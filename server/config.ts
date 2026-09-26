@@ -624,7 +624,7 @@ export interface AppConfig {
    * seats shared by all conversations, with per-thread affinity (#1654). */
   localVm?: { mode?: "shared" | "per-bot" | "pool"; maxInstances?: number; idleTimeoutMinutes?: number };
   /** Opt-in product experiments. Every flag defaults to disabled. */
-  features?: { skillAuthoring?: boolean; showToolCalls?: boolean; browser?: boolean; sharedComputers?: boolean; claudeUserMcp?: boolean; llmThreadTitles?: boolean; autoRecall?: boolean; computerClaimIdleRelease?: boolean; cloudOverflow?: boolean; routinesInConversation?: boolean };
+  features?: { skillAuthoring?: boolean; showToolCalls?: boolean; browser?: boolean; sharedComputers?: boolean; claudeUserMcp?: boolean; llmThreadTitles?: boolean; autoRecall?: boolean; computerClaimIdleRelease?: boolean; cloudOverflow?: boolean; routinesInConversation?: boolean; skillsLibrary?: boolean };
   /** #1655: consented cloud overflow for local computer waits. The cost is
    * the operator's own per-second rate; unset keeps the feature inert. */
   cloudOverflow?: { perSecondCostUsd?: number; idleStopMs?: number; allowlistedThreads?: string[] };
@@ -923,6 +923,14 @@ export function cloudOverflowIdleStopMs(cfg: AppConfig): number {
 export function cloudOverflowAllowlistedThreads(cfg: AppConfig): Set<string> {
   return new Set(cfg.cloudOverflow?.allowlistedThreads ?? []);
 }
+/** Opt-in shared skills library (skills lane S1): one store at the data dir
+ * that bots reference by assignment instead of per-workspace copies. Off
+ * unless enabled by hand in ~/.openmausbot/config.json
+ * (`{"features": {"skillsLibrary": true}}`); while off, every skills
+ * surface keeps today's byte-identical per-bot behavior. */
+export function skillsLibraryEnabled(cfg: AppConfig): boolean {
+  return cfg.features?.skillsLibrary === true;
+ }
 
 /** Config sections no provider driver reads. A write that touches only
  * these must not rebuild the fleet: rebuilding disposes every engine child
