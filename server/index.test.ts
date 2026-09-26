@@ -3440,19 +3440,19 @@ describe("harness HTTP API", () => {
     }
   }, 30_000);
 
-  it("keeps the wait history when the wait ceiling gives up", async () => {
+  it("parks the turn at the wait ceiling and resumes when the computer frees", async () => {
     const requestId = randomUUID();
-    const section = `Give-up machine ${requestId.slice(0, 8)}`;
+    const section = `Park machine ${requestId.slice(0, 8)}`;
     // The main fixture server runs with the production ceiling (minutes); this
     // test exists to make the ceiling fire, so it boots its own server with a
     // seconds-scale cap against the same shared Boat stub.
-    const isolatedHome = mkdtempSync(join(tmpdir(), "omb-computer-wait-giveup-"));
+    const isolatedHome = mkdtempSync(join(tmpdir(), "omb-computer-wait-park-"));
     const isolatedData = join(isolatedHome, ".openmausbot");
     const isolatedStatic = join(isolatedHome, "static");
     const isolatedPort = await freePortBlock([0, 1]);
     mkdirSync(join(isolatedStatic, "assets"), { recursive: true });
-    mkdirSync(isolatedData, { recursive: true });
-    writeFileSync(join(isolatedStatic, "index.html"), "<!doctype html><title>Computer wait give-up test</title>");
+    mkdirSync(join(isolatedData), { recursive: true });
+    writeFileSync(join(isolatedStatic, "index.html"), "<!doctype html><title>Computer wait park test</title>");
     writeFileSync(join(isolatedStatic, "assets", "smoke.css"), "body{}");
     writeFileSync(join(isolatedData, "config.json"), JSON.stringify({
       instances: {
@@ -3473,8 +3473,9 @@ describe("harness HTTP API", () => {
         OMB_STATIC_DIR: isolatedStatic,
         OMB_BOX_API: `http://127.0.0.1:${boatStubPort}`,
         FAKE_CLAUDE_MODE: "hang",
-        // seconds, not minutes: the point of this file is the cap firing
-        OMB_GOAL_WAIT_MAX_MS: "2000",
+        // seconds, not minutes: the point of this file is the cap firing,
+        // on the computer cap itself — not the goal cap it used to share
+        OMB_COMPUTER_WAIT_MAX_MS: "2000",
       },
       stdio: ["ignore", "pipe", "pipe"],
     });
@@ -3487,76 +3488,121 @@ describe("harness HTTP API", () => {
       });
       return { status: response.status, body: await response.json() };
     };
+    const promptsOnParkBox = () => boatRouteCalls.filter((call) => call.method === "POST" && call.path === "/boxes/bx_parkdskt/prompt").length;
     let botId = "";
+    let holderThreadId = "";
+    let siblingThreadId = "";
+    let roomBotId = "";
+    let roomId = "";
     try {
       await waitForIsolatedServer(isolatedChild, isolatedPort, () => isolatedStderr);
       managedBoatCreateMode = "success";
-      managedBoatCreateId = "bx_gaveupzz";
+      managedBoatCreateId = "bx_parkdskt";
       expect((await isolatedApi("PUT", "/api/config", { box: { token: "box_route" } })).status).toBe(200);
       const bot = (await isolatedApi("POST", "/api/bots", {
-        name: "Give-up holder", section,
+        name: "Park holder", section,
         modelSelection: { instanceId: "claude", model: "claude-sonnet-5" },
       })).body.bot;
       botId = bot.id;
-      expect((await isolatedApi("POST", "/api/team-computers", { requestId, name: "Give-up desktop", acknowledgeCost: true })).status).toBe(201);
+      holderThreadId = bot.threadId;
+      expect((await isolatedApi("POST", "/api/team-computers", { requestId, name: "Park desktop", acknowledgeCost: true })).status).toBe(201);
       expect((await isolatedApi("PATCH", `/api/team-computers/${requestId}`, { section, acknowledgeSharedAccess: true })).status).toBe(200);
       expect((await isolatedApi("POST", `/api/bots/${botId}/messages`, { text: "hold the desktop forever" })).status).toBe(202);
-      await expect.poll(() => boatRouteCalls.filter((call) => call.method === "POST" && call.path === "/boxes/bx_gaveupzz/prompt").length,
-        { timeout: 10_000 }).toBeGreaterThanOrEqual(1);
+      await expect.poll(promptsOnParkBox, { timeout: 10_000 }).toBeGreaterThanOrEqual(1);
       const sibling = (await isolatedApi("POST", `/api/bots/${botId}/tasks`, { title: "Waiting sibling" })).body.task;
+      siblingThreadId = sibling.threadId;
       expect((await isolatedApi("POST", `/api/bots/${botId}/messages`, { text: "wait past the ceiling", threadId: sibling.threadId })).status).toBe(202);
       await expect.poll(async () => JSON.stringify((await isolatedApi("GET", `/api/threads/${sibling.threadId}/messages`)).body),
         { timeout: 5_000 }).toMatch(/Waiting for its turn on this computer/);
-      // The ceiling fires: the turn gives up, but the wait it waited through
-      // stays in the transcript and the event log instead of being erased.
+      // The ceiling fires: the turn parks — settled, not failed — and keeps
+      // the wait it waited through in the transcript and the event log.
       await expect.poll(async () => JSON.stringify((await isolatedApi("GET", `/api/threads/${sibling.threadId}/messages`)).body),
-        { timeout: 8_000 }).toMatch(/Computer is still busy after /);
+        { timeout: 8_000 }).toMatch(/Parked — it continues automatically when the computer is free/);
       const siblingMessages: Array<{ tool?: { name?: string; ok?: boolean } }> =
         (await isolatedApi("GET", `/api/threads/${sibling.threadId}/messages`)).body.messages;
       expect(siblingMessages.some((message) => (message.tool?.name ?? "").startsWith("Waiting for its turn on this computer"))).toBe(true);
-      const gaveUpChip = siblingMessages.find((message) => (message.tool?.name ?? "").startsWith("Computer is still busy after "));
-      expect(gaveUpChip?.tool?.ok).toBe(false);
+      const parkedChip = siblingMessages.find((message) => (message.tool?.name ?? "").startsWith("Computer still busy after "));
+      expect(parkedChip?.tool?.ok).toBe(true);
       const waitEvents = ((await isolatedApi("GET", `/api/threads/${sibling.threadId}/events`)).body.entries as Array<{ kind: string; data: any }>)
         .filter((entry) => entry.kind === "runtime").map((entry) => entry.data);
       expect(waitEvents.find((event) => event.type === "turn.wait_started")).toMatchObject({
-        holder: { name: "Give-up holder" },
+        holder: { name: "Park holder" },
         resource: expect.stringMatching(/^computer:/),
       });
       expect(waitEvents.find((event) => event.type === "turn.wait_ended")).toMatchObject({
-        holder: { name: "Give-up holder" },
-        outcome: "gave_up",
+        holder: { name: "Park holder" },
+        outcome: "parked",
       });
       expect(waitEvents.find((event) => event.type === "turn.wait_ended").waitedMs).toBeGreaterThanOrEqual(0);
-      await expect.poll(async () => (await isolatedApi("GET", "/api/bots?messages=0")).body.bots
-        .find((entry: any) => entry.id === botId)?.tasks.find((task: any) => task.threadId === sibling.threadId)?.busy,
-      { timeout: 5_000 }).toBe(false);
+      await expect.poll(async () => {
+        const task = (await isolatedApi("GET", "/api/bots?messages=0")).body.bots
+          .find((entry: any) => entry.id === botId)?.tasks.find((task: any) => task.threadId === sibling.threadId);
+        return task ? `${task.busy}:${task.activity}` : "";
+      }, { timeout: 5_000 }).toBe("false:parked.computer");
       const settledMessages = (await isolatedApi("GET", `/api/threads/${sibling.threadId}/messages`)).body.messages;
-      const failures = settledMessages.filter((message: any) => message.tool?.ok === false && /Computer is still busy after/.test(message.tool.name));
-      expect(failures).toHaveLength(1);
-      expect(failures[0].turnSucceeded).toBe(false);
+      expect(settledMessages.filter((message: any) => message.tool?.ok === false && /Computer still busy|Parked/.test(message.tool.name))).toHaveLength(0);
 
-      // A room speaker hits the same deadline and keeps the same single
-      // resolution, while still settling the room's failed dispatch.
+      // Freeing the seat continues the parked sibling on its own: the resume
+      // turn takes the desktop and holds it (box prompts hang), which is
+      // exactly the contention the room below needs to park against.
+      expect((await isolatedApi("POST", `/api/bots/${botId}/interrupt`, { threadId: holderThreadId })).status).toBe(200);
+      await expect.poll(promptsOnParkBox, { timeout: 10_000 }).toBeGreaterThanOrEqual(2);
+
+      // A room speaker hits the same deadline against the sibling's resumed
+      // turn and parks the same way, while the room still settles its
+      // dispatch without a failure chip.
       const roomBot = (await isolatedApi("POST", "/api/bots", {
-        name: "Give-up room speaker", section,
+        name: "Park room speaker", section,
         modelSelection: { instanceId: "claude", model: "claude-sonnet-5" },
       })).body.bot;
+      roomBotId = roomBot.id;
       const room = (await isolatedApi("POST", "/api/groups", {
-        name: "Give-up room", memberIds: [roomBot.id],
+        name: "Park room", memberIds: [roomBot.id],
         setup: { bulletin: "", defaultResponder: { kind: "member", botId: roomBot.id } },
       })).body.group;
+      roomId = room.id;
       expect((await isolatedApi("POST", `/api/groups/${room.id}/messages`, { text: "wait for the same occupied desktop" })).status).toBe(202);
       await expect.poll(async () => JSON.stringify((await isolatedApi("GET", `/api/threads/${room.threadId}/messages`)).body),
-        { timeout: 8_000 }).toMatch(/Computer is still busy after /);
+        { timeout: 8_000 }).toMatch(/Parked — it continues automatically when the computer is free/);
       await expect.poll(async () => (await isolatedApi("GET", "/api/bots?messages=0")).body.groups
         .find((group: any) => group.id === room.id)?.working, { timeout: 5_000 }).toBe(false);
       const roomMessages = (await isolatedApi("GET", `/api/threads/${room.threadId}/messages`)).body.messages;
-      expect(roomMessages.filter((message: any) => message.tool?.ok === false && /Computer is still busy after/.test(message.tool.name))).toHaveLength(1);
+      expect(roomMessages.filter((message: any) => message.tool?.ok === false && /Computer still busy|Parked/.test(message.tool.name))).toHaveLength(0);
       const roomEvents = (await isolatedApi("GET", `/api/threads/${room.threadId}/events`)).body.entries;
       expect(roomEvents.filter((entry: any) => entry.kind === "runtime" && entry.data.type === "turn.wait_ended"))
-        .toMatchObject([{ data: { outcome: "gave_up" } }]);
+        .toMatchObject([{ data: { outcome: "parked" } }]);
+
+      // Freeing the seat again continues the parked room the same way.
+      expect((await isolatedApi("POST", `/api/bots/${botId}/interrupt`, { threadId: sibling.threadId })).status).toBe(200);
+      await expect.poll(promptsOnParkBox, { timeout: 10_000 }).toBeGreaterThanOrEqual(3);
+
+      // Supersede (#1651): a newer user message replaces parked work, so
+      // the superseded park must never resume. The sibling parks behind the
+      // resumed room; a newer sibling ask arrives; freeing the seat then
+      // continues the NEWEST work, which takes the seat itself while the
+      // parked turn stays settled. Every turn that reaches this hanging Box
+      // prompt counts exactly once, so a stale resume would surface as a
+      // fifth prompt or as the parked thread waking instead of the newest
+      // ask still running.
+      expect((await isolatedApi("POST", `/api/bots/${botId}/messages`, { text: "wait past the ceiling a second time", threadId: siblingThreadId })).status).toBe(202);
+      await expect.poll(async () => JSON.stringify((await isolatedApi("GET", `/api/threads/${siblingThreadId}/messages`)).body),
+        { timeout: 8_000 }).toMatch(/wait past the ceiling a second time[\s\S]*Parked — it continues automatically when the computer is free/);
+      expect((await isolatedApi("POST", `/api/bots/${botId}/messages`, { text: "newer work replaces the parked wait", threadId: siblingThreadId })).status).toBe(202);
+      expect((await isolatedApi("POST", `/api/groups/${roomId}/interrupt`, {})).status).toBe(200);
+      await expect.poll(promptsOnParkBox, { timeout: 10_000 }).toBeGreaterThanOrEqual(4);
+      await new Promise((resolve) => setTimeout(resolve, 3_000));
+      expect(promptsOnParkBox()).toBe(4);
+      await expect.poll(async () => {
+        const task = (await isolatedApi("GET", "/api/bots?messages=0")).body.bots
+          .find((entry: any) => entry.id === botId)?.tasks.find((task: any) => task.threadId === siblingThreadId);
+        return task ? task.busy : "";
+      }, { timeout: 5_000 }).toBe(true);
+
     } finally {
-      await isolatedApi("POST", `/api/bots/${botId}/interrupt`, {}).catch(() => undefined);
+      await isolatedApi("POST", `/api/groups/${roomId}/interrupt`, {}).catch(() => undefined);
+      await isolatedApi("POST", `/api/bots/${roomBotId}/interrupt`, {}).catch(() => undefined);
+      await isolatedApi("POST", `/api/bots/${botId}/interrupt`, { threadId: holderThreadId }).catch(() => undefined);
+      await isolatedApi("POST", `/api/bots/${botId}/interrupt`, { threadId: siblingThreadId }).catch(() => undefined);
       await isolatedApi("DELETE", `/api/bots/${botId}`).catch(() => undefined);
       await isolatedApi("PUT", "/api/config", { box: { token: "" } }).catch(() => undefined);
       managedBoatRows = [];
@@ -3567,7 +3613,7 @@ describe("harness HTTP API", () => {
       await removeTempDir(isolatedHome);
     }
     expectStoppedTestServerCleanly(isolatedChild, isolatedStderr);
-  }, 60_000);
+  }, 75_000);
 
   it("blocks bot-scoped Boat lifecycle changes after a direct turn claims the bot", async () => {
     let botId = "";

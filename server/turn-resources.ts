@@ -10,6 +10,10 @@ export type TurnOwner = {
    * one incident, not two (Claude settles the follow-up interrupt as
    * exit_before_result, which reads there like a fresh failure). */
   lazyClaimFailureReported?: boolean;
+  /** The computer resource this turn parked waiting for (#1651). Set at the
+   * wait ceiling: the lazy-claim rejection path registers the resume from
+   * it, and the completion fold settles the turn as parked, not failed. */
+  computerParkedOn?: string;
 };
 
 /** Options at claim time (#1653): `idle` opts the claim into quiet-window
@@ -165,6 +169,15 @@ export class TurnResources {
     if (!current.idle.quietElapsed(current.activityAt, now)) return;
     this.owners.delete(resource);
     this.reclaims.set(resource, { owner: current.owner, until: now + current.idle.reclaimMs });
+  }
+
+  /** Whether any live owner holds this resource: the parked-resume drain's
+   * gate (#1651) — a resume fires only when the seat it queued on is free. */
+  free(resource: string): boolean {
+    for (const key of this.owners.keys()) {
+      if (overlaps(key, resource)) return false;
+    }
+    return true;
   }
 }
 
