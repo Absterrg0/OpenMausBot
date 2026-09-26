@@ -2696,6 +2696,9 @@ async function bindTurnComputer(owner: TurnOwner, resource: string, exclusive = 
     if (!waitingMessage || waitEnded) return;
     waitEnded = true;
     const waitedMs = waitedSince === undefined ? 0 : Date.now() - waitedSince;
+    // Acquisition is the only wait that completes: it is the sample the
+    // per-resource estimate is built from (#1652).
+    if (outcome === "acquired") turnResources.noteWait(resource, waitedMs);
     const text = outcome === "acquired"
       ? computerFreeAfterText(holder, waitedMs)
       : outcome === "parked"
@@ -2720,6 +2723,10 @@ async function bindTurnComputer(owner: TurnOwner, resource: string, exclusive = 
       if (!active()) throw new DirectTurnSetupCancelled("Computer wait cancelled");
       if (!exclusive || claimTurnResource(owner, resource)) break;
       if (!waitingMessage) {
+        // Arrival in the waitlist is the chip's timestamp: the position it
+        // reads is where this turn sits the moment it starts waiting (#1652).
+        const position = turnResources.startWaiting(resource, owner);
+        const estimateMs = turnResources.waitEstimateMs(resource);
         const blocker = turnResources.blocker(resource, owner);
         const holderBot = blocker && store.botByThread(blocker.threadId);
         const holderTask = holderBot && blocker && store.taskByThread(holderBot.id, blocker.threadId);
@@ -2732,7 +2739,7 @@ async function bindTurnComputer(owner: TurnOwner, resource: string, exclusive = 
           : undefined;
         waitingMessage = store.appendMessage(owner.threadId, {
           role: "bot", kind: "activity",
-          tool: { name: computerWaitingText(holder) },
+          tool: { name: computerWaitingText(holder, { position, estimateMs }) },
           ...(holderThreadRef ? { threadRef: holderThreadRef } : {}),
         });
         waitedSince = Date.now();
@@ -2740,6 +2747,7 @@ async function bindTurnComputer(owner: TurnOwner, resource: string, exclusive = 
           ...waitEventBase(),
           type: "turn.wait_started",
           resource,
+          position,
           ...(holder ? { holder } : {}),
         });
         // #1655: the wait is where an overflow choice gets made. The card
@@ -2781,6 +2789,9 @@ async function bindTurnComputer(owner: TurnOwner, resource: string, exclusive = 
     // Never patch the waiting chip over: the queue position this turn held
     // stays visible beside what the wait came to.
     endWait(active() && turnResources.owns(resource, owner) ? "acquired" : "stopped");
+    // Whatever the wait came to, this turn is no longer waiting: an owner
+    // left at the front would block the grant for everyone behind it.
+    turnResources.stopWaiting(resource, owner);
   }
   turnResourceOwners.set(owner.threadId, owner);
   turnComputerResources.set(owner.threadId, { owner, resource });

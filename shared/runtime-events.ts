@@ -74,6 +74,9 @@ export type RuntimeEvent = RuntimeEventBase &
         type: "turn.wait_started";
         /** The computer resource this turn queued behind (e.g. "computer:box:bx_…"). */
         resource: string;
+        /** Where this turn sat in the resource's arrival-ordered waitlist when
+         * the wait began (#1652). */
+        position?: number;
         /** Who held the computer when the wait began, if the holder was known. */
         holder?: { name: string; task?: string };
       }

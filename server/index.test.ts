@@ -3440,6 +3440,99 @@ describe("harness HTTP API", () => {
     }
   }, 30_000);
 
+  it("queues computer waiters in arrival order and estimates the wait only from history", async () => {
+    const requestId = randomUUID();
+    const section = `Queue machine ${requestId.slice(0, 8)}`;
+    let botId = "";
+    const waiterThreads: string[] = [];
+    try {
+      expect((await api("PUT", "/api/config", { box: { token: "box_route" } })).status).toBe(200);
+      // The queue needs four live threads on this one bot — the holder plus
+      // three waiters. At the default cap of 3 the fourth message parks in
+      // the send queue off-transcript instead of waiting on the computer.
+      expect((await api("PUT", "/api/config", { threads: { maxConcurrentPerBot: 6 } })).status).toBe(200);
+      const bot = (await api("POST", "/api/bots", { name: "Queue probe", section,
+        modelSelection: { instanceId: "claude", model: "claude-sonnet-5" } })).body.bot;
+      botId = bot.id;
+      // Stop must name the holder's thread: each task message moves the
+      // bot's active-thread pointer, so a bare interrupt would hit the
+      // newest waiter instead of the turn holding the desktop.
+      const holderThread = bot.threadId;
+      managedBoxCreateMode = "success";
+      managedBoxCreateId = "bx_queuedsk";
+      managedBoxCreateName = "";
+      expect((await api("POST", "/api/team-computers", { requestId, name: "Queue desktop", acknowledgeCost: true })).status).toBe(201);
+      expect((await api("PATCH", `/api/team-computers/${requestId}`, { section, acknowledgeSharedAccess: true })).status).toBe(200);
+      const promptsOnBox = () => boxRouteCalls.filter(call => call.method === "POST" && call.path === `/boxes/${managedBoxCreateId}/prompt`).length;
+      const threadMessages = async (threadId: string) =>
+        ((await api("GET", `/api/threads/${threadId}/messages`)).body.messages as Array<{ tool?: { name?: string } }>);
+      const threadEvents = async (threadId: string) =>
+        (((await api("GET", `/api/threads/${threadId}/events`)).body.entries as Array<{ kind: string; data: any }>)
+          .filter(entry => entry.kind === "runtime").map(entry => entry.data));
+
+      // The holder keeps the desktop until it is interrupted.
+      expect((await api("POST", `/api/bots/${botId}/messages`, { text: "hold the queue desktop" })).status).toBe(202);
+      await expect.poll(promptsOnBox, { timeout: 5_000 }).toBe(1);
+      const promptBaseline = boxPromptBodies.length;
+
+      // Three sibling tasks arrive one after another. Each chip names its
+      // stable position in arrival order, and no estimate exists yet.
+      for (const [index, title] of ["First waiter", "Second waiter", "Third waiter"].entries()) {
+        const task = (await api("POST", `/api/bots/${botId}/tasks`, { title })).body.task;
+        waiterThreads.push(task.threadId);
+        expect((await api("POST", `/api/bots/${botId}/messages`, { text: `arrival ${index + 1} of the queue`, threadId: task.threadId })).status).toBe(202);
+        await expect.poll(async () => JSON.stringify(await threadMessages(task.threadId)), { timeout: 5_000 })
+          .toMatch(new RegExp(`${index + 1}(st|nd|rd) in queue`));
+        expect((await threadMessages(task.threadId)).some(message => (message.tool?.name ?? "").includes("recent waits here"))).toBe(false);
+        expect((await threadEvents(task.threadId)).find(event => event.type === "turn.wait_started")).toMatchObject({ position: index + 1 });
+      }
+
+      // Releasing the holder grants the seat to position 1 alone: exactly
+      // one new provider prompt, carrying the first waiter's arrival text.
+      expect((await api("POST", `/api/bots/${botId}/interrupt`, { threadId: holderThread })).status).toBe(200);
+      await expect.poll(promptsOnBox, { timeout: 10_000 }).toBe(2);
+      expect(String(boxPromptBodies.slice(promptBaseline).at(-1)?.prompt)).toContain("arrival 1 of the queue");
+      await expect.poll(async () => JSON.stringify(await threadMessages(waiterThreads[0]!)), { timeout: 5_000 })
+        .toMatch(/Computer free — continuing after waiting /);
+      // Positions 2 and 3 keep waiting: nobody jumped the released seat.
+      expect(promptsOnBox()).toBe(2);
+
+      // The first waiter's completed wait is now history for this desktop:
+      // a fourth arrival's chip carries the estimate; the earlier chips,
+      // written before any wait had completed, never did.
+      const fourth = (await api("POST", `/api/bots/${botId}/tasks`, { title: "Fourth waiter" })).body.task;
+      waiterThreads.push(fourth.threadId);
+      expect((await api("POST", `/api/bots/${botId}/messages`, { text: "arrival 4 wants an estimate", threadId: fourth.threadId })).status).toBe(202);
+      await expect.poll(async () => JSON.stringify(await threadMessages(fourth.threadId)), { timeout: 5_000 }).toMatch(/3rd in queue/);
+      await expect.poll(async () => JSON.stringify(await threadMessages(fourth.threadId)), { timeout: 5_000 }).toMatch(/recent waits here have taken /);
+      for (const threadId of waiterThreads.slice(0, 3)) {
+        const chips = (await threadMessages(threadId)).map(message => message.tool?.name ?? "");
+        expect(chips.some(name => name.includes("recent waits here"))).toBe(false);
+      }
+
+      // FIFO keeps holding through the next release: position 2 is granted
+      // next, again by its own arrival text.
+      expect((await api("POST", `/api/bots/${botId}/interrupt`, { threadId: waiterThreads[0] })).status).toBe(200);
+      await expect.poll(promptsOnBox, { timeout: 10_000 }).toBe(3);
+      expect(String(boxPromptBodies.slice(promptBaseline).at(-1)?.prompt)).toContain("arrival 2 of the queue");
+    } finally {
+      for (const threadId of waiterThreads) await api("POST", `/api/bots/${botId}/interrupt`, { threadId }).catch(() => undefined);
+      await api("POST", `/api/bots/${botId}/interrupt`, {}).catch(() => undefined);
+      await api("POST", `/api/team-computers/${requestId}/control`, { action: "release" }).catch(() => undefined);
+      await api("PATCH", `/api/team-computers/${requestId}`, { section: null, acknowledgeSharedAccess: true }).catch(() => undefined);
+      managedBoxRows = [];
+      managedBoxCreatedIds.clear();
+      if (botId) await api("DELETE", `/api/bots/${botId}`).catch(() => undefined);
+      await api("PUT", "/api/config", { box: { token: "" } }).catch(() => undefined);
+      await api("PUT", "/api/config", { threads: { maxConcurrentPerBot: 3 } }).catch(() => undefined);
+      managedBoxCreateMode = "refuse";
+      managedBoxCreateId = "bx_cdefghjk";
+      managedBoxCreateName = "";
+      boxRouteCalls.length = 0;
+      rmSync(fakeClaudeDump, { force: true });
+    }
+  }, 60_000);
+
   it("parks the turn at the wait ceiling and resumes when the computer frees", async () => {
     const requestId = randomUUID();
     const section = `Park machine ${requestId.slice(0, 8)}`;

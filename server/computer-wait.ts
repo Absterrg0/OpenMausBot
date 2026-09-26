@@ -31,10 +31,30 @@ export function computerWaitDuration(ms: number): string {
 const holderPhrase = (holder: ComputerHolder): string =>
   holder.task ? `${holder.name} is running ${holder.task}` : `${holder.name} is using it`;
 
-/** The chip a turn shows while it is queued behind another turn's desktop. */
-export function computerWaitingText(holder?: ComputerHolder | null): string {
-  if (!holder) return "Waiting for its turn on this computer. Starts automatically when it is free.";
-  return `Waiting for its turn on this computer — ${holderPhrase(holder)}. Starts automatically when that finishes.`;
+/** Where this turn sits in the wait, and how long waits here have been
+ * taking, as known when the chip was written (#1652). The estimate is
+ * undefined until the resource has wait history; the chip then simply omits
+ * it — an honest blank beats a made-up number. */
+export interface WaitQueueFact {
+  position?: number;
+  estimateMs?: number;
+}
+
+const ordinal = (position: number): string => {
+  const mod100 = position % 100;
+  const mod10 = position % 10;
+  const suffix = mod100 >= 11 && mod100 <= 13 ? "th" : mod10 === 1 ? "st" : mod10 === 2 ? "nd" : mod10 === 3 ? "rd" : "th";
+  return `${position}${suffix}`;
+};
+
+/** The chip a turn shows while it is queued behind another turn's desktop:
+ * its stable queue position, the holder, and — only once waits here have
+ * history — about how long they have been taking. */
+export function computerWaitingText(holder?: ComputerHolder | null, queue?: WaitQueueFact): string {
+  const place = queue?.position && queue.position > 0 ? ` — ${ordinal(queue.position)} in queue` : "";
+  const estimate = queue?.estimateMs !== undefined ? `; recent waits here have taken ${computerWaitDuration(queue.estimateMs)}` : "";
+  if (!holder) return `Waiting for its turn on this computer${place}. Starts automatically when it is free${estimate}.`;
+  return `Waiting for its turn on this computer${place} — ${holderPhrase(holder)}. Starts automatically when that finishes${estimate}.`;
 }
 
 /** The resolution appended once the wait landed and this turn holds the
