@@ -287,6 +287,22 @@ describe("computer wait queue", () => {
     leases.release(lazy);
     expect(leases.claim("computer:host", b)).toBe(true);
   });
+
+  it("keeps granting the holder's re-claim behind a waitlist", () => {
+    const leases = new TurnResources();
+    const waiter = { threadId: "w1", generation: "1" };
+    expect(leases.claim("computer:host", a)).toBe(true);
+    expect(leases.claim("computer:host", waiter)).toBe(false);
+    expect(leases.startWaiting("computer:host", waiter)).toBe(1);
+    // Every screen tools/call re-validates the claim: the legitimate
+    // holder must keep its grant even once a waiter queues behind it.
+    expect(leases.claim("computer:host", a)).toBe(true);
+    expect(leases.owns("computer:host", a)).toBe(true);
+    // FIFO is intact: the waiter keeps position 1 and the next seat.
+    expect(leases.waitPosition("computer:host", waiter)).toBe(1);
+    leases.release(a);
+    expect(leases.claim("computer:host", waiter)).toBe(true);
+  });
 });
 
 describe("wait estimate history", () => {
