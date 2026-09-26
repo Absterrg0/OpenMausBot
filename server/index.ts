@@ -193,6 +193,7 @@ import { ComputerControl } from "./computer-control.ts";
 import { augmentedPath, findCliCandidates, resetPathCache } from "./env-path.ts";
 import { registerEnginesBinDir } from "./engine-install.ts";
 import { appendUsage, parseUsageRange, readUsage, summarizeUsage, usageCsv, USAGE_GROUPINGS, flushUsageLedger, type UsageGroupBy, type UsageRow, type UsageTrigger } from "./usage-ledger.ts";
+import { loadPlanUsage, planAccountsFromInstances } from "./plan-usage.ts";
 import { GroupUsageReader } from "./group-thread-usage.ts";
 import { ledgerCost } from "./model-prices.ts";
 import type { PriceList } from "./prices.ts";
@@ -22094,6 +22095,17 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         budget: spendState(cfg, DATA_DIR),
         billing: prices ? { currency: cfg.billing?.currency ?? "USD" } : null,
       });
+    }
+
+    // Subscription windows (5-hour and weekly), not the token ledger above.
+    // Same admin gate as /api/usage: this route is unlisted, so it stays admin.
+    if (method === "GET" && path === "/api/plan-usage") {
+      res.setHeader("cache-control", "no-store");
+      const report = await loadPlanUsage({
+        accounts: planAccountsFromInstances(instanceConfigs(cfg)),
+        refresh: url.searchParams.get("refresh") === "1",
+      });
+      return json(res, 200, report);
     }
 
     // ── provider key check: does a pasted or saved key open the provider's door ──
