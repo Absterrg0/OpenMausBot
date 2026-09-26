@@ -81,13 +81,19 @@ export function sidebarSectionCollapsed(
 }
 
 /** Pinned bots are a virtual view. Their saved section is left untouched so
- * unpinning returns them to the context they came from. */
-export function partitionSidebarBots<T extends SidebarBot>(bots: T[]) {
+ * unpinning returns them to the context they came from.
+ * With universal pins, a pin lifts a bot out of every group, including a
+ * section's chief. Without it, chiefs stay in the group they run. */
+export function partitionSidebarBots<T extends SidebarBot>(
+  bots: T[],
+  options?: { universalPins?: boolean },
+) {
+  const universalPins = options?.universalPins === true;
   const visible = bots.filter((bot) => !bot.hidden);
-  const unsectionedChief = visible.find((bot) => bot.chiefOfStaff && !bot.section) ?? null;
-  const pinnedBots = visible.filter((bot) => !bot.chiefOfStaff && Boolean(bot.pinned));
+  const pinnedBots = visible.filter((bot) => Boolean(bot.pinned) && (universalPins || !bot.chiefOfStaff));
   const pinnedIds = new Set(pinnedBots.map((bot) => bot.id));
-  const sectionChiefs = visible.filter((bot) => bot.chiefOfStaff && Boolean(bot.section));
+  const unsectionedChief = visible.find((bot) => bot.chiefOfStaff && !bot.section && !pinnedIds.has(bot.id)) ?? null;
+  const sectionChiefs = visible.filter((bot) => bot.chiefOfStaff && Boolean(bot.section) && !pinnedIds.has(bot.id));
   const sectionedBots = visible.filter(
     (bot) => !bot.chiefOfStaff && Boolean(bot.section) && !pinnedIds.has(bot.id),
   );
