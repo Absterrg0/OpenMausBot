@@ -3615,6 +3615,192 @@ describe("harness HTTP API", () => {
     expectStoppedTestServerCleanly(isolatedChild, isolatedStderr);
   }, 75_000);
 
+  it("routes a goal run around a member parked at the computer wait ceiling, then resumes it", async () => {
+    const requestId = randomUUID();
+    const section = `Park goal machine ${requestId.slice(0, 8)}`;
+    // Same shape as the park test above: an isolated server with a
+    // seconds-scale computer wait ceiling against the shared Box stub, plus
+    // scripted coordinator replies so a real goal run delegates to a member
+    // whose only computer is the one the holder already sits on.
+    const isolatedHome = mkdtempSync(join(tmpdir(), "omb-computer-wait-goal-"));
+    const isolatedData = join(isolatedHome, ".openmausbot");
+    const isolatedStatic = join(isolatedHome, "static");
+    const isolatedPort = await freePortBlock([0, 1]);
+    const leadReplies = [
+      [
+        "Parker should do the desktop work.",
+        '<openmaus-goal>{"status":"continue",',
+        '"next":"Parker","instruction":"Use the shared desktop","detail":"Delegated to Parker"}</openmaus-goal>',
+      ].join("\n"),
+      [
+        "The desktop stayed busy, so I finished without it.",
+        '<openmaus-goal>{"status":"completed",',
+        '"detail":"Parker parked at the computer; the lead finished the goal directly."}</openmaus-goal>',
+      ].join("\n"),
+    ];
+    mkdirSync(join(isolatedStatic, "assets"), { recursive: true });
+    mkdirSync(isolatedData, { recursive: true });
+    writeFileSync(join(isolatedStatic, "index.html"), "<!doctype html><title>Computer wait goal test</title>");
+    writeFileSync(join(isolatedStatic, "assets", "smoke.css"), "body{}");
+    writeFileSync(join(isolatedData, "config.json"), JSON.stringify({
+      instances: {
+        holder: {
+          driver: "claudeAgent",
+          displayName: "Fixture holder",
+          environment: { FAKE_CLAUDE_MODE: "hang" },
+          config: { cli: FAKE_CLAUDE_CLI },
+        },
+        lead: {
+          driver: "claudeAgent",
+          displayName: "Fixture lead",
+          environment: {
+            FAKE_CLAUDE_MODE: "happy",
+            FAKE_CLAUDE_REPLIES: JSON.stringify(leadReplies),
+            FAKE_CLAUDE_REPLY_STATE: join(isolatedHome, "lead-replies.txt"),
+          },
+          config: { cli: FAKE_CLAUDE_CLI },
+        },
+        worker: {
+          driver: "claudeAgent",
+          displayName: "Fixture worker",
+          environment: {
+            FAKE_CLAUDE_MODE: "happy",
+            FAKE_CLAUDE_REPLIES: JSON.stringify(["The parked computer work is complete."]),
+            FAKE_CLAUDE_REPLY_STATE: join(isolatedHome, "worker-replies.txt"),
+          },
+          config: { cli: FAKE_CLAUDE_CLI },
+        },
+        computer: { driver: "boxAgent", displayName: "Computer" },
+      },
+    }));
+    let isolatedStderr = "";
+    const isolatedChild = spawn(process.execPath, [join(SERVER_DIR, "index.ts")], {
+      cwd: ROOT,
+      env: {
+        ...(process.env.PATH ? { PATH: process.env.PATH } : {}),
+        ...(process.env.SystemRoot ? { SystemRoot: process.env.SystemRoot } : {}),
+        HOME: isolatedHome,
+        USERPROFILE: isolatedHome,
+        OMB_PORT: String(isolatedPort),
+        OMB_WEBHOOK_PORT: String(isolatedPort + 1),
+        OMB_STATIC_DIR: isolatedStatic,
+        OMB_BOX_API: `http://127.0.0.1:${boatStubPort}`,
+        OMB_COMPUTER_WAIT_MAX_MS: "2000",
+      },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    isolatedChild.stderr!.on("data", (chunk) => (isolatedStderr += chunk));
+    const isolatedApi = async (method: string, path: string, body?: unknown): Promise<{ status: number; body: any }> => {
+      const response = await fetch(`http://127.0.0.1:${isolatedPort}${path}`, {
+        method,
+        headers: body ? { "content-type": "application/json" } : undefined,
+        body: body ? JSON.stringify(body) : undefined,
+      });
+      return { status: response.status, body: await response.json() };
+    };
+    const promptsOnGoalBox = () => boatRouteCalls.filter((call) => call.method === "POST" && call.path === "/boxes/bx_parkedsk/prompt").length;
+    const goalCard = async () => {
+      const state = (await isolatedApi("GET", "/api/bots?messages=40")).body;
+      const room = state.groups.find((group: any) => group.id === roomId);
+      const card = room?.messages.find((message: any) => message.kind === "goal.run");
+      return { working: room?.working, card };
+    };
+    const parkedChips = async () => {
+      const state = (await isolatedApi("GET", "/api/bots?messages=40")).body;
+      const room = state.groups.find((group: any) => group.id === roomId);
+      return (room?.messages ?? []).filter((message: any) =>
+        typeof message.tool?.name === "string" && message.tool.name.startsWith("Computer still busy after "),
+      );
+    };
+    let holderBotId = "";
+    let holderThreadId = "";
+    let leadId = "";
+    let workerId = "";
+    let roomId = "";
+    try {
+      await waitForIsolatedServer(isolatedChild, isolatedPort, () => isolatedStderr);
+      managedBoatCreateMode = "success";
+      managedBoatCreateId = "bx_parkedsk";
+      expect((await isolatedApi("PUT", "/api/config", { box: { token: "box_route" } })).status).toBe(200);
+      const holder = (await isolatedApi("POST", "/api/bots", {
+        name: "Goal park holder", section,
+        modelSelection: { instanceId: "holder", model: "claude-sonnet-5" },
+      })).body.bot;
+      holderBotId = holder.id;
+      holderThreadId = holder.threadId;
+      const lead = (await isolatedApi("POST", "/api/bots", {
+        name: "Goal lead", section,
+        modelSelection: { instanceId: "lead", model: "claude-sonnet-5" },
+      })).body.bot;
+      leadId = lead.id;
+      // The lead never touches the desktop: only the delegated member parks.
+      // Patched before the section gains the team computer, which otherwise
+      // locks computer changes for every bot in the section.
+      expect((await isolatedApi("PATCH", `/api/bots/${leadId}`, { computer: "off" })).status).toBe(200);
+      expect((await isolatedApi("POST", "/api/team-computers", { requestId, name: "Goal park desktop", acknowledgeCost: true })).status).toBe(201);
+      expect((await isolatedApi("PATCH", `/api/team-computers/${requestId}`, { section, acknowledgeSharedAccess: true })).status).toBe(200);
+      expect((await isolatedApi("POST", `/api/bots/${holderBotId}/messages`, { text: "hold the desktop forever" })).status).toBe(202);
+      await expect.poll(promptsOnGoalBox, { timeout: 10_000 }).toBeGreaterThanOrEqual(1);
+      const worker = (await isolatedApi("POST", "/api/bots", {
+        name: "Parker", section,
+        modelSelection: { instanceId: "worker", model: "claude-sonnet-5" },
+      })).body.bot;
+      workerId = worker.id;
+      const room = (await isolatedApi("POST", "/api/groups", {
+        name: "Goal park room", memberIds: [leadId, workerId], section,
+        setup: { bulletin: "", defaultResponder: { kind: "member", botId: leadId } },
+      })).body.group;
+      roomId = room.id;
+      expect((await isolatedApi("POST", `/api/groups/${roomId}/messages`, {
+        text: "Finish the report using the shared desktop",
+        mode: "goal",
+      })).status).toBe(202);
+
+      // The run delegates, the member parks exactly once, and the lead gets
+      // the park as reassignment data — never as an in-step retry that would
+      // wait the ceiling out again for every goal turn left in the budget.
+      // On that bug this completion poll times out: the worker re-parks
+      // every ceiling until the turn budget is gone and the lead never gets
+      // the note.
+      await expect.poll(async () => {
+        const { working, card } = await goalCard();
+        return { working, status: card?.goalRun?.status, detail: card?.goalRun?.detail, turnCount: card?.goalRun?.turnCount };
+      }, { timeout: 15_000 }).toEqual({
+        working: false,
+        status: "completed",
+        detail: "Parker parked at the computer; the lead finished the goal directly.",
+        turnCount: 3,
+      });
+      expect((await parkedChips()).length).toBe(1);
+      expect((await parkedChips()).every((message: any) => message.tool?.ok === true)).toBe(true);
+      // A retry loop would park again roughly every ceiling; give it room to
+      // fail and then hold the line at one park.
+      await new Promise((resolve) => setTimeout(resolve, 3_000));
+      expect((await parkedChips()).length).toBe(1);
+
+      // Freeing the seat resumes the parked member on its own through the
+      // registered entry: the resumed turn takes the desktop (its Box prompt
+      // hangs, holding the seat) without any new user message.
+      expect((await isolatedApi("POST", `/api/bots/${holderBotId}/interrupt`, { threadId: holderThreadId })).status).toBe(200);
+      await expect.poll(promptsOnGoalBox, { timeout: 10_000 }).toBeGreaterThanOrEqual(2);
+    } finally {
+      await isolatedApi("POST", `/api/groups/${roomId}/interrupt`, {}).catch(() => undefined);
+      await isolatedApi("POST", `/api/bots/${holderBotId}/interrupt`, {}).catch(() => undefined);
+      await isolatedApi("POST", `/api/bots/${leadId}/interrupt`, {}).catch(() => undefined);
+      await isolatedApi("POST", `/api/bots/${workerId}/interrupt`, {}).catch(() => undefined);
+      await isolatedApi("DELETE", `/api/groups/${roomId}`).catch(() => undefined);
+      for (const botId of [holderBotId, leadId, workerId]) await isolatedApi("DELETE", `/api/bots/${botId}`).catch(() => undefined);
+      await isolatedApi("PUT", "/api/config", { box: { token: "" } }).catch(() => undefined);
+      managedBoatRows = [];
+      managedBoatCreatedIds.clear();
+      managedBoatCreateMode = "refuse";
+      managedBoatCreateId = "bx_cdefghjk";
+      await waitForExit(isolatedChild, { signal: "SIGTERM" });
+      await removeTempDir(isolatedHome);
+    }
+    expectStoppedTestServerCleanly(isolatedChild, isolatedStderr);
+  }, 75_000);
+
   it("blocks bot-scoped Boat lifecycle changes after a direct turn claims the bot", async () => {
     let botId = "";
     try {
