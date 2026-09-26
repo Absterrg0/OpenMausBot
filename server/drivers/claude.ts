@@ -537,6 +537,62 @@ function askSummary(ask: Ask): string {
   return askInputSummary(ask.input) ?? ask.tool ?? "tool";
 }
 
+/** One native `result` frame's verdict and figures. A logical turn can span
+ * more than one: a user message steered in after the turn's last model call
+ * runs as the CLI's next native turn (see STEERED_CONTINUATION_GRACE_MS). */
+export interface NativeTurnResult {
+  ok: boolean;
+  stopReason: string | null;
+  cost: number | null;
+  usage?: { input: number; output: number; cachedInput?: number };
+}
+
+/** A logical turn made of several native turns: any failed half fails it,
+ * the last stop reason stands, per-turn token usage adds up, and the cost is
+ * the latest figure — the CLI reports total_cost_usd as the process's running
+ * total ("cumulative across turns in streaming-input sessions … read the
+ * latest result rather than summing", 2.1.282), so adding would double-bill.
+ * A figure missing on one side leaves the other side's alone. */
+export function sumNativeTurnResults(earlier: NativeTurnResult | null, latest: NativeTurnResult): NativeTurnResult {
+  if (!earlier) return latest;
+  const usage = earlier.usage && latest.usage
+    ? {
+        input: earlier.usage.input + latest.usage.input,
+        output: earlier.usage.output + latest.usage.output,
+        ...(earlier.usage.cachedInput !== undefined || latest.usage.cachedInput !== undefined
+          ? { cachedInput: (earlier.usage.cachedInput ?? 0) + (latest.usage.cachedInput ?? 0) }
+          : {}),
+      }
+    : latest.usage ?? earlier.usage;
+  return {
+    ok: earlier.ok && latest.ok,
+    stopReason: latest.stopReason ?? earlier.stopReason,
+    cost: latest.cost ?? earlier.cost,
+    ...(usage ? { usage } : {}),
+  };
+}
+
+/** How long after a native `result` the CLI gets to announce, with `init`,
+ * the turn it starts for a user message steered in after this turn's last
+ * model call. The message is already buffered on its stdin, so this takes
+ * milliseconds (about 60 ms on 2.1.282). If nothing comes, the message was
+ * folded into the call that just finished after all, and the held result
+ * is the turn's. */
+export const STEERED_CONTINUATION_GRACE_MS = 2_000;
+
+/** How long a steered continuation may stay silent after its `init` before
+ * the driver stops waiting and closes the turn on the held result. 2.1.282
+ * follows `init` with a `status` frame within milliseconds and every CLI
+ * streams once the model answers; a continuation that never speaks would
+ * otherwise keep the turn — and its internal tool pass — open until the
+ * stall watchdog. */
+export const STEERED_CONTINUATION_SILENCE_MS = 30_000;
+/** Tests scale each steer timer on its own, the way FAKE_CLAUDE_RETRY_SCALE
+ * scales the retry backoff — a test that shortens the silence bound must not
+ * also shorten the grace `init` has to arrive in. Production runs at 1. */
+const fakeTimerScale = (name: string) => Number(process.env[name] ?? "1") || 1;
+const steerGraceScale = () => fakeTimerScale("FAKE_CLAUDE_STEER_GRACE_SCALE");
+const steerSilenceScale = () => fakeTimerScale("FAKE_CLAUDE_STEER_SILENCE_SCALE");
 
 /** Where the hook helper reads this thread's current turn token. Stable per
  * thread (so the CLI's environment can name it once) and private. */
@@ -1122,7 +1178,31 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
        * the truth — this is. null until init, or on a CLI that omits it. */
       nativePermissionMode: string | null;
       /** the running turn, or null between turns */
-      turn: { turnId: string; input: SendTurnInput; retryAbort: AbortController; settled: boolean; sawStreamDelta: boolean; authFailed?: boolean; updateRequired?: boolean; stopRequested?: boolean } | null;
+      turn: {
+        turnId: string;
+        input: SendTurnInput;
+        retryAbort: AbortController;
+        settled: boolean;
+        sawStreamDelta: boolean;
+        authFailed?: boolean;
+        updateRequired?: boolean;
+        stopRequested?: boolean;
+        /** User messages steered in since the CLI last showed a fold seam — a
+         * tool result, which it follows with a model call that takes queued
+         * stdin first. Words that land after the LAST seam run as the CLI's
+         * next native turn instead, so a `result` with this above zero does
+         * not end the logical turn (see the `result` handling). */
+        pendingSteers: number;
+        /** Native results already produced by this logical turn, held while
+         * a steered continuation is expected; summed into `turn.completed`. */
+        deferred: NativeTurnResult | null;
+        /** Armed after a held result: the CLI announces the continuation with
+         * `init` within milliseconds, or never — then the held result stands. */
+        continuationGrace: ReturnType<typeof setTimeout> | null;
+        /** Armed by the continuation's `init`: a frame of any other kind must
+         * follow within STEERED_CONTINUATION_SILENCE_MS, or the held result stands. */
+        continuationSilence: ReturnType<typeof setTimeout> | null;
+      } | null;
       idleTimer: ReturnType<typeof setTimeout> | null;
       closing: boolean;
       stderr: string;
@@ -1487,7 +1567,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
       const live = sessions.get(threadId);
       if (!turn.sessionReset && live && !live.turn && !live.closing && live.child.exitCode === null && live.argsKey === argsKey && (!sessionId || sessionId === live.sessionId)) {
         if (live.idleTimer) clearTimeout(live.idleTimer);
-        live.turn = { turnId, input: turn, retryAbort, settled: false, sawStreamDelta: false };
+        live.turn = { turnId, input: turn, retryAbort, settled: false, sawStreamDelta: false, pendingSteers: 0, deferred: null, continuationGrace: null, continuationSilence: null };
         active.set(threadId, { stop: () => {
           if (live.turn) live.turn.stopRequested = true;
           closeSession(threadId, "interrupted");
@@ -1666,7 +1746,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
         sessionId: sessionId ?? newSessionId,
         sawInit: false,
         nativePermissionMode: null,
-        turn: { turnId, input: turn, retryAbort, settled: false, sawStreamDelta: false },
+        turn: { turnId, input: turn, retryAbort, settled: false, sawStreamDelta: false, pendingSteers: 0, deferred: null, continuationGrace: null, continuationSilence: null },
         idleTimer: null,
         closing: false,
         stderr: "",
@@ -1685,6 +1765,14 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
         const t = session.turn;
         if (!t || t.settled) return;
         t.settled = true;
+        if (t.continuationGrace) {
+          clearTimeout(t.continuationGrace);
+          t.continuationGrace = null;
+        }
+        if (t.continuationSilence) {
+          clearTimeout(t.continuationSilence);
+          t.continuationSilence = null;
+        }
         // Resolve any ask still open for this turn, but keep the broker
         // listening for the next turn on the retained process. Between turns
         // isActive() rejects late background asks without creating cards.
@@ -1716,6 +1804,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
         emit({ ...base(threadId, t.turnId), type: "turn.completed", ok, stopReason, cost, ...(usage ? { usage } : {}) });
         if (session.child.exitCode === null && !session.closing) armIdle(threadId);
       };
+      const settleResult = (result: NativeTurnResult) => settle(result.ok, result.stopReason, result.cost, result.usage);
       const currentTurnId = () => session.turn?.turnId ?? turnId;
       // The process's first result with a cost says what --resume restored,
       // which its turns are measured from; every result is kept for a later
@@ -1740,12 +1829,39 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
           return;
         }
         appendNative(threadId, { dir: "in", source: "claude.sdk.message", msg: o });
+        // The continuation a held result waits for has spoken: any frame
+        // after its `init` — status, thinking, text, its own result.
+        if (session.turn?.continuationSilence && !(o.type === "system" && o.subtype === "init")) {
+          clearTimeout(session.turn.continuationSilence);
+          session.turn.continuationSilence = null;
+        }
         switch (o.type) {
           case "system":
             if (o.subtype === "init") {
               session.sawInit = true;
               session.nativePermissionMode = typeof o.permissionMode === "string" ? o.permissionMode : null;
               if (typeof o.session_id === "string") session.sessionId = o.session_id;
+              // The turn the CLI starts for a steered message it could not
+              // fold (see `result`): the held result now waits for this one's
+              // — bounded, so a continuation that announces itself and then
+              // never speaks cannot keep the turn's pass open indefinitely.
+              const held = session.turn;
+              if (held?.continuationGrace) {
+                clearTimeout(held.continuationGrace);
+                held.continuationGrace = null;
+                if (held.continuationSilence) clearTimeout(held.continuationSilence);
+                held.continuationSilence = setTimeout(() => {
+                  if (session.turn !== held || held.settled || !held.deferred) return;
+                  held.continuationSilence = null;
+                  emit({
+                    ...base(threadId, held.turnId),
+                    type: "runtime.error",
+                    message: "Claude began a steered message but went silent; the turn was closed.",
+                  });
+                  settleResult(held.deferred);
+                }, STEERED_CONTINUATION_SILENCE_MS * steerSilenceScale());
+                held.continuationSilence.unref?.();
+              }
               emit({ ...base(threadId, currentTurnId()), type: "session.started", sessionId: o.session_id, model: o.model, ...(retry.rebuilt ? { rebuilt: true } : {}) });
             } else if (o.subtype === "thinking_tokens") {
               emit({ ...base(threadId, currentTurnId()), type: "item.updated", itemType: "reasoning", tokens: o.estimated_tokens });
@@ -1824,17 +1940,24 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
             }
             break;
           }
-          case "user":
+          case "user": {
+            let toolResult = false;
             for (const b of Array.isArray(o.message?.content) ? o.message.content : []) {
               if (b.type === "tool_result") {
+                toolResult = true;
                 emit({ ...base(threadId, currentTurnId()), type: "item.completed", itemType: "tool", itemId: b.tool_use_id, ok: !b.is_error, output: toolDetailPreview(b.content) });
                 for (const img of extractMcpImages(b.content)) {
                   emit({ ...base(threadId, currentTurnId()), type: "item.completed", itemType: "assistant_image", data: img.data });
                 }
               }
             }
+            // The CLI follows a tool result with a model call and takes queued
+            // stdin before it: whatever was steered so far is folded in. A
+            // subagent's tool result is inside a Task, not a seam of this loop.
+            if (toolResult && !o.parent_tool_use_id && session.turn) session.turn.pendingSteers = 0;
             break;
-          case "result":
+          }
+          case "result": {
             // A synthetic background completion is not the result of the
             // submitted user turn. Settling it would revoke browser access
             // and deny approvals while that user turn is still running.
@@ -1852,25 +1975,67 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
               cacheWrite: o.usage?.cache_creation_input_tokens || 0,
               output: o.usage?.output_tokens || 0,
             });
-            settle(
-              o.is_error !== true,
-              session.turn?.authFailed
+            const native: NativeTurnResult = {
+              ok: o.is_error !== true,
+              stopReason: session.turn?.authFailed
                 ? "auth_required"
                 : session.turn?.updateRequired
                   ? "update_required"
                   : o.stop_reason ?? o.terminal_reason ?? null,
-              o.total_cost_usd ?? null,
-              o.usage
+              cost: o.total_cost_usd ?? null,
+              ...(o.usage
                 ? {
-                    input: (o.usage.input_tokens || 0) + (o.usage.cache_read_input_tokens || 0) + (o.usage.cache_creation_input_tokens || 0),
-                    output: o.usage.output_tokens || 0,
-                    ...(typeof o.usage.cache_read_input_tokens === "number"
-                      ? { cachedInput: o.usage.cache_read_input_tokens }
-                      : {}),
+                    usage: {
+                      input: (o.usage.input_tokens || 0) + (o.usage.cache_read_input_tokens || 0) + (o.usage.cache_creation_input_tokens || 0),
+                      output: o.usage.output_tokens || 0,
+                      ...(typeof o.usage.cache_read_input_tokens === "number"
+                        ? { cachedInput: o.usage.cache_read_input_tokens }
+                        : {}),
+                    },
                   }
-                : undefined,
-            );
+                : {}),
+            };
+            const t = session.turn;
+            // Does another user turn follow this result without more input?
+            // The CLI says so itself when it can: queued_turn_count ("greater
+            // than 0 means at least one more user turn (and result) follows",
+            // 2.1.282) counts its command queue. A message steered in over
+            // stdin is not in that queue when the result is written — the
+            // incident's result said 0 and the CLI ran the message 58 ms later
+            // — so 0, like an absent field, decides nothing; the driver's own
+            // count of steers since the last fold seam does. That count has
+            // windows the CLI's figure would close if it covered stdin: a
+            // steer written after the CLI drained stdin but before the driver
+            // saw that drain's tool result (counted as folded, was not), and a
+            // turn ending right after a tool result (error_max_turns, budget)
+            // with a steer it never got to fold. Both settle early, as before
+            // this fix. A steer landing while a result is held extends the hold.
+            const queuedTurns = typeof o.queued_turn_count === "number" ? o.queued_turn_count : 0;
+            if (t && !t.settled && (queuedTurns > 0 || t.pendingSteers > 0)) {
+              // The CLI runs the queued message next, in this process, with
+              // this turn's tools, and the harness recorded it as part of this
+              // turn. A `turn.completed` now would revoke the turn's
+              // capabilities under that continuation (its internal tools would
+              // answer 401) and show the bot idle while it works. Hold this
+              // result until the continuation's own arrives.
+              t.pendingSteers = 0;
+              t.deferred = sumNativeTurnResults(t.deferred, native);
+              if (t.continuationGrace) clearTimeout(t.continuationGrace);
+              t.continuationGrace = setTimeout(() => {
+                // No `init` came: the message was folded into the call that
+                // just finished after all (or a queued send was cancelled),
+                // and the held result is the turn's.
+                if (session.turn !== t || t.settled) return;
+                t.continuationGrace = null;
+                if (t.deferred) settleResult(t.deferred);
+              }, STEERED_CONTINUATION_GRACE_MS * steerGraceScale());
+              t.continuationGrace.unref?.();
+              appendNative(threadId, { dir: "out", source: "claude.session", msg: { hold: `result: a steered message is still queued (queued_turn_count ${o.queued_turn_count ?? "absent"})` } });
+              break;
+            }
+            settleResult(sumNativeTurnResults(t?.deferred ?? null, native));
             break;
+          }
         }
       };
 
@@ -1917,6 +2082,22 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
         // is just a session ending
         if (session.turn?.stopRequested && !session.turn.settled) {
           settle(false, "interrupted");
+        } else if (session.turn?.deferred && !session.turn.settled) {
+          // The prompt was answered — a native result is held for a steered
+          // continuation — and the process went away. Never relaunch: the
+          // prompt already ran. Before the continuation announced itself the
+          // held result is the turn's; once it had begun, its words are lost.
+          const held = session.turn.deferred;
+          if (session.turn.continuationGrace) {
+            settleResult(held);
+          } else {
+            emit({
+              ...base(threadId, currentTurnId()),
+              type: "runtime.error",
+              message: `claude exited ${code} before result${session.stderr ? `: ${session.stderr.trim().slice(-300)}` : ""}`,
+            });
+            settleResult({ ...held, ok: false, stopReason: "exit_before_result" });
+          }
         } else if (session.turn && !session.turn.settled) {
           // A retained process may be running a later user turn. Its close
           // handler must retry that request, not the process's first prompt.
@@ -2118,12 +2299,20 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
     };
 
     /** A user message into the running turn: the CLI delivers it before its
-     * next model call. "refused" when nothing is running here to steer or
-     * the stdin write provably failed; the caller queues those words. */
+     * next model call, or — when no call is left in this turn — as its next
+     * native turn, which this driver keeps inside the same logical turn.
+     * "refused" when nothing is running here to steer or the stdin write
+     * provably failed; the caller queues those words. */
     const steer = async (threadId: string, text: string): Promise<SteerOutcome> => {
       const s = sessions.get(threadId);
       if (!s || !s.turn || s.turn.settled || s.closing || s.child.exitCode !== null) return "refused";
-      return (await writeUser(s, threadId, claudeUserMessage(text, undefined))) ? "steered" : "refused";
+      const turn = s.turn;
+      if (!(await writeUser(s, threadId, claudeUserMessage(text, undefined)))) return "refused";
+      // Count the words until a fold seam shows, so `result` knows whether
+      // the turn is really over. A turn that settled while the write was in
+      // flight has nothing left to count them against.
+      if (s.turn === turn && !turn.settled) turn.pendingSteers += 1;
+      return "steered";
     };
 
     // Sign in from Settings: the unmodified CLI's own login, driven over pipes
