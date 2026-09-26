@@ -51,7 +51,7 @@ import { writeFileAtomic } from "./atomic.ts";
 import { DATA_DIR } from "./config.ts";
 import { redactSecretsInText } from "./redact.ts";
 import { LEARN_SOURCE_PREFIX } from "./skill-learn.ts";
-import { librarySkillFilePath, listLibrarySkills } from "./skill-library.ts";
+import { librarySkillFilePath, listLibrarySkills, type LibrarySkillListing } from "./skill-library.ts";
 import { workspaceDir } from "./workspace.ts";
 import { isSkillName, parseSkillMd, scanSkillText, SKILL_FILE_MAX_BYTES, type ParsedSkill } from "../shared/skill-md.ts";
 
@@ -1436,6 +1436,29 @@ export function resolveBotSkills(botId: string, assignedLibrary: readonly string
   const assigned = new Set(assignedLibrary);
   const fromLibrary = listLibrarySkills().filter((skill) => assigned.has(skill.name) && !ownNames.has(skill.name));
   return [...own, ...fromLibrary];
+}
+
+/** The Skills surface listing: the bot's merged skills tagged by origin,
+ * plus the library entries not yet assigned (the add-from-library pool).
+ * A private skill shadows a same-named library skill, so origin reflects
+ * what the bot actually reads. */
+export interface BotSkillWithOrigin extends SkillListing {
+  origin: "private" | "library";
+}
+
+export function listBotSkillsWithOrigin(
+  botId: string,
+  assignedLibrary: readonly string[] | undefined,
+): { skills: BotSkillWithOrigin[]; library: LibrarySkillListing[] } {
+  const own = listSkills(botId);
+  const ownNames = new Set(own.map((skill) => skill.name));
+  const assigned = new Set(assignedLibrary ?? []);
+  const skills = resolveBotSkills(botId, assignedLibrary).map((skill) => ({
+    ...skill,
+    origin: ownNames.has(skill.name) ? ("private" as const) : ("library" as const),
+  }));
+  const library = listLibrarySkills().filter((entry) => !ownNames.has(entry.name) && !assigned.has(entry.name));
+  return { skills, library };
 }
 
 /** Read-only view of a bot's per-bot skill copies for the library

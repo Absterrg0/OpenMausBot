@@ -169,6 +169,8 @@ export interface SkillLibraryEntry {
   reviewState: LibraryReviewState;
   license?: string;
   compatibility?: string;
+  /** Browsing tags parsed from frontmatter at install time. */
+  tags?: string[];
   warnings: string[];
   skippedFiles: string[];
   /** Organization installs only: the stamp that put this skill in the
@@ -189,6 +191,7 @@ export interface LibrarySkillListing {
   importedAt: string;
   license?: string;
   compatibility?: string;
+  tags: string[];
   warnings: string[];
   skippedFiles: string[];
 }
@@ -202,6 +205,7 @@ const skillLibraryEntrySchema = z.object({
   reviewState: z.enum(["approved", "disabled"]),
   license: z.string().optional(),
   compatibility: z.string().optional(),
+  tags: z.array(z.string().regex(/^[a-z0-9][a-z0-9-]{0,23}$/)).max(8).optional(),
   warnings: z.array(z.string()),
   skippedFiles: z.array(z.string()),
   package: z.object({
@@ -283,6 +287,7 @@ function librarySkillListing(root: string, entry: SkillLibraryEntry): LibrarySki
     importedAt: entry.importedAt,
     ...(entry.license ? { license: entry.license } : {}),
     ...(entry.compatibility ? { compatibility: entry.compatibility } : {}),
+    tags: entry.tags ?? [],
     warnings: intact
       ? entry.warnings
       : [...entry.warnings, "stored SKILL.md changed after review — enablement is blocked"],
@@ -307,6 +312,8 @@ export function installLibrarySkill(input: {
   source: string;
   license?: string;
   compatibility?: string;
+  tags?: string[];
+  warnings?: string[];
   reviewState?: LibraryReviewState;
   package?: SkillPackageStamp;
   root?: string;
@@ -335,7 +342,8 @@ export function installLibrarySkill(input: {
     reviewState: input.reviewState ?? "disabled",
     ...(input.license ? { license: input.license } : {}),
     ...(input.compatibility ? { compatibility: input.compatibility } : {}),
-    warnings: [],
+    ...(input.tags?.length ? { tags: input.tags } : {}),
+    warnings: input.warnings ?? [],
     skippedFiles: [],
     ...(input.package ? { package: { ...input.package } } : {}),
   };
