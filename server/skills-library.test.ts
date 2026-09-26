@@ -90,6 +90,17 @@ describe("skills library store", () => {
     expect(config.skillsLibraryEnabled({ features: {} } as AppConfig)).toBe(false);
     expect(config.skillsLibraryEnabled({ features: { skillsLibrary: true } } as AppConfig)).toBe(true);
   });
+
+  it("parseStoredConfig keeps features.skillsLibrary while stripping genuinely unknown keys", () => {
+    const stored = config.parseStoredConfig({ features: { skillsLibrary: true, browser: true } });
+    expect(stored).toEqual({ features: { skillsLibrary: true, browser: true } });
+    expect(config.skillsLibraryEnabled(stored)).toBe(true);
+    expect(config.skillsLibraryEnabled(config.parseStoredConfig({ features: { browser: true } }))).toBe(false);
+    // an unknown flag still strips as a no-op instead of failing the file
+    expect(config.parseStoredConfig({ features: { skillsLibrary: true, teleport: true } })).toEqual({
+      features: { skillsLibrary: true },
+    });
+  });
 });
 
 describe("assignment resolution", () => {

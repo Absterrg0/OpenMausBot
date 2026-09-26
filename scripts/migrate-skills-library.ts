@@ -7,8 +7,11 @@
 // resulting assignments in pending-assignments.json. It never writes
 // bots.json: the next boot with features.skillsLibrary on applies the
 // pending assignments through the Store, the single writer of bot records.
-// While the flag is off, a migrated library plus pending file changes no
-// bot's behavior.
+// This script migrates unconditionally — it does not read the flag: each
+// migrated skill's per-bot copy is archived away and its manifest entry
+// cleared, so until a boot with features.skillsLibrary on applies the
+// pending assignments, bots see those skills gone. Run it only when the
+// flag is on.
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";

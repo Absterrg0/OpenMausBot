@@ -332,6 +332,10 @@ const featureConfigSchema = z.object({
    * consent card or a configured allowlist — never a silent Auto default.
    * Off until baked; see cloudOverflowEnabled for how to enable it by hand. */
   cloudOverflow: z.boolean().optional(),
+  /** Opt-in shared skills library: one store at the data dir that bots
+   * read by assignment instead of per-workspace copies. Off until
+   * explicitly enabled — see skillsLibraryEnabled. */
+  skillsLibrary: z.boolean().optional(),
 });
 /** First-run progress. Kept in the workspace config rather than a browser so
  * it survives cleared site data and is shared by every paired client. Hint
