@@ -42,6 +42,48 @@ describe("skills library migration", () => {
     expect(skills.resolveBotSkills(botB, reportB.assignments[botB]).map((skill) => skill.sha256)).toEqual([index["shared-review"]!.sha256]);
   });
 
+  it("assigns by each bot's own copy.enabled, so identical bytes are order-independent", () => {
+    // Two bots hold byte-identical copies, one enabled and one disabled.
+    // Whichever migrates first, the disabled bot is never assigned, and
+    // the enabled bot is assigned only when the entry it meets is
+    // approved — never silently dropped, never handed a disabled entry.
+    for (const order of [["enabled", "disabled"], ["disabled", "enabled"]] as const) {
+      const name = `order-${order[0]}-${order[1]}`;
+      const content = SKILL(name);
+      const ids = { enabled: botA, disabled: botB };
+      const reports: Partial<Record<"enabled" | "disabled", ReturnType<typeof migration.migrateBotSkillsToLibrary>>> = {};
+      for (const state of order) {
+        skills.installSkill(ids[state], "private:test", [{ path: "SKILL.md", content }]);
+        skills.setSkillEnabled(ids[state], name, state === "enabled");
+        reports[state] = migration.migrateBotSkillsToLibrary(ids[state]);
+      }
+      const enabledReport = reports.enabled!;
+      const disabledReport = reports.disabled!;
+
+      // the disabled bot gains nothing in either order
+      expect(disabledReport.assignments[ids.disabled]).toBeUndefined();
+
+      if (order[0] === "enabled") {
+        // enabled first: the entry is approved, the enabled bot is
+        // assigned, and the disabled copy deduplicates into bytes that
+        // bot cannot use
+        expect(enabledReport.outcomes).toEqual([expect.objectContaining({ outcome: "migrated" })]);
+        expect(disabledReport.outcomes).toEqual([expect.objectContaining({ outcome: "deduplicated" })]);
+        expect(enabledReport.assignments[ids.enabled]).toEqual([name]);
+        expect(library.readSkillLibraryIndex()[name]!.reviewState).toBe("approved");
+      } else {
+        // disabled first: the entry is disabled, so the enabled bot keeps
+        // its working copy instead of an assignment nobody approved
+        expect(disabledReport.outcomes).toEqual([expect.objectContaining({ outcome: "migrated" })]);
+        expect(enabledReport.outcomes).toEqual([expect.objectContaining({ outcome: "skipped", detail: expect.stringContaining("disabled") })]);
+        expect(enabledReport.assignments[ids.enabled]).toBeUndefined();
+        expect(library.readSkillLibraryIndex()[name]!.reviewState).toBe("disabled");
+        expect(existsSync(join(workspaceDir(ids.enabled), "skills", name, "SKILL.md"))).toBe(true);
+        expect(skills.listSkills(ids.enabled).map((skill) => [skill.name, skill.enabled])).toEqual([[name, true]]);
+      }
+    }
+  });
+
   it("archives originals instead of deleting them and clears the per-bot manifest", () => {
     const content = SKILL("archive-me", "Precious bytes.");
     skills.installSkill(botA, "private:test", [{ path: "SKILL.md", content }]);
@@ -101,6 +143,7 @@ describe("skills library migration", () => {
 describe("skills library boot sweep", () => {
   it("applies script-recorded pending assignments through the patch callback and clears the file", () => {
     skills.installSkill(botA, "private:test", [{ path: "SKILL.md", content: SKILL("pending-skill") }]);
+    skills.setSkillEnabled(botA, "pending-skill", true);
     migration.writePendingAssignments({ [botA]: ["some-already-library-skill"] });
     const bots = [{ id: botA, assignedSkills: undefined as string[] | undefined }];
     const patched: Array<[string, string[]]> = [];

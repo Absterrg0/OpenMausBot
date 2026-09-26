@@ -57,7 +57,9 @@ function archiveSkillDirectory(source: string, archive: string, expectSha256: st
 
 /** Migrate one bot's per-bot skill copies into the library. Org-stamped
  * skills carry their stamp onto the library entry, so an organization
- * install becomes a library source instead of a parallel system. */
+ * install becomes a library source instead of a parallel system. A bot is
+ * assigned only when its own copy was enabled; the first copy's enabled
+ * flag still decides the entry's reviewState. */
 export function migrateBotSkillsToLibrary(botId: string, root: string = skillsLibraryRoot()): SkillsMigrationReport {
   const outcomes: SkillMigrationOutcome[] = [];
   const assigned: string[] = [];
@@ -99,6 +101,14 @@ export function migrateBotSkillsToLibrary(botId: string, root: string = skillsLi
         continue;
       }
       outcomes.push({ botId, name: copy.name, outcome: "migrated" });
+    } else if (copy.enabled && existing.reviewState === "disabled") {
+      // The bytes are identical, but this bot's copy was reviewed on while
+      // the library entry is off. Archiving here would silently retire an
+      // enabled skill, and assigning would hand the bot an entry nobody
+      // approved — so the copy stays in place and the next sweep retries
+      // once the entry is enabled in the library.
+      outcomes.push({ botId, name: copy.name, outcome: "skipped", detail: `the library already has an identical but disabled "${copy.name}" — enable it in the library to assign it` });
+      continue;
     } else {
       outcomes.push({ botId, name: copy.name, outcome: "deduplicated", detail: "identical sha256 already in the library" });
     }
@@ -115,7 +125,10 @@ export function migrateBotSkillsToLibrary(botId: string, root: string = skillsLi
       outcomes.push({ botId, name: copy.name, outcome: "skipped", detail: removed.error });
       continue;
     }
-    assigned.push(copy.name);
+    // Assignment follows this bot's own copy.enabled: a disabled copy
+    // migrates its bytes but assigns nothing, so nobody gains a skill
+    // they never turned on.
+    if (copy.enabled) assigned.push(copy.name);
   }
   return { ranAt: new Date().toISOString(), outcomes, assignments: assigned.length ? { [botId]: assigned } : {} };
 }
