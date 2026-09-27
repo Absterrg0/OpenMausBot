@@ -42,13 +42,13 @@ describe("computer wait wording", () => {
       "Waiting for its turn on this computer — 1st in queue — Ada is running Refill. Starts automatically when that finishes.",
     );
     expect(computerWaitingText({ name: "Engineering Room" }, { position: 3 })).toBe(
-      "Waiting for its turn on this computer — 3rd in queue — Engineering Room is using it. Starts automatically when that finishes.",
+      "Waiting for its turn on this computer — 3rd in queue — Engineering Room is using it. Starts automatically when the turns ahead finish.",
     );
     expect(computerWaitingText(null, { position: 2, estimateMs: 90_000 })).toBe(
-      "Waiting for its turn on this computer — 2nd in queue. Starts automatically when it is free; recent waits here have taken 2 minutes.",
+      "Waiting for its turn on this computer — 2nd in queue. Starts automatically when the turns ahead finish; recent waits here have taken 2 minutes.",
     );
     expect(computerWaitingText({ name: "Ada" }, { position: 4, estimateMs: 500 })).toBe(
-      "Waiting for its turn on this computer — 4th in queue — Ada is using it. Starts automatically when that finishes; recent waits here have taken under a second.",
+      "Waiting for its turn on this computer — 4th in queue — Ada is using it. Starts automatically when the turns ahead finish; recent waits here have taken under a second.",
     );
     // No queue fact (older callers) and no history yet: today's exact text.
     expect(computerWaitingText({ name: "Ada" })).toBe(
