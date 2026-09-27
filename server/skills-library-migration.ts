@@ -126,14 +126,6 @@ export function migrateBotSkillsToLibrary(botId: string, root: string = skillsLi
     } else {
       outcomes.push({ botId, name: copy.name, outcome: "deduplicated", detail: "identical sha256 already in the library" });
     }
-    try {
-      archiveSkillDirectory(copy.directory, libraryArchiveDirectory(root, botId, copy.name), copy.sha256);
-    } catch (error) {
-      // The library entry is idempotent, so leaving the per-bot copy in
-      // place only means the next sweep retries this skill.
-      outcomes.push({ botId, name: copy.name, outcome: "skipped", detail: `archiving failed: ${error instanceof Error ? error.message : String(error)}` });
-      continue;
-    }
     // The manifest entry is the only re-readable record of this skill, so
     // the assignment must be durable before it goes away. Record it in the
     // pending-assignments file the boot sweep and the standalone script both
@@ -148,6 +140,16 @@ export function migrateBotSkillsToLibrary(botId: string, root: string = skillsLi
       }, root);
     } catch (error) {
       outcomes.push({ botId, name: copy.name, outcome: "skipped", detail: `could not record the assignment durably: ${error instanceof Error ? error.message : String(error)}` });
+      continue;
+    }
+    try {
+      archiveSkillDirectory(copy.directory, libraryArchiveDirectory(root, botId, copy.name), copy.sha256);
+    } catch (error) {
+      // The library entry is idempotent, so leaving the per-bot copy in
+      // place only means the next sweep retries this skill. The assignment
+      // recorded above replays idempotently, so the extra pending entry a
+      // failed archive leaves behind is harmless.
+      outcomes.push({ botId, name: copy.name, outcome: "skipped", detail: `archiving failed: ${error instanceof Error ? error.message : String(error)}` });
       continue;
     }
     const removed = removeManifestEntry(botId, copy.name, copy.sha256);

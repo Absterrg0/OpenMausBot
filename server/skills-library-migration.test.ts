@@ -177,8 +177,17 @@ describe("skills library migration", () => {
       expect(report.assignments[botA]).toBeUndefined();
       // Nothing was removed, so the next sweep can retry the whole move.
       expect(skills.listSkills(botA).map((skill) => skill.name)).toEqual(["hold-manifest"]);
-    } finally {
+      // The per-bot copy is still in place and readable, not archived.
+      expect(skills.readSkillFile(botA, "hold-manifest")).toContain("# hold-manifest");
+      // Once the pending write works again, the retry completes the move.
       rmSync(pendingPath, { recursive: true });
+      const retried = migration.migrateBotSkillsToLibrary(botA);
+      expect(retried.assignments[botA]).toEqual(["hold-manifest"]);
+      expect(skills.listSkills(botA)).toEqual([]);
+      expect(migration.readPendingAssignments()[botA]).toEqual(["hold-manifest"]);
+    } finally {
+      rmSync(pendingPath, { recursive: true, force: true });
+      migration.writePendingAssignments({});
     }
   });
 
