@@ -1869,7 +1869,14 @@ const listBotSkills = (bot: BotRecord) =>
 const readBotSkillFile = (bot: BotRecord, name: string): string | null => {
   const own = readSkillFile(bot.id, name);
   if (own !== null || !skillsLibraryEnabled(cfg)) return own;
-  return bot.assignedSkills?.includes(name) ? readLibrarySkillFile(name) : null;
+  // A private listing whose stored bytes no longer verify must not fall
+  // through to a same-named library skill: private wins collisions, so a
+  // broken private file stays unreadable instead of exporting another
+  // bot's library instructions under this bot's name.
+  if (listSkills(bot.id).some((skill) => skill.name === name)) return null;
+  // The library fallback is by assignment only, never by name alone.
+  if (!bot.assignedSkills?.includes(name)) return null;
+  return readLibrarySkillFile(name);
 };
 
 // Electron's utility-process parent port is private to the desktop main
