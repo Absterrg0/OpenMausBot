@@ -1,6 +1,6 @@
 // Settings → Usage: remaining subscription allowance. This is not the token
 // ledger below it — each provider reports its own 5-hour and weekly windows.
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Loader2, RefreshCw } from "lucide-react";
 import { api } from "@/state/store";
 import { t } from "@/lib/i18n";
@@ -47,8 +47,8 @@ interface PlanUsageReport {
 function formatResetDistance(resetsAt: string | null, now: number): string | null {
   if (!resetsAt) return null;
   const at = Date.parse(resetsAt);
-  if (!Number.isFinite(at)) return null;
-  const minutes = Math.floor(Math.max(0, at - now) / 60_000);
+  if (!Number.isFinite(at) || at <= now) return null;
+  const minutes = Math.floor((at - now) / 60_000);
   if (minutes < 1) return "less than a minute";
   const days = Math.floor(minutes / 1440);
   const hours = Math.floor((minutes % 1440) / 60);
@@ -56,6 +56,25 @@ function formatResetDistance(resetsAt: string | null, now: number): string | nul
   if (days > 0) return hours > 0 ? `${days}d ${hours}h` : `${days}d`;
   if (hours > 0) return mins > 0 ? `${hours}h ${mins}m` : `${hours}h`;
   return `${mins}m`;
+}
+
+function dueResetDeadlines(report: PlanUsageReport, now: number, seen: Set<string>): string[] {
+  const due: string[] = [];
+  for (const provider of report.providers) {
+    if (!provider.ok) continue;
+    const stamps = [
+      provider.fiveHour.available ? provider.fiveHour.resetsAt : null,
+      provider.weekly.available ? provider.weekly.resetsAt : null,
+      ...provider.extra.map((extra) => extra.resetsAt),
+      ...(provider.models ?? []).flatMap((model) => model.windows.map((entry) => entry.resetsAt)),
+    ];
+    for (const resetsAt of stamps) {
+      if (!resetsAt || seen.has(resetsAt) || due.includes(resetsAt)) continue;
+      const at = Date.parse(resetsAt);
+      if (Number.isFinite(at) && at <= now) due.push(resetsAt);
+    }
+  }
+  return due;
 }
 
 function usageTone(used: number): string {
@@ -118,6 +137,7 @@ export function PlanUsage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [now, setNow] = useState(() => Date.now());
+  const refreshedDeadlines = useRef(new Set<string>());
 
   const load = useCallback(async (refresh = false) => {
     setLoading(true);
@@ -136,6 +156,19 @@ export function PlanUsage() {
   useEffect(() => {
     void load(false);
   }, [load]);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), 30_000);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  useEffect(() => {
+    if (!report) return;
+    const due = dueResetDeadlines(report, now, refreshedDeadlines.current);
+    if (due.length === 0) return;
+    for (const deadline of due) refreshedDeadlines.current.add(deadline);
+    void load(true);
+  }, [report, now, load]);
 
   return (
     <Card title={t("planUsage.title")} subtitle={t("planUsage.subtitle")}>

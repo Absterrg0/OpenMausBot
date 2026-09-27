@@ -1,5 +1,6 @@
+import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, normalize } from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   clearPlanUsageCache,
@@ -70,6 +71,16 @@ describe("plan usage parsers", () => {
       },
     ]);
     expect(JSON.stringify(parsed)).not.toContain(SECRET);
+  });
+
+  it("keeps seven_day_oauth_apps on an extra line instead of a model row", () => {
+    const parsed = parseClaudeUsage({
+      seven_day_oauth_apps: { utilization: 12, resets_at: "2026-10-03T00:00:00.000Z" },
+    });
+    expect(parsed.extra).toEqual([
+      expect.objectContaining({ label: "Oauth Apps", usedPercent: 12, remainingPercent: 88 }),
+    ]);
+    expect(parsed.models).toEqual([]);
   });
 
   it("classifies Codex windows by duration and does not stuff a 30-day window into weekly", () => {
@@ -202,6 +213,63 @@ describe("plan usage fetcher", () => {
     expect(JSON.stringify(report)).not.toContain(SECRET);
   });
 
+  it("reads a Claude keychain token when the credentials file has none", async () => {
+    const token = "claude-keychain-fixture-token";
+    const fetchImpl = vi.fn<PlanFetch>(async () => jsonResponse({
+      five_hour: { utilization: 25, resets_at: "2026-09-26T12:00:00.000Z" },
+      seven_day: { utilization: 40, resets_at: "2026-10-03T00:00:00.000Z" },
+    }));
+    const services: string[] = [];
+    const report = await fetchPlanUsage([account("claude")], {
+      fetch: fetchImpl,
+      now: () => NOW,
+      credentials: fileCredentialReader({
+        now: () => NOW,
+        env: { HOME: tmpdir(), USERPROFILE: tmpdir() },
+        readText: () => null,
+        readClaudeKeychain: async (service) => {
+          services.push(service);
+          return service === "Claude Code-credentials"
+            ? JSON.stringify({ claudeAiOauth: { accessToken: token } })
+            : null;
+        },
+      }),
+    });
+    expect(services).toEqual(["Claude Code-credentials"]);
+    expect(fetchImpl.mock.calls[0]?.[1].headers.Authorization).toBe(`Bearer ${token}`);
+    expect(JSON.stringify(report)).not.toContain(token);
+  });
+
+  it("asks the keychain for a non-default config dir service before the bare name", async () => {
+    const token = "claude-keychain-other-token";
+    const configDir = normalize(join(tmpdir(), "omb-plan-usage-claude-other"));
+    const suffixed = `Claude Code-credentials-${createHash("sha256").update(configDir).digest("hex").slice(0, 8)}`;
+    const fetchImpl = vi.fn<PlanFetch>(async () => jsonResponse({
+      five_hour: { utilization: 25, resets_at: "2026-09-26T12:00:00.000Z" },
+      seven_day: { utilization: 40, resets_at: "2026-10-03T00:00:00.000Z" },
+    }));
+    const services: string[] = [];
+    const report = await fetchPlanUsage([account("claude", { configDir })], {
+      fetch: fetchImpl,
+      now: () => NOW,
+      credentials: fileCredentialReader({
+        now: () => NOW,
+        env: { HOME: tmpdir(), USERPROFILE: tmpdir() },
+        readText: () => null,
+        readClaudeKeychain: (service) => {
+          services.push(service);
+          return service === suffixed
+            ? JSON.stringify({ claudeAiOauth: { accessToken: token } })
+            : null;
+        },
+      }),
+    });
+    expect(services[0]).toBe(suffixed);
+    expect(services).toEqual([suffixed]);
+    expect(fetchImpl.mock.calls[0]?.[1].headers.Authorization).toBe(`Bearer ${token}`);
+    expect(JSON.stringify(report)).not.toContain(token);
+  });
+
   it("turns a 401 into ok:false without throwing and still returns the other provider", async () => {
     const fetchImpl = vi.fn<PlanFetch>(async (url) => {
       if (url.includes("anthropic.com")) return jsonResponse(SECRET, 401);
@@ -286,6 +354,27 @@ describe("plan usage fetcher", () => {
     expect(fetchImpl).toHaveBeenCalledTimes(2);
     await loadPlanUsage({ accounts, now: NOW + 11_000 + 45_000, fetch: fetchImpl, credentials });
     expect(fetchImpl).toHaveBeenCalledTimes(3);
+  });
+
+  it("does not share the cache when GROK_HOME changes", async () => {
+    const fetchImpl = vi.fn<PlanFetch>(async () => jsonResponse({
+      five_hour: { utilization: 25, resets_at: "2026-09-26T12:00:00.000Z" },
+      seven_day: { utilization: 40, resets_at: "2026-10-03T00:00:00.000Z" },
+    }));
+    const credentials = { read: () => ({ token: SECRET, accountId: null, expired: false }) };
+    await loadPlanUsage({
+      accounts: [account("claude", { id: "same", environment: { GROK_HOME: "/tmp/one" } })],
+      now: NOW,
+      fetch: fetchImpl,
+      credentials,
+    });
+    await loadPlanUsage({
+      accounts: [account("claude", { id: "same", environment: { GROK_HOME: "/tmp/two" } })],
+      now: NOW + 1_000,
+      fetch: fetchImpl,
+      credentials,
+    });
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
   });
 
   it("lists configured Claude, Codex, and Grok accounts and skips other engines", () => {

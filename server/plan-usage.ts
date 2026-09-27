@@ -2,6 +2,8 @@
 // (Claude, Codex, Grok). Parsers are pure. The fetcher takes fetch and a
 // credential reader so tests never touch the network or a real login file.
 // Access tokens stay in the request header only — never in the JSON result.
+import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
 import { readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import type { InstanceConfigMap } from "./contracts.ts";
@@ -73,7 +75,7 @@ export interface PlanCredential {
 }
 
 export interface CredentialReader {
-  read(account: PlanAccount): PlanCredential;
+  read(account: PlanAccount): PlanCredential | Promise<PlanCredential>;
 }
 
 export interface PlanResponse {
@@ -98,11 +100,17 @@ export interface CredentialSource {
   readText: (path: string) => string | null;
   env?: NodeJS.ProcessEnv;
   now?: () => number;
+  /** macOS login keychain, read-only. Tests inject this so `security` is never spawned. */
+  readClaudeKeychain?: (service: string) => string | null | Promise<string | null>;
 }
 
 const PROVIDER_TIMEOUT_MS = 8_000;
 const PLAN_USAGE_CACHE_MS = 45_000;
 const CREDENTIAL_READ_MAX_BYTES = 1_000_000;
+const KEYCHAIN_TIMEOUT_MS = 5_000;
+const KEYCHAIN_MAX_BUFFER = 1_000_000;
+const CLAUDE_KEYCHAIN_SERVICE = "Claude Code-credentials";
+const CLAUDE_MODEL_FAMILIES = ["opus", "sonnet", "haiku"];
 
 const CLAUDE_USAGE_URL = "https://api.anthropic.com/api/oauth/usage";
 const CODEX_USAGE_URL = "https://chatgpt.com/backend-api/wham/usage";
@@ -217,10 +225,10 @@ export function fileCredentialReader(source: CredentialSource): CredentialReader
   const env = source.env ?? process.env;
   const now = source.now ?? Date.now;
   return {
-    read(account) {
+    async read(account) {
       const merged: NodeJS.ProcessEnv = { ...env, ...account.environment };
       const at = now();
-      if (account.driver === "claude") return readClaudeCredential(account, merged, source.readText, at);
+      if (account.driver === "claude") return readClaudeCredential(account, merged, source, at);
       if (account.driver === "codex") return readCodexCredential(merged, source.readText, at);
       return readGrokCredential(merged, source.readText, at);
     },
@@ -239,6 +247,7 @@ export function defaultCredentialReader(env: NodeJS.ProcessEnv = process.env): C
         return null;
       }
     },
+    ...(process.platform === "darwin" ? { readClaudeKeychain: readDarwinClaudeKeychain } : {}),
   });
 }
 
@@ -264,9 +273,7 @@ export async function loadPlanUsage(input: {
   timeoutMs?: number;
 }): Promise<PlanUsageReport> {
   const now = input.now ?? Date.now();
-  const key = input.accounts.map((account) =>
-    [account.id, account.driver, account.name, account.configDir ?? ""].join("\u0000"),
-  ).join("\n");
+  const key = planUsageCacheKey(input.accounts);
   if (!input.refresh && cachedReport && cachedReport.key === key && now - cachedReport.at < PLAN_USAGE_CACHE_MS) {
     return cachedReport.report;
   }
@@ -411,11 +418,16 @@ function titleWords(suffix: string): string {
   return words.map((part) => part.charAt(0).toUpperCase() + part.slice(1).toLowerCase()).join(" ");
 }
 
-/** Claude names a model's own window `five_hour_<model>` or `seven_day_<model>`. */
+/** Opus, Sonnet, and Haiku only. `seven_day_oauth_apps` and other windows stay extra lines. */
 function claudeModelWindow(key: string): { name: string; window: string } | null {
-  if (key.startsWith("seven_day_")) return { name: titleWords(key.slice("seven_day_".length)), window: "Weekly" };
-  if (key.startsWith("five_hour_")) return { name: titleWords(key.slice("five_hour_".length)), window: "5-hour" };
-  return null;
+  const weekly = key.startsWith("seven_day_");
+  const fiveHour = key.startsWith("five_hour_");
+  if (!weekly && !fiveHour) return null;
+  const suffix = key.slice(weekly ? "seven_day_".length : "five_hour_".length);
+  const lower = suffix.toLowerCase();
+  const family = CLAUDE_MODEL_FAMILIES.find((name) => lower === name || lower.startsWith(`${name}_`));
+  if (!family) return null;
+  return { name: titleWords(suffix), window: weekly ? "Weekly" : "5-hour" };
 }
 
 function addModelWindow(models: PlanModelUsage[], name: string, line: PlanExtra): void {
@@ -591,24 +603,103 @@ function grokPlan(settings: unknown): string | null {
   return planLabel(nested?.subscription_tier_display ?? root.subscription_tier_display);
 }
 
-function readClaudeCredential(
-  account: PlanAccount,
-  env: NodeJS.ProcessEnv,
-  readText: (path: string) => string | null,
-  now: number,
-): PlanCredential {
-  let path: string;
-  try {
-    path = join(resolveClaudeConfigDir(account.configDir, env), ".credentials.json");
-  } catch {
-    return missingCredential();
-  }
-  const oauth = asRecord(asRecord(parseJson(readText(path)))?.claudeAiOauth);
+function planUsageCacheKey(accounts: PlanAccount[]): string {
+  return accounts.map((account) => {
+    const environment = Object.entries(account.environment)
+      .filter((entry): entry is [string, string] => typeof entry[1] === "string")
+      .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
+      .map(([name, value]) => `${name}=${value}`)
+      .join("\n");
+    return [account.id, account.driver, account.name, account.configDir ?? "", environment].join("\u0000");
+  }).join("\n");
+}
+
+function claudeCredentialFromText(text: string | null, now: number): PlanCredential {
+  const oauth = asRecord(asRecord(parseJson(text))?.claudeAiOauth);
   const token = secretString(oauth?.accessToken);
   if (!token) return missingCredential();
   const expiry = timeMs(oauth?.expiresAt);
   if (expiry != null && expiry <= now) return expiredCredential();
   return { token, accountId: null, expired: false };
+}
+
+/** macOS 26 `security -w` may print the JSON secret as hex. */
+function decodeKeychainSecret(raw: string | null): string | null {
+  if (!raw) return null;
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+  if (!trimmed.startsWith("{") && trimmed.length % 2 === 0 && /^[0-9a-fA-F]+$/.test(trimmed)) {
+    return Buffer.from(trimmed, "hex").toString("utf8");
+  }
+  return trimmed;
+}
+
+function claudeKeychainServices(account: PlanAccount, env: NodeJS.ProcessEnv, resolvedDir: string): string[] {
+  if (!account.configDir?.trim() && !env.CLAUDE_CONFIG_DIR?.trim()) return [CLAUDE_KEYCHAIN_SERVICE];
+  let defaultDir: string | null = null;
+  try {
+    const withoutConfig = { ...env };
+    delete withoutConfig.CLAUDE_CONFIG_DIR;
+    defaultDir = resolveClaudeConfigDir(undefined, withoutConfig);
+  } catch {
+    defaultDir = null;
+  }
+  if (defaultDir != null && resolvedDir === defaultDir) return [CLAUDE_KEYCHAIN_SERVICE];
+  const suffix = createHash("sha256").update(resolvedDir).digest("hex").slice(0, 8);
+  return [`${CLAUDE_KEYCHAIN_SERVICE}-${suffix}`, CLAUDE_KEYCHAIN_SERVICE];
+}
+
+function readDarwinClaudeKeychain(service: string): Promise<string | null> {
+  if (process.platform !== "darwin") return Promise.resolve(null);
+  return new Promise((resolve) => {
+    try {
+      execFile(
+        "security",
+        ["find-generic-password", "-s", service, "-w"],
+        {
+          timeout: KEYCHAIN_TIMEOUT_MS,
+          maxBuffer: KEYCHAIN_MAX_BUFFER,
+          windowsHide: true,
+          shell: false,
+          encoding: "utf8",
+        },
+        (error, stdout) => {
+          resolve(error || !stdout ? null : stdout);
+        },
+      );
+    } catch {
+      resolve(null);
+    }
+  });
+}
+
+async function readClaudeCredential(
+  account: PlanAccount,
+  env: NodeJS.ProcessEnv,
+  source: CredentialSource,
+  now: number,
+): Promise<PlanCredential> {
+  let resolvedDir: string;
+  try {
+    resolvedDir = resolveClaudeConfigDir(account.configDir, env);
+  } catch {
+    return missingCredential();
+  }
+  const file = claudeCredentialFromText(source.readText(join(resolvedDir, ".credentials.json")), now);
+  if (file.token || !source.readClaudeKeychain) return file;
+  let sawExpired = file.expired;
+  for (const service of claudeKeychainServices(account, env, resolvedDir)) {
+    let raw: string | null = null;
+    try {
+      raw = (await source.readClaudeKeychain(service)) ?? null;
+    } catch {
+      raw = null;
+    }
+    const parsed = claudeCredentialFromText(decodeKeychainSecret(raw), now);
+    if (parsed.token) return parsed;
+    if (parsed.expired) sawExpired = true;
+  }
+  return sawExpired ? expiredCredential() : missingCredential();
 }
 
 function readCodexCredential(
@@ -705,7 +796,7 @@ function okRow(account: PlanAccount, windows: PlanWindows): PlanProviderRow {
 async function fetchProvider(account: PlanAccount, deps: PlanUsageDeps): Promise<PlanProviderRow> {
   let credential: PlanCredential;
   try {
-    credential = deps.credentials.read(account);
+    credential = await deps.credentials.read(account);
   } catch {
     return errorRow(account, signInAgain(account.driver));
   }
