@@ -158,6 +158,41 @@ describe("computer claim idle release (#1653)", () => {
     expect(leases.owns(seat, a, 150_000)).toBe(false);
   });
 
+  it("an in-flight computer call fences the seat past the quiet window", () => {
+    const leases = new TurnResources();
+    expect(leases.claim(seat, a, { now: 0, idle: policy })).toBe(true);
+    leases.beginComputerCall(seat, a);
+    // The call outruns the quiet window: no mid-call handoff, ever.
+    expect(leases.blocker(seat, b, 10_000_000)).toEqual(a);
+    expect(leases.owns(seat, a, 10_000_000)).toBe(true);
+    // A stale end from another owner never lifts the sitting owner's fence.
+    leases.endComputerCall(seat, b);
+    expect(leases.blocker(seat, b, 10_000_001)).toEqual(a);
+  });
+
+  it("completing the in-flight call releases the fence, then the seat", () => {
+    const leases = new TurnResources();
+    expect(leases.claim(seat, a, { now: 0, idle: policy })).toBe(true);
+    leases.beginComputerCall(seat, a);
+    leases.endComputerCall(seat, a);
+    leases.activity(seat, a, 91_000);
+    // The call outran the window: its completion releases the seat (no
+    // straggler restart) and opens the reclaim window for the holder.
+    expect(leases.owns(seat, a, 91_000)).toBe(false);
+    expect(leases.reclaimHolder(seat, 91_000)).toEqual(a);
+    expect(leases.claim(seat, b, { now: 91_000, idle: policy })).toBe(true);
+  });
+
+  it("a call inside the window keeps the normal quiet clock", () => {
+    const leases = new TurnResources();
+    expect(leases.claim(seat, a, { now: 0, idle: policy })).toBe(true);
+    leases.beginComputerCall(seat, a);
+    leases.endComputerCall(seat, a);
+    leases.activity(seat, a, 60_000);
+    expect(leases.blocker(seat, b, 149_999)).toEqual(a);
+    expect(leases.blocker(seat, b, 150_000)).toBeUndefined();
+  });
+
   it("yields to an occupied seat and ends the previous holder's priority", () => {
     const leases = new TurnResources();
     expect(leases.claim(seat, a, { now: 0, idle: policy })).toBe(true);

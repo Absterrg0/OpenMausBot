@@ -24,6 +24,10 @@ type ClaimRecord = {
   /** Clock of the last real screen call (#1653). Only claims taken with an
    * idle policy carry it; everything else keeps hold-until-settle. */
   activityAt?: number;
+  /** Screen-touching computer calls this owner has started and not yet
+   * completed (#1653). While any is in flight the desktop is executing
+   * real I/O, so quiet-window expiry defers to the completion. */
+  computerCallsInFlight?: number;
   idle?: IdleReleasePolicy;
 };
 
@@ -90,6 +94,28 @@ export class TurnResources {
     if (current?.idle && sameOwner(current.owner, owner)) current.activityAt = now;
   }
 
+  /** A screen-touching computer tool call started on this claim (#1653):
+   * the desktop is executing real I/O for the sitting owner, so the seat
+   * cannot be idle-released mid-call. Only the sitting owner's start
+   * counts; a start whose completion never arrives holds the seat until
+   * settle — the pre-#1653 behavior, never an overlapping handoff. */
+  beginComputerCall(resource: string, owner: TurnOwner): void {
+    const current = this.owners.get(resource);
+    if (current?.idle && sameOwner(current.owner, owner)) {
+      current.computerCallsInFlight = (current.computerCallsInFlight ?? 0) + 1;
+    }
+  }
+
+  /** The in-flight computer call finished: drop its fence and let the
+   * completion's own activity tick govern the quiet window. A no-op when
+   * the claim lapsed or another turn seated itself in between. */
+  endComputerCall(resource: string, owner: TurnOwner): void {
+    const current = this.owners.get(resource);
+    if (!current?.idle || !sameOwner(current.owner, owner)) return;
+    const inFlight = current.computerCallsInFlight ?? 0;
+    if (inFlight > 0) current.computerCallsInFlight = inFlight - 1;
+  }
+
   /** Who may still re-claim `resource` directly after an idle release
    * (#1653): the mid-task turn that went quiet, until its reclaim window
    * ends or another turn seats itself. The direct re-claim itself is
@@ -133,6 +159,9 @@ export class TurnResources {
   private expireIdle(resource: string, now: number): void {
     const current = this.owners.get(resource);
     if (!current?.idle || current.activityAt === undefined) return;
+    // A call the desktop is still executing fences the seat (#1653):
+    // releasing mid-call would hand one desktop to two turns at once.
+    if ((current.computerCallsInFlight ?? 0) > 0) return;
     if (!current.idle.quietElapsed(current.activityAt, now)) return;
     this.owners.delete(resource);
     this.reclaims.set(resource, { owner: current.owner, until: now + current.idle.reclaimMs });
