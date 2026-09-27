@@ -646,7 +646,7 @@ function claudeKeychainServices(account: PlanAccount, env: NodeJS.ProcessEnv, re
   }
   if (defaultDir != null && resolvedDir === defaultDir) return [CLAUDE_KEYCHAIN_SERVICE];
   const suffix = createHash("sha256").update(resolvedDir).digest("hex").slice(0, 8);
-  return [`${CLAUDE_KEYCHAIN_SERVICE}-${suffix}`, CLAUDE_KEYCHAIN_SERVICE];
+  return [`${CLAUDE_KEYCHAIN_SERVICE}-${suffix}`];
 }
 
 function readDarwinClaudeKeychain(service: string): Promise<string | null> {

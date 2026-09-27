@@ -240,7 +240,7 @@ describe("plan usage fetcher", () => {
     expect(JSON.stringify(report)).not.toContain(token);
   });
 
-  it("asks the keychain for a non-default config dir service before the bare name", async () => {
+  it("asks the keychain only for the custom config dir service", async () => {
     const token = "claude-keychain-other-token";
     const configDir = normalize(join(tmpdir(), "omb-plan-usage-claude-other"));
     const suffixed = `Claude Code-credentials-${createHash("sha256").update(configDir).digest("hex").slice(0, 8)}`;
@@ -268,6 +268,33 @@ describe("plan usage fetcher", () => {
     expect(services).toEqual([suffixed]);
     expect(fetchImpl.mock.calls[0]?.[1].headers.Authorization).toBe(`Bearer ${token}`);
     expect(JSON.stringify(report)).not.toContain(token);
+  });
+
+  it("does not use the default Claude keychain login for a custom config dir", async () => {
+    const defaultToken = "claude-keychain-default-token";
+    const configDir = normalize(join(tmpdir(), "omb-plan-usage-claude-custom"));
+    const suffixed = `Claude Code-credentials-${createHash("sha256").update(configDir).digest("hex").slice(0, 8)}`;
+    const fetchImpl = vi.fn<PlanFetch>(async () => jsonResponse({}));
+    const services: string[] = [];
+    const report = await fetchPlanUsage([account("claude", { id: "work", name: "Work Claude", configDir })], {
+      fetch: fetchImpl,
+      now: () => NOW,
+      credentials: fileCredentialReader({
+        now: () => NOW,
+        env: { HOME: tmpdir(), USERPROFILE: tmpdir() },
+        readText: () => null,
+        readClaudeKeychain: (service) => {
+          services.push(service);
+          return service === "Claude Code-credentials"
+            ? JSON.stringify({ claudeAiOauth: { accessToken: defaultToken } })
+            : null;
+        },
+      }),
+    });
+    expect(services).toEqual([suffixed]);
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(report.providers[0]).toMatchObject({ ok: false, error: "Sign in again in Claude" });
+    expect(JSON.stringify(report)).not.toContain(defaultToken);
   });
 
   it("turns a 401 into ok:false without throwing and still returns the other provider", async () => {
