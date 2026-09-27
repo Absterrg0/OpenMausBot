@@ -1,5 +1,5 @@
 import { describe, expect, it, beforeEach } from "vitest";
-import { existsSync, mkdtempSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -119,6 +119,67 @@ describe("skills library migration", () => {
     expect(entry.source).toBe("org:acme/sales-skills@2.0.1");
     expect(entry.package).toEqual(stamp);
     expect(entry.reviewState).toBe("approved"); // org skills arrive switched on
+  });
+
+  it("keeps a deduplicated copy whose on/off differs from the library entry", () => {
+    const content = SKILL("toggle-review", "Identical bytes.");
+    skills.installSkill(botA, "private:test", [{ path: "SKILL.md", content }]);
+    skills.setSkillEnabled(botA, "toggle-review", true);
+    expect(migration.migrateBotSkillsToLibrary(botA).assignments[botA]).toEqual(["toggle-review"]);
+    // Bot B holds the same bytes but switched off: the shared entry is
+    // approved, so deduplication would switch the skill on for B.
+    skills.installSkill(botB, "private:test", [{ path: "SKILL.md", content }]);
+    const reportB = migration.migrateBotSkillsToLibrary(botB);
+    expect(reportB.outcomes).toEqual([expect.objectContaining({
+      botId: botB,
+      name: "toggle-review",
+      outcome: "skipped",
+      detail: expect.stringContaining("align them before migrating"),
+    })]);
+    expect(reportB.assignments[botB]).toBeUndefined();
+    // The per-bot copy — and its off switch — stays put.
+    expect(skills.listSkills(botB).map((skill) => skill.name)).toEqual(["toggle-review"]);
+    expect(skills.listSkills(botB)[0]!.enabled).toBe(false);
+    expect(existsSync(join(workspaceDir(botB), "skills", "toggle-review", "SKILL.md"))).toBe(true);
+  });
+
+  it("records the assignment durably before dropping the manifest entry", () => {
+    try {
+      skills.installSkill(botA, "private:test", [{ path: "SKILL.md", content: SKILL("durable-assign") }]);
+      skills.setSkillEnabled(botA, "durable-assign", true);
+      const report = migration.migrateBotSkillsToLibrary(botA);
+      expect(report.assignments[botA]).toEqual(["durable-assign"]);
+      expect(skills.listSkills(botA)).toEqual([]);
+      // The pending file is the recovery record a failed patch replays on
+      // the next boot; it must exist before the manifest entry is gone.
+      expect(migration.readPendingAssignments()[botA]).toEqual(["durable-assign"]);
+    } finally {
+      migration.writePendingAssignments({});
+    }
+  });
+
+  it("keeps the manifest when the assignment cannot be recorded", () => {
+    const pendingPath = migration.pendingAssignmentsPath();
+    rmSync(pendingPath, { force: true });
+    mkdirSync(pendingPath); // a directory where the file must go: the write fails
+    try {
+      skills.installSkill(botA, "private:test", [{ path: "SKILL.md", content: SKILL("hold-manifest") }]);
+      skills.setSkillEnabled(botA, "hold-manifest", true);
+      const report = migration.migrateBotSkillsToLibrary(botA);
+      // The library install is idempotent and reported first; the failed
+      // assignment record then skips the skill before anything is removed.
+      expect(report.outcomes.at(-1)).toEqual(expect.objectContaining({
+        botId: botA,
+        name: "hold-manifest",
+        outcome: "skipped",
+        detail: expect.stringContaining("could not record the assignment durably"),
+      }));
+      expect(report.assignments[botA]).toBeUndefined();
+      // Nothing was removed, so the next sweep can retry the whole move.
+      expect(skills.listSkills(botA).map((skill) => skill.name)).toEqual(["hold-manifest"]);
+    } finally {
+      rmSync(pendingPath, { recursive: true });
+    }
   });
 
   it("flag-off byte-identity: a populated library changes no unassigned bot surface", () => {
