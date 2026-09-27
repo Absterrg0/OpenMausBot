@@ -70,14 +70,12 @@ describe("resolveSurface", () => {
     }
   });
 
-  it("a browser pin that cannot be honoured falls back to the default and asks to be cleared", () => {
-    expect(resolveSurface({ destination: "cloud", pinnedSurface: "browser", browserOn: false }))
-      .toEqual({ computer: "cloud", browser: false, pinned: null, clearPin: true, note: "" });
-    expect(resolveSurface({ destination: undefined, pinnedSurface: "browser", browserOn: false }))
-      .toEqual({ computer: undefined, browser: false, pinned: null, clearPin: true, note: "" });
-    // a browser-only bot with no browser keeps its explanation
-    expect(resolveSurface({ destination: "browser", pinnedSurface: "browser", browserOn: false }))
-      .toMatchObject({ computer: "off", browser: false, clearPin: true, note: expect.stringMatching(/switched off/) });
+  it("keeps an unavailable browser pin instead of silently moving to another computer", () => {
+    for (const destination of [undefined, "local", "vm", "cloud", "browser"] as const) {
+      expect(resolveSurface({ destination, pinnedSurface: "browser", browserOn: false }))
+        .toMatchObject({ computer: "off", browser: false, pinned: "browser", clearPin: false,
+          note: expect.stringMatching(/No computer is mounted instead/) });
+    }
   });
 
   it("Auto without a pin leaves the computer to the dispatch and keeps the browser as its fallback", () => {
@@ -117,14 +115,41 @@ describe("surfacePrompt", () => {
     expect(text).toMatch(/no desktop, file or shell computer/);
     expect(text).toMatch(/Browser tab of the Computer panel/);
     expect(text).toMatch(/say in one short sentence where you are working/);
-    expect(text).not.toMatch(/cloud computer/);
+    expect(text).not.toMatch(/happens on the cloud computer/);
   });
 
-  it("is silent with nothing mounted, and carries the pin line and the note", () => {
-    expect(surfacePrompt({ computer: null, browser: false })).toBe("");
+  it("explains unavailable tools, and carries the pin line and the note", () => {
+    expect(surfacePrompt({ computer: null, browser: false })).toContain("No computer or built-in browser tools are mounted");
     expect(surfacePrompt({ computer: "cloud", browser: false }, { pinned: "cloud" }))
-      .toMatch(/This task has been running on the cloud computer; keep using it unless the user says otherwise\./);
+      .toContain("This conversation is pinned to the cloud computer; changing places requires");
     expect(surfacePrompt({ computer: null, browser: false }, { note: " NOTE." })).toBe(" NOTE.");
+  });
+
+  it.each(["local", "vm", "cloud", "browser"] as const)("requires observed results on the actual %s tools", (place) => {
+    const text = surfacePrompt({ computer: place === "browser" ? null : place, browser: place === "browser" });
+    expect(text).toContain("verify its result before claiming success");
+    expect(text).toContain("Announcing an action is not performing it");
+    expect(text).toContain("never act on a different computer or describe a host window as a VM");
+    expect(text).toContain("use OpenMausBot's mounted browser/computer tools first");
+    expect(text).toContain("Do not substitute the provider's own desktop");
+  });
+
+  it("chooses and starts configured targets through chat instead of requiring menu nudges", () => {
+    const text = surfacePrompt({ computer: null, browser: false }, { canSelect: true });
+    expect(text).toContain("use select_computer with no arguments");
+    expect(text).toContain("surface auto instead of asking them to operate the menu");
+    expect(text).toContain("highlight the selected target");
+    expect(text).toContain("when it needs desktop apps or capabilities the current Browser lacks, select an available Local VM");
+    expect(text).toContain("then you must carry out the task");
+    expect(text).not.toContain("ask the user to choose and connect a computer");
+  });
+
+  it("keeps explicit destinations and uses a turn-bound switch when supported", () => {
+    const text = surfacePrompt({ computer: "local", browser: false }, { pinned: "local", canSelect: true });
+    expect(text).toContain("select the requested available place");
+    expect(text).toContain("changing places requires select_computer");
+    expect(text).toContain("Never silently replace an explicitly requested VM with the host desktop");
+    expect(text).not.toContain("ask the user to change the conversation's computer selector");
   });
 });
 
@@ -162,4 +187,10 @@ describe("surface parsing", () => {
     expect(surfaceOfComputerKind("local")).toBe("local");
     expect(surfaceOfComputerKind(null)).toBeNull();
   });
+});
+
+
+it("does not instruct use of a selected browser when no surface is mounted", () => {
+  expect(surfacePrompt({ computer: null, browser: false }, { canSelect: true })).not.toContain("For online research");
+  expect(surfacePrompt({ computer: null, browser: true })).toContain("For online research");
 });

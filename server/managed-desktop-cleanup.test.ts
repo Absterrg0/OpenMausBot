@@ -8,13 +8,23 @@ import { expect, it } from "vitest";
 // regression, not proof of a real provider or conversation workflow.
 const source = readFileSync(new URL("./index.ts", import.meta.url), "utf8");
 function section(start: string, end: string) {
-  const from = source.indexOf(start), to = source.indexOf(end, from + start.length);
+  // Anchor both markers to the start of a line. `function bindTurnComputer(`
+  // also matches INSIDE `async function bindTurnComputer(`, which silently cut
+  // the slice after the `async ` and left it dangling — the extracted code then
+  // died with `ReferenceError: async is not defined` instead of failing here
+  // with a readable "section moved". Anchoring makes drift loud again.
+  const lineStart = (marker: string, from: number) => {
+    if (from === 0 && source.startsWith(marker)) return 0;
+    const at = source.indexOf(`\n${marker}`, from);
+    return at < 0 ? -1 : at + 1;
+  };
+  const from = lineStart(start, 0), to = from < 0 ? -1 : lineStart(end, from + start.length);
   if (from < 0 || to <= from) throw new Error(`Cleanup test section moved: ${start}`);
   return source.slice(from, to);
 }
 const code = ts.transpileModule([
   section("async function interruptDirectThread(", "/** Stop left teammates"),
-  section("function releaseTurnResources(", "function bindTurnComputer("),
+  section("function releaseTurnResources(", "async function bindTurnComputer("),
   section("async function stopCompanyInstances(", "async function persistProviderInstance("),
 ].join("\n"), { compilerOptions: { target: ts.ScriptTarget.ESNext } }).outputText;
 const reloadProvidersCode = ts.transpileModule(
@@ -36,6 +46,7 @@ function fixture(kind: "direct" | "group", threadIds = ["first"]) {
   const owners = new Map<string, Owner>(), generations = new Map<string, string>();
   const directBots = new Map<string, Bot>(), speakers = new Map<string, Speaker>();
   const vmLeases = new Map<string, object>(), approvals = new Set<string>(), screens = new Set<string>(), watched = new Set<string>();
+  const autoVmClaims = new Map<string, { owner: { threadId: string; generation: string } }>();
   const started = new Map<string, ReturnType<typeof deferred>>(), interrupted = new Map<string, ReturnType<typeof deferred>>();
   const interruptCalls: string[] = [], cancelled: string[] = [], revoked: string[] = [], messages: string[] = [], settled: string[] = [], detached: string[] = [];
   for (const threadId of threadIds) {
@@ -46,6 +57,7 @@ function fixture(kind: "direct" | "group", threadIds = ["first"]) {
     if (kind === "direct") directBots.set(threadId, bot);
     else { speakers.set(threadId, { botId: threadId, name: "Company turn" }); groups.set(threadId, { id: threadId, busyBotId: threadId }); }
     vmLeases.set(threadId, {}); approvals.add(threadId); screens.add(threadId); watched.add(threadId);
+    autoVmClaims.set(threadId, { owner: { threadId, generation: `company-${threadId}` } });
     started.set(threadId, deferred()); interrupted.set(threadId, deferred());
   }
   const context = vm.createContext({
@@ -67,6 +79,8 @@ function fixture(kind: "direct" | "group", threadIds = ["first"]) {
       interruptCalls.push(threadId); started.get(threadId)!.resolve(); return interrupted.get(threadId)!.promise;
     } } }) },
     turnResourceOwners: owners, directTurnGenerationByThread: generations, directTurnBots: directBots, groupSpeakers: speakers,
+    directRequestOwners: new Map(),
+    autoVmClaims,
     turnResources: { release() {} }, settlingResourceOwners: new Map(), turnComputerResources: new Map(), teamComputerTurns: new Map(),
     roomHandoffs: { stopAwaitingDirect() {} }, noteTeammatesLeftRunning() {},
     cancelDirectTurnDispatch: (_botId: string, threadId: string) => cancelled.push(threadId),
@@ -83,6 +97,7 @@ function fixture(kind: "direct" | "group", threadIds = ["first"]) {
   vm.runInContext(code, context, { filename: "index.ts (Company cleanup ownership fixture)" });
   return {
     bots, tasks, groups, owners, directBots, speakers, vmLeases, approvals, screens, watched,
+    autoVmClaims,
     interruptCalls, cancelled, revoked, messages, settled, detached,
     context,
     stop: () => context.stopCompanyInstances(["company"]) as Promise<void>,
@@ -97,12 +112,14 @@ function fixture(kind: "direct" | "group", threadIds = ["first"]) {
       if (kind === "direct") directBots.set(threadId, bot);
       else if (replaceSpeaker) speakers.set(threadId, { botId: threadId, name: "Personal turn" });
       vmLeases.set(threadId, {}); approvals.add(threadId); screens.add(threadId); watched.add(threadId);
+      autoVmClaims.set(threadId, { owner: { threadId, generation: `personal-${threadId}` } });
     },
   };
 }
 
 function expectPersonalResources(f: ReturnType<typeof fixture>, threadId: string) {
   expect(f.owners.get(threadId)?.generation).toBe(`personal-${threadId}`);
+  expect(f.autoVmClaims.get(threadId)?.owner?.generation).toBe(`personal-${threadId}`);
   expect(f.vmLeases.has(threadId)).toBe(true);
   expect(f.approvals.has(threadId)).toBe(true);
   expect(f.screens.has(threadId)).toBe(true);
@@ -170,6 +187,7 @@ for (const kind of ["direct", "group"] as const) {
     await f.started("first"); f.finish("first"); await stopping;
     expect(f.owners.has("first")).toBe(false);
     expect(f.vmLeases.has("first")).toBe(false);
+    expect(f.autoVmClaims.has("first")).toBe(false);
     expect(f.approvals.has("first")).toBe(false);
     expect(f.watched.has("first")).toBe(false);
     if (kind === "direct") {
@@ -213,7 +231,7 @@ it("reattaches rebuilt personal providers before a Company restore failure", asy
       load: async () => { order.push("load-personal"); },
       instances: () => [personal],
     },
-    instanceConfigs: () => ({ personal: { driver: "fake" } }), cfg: {},
+    providerConfigs: () => ({ personal: { driver: "fake" } }), decorateHostedProvider: undefined,
     managedDesktop: { restore: async () => { order.push("restore-company"); throw new Error("Fixture Company restore failure"); } },
   });
   vm.runInContext(reloadProvidersCode, context, { filename: "index.ts (provider reload fixture)" });

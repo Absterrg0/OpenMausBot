@@ -91,6 +91,18 @@ const __APP_VERSION__: string;
     code?: "load-failed" | "renderer-gone";
   }
 
+  /** Whether the desktop is holding this computer awake for routines. */
+  interface DesktopRoutineWake {
+    /** the toggle */
+    keepAwake: boolean;
+    /** a power assertion is held right now */
+    hold: boolean;
+    /** "due" | "running" while held; "off" | "battery" | "idle" | "stopped" otherwise */
+    reason: string;
+    /** the due routine's time, when the hold is for a due routine */
+    at: number | null;
+    onBattery: boolean;
+  }
   interface DesktopRemoteClientState {
     active: boolean;
     endpoint?: string;
@@ -138,6 +150,7 @@ const __APP_VERSION__: string;
         save(id: string, grant: Pick<DesktopComputerSharing, "folders" | "terminal" | "computer">): Promise<DesktopComputerSharing | null>;
         revoke(id: string): Promise<DesktopComputerSharing>;
       };
+      confirm(message: string): Promise<boolean>;
       getCapabilities(): Promise<DesktopCapabilities>;
       onCapabilitiesChanged(cb: (capabilities: DesktopCapabilities) => void): () => void;
       remoteClient?: {
@@ -145,6 +158,12 @@ const __APP_VERSION__: string;
         state(): Promise<DesktopRemoteClientState>;
         pair(endpoint: string, code: string): Promise<DesktopRemoteClientState>;
         disconnect(): Promise<DesktopRemoteClientState>;
+      };
+      /** Keep this computer awake for scheduled routines; absent on remote
+       * server pages and in older desktop builds. */
+      routines?: {
+        wakeState(): Promise<DesktopRoutineWake>;
+        keepAwake(enabled: boolean): Promise<DesktopRoutineWake>;
       };
       companionAccount?: {
         state(): Promise<CompanionAccountState>;
@@ -159,7 +178,7 @@ const __APP_VERSION__: string;
         setMode(
           botId: string,
           mode: import("../../shared/approval-mode").ApprovalMode,
-          options?: { acknowledgeLocalAuto?: boolean; threadId?: string; threadOnly?: boolean;
+          options?: { acknowledgeLocalAuto?: boolean; threadId?: string; threadOnly?: boolean; allThreads?: boolean;
             modelSelection?: import("../state/store").ModelSelection; updateBotDefault?: boolean },
         ): Promise<import("../state/store").Bot>;
       };
@@ -198,6 +217,8 @@ const __APP_VERSION__: string;
       permRequestMic(): Promise<boolean>;
       /** Opens System Settings on a privacy pane: mic|screen|speech|accessibility. */
       permOpenSettings(pane: "mic" | "screen" | "speech" | "accessibility"): Promise<void>;
+      /** Relaunch the local macOS app after a permission grant. */
+      relaunch?(): Promise<boolean>;
       /** Copies an engine install command and opens a blank terminal. False
        * when no terminal could be launched; the clipboard still has it. */
       openInstallTerminal?(command: string): Promise<boolean>;
@@ -219,7 +240,7 @@ const __APP_VERSION__: string;
       /** The desktop shell's app-menu Preferences… item was activated; open
        * app Settings. Local-shell only: remote server pages never receive
        * the channel, and the bridge is absent in the browser. */
-      onOpenAppSettings?(cb: () => void): () => void;
+      onOpenAppSettings?(cb: (section?: "organization") => void): () => void;
       /** Updates the native Dock/taskbar unread indicator. */
       setUnreadCount?(count: number): void;
       /** Opens a live desktop as a sandboxed window owned by OpenMausBot. */
@@ -260,7 +281,7 @@ const __APP_VERSION__: string;
       saveFile?(filePath: string): Promise<string | null>;
       /** Save a provider credential through Electron's OS-backed store. */
       setCredential?(
-        name: "composioApiKey" | "xaiApiKey" | "boxToken" | "opencodeGoApiKey" | "ttsKey" | "openaiImageApiKey" | "customImageApiKey",
+        name: "composioApiKey" | "xaiApiKey" | "boxToken" | "opencodeGoApiKey" | "ttsKey" | "fishAudioKey" | "openaiImageApiKey" | "customImageApiKey",
         value: string,
       ): Promise<ConfigStatus>;
       /** In-app auto-update (packaged app only; dormant in dev). onState

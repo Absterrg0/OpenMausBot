@@ -8,8 +8,10 @@ import { SettingsModal } from "./SettingsModal";
 // pairing code, so MCP clients (and a second desktop app) had no path to
 // one. ServerPairingCard was gated on `!window.ogb`, hiding it from every
 // desktop instance instead of only the ones that don't own the server
-// being paired against. These tests pin the corrected `!remoteActive` gate.
+// being paired against. MOCA-84 then found the remote-client case needs it
+// too. These tests pin the card as always offered; the server decides who may act.
 const fixture = vi.hoisted(() => ({ section: "companion" as AppSettingsSection }));
+vi.mock("./DesktopCapabilities", () => ({ useDesktopCapabilities: () => ({ capabilities: {} }) }));
 
 vi.mock("@/state/store", async (importOriginal) => ({
   ...await importOriginal<typeof import("@/state/store")>(),
@@ -44,8 +46,12 @@ describe("Settings → Remote access: server pairing card visibility", () => {
     expect(render()).toContain("SERVER_PAIRING_CARD_MARKER");
   });
 
-  it("is hidden when this desktop is itself a remote client of someone else's server", () => {
+  it("is offered when this desktop is a remote client of a hosted workspace, whose phones pair only here", () => {
+    // MOCA-84: a NAS-hosted server reached from the Mac app had no pairing
+    // options at all — the companion section is hidden remotely too. The
+    // desktop's requests carry the hosted server's session, so the server,
+    // not this gate, decides whether that session may mint codes.
     vi.stubGlobal("window", { ogb: { remoteClient: { active: true } } });
-    expect(render()).not.toContain("SERVER_PAIRING_CARD_MARKER");
+    expect(render()).toContain("SERVER_PAIRING_CARD_MARKER");
   });
 });

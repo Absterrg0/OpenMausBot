@@ -1,3 +1,4 @@
+import { codexToolSurfaceArgs } from "./codex-tool-surface.ts";
 // Codex driver — upstream CodexDriver skeleton over agentcal's
 // drivers/codex.js runtime: the official `codex` CLI headless over its
 // app-server JSON-RPC protocol (newline-delimited JSON on stdio).
@@ -11,6 +12,7 @@
 // and preserves that history or reports a failed resume.
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
+import { codexConfigMcpServerNames, mountedMcpServerName } from "./codex-mcp-names.ts";
 
 import { stripWorkspaceCredentialEnv } from "../config.ts";
 import { describeSpawnFailure, execCli, killCliTree, spawnCli } from "../procs.ts";
@@ -18,12 +20,14 @@ import { isHarnessOwnedMcpEnvName } from "../mcp-registry.ts";
 
 import type {
   DriverCreateInput,
+  McpServerSpec,
   ProviderDriver,
   ProviderInstance,
   ProviderSnapshot,
   RuntimeEvent,
   RuntimeEventListener,
   SendTurnInput,
+  SteerOutcome,
 } from "../contracts.ts";
 import { newEventId, newId } from "../contracts.ts";
 import { decodeCodexSelection, readCodexModelCatalog, STATIC_CODEX_MODELS } from "./codex-catalog.ts";
@@ -31,18 +35,21 @@ import { codexLocalProviderArgs } from "./local-inject.ts";
 import { augmentedPath, splitCliString } from "../env-path.ts";
 import { classifyError, computeBackoff, interruptibleDelay, RETRY_MAX_ATTEMPTS } from "./retry.ts";
 import { appendNative } from "./native.ts";
+import { permissionCommand, permissionLaunchCwd } from "./permission-command.ts";
 import { commandSummary, toolDetailPreview } from "../tool-summary.ts";
 import { codexDeveloperInstructions, syncCodexInstructions } from "./codex-instructions.ts";
+import { volatileContextNote, withContextNote } from "./prompt-split.ts";
 import type { ApprovalMode } from "../../shared/approval-mode.ts";
 import { CodexDeviceAuthController } from "./codex-device-auth.ts";
 import { codexAccountEmail } from "./codex-identity.ts";
 import { classifyResumeFailure, mayReplay, recoveryPromptFor } from "../resume-recovery.ts";
+import { extractMcpImages } from "../mcp-tool-images.ts";
+import { parseProtocolAskQuestions, questionAnswersById, questionChoices } from "../../shared/ask-question.ts";
+import { codexVersionBehind, readLatestCodexRelease } from "./codex-release.ts";
 
 export { decodeCodexSelection, readCodexModelCatalog, STATIC_CODEX_MODELS } from "./codex-catalog.ts";
 
 const DRIVER_KIND = "codex";
-const ASTRA_MODEL_ID = "gpt-6-astra";
-const ASTRA_MIN_CODEX_VERSION = [0, 153, 1] as const;
 
 class CodexRpcError extends Error {
   code: unknown;
@@ -59,23 +66,6 @@ function missingNativeCodexThread(error: unknown, cursor: string): boolean {
   // not evidence that the native history was lost. Unknown versions fail closed.
   return error instanceof CodexRpcError && error.code === -32600 &&
     error.message === `no rollout found for thread id ${cursor}`;
-}
-
-/** Whether an installed Codex predates the release that exposes GPT-6 Astra
- * through app-server. Unknown version formats stay quiet: a bad guess should
- * never nag someone whose custom build may already support the model. */
-export function codexPredatesAstra(version: string): boolean {
-  const value = version.trim();
-  const match = /\bcodex-cli\s+v?(\d+)\.(\d+)\.(\d+)(?:[-+][0-9a-z.-]+)?(?![\d.])\b/i.exec(value)
-    ?? /^v?(\d+)\.(\d+)\.(\d+)(?:[-+][0-9a-z.-]+)?$/i.exec(value);
-  if (!match) return false;
-  const installed = match.slice(1, 4).map(Number);
-  for (let i = 0; i < ASTRA_MIN_CODEX_VERSION.length; i += 1) {
-    if (installed[i] !== ASTRA_MIN_CODEX_VERSION[i]) {
-      return installed[i] < ASTRA_MIN_CODEX_VERSION[i];
-    }
-  }
-  return false;
 }
 
 /** Ask the configured executable to update itself. This matters when the user
@@ -97,18 +87,12 @@ export function codexUpdateCommand(cli: string, platform: NodeJS.Platform = proc
   return platform === "win32" ? `& ${command} update` : `${command} update`;
 }
 
-function codexAstraUpdate(
-  version: string,
-  models: typeof STATIC_CODEX_MODELS,
-  cli: string,
-): ProviderSnapshot["update"] | undefined {
-  if (models.options.some((model) => model.id === ASTRA_MODEL_ID) || !codexPredatesAstra(version)) {
-    return undefined;
-  }
+async function codexReleaseUpdate(version: string, cli: string): Promise<ProviderSnapshot["update"] | undefined> {
+  const latest = await readLatestCodexRelease();
+  if (!latest || !codexVersionBehind(version, latest)) return undefined;
   return {
-    title: "Update Codex for GPT-6 Astra",
-    message:
-      "This Codex version predates Astra support. Update it, then refresh models. Astra must also be available to your signed-in ChatGPT account.",
+    title: `Update Codex to ${latest}`,
+    message: `A newer stable Codex CLI is available (installed: ${version}). Update it, then refresh models. Model availability also depends on your signed-in account.`,
     command: codexUpdateCommand(cli),
   };
 }
@@ -157,11 +141,29 @@ export function managedCodexArgs(config: NonNullable<CodexConfig["managed"]>): s
   ];
 }
 
-const QUESTION_TIMEOUT_NOTE = "No answer was given — use your best judgment.";
 const DENY_TIMEOUT_NOTE =
   "OpenMausBot: nobody answered this permission request in time. Skip this action and finish what you can without it.";
 
-type StdioMcpServer = { command: string; args: string[]; env: Record<string, string> };
+const skippedSseServers = new Set<string>();
+const renamedMcpServers = new Set<string>();
+/** Logged once per name: the rename is deliberate, not a lost server. */
+function noteRenamedMcpServer(name: string, mountName: string): void {
+  if (renamedMcpServers.has(name)) return;
+  renamedMcpServers.add(name);
+  console.error(`codex: MCP server ${JSON.stringify(name)} is also declared in Codex's own config.toml — mounted as ${JSON.stringify(mountName)} for this bot so the two do not merge`);
+}
+
+function noteSkippedSseServer(name: string): void {
+  if (skippedSseServers.has(name)) return;
+  skippedSseServers.add(name);
+  console.error(`codex: MCP server ${JSON.stringify(name)} uses the SSE transport, which codex does not speak — it is available to Claude bots only`);
+}
+
+/** A TOML inline table for a `-c key=value` override; JSON string quoting
+ * is valid TOML basic-string quoting. */
+function tomlInlineTable(entries: Record<string, string>): string {
+  return `{ ${Object.entries(entries).map(([key, value]) => `${JSON.stringify(key)} = ${JSON.stringify(value)}`).join(", ")} }`;
+}
 
 interface CodexApprovalParams {
   thread: Record<string, unknown>;
@@ -309,6 +311,21 @@ function namedApprovalParams(mode: Exclude<ApprovalMode, "custom">): CodexApprov
       sandboxPolicy: { type: "workspaceWrite" },
     },
   };
+}
+
+/** Keep the turn on the complete sandbox resolved by native start/resume. */
+function withResolvedSandbox(params: CodexApprovalParams, session: unknown): CodexApprovalParams {
+  const requested = plainRecord(params.turn.sandboxPolicy);
+  // Named permission profiles own their policy; do not mix both selectors.
+  if (!requested) return params;
+  const sandbox = plainRecord(plainRecord(session)?.sandbox);
+  if (!sandbox || typeof sandbox.type !== "string") {
+    throw new Error("Codex did not return its resolved sandbox policy. Update Codex, then retry; the turn was not started because its permissions could not be verified.");
+  }
+  if (sandbox.type !== requested.type) {
+    throw new Error("Codex did not apply the requested sandbox mode; cannot safely start the turn.");
+  }
+  return { ...params, turn: { ...params.turn, sandboxPolicy: sandbox } };
 }
 
 function effectiveApprovalPolicy(value: unknown): unknown {
@@ -477,18 +494,44 @@ function mountMcpServer(
   appServerArgs: string[],
   env: Record<string, string | undefined>,
   name: string,
-  server: StdioMcpServer,
+  server: McpServerSpec,
   preApproved = true,
 ): void {
-  Object.assign(env, server.env);
   const prefix = `mcp_servers.${name}`;
-  appServerArgs.push(
-    "-c", `${prefix}.command=${JSON.stringify(server.command)}`,
-    "-c", `${prefix}.args=${JSON.stringify(server.args)}`,
-    // Values stay in the child environment; argv contains names only so
-    // credentials never appear in process listings or diagnostics.
-    "-c", `${prefix}.env_vars=${JSON.stringify(Object.keys(server.env))}`,
-  );
+  if ("url" in server) {
+    // A remote server: codex connects itself. Header values are credentials
+    // (Authorization: Bearer …) and travel like env values — the child env
+    // holds them under harness-generated names, argv names only the variables.
+    // A bearer token goes through codex's own bearer setting, the path its
+    // remote servers are documented and exercised with; any other header
+    // rides env_http_headers.
+    appServerArgs.push("-c", `${prefix}.url=${JSON.stringify(server.url)}`);
+    const stem = `OMB_MCP_HEADER_${name.toUpperCase().replace(/[^A-Z0-9]/g, "_")}`;
+    const variables: Record<string, string> = {};
+    Object.entries(server.headers).forEach(([header, value], index) => {
+      const bearer = header.toLowerCase() === "authorization" ? /^Bearer\s+(\S+)$/i.exec(value) : null;
+      if (bearer) {
+        env[`${stem}_BEARER`] = bearer[1];
+        appServerArgs.push("-c", `${prefix}.bearer_token_env_var=${JSON.stringify(`${stem}_BEARER`)}`);
+        return;
+      }
+      const variable = `${stem}_${index}`;
+      env[variable] = value;
+      variables[header] = variable;
+    });
+    if (Object.keys(variables).length) {
+      appServerArgs.push("-c", `${prefix}.env_http_headers=${tomlInlineTable(variables)}`);
+    }
+  } else {
+    Object.assign(env, server.env);
+    appServerArgs.push(
+      "-c", `${prefix}.command=${JSON.stringify(server.command)}`,
+      "-c", `${prefix}.args=${JSON.stringify(server.args)}`,
+      // Values stay in the child environment; argv contains names only so
+      // credentials never appear in process listings or diagnostics.
+      "-c", `${prefix}.env_vars=${JSON.stringify(Object.keys(server.env))}`,
+    );
+  }
   // Harness-owned servers are pre-quieted; a user-configured server keeps
   // codex's on-request policy so its tool calls become approval cards.
   if (preApproved) {
@@ -550,6 +593,11 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
     const listeners = new Set<RuntimeEventListener>();
     interface Turn {
       stop: () => Promise<boolean>;
+      /** Fold new user input into the running native turn (turn/steer).
+       * "refused" when this attempt has nothing steerable; the caller
+       * queues. "indeterminate" when delivery happened but the answer did
+       * not come back — the caller must not re-queue those words. */
+      steer?: (text: string) => Promise<SteerOutcome>;
       turnId: string;
       asks: Map<string, (behavior: "allow" | "deny" | "answer", message?: string, source?: "user" | "timeout" | "system") => void>;
     }
@@ -597,6 +645,7 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
       // explicit mode, which takes precedence.
       const approvalMode: ApprovalMode = turn.approvalMode ?? (config.fullAuto ? "full" : "ask");
       for (const [name, server] of Object.entries(turn.integrations?.custom ?? {})) {
+        if ("url" in server) continue;
         const reserved = Object.keys(server.env).find(isHarnessOwnedMcpEnvName);
         if (reserved) {
           throw new Error(`Custom MCP server “${name}” cannot set reserved environment variable “${reserved}”`);
@@ -611,7 +660,7 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
 
       const launchAttempt = async (attempt: number): Promise<void> => {
         const env = childEnv();
-        const appServerArgs = ["app-server", ...(config.managed ? managedCodexArgs(config.managed) : codexLocalProviderArgs(env, turn.model))];
+        const appServerArgs = ["app-server", ...(config.managed ? managedCodexArgs(config.managed) : codexLocalProviderArgs(env, turn.model)), ...codexToolSurfaceArgs()];
         if (turn.integrations?.composio) {
           mountMcpServer(appServerArgs, env, "openmausbot_connectors", turn.integrations.composio);
         }
@@ -626,8 +675,22 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
         if (turn.integrations?.browser) {
           mountMcpServer(appServerArgs, env, "browser", turn.integrations.browser);
         }
+        // A custom server named like one in the user's own config.toml would
+        // be merged with it by the `-c` override — a stdio command over a
+        // remote url is "invalid configuration" and kills the turn before the
+        // model is asked. Such a server mounts under a name of its own.
+        const declaredInCodexConfig = codexConfigMcpServerNames(env);
         for (const [name, server] of Object.entries(turn.integrations?.custom ?? {})) {
-          mountMcpServer(appServerArgs, env, name, server, false);
+          // codex speaks streamable HTTP to a remote server, not the older
+          // SSE transport: such an entry still reaches Claude bots, and is
+          // left out here rather than mounted as something it is not
+          if ("url" in server && server.type === "sse") {
+            noteSkippedSseServer(name);
+            continue;
+          }
+          const mountName = mountedMcpServerName(name, declaredInCodexConfig);
+          if (mountName !== name) noteRenamedMcpServer(name, mountName);
+          mountMcpServer(appServerArgs, env, mountName, server, false);
         }
         if (turn.integrations?.phone) {
           const bridge = turn.integrations.phone;
@@ -641,6 +704,7 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
           );
         }
 
+        const commandCwd = permissionLaunchCwd(turn.cwd ?? homedir());
         const child = spawnCli(config.cli, appServerArgs, {
           cwd: turn.cwd ?? homedir(),
           env,
@@ -736,9 +800,31 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
         return stopped;
       });
       let completeStoppedTurn: (() => void) | undefined;
+      // Stop asks the app-server to end the turn itself before any process
+      // signal. Killing first surfaced routine stops as "codex exited null
+      // (signal SIGTERM) before turn/completed"; the protocol interrupt keeps
+      // the session the authority, and the kill below is only escalation for
+      // a server that will not answer. settle() runs with state.settled
+      // already true, so ordinary completion still tears down immediately.
+      let interruptRequested = false;
       const stop = async () => {
         stopRequested = true;
         stopSignal.abort();
+        if (!state.settled && !interruptRequested && codexThreadId && codexTurnId &&
+            child.exitCode === null && child.signalCode === null) {
+          interruptRequested = true;
+          const graceMs = Math.max(1, Number(process.env.FAKE_CODEX_INTERRUPT_GRACE_MS ?? 750) || 750);
+          try {
+            await request("turn/interrupt", { threadId: codexThreadId, turnId: codexTurnId }, graceMs);
+          } catch {
+            // Old CLI without the method, or a wedged server: escalate below.
+          }
+          const deadline = Date.now() + graceMs;
+          while (!state.settled && Date.now() < deadline) {
+            await new Promise((wake) => setTimeout(wake, 15));
+          }
+          if (state.settled) return true;
+        }
         const stopped = await terminate();
         if (stopped) completeStoppedTurn?.();
         return stopped;
@@ -758,6 +844,32 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
         completeStoppedTurn = complete;
         if (!(await stop())) {
           emit({ ...base(threadId, turnId), type: "runtime.error", message: "codex did not shut down after termination was requested" });
+        }
+      };
+
+      // Live steering folds new input into the running turn without ending
+      // it. expectedTurnId is the protocol's precondition: a turn that moved
+      // on (or a CLI without turn/steer) answers with an explicit RPC error,
+      // which becomes "refused" here so the caller queues for the next turn —
+      // the child is never killed to steer. A timeout after delivery, a dead
+      // transport, or a turn that settles while the answer is in flight is
+      // "indeterminate": the words may already be running, so the caller must
+      // not re-queue them.
+      const steerActiveTurn = async (text: string): Promise<SteerOutcome> => {
+        if (state.settled || abandoned || stopRequested || !codexThreadId || !codexTurnId) return "refused";
+        if (child.exitCode !== null || child.signalCode !== null) return "refused";
+        try {
+          const steerTimeoutMs = Math.max(1, Number(process.env.FAKE_CODEX_STEER_TIMEOUT_MS ?? 10_000) || 10_000);
+          await request("turn/steer", {
+            threadId: codexThreadId,
+            input: [{ type: "text", text }],
+            expectedTurnId: codexTurnId,
+          }, steerTimeoutMs);
+          return "steered";
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          if (state.settled || message.includes("timed out")) return "indeterminate";
+          return "refused";
         }
       };
 
@@ -797,23 +909,22 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
           }
           return;
         }
-        // One ask card carries one question honestly: its choices would come
-        // from the first question alone and its one reply (including the
-        // timeout note) would be copied into every question id (#1237).
-        // Refuse the bundled call with a teaching error instead of
-        // fabricating per-question answers.
-        if (isQuestion && (!Array.isArray(params.questions) || params.questions.length !== 1)) {
-          const bundled = Array.isArray(params.questions) && params.questions.length > 1;
+        // The whole set rides one card, answered per id: the protocol pairs
+        // each question with its own id, and the card's single reply is
+        // mapped back block by block (or as the flat single-question
+        // fallback). The only refusal left is an ask with nothing answerable
+        // — #1237 is closed: a bundle no longer copies one answer into
+        // every id.
+        const protocolQuestions = isQuestion ? parseProtocolAskQuestions(params.questions) : null;
+        if (isQuestion && !protocolQuestions) {
           send({
             jsonrpc: "2.0",
             id: msg.id,
             error: {
               code: -32602,
-              message: bundled
-                ? `ask supports one question per call; this request bundled ${params.questions.length}. Split it into separate asks, one question each.`
-                : Array.isArray(params.questions)
-                ? "ask supports one question per call; this request sent none."
-                : "ask supports one question per call; params.questions must be an array with exactly one question.",
+              message: Array.isArray(params.questions)
+                ? "ask needs at least one answerable question — a string id and question text each; this request sent none."
+                : "ask needs params.questions to be an array of questions, each with a string id and question text.",
             },
           });
           return;
@@ -856,22 +967,36 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
             ? (mcpAppApproval?.summary ?? (typeof params.message === "string" ? params.message : "MCP access requested"))
             : typeof params.command === "string"
             ? params.command
+            : protocolQuestions
+              ? protocolQuestions.map(({ question }) => question.question).join(" · ")
             : Array.isArray(params.questions)
               ? params.questions.map((q: any) => q.question ?? q.header).filter(Boolean).join(" · ")
               : typeof params.reason === "string"
                 ? params.reason
                 : tool;
-        const choices = isQuestion
-          ? (params.questions?.[0]?.options ?? []).map((o: any) => o.label).slice(0, 5)
-          : undefined;
+        // Flat choices only when one non-multiselect question can actually
+        // be answered by a bare reply; a bundle's first-question buttons
+        // would be an unusable lie for flat clients.
+        const choices =
+          isQuestion && protocolQuestions ? questionChoices(protocolQuestions.map(({ question }) => question)) : undefined;
         const finish = (behavior: "allow" | "deny" | "answer", message?: string, source: "user" | "timeout" | "system" = "user") => {
           if (!asks.delete(requestId)) return;
           clearTimeout(timer);
           if (isQuestion) {
-            const answers: Record<string, { answers: string[] }> = {};
-            for (const q of Array.isArray(params.questions) ? params.questions : []) {
-              answers[q.id] = { answers: [message || QUESTION_TIMEOUT_NOTE] };
-            }
+            // Only the person's reply is filed: Q:/A: blocks mapped to the
+            // id that asked them, or the flat fallback for a single
+            // question. Timeout and turn teardown send empty answers so
+            // every id reads unanswered — system notes never occupy the
+            // slot the model reads as the person's words (the rule
+            // permission-proxy already follows).
+            const mapped =
+              behavior === "answer" && source === "user" && typeof message === "string"
+                ? questionAnswersById(message, protocolQuestions ?? [])
+                : {};
+            // Null prototype so an opaque id like __proto__ becomes a real
+            // answer key instead of hitting the inherited setter.
+            const answers: Record<string, { answers: string[] }> = Object.create(null);
+            for (const [id, answer] of Object.entries(mapped)) answers[id] = { answers: [answer] };
             send({ jsonrpc: "2.0", id: msg.id, result: { answers } });
           } else {
             send({
@@ -883,7 +1008,10 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
           emit({ ...base(threadId, turnId), type: "request.resolved", requestId, behavior, source });
         };
         const timer = setTimeout(
-          () => (isQuestion ? finish("answer", QUESTION_TIMEOUT_NOTE, "timeout") : finish("deny", DENY_TIMEOUT_NOTE, "timeout")),
+          // A timed-out question resolves as denied, not answered: the card
+          // closes with no reply (answers stay empty either way), and the
+          // resolve event must not claim an answer that never happened.
+          () => finish("deny", isQuestion ? undefined : DENY_TIMEOUT_NOTE, "timeout"),
           15 * 60_000,
         );
         timer.unref?.();
@@ -895,9 +1023,18 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
           requestType: isQuestion ? "question" : "permission",
           tool,
           summary,
+          command: method === "execCommandApproval" || method === "item/commandExecution/requestApproval"
+            ? permissionCommand(params.command, params.cwd ?? (
+              // Helpers may have a different workspace from their parent.
+              !params.threadId || params.threadId === codexThreadId ? commandCwd : undefined
+            )) : undefined,
           choices,
+          ...(protocolQuestions ? { questions: protocolQuestions.map((pair) => pair.question) } : {}),
           approvalScope: controlsHost ? "local-computer" : undefined,
-          requiresExplicitApproval: isAdditionalPermission || undefined,
+          requiresExplicitApproval: isAdditionalPermission || (
+            (method === "execCommandApproval" || method === "item/commandExecution/requestApproval") &&
+            (params.additionalPermissions != null || params.networkApprovalContext != null)
+          ) || undefined,
         });
       };
 
@@ -1016,6 +1153,11 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
                 ok: item.status !== "failed" && item.status !== "declined",
                 output: toolDetailPreview(item.type === "commandExecution" ? { output: item.aggregatedOutput, exitCode: item.exitCode } : item.type === "mcpToolCall" ? item.error ?? item.result : item.type === "fileChange" ? item.changes : item.action),
               });
+              if (item.type === "mcpToolCall") {
+                for (const img of extractMcpImages(item.result)) {
+                  emit({ ...base(threadId, turnId), type: "item.completed", itemType: "assistant_image", data: img.data });
+                }
+              }
             } else if (item.type === "reasoning") {
               emit({ ...base(threadId, turnId), type: "item.updated", itemType: "reasoning", tokens: null });
             }
@@ -1153,6 +1295,13 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
           void stop();
           return;
         }
+        // An intentional stop killed (or outlived) the child before the
+        // turn acknowledged its own end. That is the stop doing its job, not
+        // a crash: settle quietly so Stop never reports the raw signal.
+        if (stopRequested) {
+          void settle(false, "interrupted");
+          return;
+        }
         // The child died before the turn completed. Attribute the exit
         // honestly: name the signal when it was killed, and only quote
         // stderr that arrived after the last protocol message. A stale
@@ -1218,7 +1367,7 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
         void settle(false, "exit_before_result");
       });
 
-      active.set(threadId, { stop, turnId, asks });
+      active.set(threadId, { stop, turnId, asks, steer: steerActiveTurn });
       // Relaunching the app-server is still the same logical turn. Keep the
       // active process current on every attempt, but announce the turn once.
       if (attempt === 0) emit({ ...base(threadId, turnId), type: "turn.started" });
@@ -1245,12 +1394,33 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
             includeLayers: false,
           });
           effectiveConfig = configured?.config;
-        } catch {
+        } catch (error) {
           // Do not expose a possibly secret-bearing native config error or
-          // overwrite unknown instructions with an empty fallback.
-          throw new Error("Could not read Codex configuration; cannot safely update bot instructions. Retry after checking Codex.");
+          // overwrite unknown instructions with an empty fallback. A config
+          // codex itself rejected is the one case worth naming: the person
+          // can act on it, and the message carries no credential.
+          const invalid = error instanceof CodexRpcError && /^invalid configuration\b/i.test(error.message);
+          throw new Error(
+            invalid
+              ? "Codex rejected its configuration as invalid. Check ~/.codex/config.toml (or CODEX_HOME) for a broken entry, then retry."
+              : "Could not read Codex configuration; cannot safely update bot instructions. Retry after checking Codex.",
+          );
         }
-        const developerInstructions = codexDeveloperInstructions(effectiveConfig, turn.system ?? "");
+        // Only the stable half of the prompt belongs in the developer slot:
+        // it is the part that must survive compaction unchanged, and any
+        // change to it invalidates the provider's cached prefix. The volatile
+        // half (memory, mentions, outstanding teammate work) is delivered
+        // inside the turn that changed it, after the cached prefix, the same
+        // contract SendTurnInput.systemStable documents. Without the split
+        // the driver keeps the previous single-block behaviour.
+        const stableInstructions = typeof turn.systemStable === "string" && typeof turn.systemVolatile === "string"
+          ? turn.systemStable
+          : null;
+        const promptSplit = stableInstructions !== null;
+        const developerInstructions = codexDeveloperInstructions(
+          effectiveConfig,
+          stableInstructions ?? turn.system ?? "",
+        );
         let approvalParams: CodexApprovalParams;
         if (approvalMode === "custom") {
           // config/read returns the effective global + project config for this
@@ -1271,6 +1441,7 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
         const cursor = typeof turn.resumeCursor === "string" ? turn.resumeCursor : null;
         let startedModel: string | null = null;
         let resumedNativeThread = false;
+        let rebuiltFromReplay = false;
         let promptText = turn.text;
         if (cursor) {
           const resumeThread = () => request("thread/resume", {
@@ -1289,6 +1460,7 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
               approvalParams = approvalParams.fallback;
               resumed = await resumeThread();
             }
+            approvalParams = withResolvedSandbox(approvalParams, resumed);
             codexThreadId = resumed?.thread?.id ?? cursor;
             resumedNativeThread = true;
           } catch (error) {
@@ -1298,12 +1470,18 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
               promptSubmitted,
               producedOutput: state.sawStreamDelta,
             });
-            if (!config.managed || recoveredMissingSession || stopRequested || state.settled ||
+            if ((!config.managed && !turn.recoveryIsReplay) || recoveredMissingSession || stopRequested || state.settled ||
                 !turn.recoveryText?.trim() || !missingNativeCodexThread(error, cursor) || !mayReplay(failure)) throw error;
-            // The prompt has never been submitted. Rebuild only missing Company
-            // histories, once, through the same approved model/provider below.
+            // The prompt has never been submitted. Rebuild missing Company
+            // histories, and a personal thread only for a turn whose recovery
+            // text is the replay it would have had anyway; once, through the
+            // same approved model/provider below.
             recoveredMissingSession = true;
-            promptText = recoveryPromptFor({ recoveryText: turn.recoveryText, currentText: turn.text, failure }).text;
+            const rebuild = recoveryPromptFor({ recoveryText: turn.recoveryText, currentText: turn.text, failure });
+            // Announced as rebuilt only when the replacement really carries the
+            // replay; otherwise it holds no more than the turn text.
+            rebuiltFromReplay = rebuild.replayed;
+            promptText = rebuild.text;
           }
         }
         if (!codexThreadId) {
@@ -1324,12 +1502,31 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
             approvalParams = approvalParams.fallback;
             started = await startThread();
           }
+          approvalParams = withResolvedSandbox(approvalParams, started);
           codexThreadId = started?.thread?.id ?? null;
           startedModel = started?.model ?? null;
         }
         if (!codexThreadId) throw new Error("Codex did not return a native thread id");
-        await syncCodexInstructions(threadId, codexThreadId, developerInstructions, resumedNativeThread, request);
-        emit({ ...base(threadId, turnId), type: "session.started", sessionId: codexThreadId, model: startedModel ?? turn.model ?? null });
+        const { deliverVolatile, hadVolatile, commitVolatile } = await syncCodexInstructions(
+          threadId,
+          codexThreadId,
+          developerInstructions,
+          promptSplit ? turn.systemVolatile ?? "" : "",
+          resumedNativeThread,
+          request,
+          Boolean(turn.mentionTurn),
+        );
+        // A changed volatile half rides the next user input as a labelled
+        // context block. It never touches the developer slot, so an
+        // ordinary memory write or roster change neither appends a second
+        // copy of the prompt to history nor re-uploads the conversation.
+        if (deliverVolatile) {
+          promptText = withContextNote(
+            volatileContextNote(promptSplit ? turn.systemVolatile ?? "" : "", hadVolatile),
+            promptText,
+          );
+        }
+        emit({ ...base(threadId, turnId), type: "session.started", sessionId: codexThreadId, model: startedModel ?? turn.model ?? null, ...(rebuiltFromReplay ? { rebuilt: true } : {}) });
         const turnInput = [
           ...(promptText ? [{ type: "text" as const, text: promptText }] : []),
           ...(turn.images ?? []).map((image) => ({ type: "localImage" as const, path: image.path })),
@@ -1360,6 +1557,9 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
           approvalParams = approvalParams.fallback;
           await startTurn();
         }
+        // turn/start accepted the input: only now may the receipt claim the
+        // volatile half was delivered, so a rejected turn redelivers on retry.
+        if (commitVolatile) commitVolatile();
       } catch (e) {
         const failure = e instanceof Error ? e : { text: String(e) };
         const message = e instanceof Error ? e.message : String(e);
@@ -1434,7 +1634,7 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
       version,
       authenticated,
       ...(email ? { account: { email } } : {}),
-      update: codexAstraUpdate(version, models, config.cli),
+      update: await codexReleaseUpdate(version, config.cli),
       billing: "subscription",
     };
   };
@@ -1457,6 +1657,7 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
       provider: DRIVER_KIND,
       capabilities: {
         sessionModelSwitch: "unsupported",
+        queueing: true,
         computerMcp: true,
         localComputerMcp: true,
         composioMcp: true,
@@ -1467,10 +1668,15 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
         images: true,
         nativeImageInput: true,
         effortLevels: ["low", "medium", "high", "xhigh", "max"],
+        strictResume: true,
       },
       sendTurn,
       interruptTurn: async (threadId) => {
         await active.get(threadId)?.stop();
+      },
+      steer: async (threadId, text) => {
+        const turn = active.get(threadId);
+        return turn?.steer ? await turn.steer(text) : "refused";
       },
       respondToRequest: async (threadId, requestId, decision) => {
         const turn = active.get(threadId);

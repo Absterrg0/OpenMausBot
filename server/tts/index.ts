@@ -1,15 +1,11 @@
-// Voice, wired to config. Three engines live behind this file: ElevenLabs
-// (elevenlabs.ts, needs a key), the Mac's built-in voices
-// (system-voices.ts, no key), and a local Chatterbox server
-// (chatterbox.ts, an address instead of a key). This file is only the part that reads
-// ~/.openmausbot/config.json, picks the engine, and decides whether there
-// is a voice at all.
 import type { AppConfig } from "../config.ts";
 import * as chatterbox from "./chatterbox.ts";
 import * as elevenlabs from "./elevenlabs.ts";
+import * as grok from "./grok.ts";
+import * as fish from "./fish.ts";
 import * as systemVoices from "./system-voices.ts";
 
-export type VoiceProvider = "elevenlabs" | "system" | "chatterbox";
+export type VoiceProvider = "elevenlabs" | "fish" | "system" | "chatterbox" | "xai";
 
 export class NoVoiceConfigured extends Error {
   // a plain field rather than a constructor parameter property: the harness
@@ -29,7 +25,8 @@ export class NoVoiceConfigured extends Error {
 }
 
 export function voiceProvider(cfg: AppConfig): VoiceProvider {
-  return cfg.tts?.provider === "system" || cfg.tts?.provider === "chatterbox" ? cfg.tts.provider : "elevenlabs";
+  const provider = cfg.tts?.provider;
+  return provider === "xai" || provider === "fish" || provider === "system" || provider === "chatterbox" ? provider : "elevenlabs";
 }
 
 /** The system provider needs no credential — it is only ever offered where
@@ -37,17 +34,21 @@ export function voiceProvider(cfg: AppConfig): VoiceProvider {
  * speak", not "a key is on file". */
 export function providerConfigured(cfg: AppConfig): boolean {
   const provider = voiceProvider(cfg);
+  if (provider === "xai") return Boolean(cfg.xai?.key);
   if (provider === "system") return systemVoices.systemVoicesAvailable();
   if (provider === "chatterbox") return Boolean(cfg.tts?.baseUrl?.trim());
+  if (provider === "fish") return Boolean(cfg.tts?.fishKey);
   return Boolean(cfg.tts?.key);
 }
 
 export function voiceConfigured(cfg: AppConfig): boolean {
   const provider = voiceProvider(cfg);
+  if (provider === "xai") return Boolean(cfg.xai?.key && cfg.tts?.voice);
   if (provider === "system") {
     return systemVoices.systemVoicesAvailable() && Boolean(cfg.tts?.voice);
   }
   if (provider === "chatterbox") return Boolean(cfg.tts?.baseUrl?.trim() && cfg.tts?.voice);
+  if (provider === "fish") return Boolean(cfg.tts?.fishKey && cfg.tts?.voice);
   return Boolean(cfg.tts?.key && cfg.tts?.voice);
 }
 
@@ -55,10 +56,12 @@ export function voiceConfigured(cfg: AppConfig): boolean {
  * because the app-wide fallback has not been selected yet. */
 export function voiceReady(cfg: AppConfig, voiceId?: string): boolean {
   const provider = voiceProvider(cfg);
+  if (provider === "xai") return Boolean(cfg.xai?.key && (voiceId || cfg.tts?.voice));
   if (provider === "system") {
     return systemVoices.systemVoicesAvailable() && Boolean(voiceId || cfg.tts?.voice);
   }
   if (provider === "chatterbox") return Boolean(cfg.tts?.baseUrl?.trim() && (voiceId || cfg.tts?.voice));
+  if (provider === "fish") return Boolean(cfg.tts?.fishKey && (voiceId || cfg.tts?.voice));
   return Boolean(cfg.tts?.key && (voiceId || cfg.tts?.voice));
 }
 
@@ -77,16 +80,21 @@ export function describeVoice(cfg: AppConfig) {
   };
 }
 
-export function verifyKey(key: string) {
-  return elevenlabs.verifyKey(key);
+export function verifyKey(provider: "elevenlabs" | "fish", key: string) {
+  return provider === "fish" ? fish.verifyKey(key) : elevenlabs.verifyKey(key);
 }
 
 export async function listVoices(cfg: AppConfig, run?: systemVoices.Runner): Promise<elevenlabs.Voice[]> {
   const provider = voiceProvider(cfg);
+  if (provider === "xai") return cfg.xai?.key ? grok.listVoices(cfg.xai.key) : [];
   if (provider === "system") return systemVoices.listSystemVoices(run);
   if (provider === "chatterbox") {
     const baseUrl = cfg.tts?.baseUrl?.trim();
     return baseUrl ? chatterbox.listChatterboxVoices(baseUrl) : [];
+  }
+  if (provider === "fish") {
+    const key = cfg.tts?.fishKey;
+    return key ? fish.listVoices(key) : [];
   }
   const key = cfg.tts?.key;
   if (!key) return [];
@@ -97,6 +105,13 @@ export async function listVoices(cfg: AppConfig, run?: systemVoices.Runner): Pro
  * to speak with, which the route turns into a 409 the client can explain. */
 export function speak(cfg: AppConfig, text: string, voiceId?: string, run?: systemVoices.Runner) {
   const provider = voiceProvider(cfg);
+  if (provider === "xai") {
+    const key = cfg.xai?.key;
+    if (!key) throw new NoVoiceConfigured("key", "Add an xAI key in Settings to use Grok voice.");
+    const voice = voiceId || cfg.tts?.voice;
+    if (!voice) throw new NoVoiceConfigured("voice");
+    return grok.synthesize(text, voice, key);
+  }
   if (provider === "system") {
     const voice = voiceId || cfg.tts?.voice;
     // An injected runner is the cross-platform test seam for `/usr/bin/say`;
@@ -116,6 +131,18 @@ export function speak(cfg: AppConfig, text: string, voiceId?: string, run?: syst
     const voice = voiceId || cfg.tts?.voice;
     if (!voice) throw new NoVoiceConfigured("voice");
     return chatterbox.synthesizeChatterbox(text, voice, baseUrl, cfg.tts?.model);
+  }
+  if (provider === "fish") {
+    const key = cfg.tts?.fishKey;
+    if (!key) {
+      throw new NoVoiceConfigured(
+        "key",
+        "Add a Fish Audio key in Settings on the computer to turn on voice.",
+      );
+    }
+    const voice = voiceId || cfg.tts?.voice;
+    if (!voice) throw new NoVoiceConfigured("voice");
+    return fish.synthesize(text, voice, key);
   }
   const key = cfg.tts?.key;
   if (!key) throw new NoVoiceConfigured("key");

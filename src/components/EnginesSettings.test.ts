@@ -31,7 +31,11 @@ function render(authenticated: boolean, options: { email?: string; signOut?: boo
 
 describe("Settings → Engines → Codex", () => {
   it("makes browser sign-in discoverable in Settings, not only the model picker", () => {
-    expect(render(false)).toContain("Connect ChatGPT");
+    const html = render(false);
+    expect(html).toContain("Connect ChatGPT");
+    expect(html).toContain("Provider icon");
+    expect(html).toContain("Google Gemini");
+    expect(html).toContain("Upload a custom provider icon for Codex");
   });
 
   it("shows a connected account without offering to replace it", () => {
@@ -74,7 +78,7 @@ describe("Settings → Engines → setup cards", () => {
     }));
     const companyOnly = renderToStaticMarkup(createElement(EnginesSettings));
     for (const driver of ["claudeAgent", "codex", "openai-compat"]) expect(companyOnly).toContain(`Company ${driver}`);
-    expect(companyOnly).toContain("managed by your organisation");
+    expect(companyOnly).toContain("managed by your organization");
     for (const control of ["Set CLI", "CLI path and updates", "Sign out of ChatGPT", "Update Claude", "fixture login"]) expect(companyOnly).not.toContain(control);
     fixture.instances.push({ instanceId: "personal", displayName: "Personal Claude", driverKind: "claudeAgent", cliDefault: "claude",
       snapshot: { state: "available" }, models: { default: "sonnet", options: [] } });

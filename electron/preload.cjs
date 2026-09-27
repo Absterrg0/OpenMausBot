@@ -14,6 +14,18 @@ ipcRenderer.on("package:install", (_event, url) => {
   for (const listener of packageInstallListeners) listener(url);
 });
 
+// Main can finish loading the document before React subscribes. Retain only
+// the fixed Organisation action, never a destination supplied by a renderer.
+let pendingOrganizationSettings = false;
+const appSettingsListeners = new Set();
+ipcRenderer.on("app:open-settings", (_event, section) => {
+  const fixedSection = section === "organization" ? "organization" : undefined;
+  if (fixedSection && !appSettingsListeners.size) pendingOrganizationSettings = true;
+  if (!appSettingsListeners.size) return;
+  pendingOrganizationSettings = false;
+  for (const listener of appSettingsListeners) listener(fixedSection);
+});
+
 // The bridge is built once, then exposed in full only to the local server's
 // UI. A remote server's page (Server menu) gets the safe subset: nothing that
 // captures this screen, touches this computer's files or logins, or runs
@@ -87,6 +99,12 @@ const bridge = {
     cloudDesktop: (deviceId, allowed) => ipcRenderer.invoke("companion:cloud-desktop", deviceId, allowed),
     revoke: (deviceId) => ipcRenderer.invoke("companion:revoke", deviceId),
   },
+  /** Keep this computer awake for scheduled routines. The hold itself lives
+   * in the main process; the page reads its state and flips the toggle. */
+  routines: {
+    wakeState: () => ipcRenderer.invoke("routines:wake-state"),
+    keepAwake: (enabled) => ipcRenderer.invoke("routines:keep-awake", enabled),
+  },
   /** Optional account-backed HTTPS access for Companion. Secrets stay in the
    * main process; the renderer sees only status and narrow user actions. */
   companionAccount: {
@@ -135,9 +153,13 @@ const bridge = {
   /** The app menu's Preferences… item; local shell only (the remote-safe
    * subset never sees it). */
   onOpenAppSettings: (cb) => {
-    const handler = () => cb();
-    ipcRenderer.on("app:open-settings", handler);
-    return () => ipcRenderer.removeListener("app:open-settings", handler);
+    appSettingsListeners.add(cb);
+    queueMicrotask(() => {
+      if (!pendingOrganizationSettings || !appSettingsListeners.size) return;
+      pendingOrganizationSettings = false;
+      for (const listener of appSettingsListeners) listener("organization");
+    });
+    return () => appSettingsListeners.delete(cb);
   },
   /** Absolute path of a dropped File — Electron 32 removed File.path, and
    * only the preload can ask. "" when the drag carried no file on disk. */
@@ -156,6 +178,8 @@ const bridge = {
   permRequestMic: () => ipcRenderer.invoke("perm:request-mic"),
   /** Opens System Settings on the given privacy pane: mic|screen|speech. */
   permOpenSettings: (pane) => ipcRenderer.invoke("perm:open-settings", pane),
+  /** Relaunch the local macOS app after a permission grant. */
+  relaunch: () => ipcRenderer.invoke("desktop:relaunch"),
 
   /** Copies an engine install command and opens a blank terminal. Resolves
    * false if no terminal could be launched; the clipboard still has it. */
@@ -262,8 +286,10 @@ const bridge = {
     },
   },
   organization: process.argv.includes("--omb-company-desktop=1") ? {
+    settingsOpened: () => ipcRenderer.invoke("organization:settings-opened"),
     state: () => ipcRenderer.invoke("organization:state"),
     begin: input => ipcRenderer.invoke("organization:begin", input),
+    reopen: () => ipcRenderer.invoke("organization:reopen"),
     cancelEnrollment: () => ipcRenderer.invoke("organization:cancel"),
     refresh: () => ipcRenderer.invoke("organization:refresh"),
     disconnect: () => ipcRenderer.invoke("organization:disconnect"),
@@ -294,6 +320,7 @@ const bridge = {
     save: (id, grant) => ipcRenderer.invoke("sharing:save", id, grant),
     revoke: id => ipcRenderer.invoke("sharing:revoke", id),
   },
+  confirm: message => ipcRenderer.invoke("dialog:confirm", message),
 };
 
 contextBridge.exposeInMainWorld(

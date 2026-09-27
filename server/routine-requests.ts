@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 
 import { z } from "zod";
 
@@ -83,6 +84,7 @@ const routineToolDefinitionSchema = z.object({
   durationMinutes: z.number().optional(),
   timeoutMinutes: z.number().nullable().optional(),
   continuity: z.boolean().optional(),
+  overlap: z.enum(["skip", "queue"]).optional(),
 }).strict();
 
 const routineToolChangesSchema = routineToolDefinitionSchema
@@ -209,6 +211,7 @@ const storedDefinitionSchema = z.object({
   durationMinutes: z.number().int().min(5).max(240),
   timeoutMinutes: z.number().int().min(5).max(240).optional(),
   continuity: z.boolean().optional(),
+  overlap: z.enum(["skip", "queue"]).optional(),
 }).strict();
 const storedChangesSchema = storedDefinitionSchema
   .omit({ schedule: true, timeoutMinutes: true })
@@ -257,6 +260,7 @@ export interface RoutineRequestOptionCard {
   options: string[];
   answered?: string;
   dismissed?: boolean;
+  expired?: boolean;
   requestId?: string;
   tool?: string;
   held?: string;
@@ -295,7 +299,7 @@ export interface RoutineRequestServiceOptions {
   /** Server-owned effective mode of the source conversation, never request input. */
   autoApply?: (botId: string, threadId: string) => boolean;
   /** Harness-owned readiness check for proposals that would execute in cloud. */
-  cloudReady?: () => Promise<{ ready: boolean; reason?: string }>;
+  cloudReady?: (botId: string) => Promise<{ ready: boolean; reason?: string }>;
   /** Revalidates conversation ownership and capacity synchronously, directly
    * before the card append. This closes races across an async cloud probe. */
   canPersist?: (
@@ -356,11 +360,16 @@ export type ResolveRoutineRequestResult =
 
 export class RoutineRequestError extends Error {
   readonly status: number;
+  /** True when no retry of this card can ever succeed — the routine moved
+   * under the proposal — so the card must settle as expired rather than
+   * staying actionable. */
+  readonly terminal: boolean;
 
-  constructor(message: string, status = 400) {
+  constructor(message: string, status = 400, options?: { terminal?: boolean }) {
     super(message);
     this.name = "RoutineRequestError";
     this.status = status;
+    this.terminal = options?.terminal === true;
   }
 }
 
@@ -550,6 +559,7 @@ function normalizeDefinition(input: RoutineToolDefinitionInput, now: number): Ro
     durationMinutes: duration(input.durationMinutes),
     ...(timeoutMinutes == null ? {} : { timeoutMinutes }),
     ...(input.continuity === true ? { continuity: true } : {}),
+    ...(input.overlap === "queue" ? { overlap: "queue" as const } : {}),
   };
 }
 
@@ -562,6 +572,7 @@ function normalizeChanges(input: RoutineToolChangesInput, now: number): RoutineR
   if (input.durationMinutes !== undefined) changes.durationMinutes = duration(input.durationMinutes);
   if (input.timeoutMinutes !== undefined) changes.timeoutMinutes = timeout(input.timeoutMinutes);
   if (input.continuity !== undefined) changes.continuity = input.continuity === true;
+  if (input.overlap !== undefined) changes.overlap = input.overlap;
   return changes;
 }
 
@@ -782,6 +793,7 @@ function effectiveDefinition(operation: RoutineRequestOperation, manager: Routin
     durationMinutes: existing.durationMinutes,
     ...(existing.timeoutMinutes === undefined ? {} : { timeoutMinutes: existing.timeoutMinutes }),
     ...(existing.continuity ? { continuity: true } : {}),
+    ...(existing.overlap ? { overlap: existing.overlap } : {}),
   };
   if (operation.action !== "update") return base;
   const { schedule, timeoutMinutes, ...changes } = operation.changes;
@@ -820,7 +832,7 @@ function cardCopy(
   const nextRunAt = nextForOperation(operation, manager, now);
   const scheduleTimeZone = definition.schedule.type === "cron" ? definition.schedule.timeZone : timeZone;
   const when = operation.action === "run_now" ? "Now" : scheduleText(definition.schedule, timeZone);
-  const destination = definition.runOn === "cloud" ? "Cloud VM" : "This OpenMausBot setup";
+  const destination = definition.runOn === "cloud" ? "Box-hosted agent" : "Bot’s current model and configured computer";
   const current = operation.action === "create"
     ? null
     : manager.listRoutines().find((routine) => routine.id === operation.routineId) ?? null;
@@ -865,6 +877,7 @@ function cardCopy(
       `Runs on: ${destination}`,
       `Run limit: ${definition.timeoutMinutes === undefined ? "No limit" : `${definition.timeoutMinutes} minutes`}`,
       `Continuity: ${definition.continuity ? "Carries the previous run's report into the next run" : "Each run starts fresh"}`,
+      `While busy: ${definition.overlap === "queue" ? "Queue one scheduled run; skip further occurrences until it starts" : "Skip overlapping scheduled occurrences"}`,
       // Last before the instructions: the one sentence that says what
       // confirming actually does, in the reader's terms.
       ...(operation.action === "create" || operation.action === "update"
@@ -890,6 +903,7 @@ function inputFromDefinition(definition: RoutineRequestDefinition, botId: string
     durationMinutes: definition.durationMinutes,
     ...(definition.timeoutMinutes === undefined ? {} : { timeoutMinutes: definition.timeoutMinutes }),
     ...(definition.continuity ? { continuity: true } : {}),
+    ...(definition.overlap === "queue" ? { overlap: "queue" as const } : {}),
   };
 }
 
@@ -906,6 +920,7 @@ function updateFromChanges(
   if (changes.durationMinutes !== undefined) patch.durationMinutes = changes.durationMinutes;
   if (changes.timeoutMinutes !== undefined) patch.timeoutMinutes = changes.timeoutMinutes;
   if (changes.continuity !== undefined) patch.continuity = changes.continuity;
+  if (changes.overlap !== undefined) patch.overlap = changes.overlap;
   return patch;
 }
 
@@ -946,11 +961,12 @@ function verifyManageSnapshot(
   botId: string,
 ): Routine {
   const current = ownedRoutine(manager, operation.routineId, botId);
-  if (!current) throw new RoutineRequestError("That routine no longer exists", 404);
+  if (!current) throw new RoutineRequestError("That routine no longer exists", 404, { terminal: true });
   if (current.updatedAt !== operation.expectedUpdatedAt) {
     throw new RoutineRequestError(
       "That routine changed after this confirmation card was prepared. Ask the bot to review it and propose the action again.",
       409,
+      { terminal: true },
     );
   }
   return current;
@@ -969,6 +985,36 @@ function requestCommit(payload: RoutineRequestCardData, messageId: string): Rout
 }
 
 function revalidateOperation(operation: RoutineRequestOperation, manager: RoutineManager, botId: string, now: number): void {
+  if (operation.action === "create") {
+    const definition = operation.routine;
+    const owner = operation.forBot?.botId ?? botId;
+    const schedule = asSchedule(definition.schedule, now);
+    const duplicate = manager.listRoutines().find((routine) => {
+      if (!routine.enabled || routine.target !== "bot" || routine.botId !== owner
+        || routine.runOn !== definition.runOn || routine.prompt !== definition.instructions
+        || routine.durationMinutes !== definition.durationMinutes
+        || routine.timeoutMinutes !== definition.timeoutMinutes
+        || Boolean(routine.continuity) !== Boolean(definition.continuity)
+        || (routine.overlap ?? "skip") !== (definition.overlap ?? "skip")
+        || (routine.attachments?.length ?? 0) > 0) return false;
+      // An omitted start means "every N minutes", not a new phase each time
+      // the model retries. Explicit starts and all other constraints stay exact.
+      const candidate = schedule.type === "interval" && routine.schedule.type === "interval"
+        && definition.schedule.type === "interval" && definition.schedule.anchorAt === undefined
+        ? { ...schedule, anchorAt: routine.schedule.anchorAt }
+        : schedule;
+      return isDeepStrictEqual(candidate, routine.schedule);
+    });
+    if (duplicate) {
+      // The tool cannot choose a result destination. Return the existing ID,
+      // without moving its reports or treating a renamed request as new work.
+      throw new RoutineRequestError(
+        `An enabled routine with the same instructions and execution settings already exists (${duplicate.id}). Use list_routines to review it, then update or run that routine instead.`,
+        409,
+        { terminal: true },
+      );
+    }
+  }
   const current = operation.action === "create"
     ? null
     : verifyManageSnapshot(operation, manager, botId);
@@ -985,7 +1031,7 @@ function revalidateOperation(operation: RoutineRequestOperation, manager: Routin
     }
   }
   if (schedule?.type === "once" && schedule.at <= now) {
-    throw new RoutineRequestError("That one-time schedule is now in the past. Ask the bot to propose a new time.", 409);
+    throw new RoutineRequestError("That one-time schedule is now in the past. Ask the bot to propose a new time.", 409, { terminal: true });
   }
   if (schedule?.type === "interval") {
     const base = operation.action === "create"
@@ -1031,7 +1077,7 @@ export class RoutineRequestService {
   private readonly routines: RoutineManager;
   private readonly now: () => number;
   private readonly timeZone: () => string;
-  private readonly cloudReady?: () => Promise<{ ready: boolean; reason?: string }>;
+  private readonly cloudReady?: (botId: string) => Promise<{ ready: boolean; reason?: string }>;
   private readonly canPersist?: RoutineRequestServiceOptions["canPersist"];
   private readonly validateTarget?: RoutineRequestServiceOptions["validateTarget"];
   private readonly autoApply?: RoutineRequestServiceOptions["autoApply"];
@@ -1071,7 +1117,7 @@ export class RoutineRequestService {
       const refusal = this.validateTarget(botId, operation.forBot);
       if (refusal) throw new RoutineRequestError(refusal, 403);
     }
-    await this.requireCloudReadiness(operation);
+    await this.requireCloudReadiness(operation, botId);
     // The readiness probe is asynchronous. Another request can edit or
     // delete the routine while it is in flight, so re-check the captured
     // revision before rendering and persisting the confirmation snapshot.
@@ -1151,13 +1197,16 @@ export class RoutineRequestService {
     throw new RoutineRequestError(result.state === "invalid" ? result.error : "The routine change could not be applied", result.state === "invalid" ? result.status : 409);
   }
 
-  private async requireCloudReadiness(operation: RoutineRequestOperation): Promise<void> {
+  private async requireCloudReadiness(operation: RoutineRequestOperation, proposerBotId: string): Promise<void> {
     if (!this.cloudReady || operation.action === "pause" || operation.action === "delete") return;
     const definition = effectiveDefinition(operation, this.routines);
     if (definition?.runOn !== "cloud") return;
     let readiness: { ready: boolean; reason?: string };
     try {
-      readiness = await this.cloudReady();
+      const targetBotId = operation.action === "create"
+        ? operation.forBot?.botId ?? proposerBotId
+        : this.routines.listRoutines().find(routine => routine.id === operation.routineId)?.botId ?? proposerBotId;
+      readiness = await this.cloudReady(targetBotId);
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error);
       throw new RoutineRequestError(`Could not verify cloud readiness: ${detail}`, 503);
@@ -1259,6 +1308,19 @@ export class RoutineRequestService {
           receipt.appliedAt,
         );
       }
+      // An expired card is settled terminal state, not a decision waiting on
+      // a slower click: the proposal it carried can never be confirmed as
+      // prepared, even when the routine moves back under it. The committed
+      // receipt above still recovers a write that already happened; nothing
+      // past this point can.
+      if (card.expired) {
+        return {
+          claimed: true,
+          state: "invalid",
+          error: "This routine request expired before it was confirmed. Ask for a fresh proposal.",
+          status: 409,
+        };
+      }
       if (args.behavior === "deny") {
         this.store.patchMessage(args.threadId, message.id, { card: { ...card, answered: "deny", held: undefined } });
         return { claimed: true, state: "denied" };
@@ -1266,15 +1328,19 @@ export class RoutineRequestService {
       revalidateOperation(payload.operation, this.routines, payload.botId, this.now());
       if (payload.operation.action === "create" && payload.operation.forBot && this.validateTarget) {
         const refusal = this.validateTarget(payload.botId, payload.operation.forBot);
-        if (refusal) throw new RoutineRequestError(refusal, 404);
+        if (refusal) throw new RoutineRequestError(refusal, 404, { terminal: true });
       }
       const resultId = this.apply(payload, message.id, fingerprint);
       return this.settleApplied(args.threadId, message.id, card, payload, resultId);
     } catch (error) {
       const status = error instanceof RoutineRequestError ? error.status : 400;
       const detail = error instanceof Error ? error.message : String(error);
+      // A terminal failure (the routine moved under the proposal) can never
+      // be confirmed as prepared: settle the card as expired with its
+      // options removed so it stops looking actionable.
+      const expired = error instanceof RoutineRequestError && error.terminal;
       this.store.patchMessage(args.threadId, message.id, {
-        card: { ...card, held: redactSecretsInText(detail).slice(0, 500) },
+        card: { ...card, ...(expired ? { expired: true, options: [] } : {}), held: redactSecretsInText(detail).slice(0, 500) },
       });
       return {
         claimed: true,

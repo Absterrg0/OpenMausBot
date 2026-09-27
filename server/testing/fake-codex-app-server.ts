@@ -6,7 +6,7 @@
 //
 //   FAKE_CODEX_MODE   happy (default) | approval | resume | stream | windows-command |
 //                     mcp-elicitation | mcp-app-approval | mcp-form | permissions-approval | question |
-//                     multi-question | empty-question | malformed-question | config-profile |
+//                     multi-question | mixed-question | empty-question | malformed-question | config-profile |
 //                     config-profile-unsupported | config-read-error | image |
 //                     logged-in-stdout | logged-out | unauthorized | late-request
 //   FAKE_CODEX_LAUNCH_CRASHES  die at turn/start (before ack) with transient stderr,
@@ -27,14 +27,27 @@
 //   FAKE_CODEX_ASK_HOLD        question modes: record the ask reply and hold the turn open, for
 //                              timeout tests that advance the clock
 //   FAKE_CODEX_DUMP   path to write {pid, argv, env, calls, decision} as JSON
+//   FAKE_CODEX_APPROVAL_REQUEST JSON {method, params} override in approval mode
 //   FAKE_CODEX_ACCOUNT_EMAIL  synthetic ChatGPT identity (default ada@example.test)
 //   FAKE_CODEX_ACCOUNT_MODE   chatgpt (default) | api-key | none | unsupported | error | hang
 //   FAKE_CODEX_RESUME_ERROR   JSON-RPC error object to reject thread/resume
 //   FAKE_CODEX_START_ERROR    JSON-RPC error object to reject thread/start
 //   FAKE_CODEX_RESTORED_USAGE report 100/50/10 tokens already used before turn/start, as a resumed thread can
+//   FAKE_CODEX_STEER_ERROR  JSON-RPC error object to reject turn/steer (queue fallback)
+//   FAKE_CODEX_STEER_ERROR_FILE  gate file path: reject turn/steer only while the file exists
+//   FAKE_CODEX_STEER_HANG  accept turn/steer and never answer (delivery happened, the
+//                          reply is lost — the driver must report indeterminate)
+//   FAKE_CODEX_INTERRUPT_SILENT  ignore turn/interrupt entirely (wedged server; driver must escalate)
+//   FAKE_CODEX_INTERRUPT_GRACE_MS  driver-side grace before escalating an interrupt (tests)
+//   FAKE_CODEX_ROOM_PLAN  plan path: each turn runs the scripted room agent
+//                         (room-handoff-agent.ts) against the mounted agents
+//                         MCP server and replies with its text
+//   FAKE_CODEX_COMPLETE_BEFORE_ACK  with FAKE_CODEX_ROOM_PLAN: stream the whole
+//                         turn, completion included, before acknowledging turn/start
 //
 // Keep this file dependency-free — it runs as a bare `node` subprocess.
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+
 
 const mode = process.env.FAKE_CODEX_MODE ?? "happy";
 
@@ -72,6 +85,8 @@ if (process.argv[2] === "login" && process.argv[3] === "status") {
   process.exit(0);
 }
 const calls: Array<{ method: string; params: unknown }> = [];
+let developerInstructions = "";
+let resumedThread: string | null = null;
 let decision: unknown = null;
 let experimentalApi = false;
 
@@ -91,6 +106,18 @@ const notify = (method: string, params: any) => out({
 // The response and restored usage notification may arrive in one stdout
 // chunk. Force that ordering for the baseline fixture instead of relying on
 // the OS to coalesce two writes under load.
+// Model the resolved policy returned by native start/resume, including fields
+// absent from the client's short sandbox selector.
+const resolvedSandbox = (params: Record<string, unknown>) => {
+  if (process.env.FAKE_CODEX_RESOLVED_SANDBOX) return JSON.parse(process.env.FAKE_CODEX_RESOLVED_SANDBOX);
+  if (params.sandbox === "danger-full-access") return { type: "dangerFullAccess" };
+  if (params.sandbox === "workspace-write") return {
+    type: "workspaceWrite", networkAccess: false, writableRoots: [],
+    excludeTmpdirEnvVar: false, excludeSlashTmp: false,
+  };
+  return { type: "readOnly" };
+};
+
 const threadReply = (response: unknown) => {
   if (!process.env.FAKE_CODEX_RESTORED_USAGE) return out(response);
   const restored = {
@@ -101,9 +128,41 @@ const threadReply = (response: unknown) => {
   process.stdout.write(`${JSON.stringify(response)}\n${JSON.stringify(restored)}\n`);
 };
 
+// Every call rewrites the whole dump, and it is large (it carries the entire
+// environment). A test reading it on a slow disk could catch the truncated
+// middle of that rewrite — Windows CI failed "Unexpected end of JSON input"
+// exactly there. Write it whole or not at all: a sibling temp file, then a
+// rename over the target, which is atomic on one filesystem.
+//
+// Inlined rather than imported from ../atomic.ts on purpose. This file is
+// dependency-free because tests copy it out of the repo — the browser PATH
+// test strips it to a plain .mjs in a temp bin dir and runs it as `codex` —
+// and a relative import dies there at ESM link time, taking the whole turn
+// with it (#1372 broke main exactly so). Windows may refuse the rename for a
+// few milliseconds while an indexer holds the just-written file; retry those
+// codes briefly, as atomic.ts does.
+const RENAME_RETRY_DELAYS_MS = [5, 10, 20, 40, 80];
+const RETRYABLE_RENAME_CODES = new Set(["EPERM", "EACCES", "EBUSY"]);
+const writeDumpAtomic = (path: string, contents: string): void => {
+  const tmp = `${path}.${process.pid}.${Date.now()}.tmp`;
+  writeFileSync(tmp, contents);
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      renameSync(tmp, path);
+      return;
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code ?? "";
+      if (!RETRYABLE_RENAME_CODES.has(code) || attempt >= RENAME_RETRY_DELAYS_MS.length) {
+        try { unlinkSync(tmp); } catch {}
+        throw error;
+      }
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, RENAME_RETRY_DELAYS_MS[attempt]);
+    }
+  }
+};
 const dump = () => {
   if (process.env.FAKE_CODEX_DUMP) {
-    writeFileSync(
+    writeDumpAtomic(
       process.env.FAKE_CODEX_DUMP,
       JSON.stringify({ pid: process.pid, argv: process.argv.slice(2), env: process.env, calls, decision }, null, 2),
     );
@@ -148,6 +207,31 @@ const finishTurn = () => {
     out({ jsonrpc: "2.0", id: 100, method: "execCommandApproval", params: { command: "echo too late" } });
     process.stdout.uncork();
   }
+};
+
+const playRoomPlanTurn = (msg: any, planPath: string) => {
+  const ack = () => out({ jsonrpc: "2.0", id: msg.id, result: { turn: { id: nativeTurnId } } });
+  const early = process.env.FAKE_CODEX_COMPLETE_BEFORE_ACK === "1";
+  const setting = (key: string) => {
+    const entry = process.argv.find((arg) => arg.startsWith(`mcp_servers.agents.${key}=`));
+    return entry ? JSON.parse(entry.slice(entry.indexOf("=") + 1)) : undefined;
+  };
+  const integration = {
+    command: setting("command"),
+    args: setting("args") ?? [],
+    env: Object.fromEntries((setting("env_vars") ?? []).map((key: string) => [key, process.env[key] ?? ""])),
+  };
+  const text = (msg.params?.input ?? []).filter((item: any) => item?.type === "text").map((item: any) => item.text).join("\n");
+  if (!early) ack();
+  // Loaded only in this mode: other tests run a copy of this file on its own.
+  void import("./room-handoff-agent.ts").then(({ runRoomHandoffAgent }) => runRoomHandoffAgent(process.argv.slice(2), planPath, { message: { content: text } },
+    { integration, system: developerInstructions, evidence: { resumedThread } }))
+    .then((reply) => {
+      notify("item/completed", { item: { id: "m1", type: "agentMessage", text: reply } });
+      notify("turn/completed", { turn: { status: "completed" } });
+    })
+    .catch((error) => notify("turn/completed", { turn: { status: "failed", error: { message: String(error) } } }))
+    .finally(() => { if (early) ack(); });
 };
 
 let buf = "";
@@ -270,13 +354,15 @@ process.stdin.on("data", (chunk) => {
         break;
       case "thread/resume":
         dump();
+        developerInstructions = msg.params?.developerInstructions ?? "";
+        resumedThread = msg.params?.threadId ?? null;
         if (process.env.FAKE_CODEX_RESUME_ERROR) {
           out({ jsonrpc: "2.0", id: msg.id, error: JSON.parse(process.env.FAKE_CODEX_RESUME_ERROR) });
         } else if (msg.params?.permissions && (!experimentalApi || mode === "config-profile-unsupported")) {
           out({ jsonrpc: "2.0", id: msg.id, error: { code: -32602, message: "experimental API required for permissions" } });
         } else if (mode === "resume" || mode === "helper-events" || mode === "instructions-unsupported" || mode === "config-profile" || mode === "config-profile-unsupported" ||
             (mode === "resume-then-missing" && !existsSync(process.env.FAKE_CODEX_STATE ?? ""))) {
-          threadReply({ jsonrpc: "2.0", id: msg.id, result: { thread: { id: msg.params?.threadId } } });
+          threadReply({ jsonrpc: "2.0", id: msg.id, result: { thread: { id: msg.params?.threadId }, sandbox: resolvedSandbox(msg.params ?? {}) } });
         } else {
           out({ jsonrpc: "2.0", id: msg.id, error: { code: -32600, message: `no rollout found for thread id ${msg.params?.threadId}` } });
         }
@@ -289,14 +375,43 @@ process.stdin.on("data", (chunk) => {
         }
         out({ jsonrpc: "2.0", id: msg.id, result: {} });
         break;
+      case "turn/steer": {
+        dump();
+        const refused = (message: string) =>
+          out({ jsonrpc: "2.0", id: msg.id, error: { code: -32000, message } });
+        if (process.env.FAKE_CODEX_STEER_ERROR) {
+          out({ jsonrpc: "2.0", id: msg.id, error: JSON.parse(process.env.FAKE_CODEX_STEER_ERROR) });
+          break;
+        }
+        if (process.env.FAKE_CODEX_STEER_ERROR_FILE && existsSync(process.env.FAKE_CODEX_STEER_ERROR_FILE)) {
+          refused("active turn is not steerable");
+          break;
+        }
+        if (process.env.FAKE_CODEX_STEER_HANG) break; // accepted, never answered
+        if (msg.params?.expectedTurnId !== nativeTurnId) {
+          refused("active turn is not steerable");
+          break;
+        }
+        out({ jsonrpc: "2.0", id: msg.id, result: { turnId: nativeTurnId } });
+        break;
+      }
+      case "turn/interrupt":
+        dump();
+        // SILENT models a server that accepts stdin but never acts: the
+        // driver must escalate to a kill after its grace window.
+        if (process.env.FAKE_CODEX_INTERRUPT_SILENT) break;
+        out({ jsonrpc: "2.0", id: msg.id, result: {} });
+        notify("turn/completed", { turn: { status: "interrupted" } });
+        break;
       case "thread/start":
         dump();
+        developerInstructions = msg.params?.developerInstructions ?? "";
         if (process.env.FAKE_CODEX_START_ERROR) {
           out({ jsonrpc: "2.0", id: msg.id, error: JSON.parse(process.env.FAKE_CODEX_START_ERROR) });
         } else if (msg.params?.permissions && (!experimentalApi || mode === "config-profile-unsupported")) {
           out({ jsonrpc: "2.0", id: msg.id, error: { code: -32602, message: "experimental API required for permissions" } });
         } else {
-          threadReply({ jsonrpc: "2.0", id: msg.id, result: { thread: { id: "codex-thread-1" }, model: "fake-codex-model" } });
+          threadReply({ jsonrpc: "2.0", id: msg.id, result: { thread: { id: "codex-thread-1" }, model: "fake-codex-model", sandbox: resolvedSandbox(msg.params ?? {}) } });
         }
         break;
       case "turn/start": {
@@ -438,6 +553,10 @@ process.stdin.on("data", (chunk) => {
           });
           break;
         }
+        if (process.env.FAKE_CODEX_ROOM_PLAN) {
+          playRoomPlanTurn(msg, process.env.FAKE_CODEX_ROOM_PLAN);
+          break;
+        }
         if (mode === "early-turn-events") finishTurn();
         out({ jsonrpc: "2.0", id: msg.id, result: { turn: { id: nativeTurnId } } });
         if (mode === "early-turn-events") break;
@@ -545,8 +664,15 @@ process.stdin.on("data", (chunk) => {
               },
             },
           });
-        } else if (mode === "question" || mode === "multi-question" || mode === "empty-question" || mode === "malformed-question") {
-          // one card per ask: a single question vs a bundled pair vs none vs a malformed shape
+        } else if (
+          mode === "question" ||
+          mode === "multi-question" ||
+          mode === "mixed-question" ||
+          mode === "empty-question" ||
+          mode === "malformed-question"
+        ) {
+          // one card per ask: a single question vs a bundled pair vs a
+          // broken-plus-valid pair vs none vs a malformed shape
           out({
             jsonrpc: "2.0",
             id: 101,
@@ -560,6 +686,11 @@ process.stdin.on("data", (chunk) => {
                     question: "Ship today?",
                     options: ["Yes", "No", "Maybe", "Later", "Soon", "Never"].map((label) => ({ label })),
                   }]
+                : mode === "mixed-question"
+                ? [
+                    { id: "q-broken", question: "   ", options: [{ label: "Broken choice" }] },
+                    { id: "q-review", question: "Who reviews?", options: [{ label: "Ada" }, { label: "Lin" }] },
+                  ]
                 : mode === "empty-question"
                 ? []
                 : [
@@ -570,7 +701,10 @@ process.stdin.on("data", (chunk) => {
           });
         } else if (mode === "approval" || mode === "windows-command") {
           const approvalCommand = mode === "windows-command" ? command : "rm -rf scratch";
-          out({ jsonrpc: "2.0", id: 100, method: "execCommandApproval", params: { command: approvalCommand } });
+          const approval = process.env.FAKE_CODEX_APPROVAL_REQUEST
+            ? JSON.parse(process.env.FAKE_CODEX_APPROVAL_REQUEST)
+            : { method: "execCommandApproval", params: { command: approvalCommand } };
+          out({ jsonrpc: "2.0", id: 100, ...approval });
           // turn continues from the approval response handler above
         } else {
           finishTurn();
