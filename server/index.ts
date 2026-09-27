@@ -103,7 +103,7 @@ import { groupTurnCwd } from "./room-cwd.ts";
 import { RoomTurnDeadline, RoomTurnStallRegistry, roomTurnTimeoutMessage } from "./room-turn-timeout.ts";
 import * as boat from "./boat.ts";
 import { TeamComputers, teamComputerAssignment, teamComputerCreate, teamComputerOwner, type TeamComputerRecord } from "./team-computers.ts";
-import { isEffortLevel, type BotVisibility, type CardAnswerer, type ResolvedSender, type WireBot, type WireGroup, type WireTask } from "../shared/wire.ts";
+import { isEffortLevel, type BotVisibility, type CardAnswerer, type ResolvedSender, type SteerQueueReason, type WireBot, type WireGroup, type WireTask } from "../shared/wire.ts";
 import type { TeamComputersPayload } from "../shared/team-computer.ts";
 import { boatCreateRecoverySnapshot, retireDeletedBoatCreate } from "./boat-create-idempotency.ts";
 import { boatDeletionSnapshot } from "./boat-delete-journal.ts";
@@ -8492,6 +8492,180 @@ async function startOrQueueDirectMessage(botId: string, threadId: string, text: 
   }
   const message = await startTurn(botId, text, { threadId, replyTo, sendId, sender, trigger });
   return { ok: true as const, threadId, message };
+}
+
+/** What a person's direct message became: a line in the transcript (a new
+ * turn, or words steered into the running one), or a place in the queue. */
+type DirectSendReceipt =
+  | { ok: true; threadId: string; message: Message; steered?: true }
+  | { ok: true; queued: true; queueId: string; threadId: string; reason?: SteerQueueReason };
+
+/** Refusal from acceptDirectSend: the route turns it into its HTTP answer. */
+class DirectSendRefused extends Error {
+  readonly status: number;
+  readonly body: Record<string, unknown>;
+  constructor(status: number, body: Record<string, unknown>) {
+    super(typeof body.error === "string" ? body.error : "send refused");
+    this.status = status;
+    this.body = body;
+  }
+}
+
+/** The refusals a direct send meets before it is sequenced, or null. */
+function directSendRefusal(botId: string, threadId: string): DirectSendRefused | null {
+  // The send is acknowledged before the turn starts, so a workspace at its
+  // spend limit is refused here, where the person can see it.
+  try {
+    assertWithinBudget(cfg, DATA_DIR);
+  } catch (error) {
+    return new DirectSendRefused(409, { error: error instanceof Error ? error.message : String(error), code: "spend_cap" });
+  }
+  if (!store.taskByThread(botId, threadId)) {
+    return new DirectSendRefused(409, { error: "the bot switched tasks before it could receive the message" });
+  }
+  return null;
+}
+
+/** The one path a person's direct message takes into a bot turn: spend cap,
+ * idempotency, steer into a running turn, queue, or start. Used by
+ * POST /api/bots/:id/messages and its guarded variant.
+ * `guardedStart` is POST /api/bots/:id/messages/guarded's own start, in
+ * place of steer, queue or start: it checks its preconditions against the
+ * task as it stands, then starts a turn or refuses. */
+async function acceptDirectSend(
+  input: {
+    botId: string;
+    threadId: string;
+    text: string;
+    sendId?: string;
+    replyTo?: Message;
+    sender?: ResolvedSender;
+    trigger: UsageTrigger;
+    /** A person is proven present (a paired session, or the desktop's owner
+     * capability): steering their words in clears the unattended mark. */
+    personPresent: boolean;
+  },
+  guardedStart?: (currentAtStart: BotRecord) => Promise<DirectSendReceipt>,
+): Promise<DirectSendReceipt> {
+  const { botId, threadId, text, sendId, replyTo, sender, trigger, personPresent } = input;
+  const refused = directSendRefusal(botId, threadId);
+  if (refused) throw refused;
+  return sendSequencer.run(
+    sendId ? `bot:${botId}:${threadId}:${sendId}` : undefined,
+    sendFingerprint(text, replyTo?.id),
+    async (): Promise<DirectSendReceipt> => {
+      if (sendId) {
+        if (cancelledChatFollowup("bot", botId, threadId, sendId)) {
+          throw Object.assign(new Error("this queued sendId was cancelled; send a new message to try again"), { status: 409 });
+        }
+        const accepted = acceptedSendMatch(store.messagesFor(threadId), sendId, text, replyTo?.id);
+        if (accepted.kind === "conflict") {
+          throw Object.assign(new Error("sendId already belongs to another message"), { status: 409 });
+        }
+        if (accepted.kind === "match") {
+          const canonical = {
+            ok: true as const,
+            threadId,
+            message: accepted.message,
+          };
+          return accepted.message.steered
+            ? { ...canonical, steered: true as const }
+            : canonical;
+        }
+        const queued = queuedSteeredMessage(botId, threadId, sendId);
+        if (queued) {
+          if (queued.text !== text || queued.replyToId !== replyTo?.id) {
+            throw Object.assign(new Error("sendId already belongs to another message"), { status: 409 });
+          }
+          return { ok: true as const, queued: true as const, queueId: queued.id, threadId, reason: queued.reason };
+        }
+      }
+
+      const currentAtStart = store.projectBotForTask(botId, threadId);
+      if (!currentAtStart) throw Object.assign(new Error("no such bot"), { status: 404 });
+      if (!store.taskByThread(currentAtStart.id, threadId)) {
+        throw Object.assign(new Error("the target task no longer exists"), { status: 409 });
+      }
+
+      if (guardedStart) return guardedStart(currentAtStart);
+
+      // Claude can accept the message inside its live turn. If the write
+      // loses a race with turn settlement, or the engine cannot steer, the
+      // existing server-side queue records it atomically for the next turn.
+      if (currentAtStart.busy) {
+        const instance = runningTurnInstance(currentAtStart, threadId);
+        let steered: SteerOutcome = "refused";
+        // A live text steer has no image side channel. Keep an attachment
+        // message intact for the next ordinary turn, where central image
+        // admission can hand it to the provider natively.
+        const carriesImages = extractTurnImages(text).images.length > 0;
+        const steerTarget = handoffs.current(threadId);
+        const busyAdmission = admit("direct-busy", {
+          carriesImages,
+          pendingComputerSelection: Boolean(computerSelectionTurns.get(threadId)?.selected),
+          engineCanSteer: Boolean(instance?.adapter.capabilities.queueing && instance.adapter.steer),
+        });
+        // steer was offered only when a live instance could take it;
+        // the second check carries that fact to the type system.
+        if (busyAdmission.action === "steer" && instance?.adapter.steer) {
+          steered = await instance.adapter
+            .steer(threadId, promptWithReply(text, replyTo, cfg.profile?.name?.trim() || "User"))
+            .catch((): SteerOutcome => "indeterminate");
+        }
+        // steer() is awaited adapter work. The turn can settle, the task can
+        // switch, or the whole bot can be deleted before its acknowledgement
+        // arrives. Re-read every ownership invariant before appending even a
+        // successful steer; otherwise that late acknowledgement writes a user
+        // message into a task the bot no longer owns. A conflict leaves the
+        // text in the client's composer/outbox to resend deliberately.
+        const current = store.projectBotForTask(botId, threadId);
+        if (!current) throw Object.assign(new Error("no such bot"), { status: 404 });
+        if (!store.taskByThread(botId, threadId)) {
+          throw Object.assign(new Error("the target task no longer exists"), { status: 409 });
+        }
+        const delivered = steered !== "refused";
+        if (delivered) {
+          if (steered === "steered" && !current.busy) {
+            throw Object.assign(
+              new Error("the running turn ended before the steered message could be recorded"),
+              { status: 409 },
+            );
+          }
+          // "indeterminate" falls through to the same record: the words
+          // may already be folded into a turn whose acknowledgement was
+          // lost, and handing them back for a resend could run them
+          // twice. Recording them once is the honest outcome.
+          // A person steering a webhook turn is present, and auto mode may
+          // follow them again; words that do not prove a person never lift it.
+          if (personPresent) clearUnattended(threadId);
+          const message = store.appendMessage(threadId, {
+            role: "user",
+            kind: "text",
+            text,
+            replyToId: replyTo?.id,
+            sendId,
+            steered: true,
+            sender,
+          });
+          // Offered to the next turn again unless the person stops this one.
+          handoffs.steered(threadId, steerTarget, instance?.instanceId, message.id);
+          return { ok: true as const, steered: true as const, threadId, message };
+        }
+        if (!current.busy) {
+          return startOrQueueDirectMessage(botId, threadId, text, replyTo, sendId, sender, trigger);
+        }
+        const queued = queueSteeredMessage(current.id, threadId, text, {
+          replyToId: replyTo?.id,
+          sendId,
+          prompt: promptWithReply(text, replyTo, cfg.profile?.name?.trim() || "User"),
+          sender,
+          trigger,
+        });
+        return { ok: true as const, queued: true as const, queueId: queued.id, threadId };
+      }
+      return startOrQueueDirectMessage(botId, threadId, text, replyTo, sendId, sender, trigger);
+    },
+  );
 }
 
 /** How many start_thread calls one turn may make. Same spirit as the
@@ -20635,56 +20809,16 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       const trigger: UsageTrigger = onBehalfOf
         ? { kind: "user", ...(onBehalfOf.email ? { email: onBehalfOf.email } : {}), ...(onBehalfOf.name ? { label: onBehalfOf.name } : {}) }
         : usageTriggerFor(auth);
-      // The send is acknowledged before the turn starts, so a workspace at its
-      // spend limit is refused here, where the person can see it.
-      try {
-        assertWithinBudget(cfg, DATA_DIR);
-      } catch (error) {
-        return json(res, 409, { error: error instanceof Error ? error.message : String(error), code: "spend_cap" });
-      }
-      if (!store.taskByThread(bot.id, threadId)) {
-        return json(res, 409, { error: "the bot switched tasks before it could receive the message" });
-      }
+      // The spend cap and a task that is gone answer before a malformed
+      // sendId or reply target does. acceptDirectSend checks both again for
+      // callers that do not come through this route; nothing awaits between.
+      const refused = directSendRefusal(bot.id, threadId);
+      if (refused) return json(res, refused.status, refused.body);
       const sendId = parseSendId(body.sendId);
       const replyTo = resolveReplyTarget(threadId, body.replyToId);
-      const receipt = await sendSequencer.run(
-        sendId ? `bot:${bot.id}:${threadId}:${sendId}` : undefined,
-        sendFingerprint(text, replyTo?.id),
-        async () => {
-          if (sendId) {
-            if (cancelledChatFollowup("bot", bot.id, threadId, sendId)) {
-              throw Object.assign(new Error("this queued sendId was cancelled; send a new message to try again"), { status: 409 });
-            }
-            const accepted = acceptedSendMatch(store.messagesFor(threadId), sendId, text, replyTo?.id);
-            if (accepted.kind === "conflict") {
-              throw Object.assign(new Error("sendId already belongs to another message"), { status: 409 });
-            }
-            if (accepted.kind === "match") {
-              const canonical = {
-                ok: true as const,
-                threadId,
-                message: accepted.message,
-              };
-              return accepted.message.steered
-                ? { ...canonical, steered: true as const }
-                : canonical;
-            }
-            const queued = queuedSteeredMessage(bot.id, threadId, sendId);
-            if (queued) {
-              if (queued.text !== text || queued.replyToId !== replyTo?.id) {
-                throw Object.assign(new Error("sendId already belongs to another message"), { status: 409 });
-              }
-              return { ok: true as const, queued: true as const, queueId: queued.id, threadId, reason: queued.reason };
-            }
-          }
-
-          const currentAtStart = store.projectBotForTask(bot.id, threadId);
-          if (!currentAtStart) throw Object.assign(new Error("no such bot"), { status: 404 });
-          if (!store.taskByThread(currentAtStart.id, threadId)) {
-            throw Object.assign(new Error("the target task no longer exists"), { status: 409 });
-          }
-
-          if (guarded) {
+      const sender = messageSender(auth);
+      const guardedStart = guarded
+        ? async (currentAtStart: BotRecord): Promise<DirectSendReceipt> => {
             // There is no await between these checks and startTurn's
             // synchronous transcript append / runtime reservation. In
             // particular, never steer or enqueue under stale permissions.
@@ -20706,94 +20840,28 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
             if (guardedAdmission.action === "refuse") {
               throw Object.assign(new Error("wait for a free thread slot before retrying this message"), { status: 409, code: "guarded_busy" });
             }
-            const message = await startTurn(bot.id, text, { threadId, replyTo, sendId, sender: messageSender(auth), trigger });
+            const message = await startTurn(bot.id, text, { threadId, replyTo, sendId, sender, trigger });
             return { ok: true as const, threadId, message };
           }
-
-          // Claude can accept the message inside its live turn. If the write
-          // loses a race with turn settlement, or the engine cannot steer, the
-          // existing server-side queue records it atomically for the next turn.
-          if (currentAtStart.busy) {
-            const instance = runningTurnInstance(currentAtStart, threadId);
-            let steered: SteerOutcome = "refused";
-            // A live text steer has no image side channel. Keep an attachment
-            // message intact for the next ordinary turn, where central image
-            // admission can hand it to the provider natively.
-            const carriesImages = extractTurnImages(text).images.length > 0;
-            const steerTarget = handoffs.current(threadId);
-            const busyAdmission = admit("direct-busy", {
-              carriesImages,
-              pendingComputerSelection: Boolean(computerSelectionTurns.get(threadId)?.selected),
-              engineCanSteer: Boolean(instance?.adapter.capabilities.queueing && instance.adapter.steer),
-            });
-            // steer was offered only when a live instance could take it;
-            // the second check carries that fact to the type system.
-            if (busyAdmission.action === "steer" && instance?.adapter.steer) {
-              steered = await instance.adapter
-                .steer(threadId, promptWithReply(text, replyTo, cfg.profile?.name?.trim() || "User"))
-                .catch((): SteerOutcome => "indeterminate");
-            }
-            // steer() is awaited adapter work. The turn can settle, the task can
-            // switch, or the whole bot can be deleted before its acknowledgement
-            // arrives. Re-read every ownership invariant before appending even a
-            // successful steer; otherwise that late acknowledgement writes a user
-            // message into a task the bot no longer owns. A conflict leaves the
-            // text in the client's composer/outbox to resend deliberately.
-            const current = store.projectBotForTask(bot.id, threadId);
-            if (!current) throw Object.assign(new Error("no such bot"), { status: 404 });
-            if (!store.taskByThread(bot.id, threadId)) {
-              throw Object.assign(new Error("the target task no longer exists"), { status: 409 });
-            }
-            const delivered = steered !== "refused";
-            if (delivered) {
-              if (steered === "steered" && !current.busy) {
-                throw Object.assign(
-                  new Error("the running turn ended before the steered message could be recorded"),
-                  { status: 409 },
-                );
-              }
-              // "indeterminate" falls through to the same record: the words
-              // may already be folded into a turn whose acknowledgement was
-              // lost, and handing them back for a resend could run them
-              // twice. Recording them once is the honest outcome.
-              // A person steering a webhook turn is present, and auto mode may
-              // follow them again. But this route is also reachable from the
-              // bot's own shell on a headless server (loopback is the owner
-              // there), and "continue" typed by the turn itself must not be
-              // the thing that lifts the block written against it — so only
-              // a request that proves a person (a paired session, or the
-              // desktop's owner capability, which every mutation there has
-              // already shown) clears the mark.
-              if (auth.kind === "session" || DESKTOP_MANAGED) clearUnattended(threadId);
-              const message = store.appendMessage(threadId, {
-                role: "user",
-                kind: "text",
-                text,
-                replyToId: replyTo?.id,
-                sendId,
-                steered: true,
-                sender: messageSender(auth),
-              });
-              // Offered to the next turn again unless the person stops this one.
-              handoffs.steered(threadId, steerTarget, instance?.instanceId, message.id);
-              return { ok: true as const, steered: true as const, threadId, message };
-            }
-            if (!current.busy) {
-              return startOrQueueDirectMessage(bot.id, threadId, text, replyTo, sendId, messageSender(auth), trigger);
-            }
-            const queued = queueSteeredMessage(current.id, threadId, text, {
-              replyToId: replyTo?.id,
-              sendId,
-              prompt: promptWithReply(text, replyTo, cfg.profile?.name?.trim() || "User"),
-              sender: messageSender(auth),
-              trigger,
-            });
-            return { ok: true as const, queued: true as const, queueId: queued.id, threadId };
-          }
-          return startOrQueueDirectMessage(bot.id, threadId, text, replyTo, sendId, messageSender(auth), trigger);
-        },
-      );
-      return json(res, 202, receipt);
+        : undefined;
+      try {
+        const receipt = await acceptDirectSend({
+          botId: bot.id, threadId, text, sendId, replyTo, sender, trigger,
+          // A person steering a webhook turn is present, and auto mode may
+          // follow them again. But this route is also reachable from the
+          // bot's own shell on a headless server (loopback is the owner
+          // there), and "continue" typed by the turn itself must not be the
+          // thing that lifts the block written against it — so only a
+          // request that proves a person (a paired session, or the desktop's
+          // owner capability, which every mutation there has already shown)
+          // clears the mark.
+          personPresent: auth.kind === "session" || DESKTOP_MANAGED,
+        }, guardedStart);
+        return json(res, 202, receipt);
+      } catch (error) {
+        if (error instanceof DirectSendRefused) return json(res, error.status, error.body);
+        throw error;
+      }
     }
 
     m = path.match(/^\/api\/bots\/([\w-]+)\/queue\/([\w-]+)$/);
