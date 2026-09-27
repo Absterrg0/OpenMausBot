@@ -3444,6 +3444,7 @@ describe("harness HTTP API", () => {
     const requestId = randomUUID();
     const section = `Queue machine ${requestId.slice(0, 8)}`;
     let botId = "";
+    let holderThread = "";
     const waiterThreads: string[] = [];
     try {
       expect((await api("PUT", "/api/config", { box: { token: "box_route" } })).status).toBe(200);
@@ -3457,7 +3458,7 @@ describe("harness HTTP API", () => {
       // Stop must name the holder's thread: each task message moves the
       // bot's active-thread pointer, so a bare interrupt would hit the
       // newest waiter instead of the turn holding the desktop.
-      const holderThread = bot.threadId;
+      holderThread = bot.threadId;
       managedBoxCreateMode = "success";
       managedBoxCreateId = "bx_queuedsk";
       managedBoxCreateName = "";
@@ -3516,6 +3517,7 @@ describe("harness HTTP API", () => {
       await expect.poll(promptsOnBox, { timeout: 10_000 }).toBe(3);
       expect(String(boxPromptBodies.slice(promptBaseline).at(-1)?.prompt)).toContain("arrival 2 of the queue");
     } finally {
+      if (holderThread) await api("POST", `/api/bots/${botId}/interrupt`, { threadId: holderThread }).catch(() => undefined);
       for (const threadId of waiterThreads) await api("POST", `/api/bots/${botId}/interrupt`, { threadId }).catch(() => undefined);
       await api("POST", `/api/bots/${botId}/interrupt`, {}).catch(() => undefined);
       await api("POST", `/api/team-computers/${requestId}/control`, { action: "release" }).catch(() => undefined);
