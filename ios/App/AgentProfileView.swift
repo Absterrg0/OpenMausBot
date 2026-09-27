@@ -604,6 +604,13 @@ struct AgentProfileView: View {
             session.actionError = "Pick an agent voice or configure a workspace default on your computer first."
             return
         }
+        // The preview reconfigures and later deactivates the shared audio
+        // session, which would cut a Live call's audio. Same arbiter as
+        // voice notes: refused while an input owner holds the session.
+        guard VoiceNoteCenter.shared.beginPlaybackSession() else {
+            session.actionError = String(localized: "Voice previews are paused during a Live call.")
+            return
+        }
         busy = true
         defer { busy = false }
         guard let data = await session.previewVoice(voice, for: current) else { return }

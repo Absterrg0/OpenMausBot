@@ -9,13 +9,13 @@ import SwiftUI
 /// holder is weak: a bubble scrolled out of the transcript releases itself.
 ///
 /// The session this coordinates is process-wide, so the arbiter is too:
-/// dictation and Walkie file through the same instance before they
-/// reconfigure the shared session for recording.
+/// dictation, Walkie and Live calls file through the same instance before
+/// they reconfigure the shared session for recording.
 @MainActor
 final class VoiceNoteCenter {
     static let shared = VoiceNoteCenter()
 
-    enum InputOwner: String { case dictation, walkie }
+    enum InputOwner: String { case dictation, walkie, liveCall }
 
     private weak var current: VoiceNotePlayer?
     private var inputOwners: Set<InputOwner> = []
@@ -192,10 +192,17 @@ struct VoiceNoteBubble: View {
     var tint: Color = .accentColor
 
     @EnvironmentObject private var session: Session
+    @EnvironmentObject private var liveCall: LiveCallController
     @StateObject private var player = VoiceNotePlayer()
     @State private var loading = true
     @State private var loadFailed = false
     @State private var attempt = 0
+
+    /// This phone is on a Live call, which holds the audio: a note cannot
+    /// play until it ends (VoiceNoteCenter refuses it), and the bubble says
+    /// so rather than ignore the tap. A note still playing as the call
+    /// starts can be paused; the call pauses it anyway once it has the mic.
+    private var heldByCall: Bool { liveCall.machine.isActive && !player.isPlaying }
 
     /// The server's estimate until the clip loads its own metadata.
     private var duration: Double? {
@@ -233,7 +240,7 @@ struct VoiceNoteBubble: View {
                     .background(Circle().fill(tint))
             }
             .buttonStyle(.plain)
-            .disabled(loading || loadFailed || duration == nil)
+            .disabled(loading || loadFailed || duration == nil || heldByCall)
             .accessibilityIdentifier("voice-note-play")
             .accessibilityLabel(player.isPlaying ? Text("Pause voice note") : Text("Play voice note"))
 
@@ -243,6 +250,12 @@ struct VoiceNoteBubble: View {
                     .frame(maxWidth: .infinity)
             } else if loadFailed {
                 failure
+            } else if heldByCall {
+                Text("Voice notes can’t play during a Live call.")
+                    .font(.system(size: 12))
+                    .foregroundStyle(Color.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .accessibilityIdentifier("voice-note-blocked")
             } else {
                 Slider(value: timeBinding, in: 0...Swift.max(duration ?? 1, 0.1))
                     .tint(tint)
