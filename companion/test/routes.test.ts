@@ -94,6 +94,10 @@ describe("what the app may do", () => {
     ["GET", "/api/tts/voices"],
     ["POST", "/api/tts/prepare"],
     ["POST", "/api/tts/speak"],
+    ["POST", "/api/live/session"],
+    ["POST", "/api/live/call/end"],
+    ["GET", "/api/live/call"],
+    ["PATCH", "/api/live/settings"],
     ["GET", "/api/routines"],
     ["POST", "/api/routines"],
     ["PATCH", "/api/routines/routine_1"],
@@ -276,6 +280,18 @@ describe("what it may not", () => {
     ] as Array<[string, string]>) {
       expect(allowed(method, path), `${method} ${path}`).toBe(false);
     }
+  });
+
+  // A phone may start, end and follow a Live call and change its voice and
+  // timing, never the OpenAI key it runs on, and nothing else under /api/live.
+  it("allows only the four Live call routes, never the key", () => {
+    expect(ask("POST", "/api/live/summary")?.status).toBe(404);
+    expect(ask("PUT", "/api/config")?.status).toBe(403);
+    expect(allowed("PUT", "/api/live/settings")).toBe(false);
+    expect(allowed("GET", "/api/live/settings")).toBe(false);
+    expect(allowed("GET", "/api/live/session")).toBe(false);
+    expect(allowed("POST", "/api/live/call")).toBe(false);
+    expect(allowed("POST", "/api/live/call/end/extra")).toBe(false);
   });
 
   it("is not fooled by a prefix", () => {

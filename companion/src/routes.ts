@@ -191,6 +191,13 @@ const ALLOWED: ReadonlyArray<{ method: string; path: RegExp }> = [
   { method: "POST", path: /^\/api\/tts\/prepare$/ },
   { method: "POST", path: /^\/api\/tts\/speak$/ },
 
+  // Live calls: the phone holds its own WebRTC audio to OpenAI; the Mac
+  // creates the session (the key never leaves it) and runs the call.
+  { method: "POST", path: /^\/api\/live\/session$/ },
+  { method: "POST", path: /^\/api\/live\/call\/end$/ },
+  { method: "GET", path: /^\/api\/live\/call$/ },
+  { method: "PATCH", path: /^\/api\/live\/settings$/ },
+
   // Routines create ordinary tasks using an existing agent configuration.
   // Webhook management remains explicitly denied below.
   { method: "GET", path: /^\/api\/routines$/ },
