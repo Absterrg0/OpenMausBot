@@ -13,7 +13,7 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import type { BotVisibility, CloudBackend, ConnectorToolGrant, EffortLevel, InstalledPackageMetadata, ServerFrame, GroupThreadUsage, SteerQueueReason } from "../../shared/wire";
+import type { BotVisibility, CardAnswerer, CloudBackend, ConnectorToolGrant, EffortLevel, InstalledPackageMetadata, LiveCallState, LiveSettings, ServerFrame, GroupThreadUsage, SteerQueueReason } from "../../shared/wire";
 import type { TurnDigest } from "../../shared/digest";
 import type { ModelVariantOption, RuntimeEvent } from "../../shared/runtime-events";
 import type { MausColor, MausMotion } from "@/lib/mascot";
@@ -83,6 +83,8 @@ export interface OptionCardData {
   /** The words an answered question card was answered with — `answered`
    * only holds the behavior once the server settles a live ask. */
   answeredText?: string;
+  /** Who settled the card; `via: "call"` when it was decided by voice on a Live call. */
+  answeredBy?: CardAnswerer;
   dismissed?: boolean;
   /** Present when this card is a live provider ask (approval/question). */
   requestId?: string;
@@ -172,8 +174,9 @@ export interface Message {
   tool?: { name: string; ok?: boolean; spoken?: string; setup?: boolean; claudeUpdate?: boolean; summary?: string; input?: string; output?: string ; itemId?: string; outputPath?: string; fullResult?: boolean };
   /** user messages sent into a running turn — the model saw it mid-turn */
   steered?: boolean;
-  /** a user message that arrived through the server's API, not typed here */
-  via?: "api";
+  /** a user message that did not come from typing here: through the
+   * server's API, or spoken during a Live call. */
+  via?: "api" | "call";
   /** Provider turn that produced this message. */
   turnId?: string;
   /** Last assistant text item from a settled provider turn. */
@@ -651,6 +654,8 @@ export interface ConfigStatus {
     enabled: boolean;
     jobs: { roomRouting: boolean };
   };
+  /** Live calls (OpenAI GPT-Live): configured-or-not, never the key. */
+  live?: LiveSettings;
   /** Shared write-only credential for on-demand GPT Image avatars. */
   imageGen?: {
     configured: boolean;
@@ -717,7 +722,7 @@ export interface BrowserProfile {
 // Settings shows (a saved key's Test button used to vanish that way).
 export type ConfigStatusFrame = Pick<
   ConfigStatus,
-  "xai" | "mistral" | "anthropic" | "openai" | "openrouter" | "openaiCompat" | "fleet" | "composio" | "box" | "vps" | "rooms" | "threads" | "automaticRecovery" | "localVm" | "opencodeGo" | "tts" | "decider" | "imageGen" | "profile" | "language" | "features" | "onboarding" | "browserEngine" | "browserProfiles" | "edition" | "budgets" | "billing" | "managedPolicy" | "cloudHome"
+  "xai" | "mistral" | "anthropic" | "openai" | "openrouter" | "openaiCompat" | "fleet" | "composio" | "box" | "vps" | "rooms" | "threads" | "automaticRecovery" | "localVm" | "opencodeGo" | "tts" | "decider" | "imageGen" | "live" | "profile" | "language" | "features" | "onboarding" | "browserEngine" | "browserProfiles" | "edition" | "budgets" | "billing" | "managedPolicy" | "cloudHome"
 >;
 
 export function configStatusFromFrame(frame: ConfigStatusFrame): ConfigStatus {
@@ -740,6 +745,7 @@ export function configStatusFromFrame(frame: ConfigStatusFrame): ConfigStatus {
     tts: frame.tts,
     decider: frame.decider,
     imageGen: frame.imageGen,
+    live: frame.live,
     profile: frame.profile,
     language: frame.language,
     features: frame.features,
@@ -895,6 +901,13 @@ export interface AppState {
   /** Session discoveries stay with their conversation and never enter persisted settings. */
   modelVariantSessions: Record<string, ModelVariantSession>;
   config: ConfigStatus | null;
+  /** The Live call the harness is running, including a call that has just
+   * ended; null when no call is known. Follows `live.call` SSE frames and
+   * the initial `/api/live/call` snapshot. */
+  liveCall: LiveCallState | null;
+  /** Counts the `live.call` frames folded in, so a `/api/live/call` lookup
+   * that was out while one landed is known to be older news. */
+  liveCallVersion: number;
   /** selected chat — a bot id OR a group id */
   selectedId: string;
   activeView: "chat" | "team-map" | "routines";
@@ -1110,6 +1123,10 @@ export type Action =
   | { type: "interruptGroup"; groupId: string; threadId?: string; onError?: () => void }
   | { type: "instances"; instances: InstanceInfo[] }
   | { type: "configStatus"; config: ConfigStatus }
+  | { type: "liveCall"; call: LiveCallState | null }
+  /** A `GET /api/live/call` answer, requested at `since` (liveCallVersion):
+   * applied only if no newer frame landed while it was out. */
+  | { type: "liveCallLookup"; call: LiveCallState | null; since: number }
   | { type: "profileSaved"; profile: Partial<NonNullable<ConfigStatus["profile"]>> }
   | { type: "select"; id: string }
   | {
@@ -1589,6 +1606,10 @@ export function reducer(state: AppState, action: Action): AppState {
       return { ...state, instances: action.instances };
     case "configStatus":
       return { ...state, config: action.config };
+    case "liveCall":
+      return { ...state, liveCall: action.call, liveCallVersion: state.liveCallVersion + 1 };
+    case "liveCallLookup":
+      return action.since === state.liveCallVersion ? { ...state, liveCall: action.call } : state;
     case "profileSaved":
       return state.config ? {
         ...state,
@@ -2349,6 +2370,8 @@ export const initialState: AppState = {
   sections: [],
   instances: [],
   config: null,
+  liveCall: null,
+  liveCallVersion: 0,
   selectedId: "",
   activeView: "chat",
   routines: [],
@@ -2388,6 +2411,22 @@ export const initialState: AppState = {
 };
 
 // ── API client ─────────────────────────────────────────────────────────
+/** The call a `live.call` frame (or a `GET /api/live/call` answer) carries,
+ * or null for a malformed one, which is ignored. A missing `call` key is
+ * malformed, never "the line is free": that reading would drop a running
+ * call's bar on a broken frame. */
+export function liveCallFromFrame(frame: unknown): { call: LiveCallState | null } | null {
+  if (!frame || typeof frame !== "object" || !Object.prototype.hasOwnProperty.call(frame, "call")) return null;
+  const call: unknown = Reflect.get(frame, "call");
+  if (call === null) return { call: null };
+  if (!call || typeof call !== "object") return null;
+  const record = call as Record<string, unknown>; // SAFETY: the fields read below are checked before use
+  if (typeof record.callId !== "string" || typeof record.botId !== "string" || typeof record.threadId !== "string" || typeof record.status !== "string") {
+    return null;
+  }
+  return { call: call as LiveCallState };
+}
+
 export class ApiError extends Error {
   readonly status: number;
   /** The refusal's JSON body, for callers that read more than `error`. */
@@ -3695,6 +3734,20 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       for (const key of keys) refreshState(key).version += 1;
     };
     const loadAll = async (): Promise<boolean> => {
+      // The Live call snapshot is its own fire-and-forget request: a server
+      // without the route answers 404, and the catch keeps that silent — a
+      // running call still arrives moments later over the SSE `live.call`
+      // frame, so this is only for the case where one was already live
+      // before this window connected.
+      // Applied only if no live.call frame lands while it is out: a frame
+      // is newer news than this answer.
+      const since = stateRef.current.liveCallVersion;
+      void api<unknown>("/api/live/call")
+        .then((body) => {
+          const answer = liveCallFromFrame(body);
+          if (alive && answer) rawDispatch({ type: "liveCallLookup", call: answer.call, since });
+        })
+        .catch(() => {});
       const chat = () =>
         api(`/api/bots?messages=${MESSAGE_PAGE_SIZE}`).then(({ bots, groups, sections, computerControl, botQueuedMessages }) => {
           if (!alive) return;
@@ -3795,7 +3848,9 @@ export function StoreProvider({ children }: { children: ReactNode }) {
             // Auto-speak is disabled during any call. Call mode owns both the
             // singleton speaker and microphone ordering for its whole lifetime.
             const owner = stateRef.current.bots.find((b) => b.threadId === frame.threadId || b.tasks?.some((task) => task.threadId === frame.threadId));
-            if (owner?.speakReplies && currentCall() === null && frame.message.text?.trim()) {
+            const live = stateRef.current.liveCall;
+            const onLiveCall = Boolean(live && live.status !== "ended" && live.botId === owner?.id);
+            if (owner?.speakReplies && currentCall() === null && !onLiveCall && frame.message.text?.trim()) {
               void speaker.speak(frame.message.text, {
                 botId: owner.id,
                 messageId: frame.message.id,
@@ -3910,6 +3965,11 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           botPatchQueue.cancel(frame.botId);
           rawDispatch({ type: "deleteBot", botId: frame.botId });
           break;
+        case "live.call": {
+          const framed = liveCallFromFrame(frame);
+          if (framed) rawDispatch({ type: "liveCall", call: framed.call });
+          break;
+        }
         // a key changed and the fleet hot-reloaded — refresh the picker so
         // newly available providers un-dim immediately
         case "config":
