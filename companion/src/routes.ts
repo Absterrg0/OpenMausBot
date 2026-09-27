@@ -222,6 +222,23 @@ const ALLOWED: ReadonlyArray<{ method: string; path: RegExp }> = [
   { method: "POST", path: /^\/api\/bots\/[\w-]+\/secret-cards\/[\w-]+\/(?:resume|dismiss)$/ },
 ];
 
+/** Notices the companion itself sends the harness, never a device: they are
+ * not in ALLOWED, so the proxy refuses them from a phone, and the harness
+ * accepts them only with the companion's private relay token
+ * (server/request-auth.ts) or, for a standalone harness, from loopback.
+ *
+ * `POST /api/live/device-revoked`: a phone was just unpaired (the device id
+ * rides in `x-openmausbot-companion-device`), so the harness ends the Live
+ * call that phone holds. A phone's requests reach the harness as this
+ * computer's own, so nothing else would tell it the phone lost its access. */
+const COMPANION_NOTICES: ReadonlyArray<{ method: string; path: RegExp }> = [
+  { method: "POST", path: /^\/api\/live\/device-revoked$/ },
+];
+
+export function isCompanionNotice(method: string, path: string): boolean {
+  return COMPANION_NOTICES.some((route) => route.method === method && route.path.test(path));
+}
+
 /** Route families worth naming in the refusal.
  *
  * Everything not allowed is denied either way; this only decides whether the

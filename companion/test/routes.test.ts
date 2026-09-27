@@ -7,7 +7,7 @@
 // and the one that quietly stopped being true once before.
 import { describe, expect, it } from "vitest";
 
-import { denyReason, isCloudDesktopAccess } from "../src/routes.ts";
+import { denyReason, isCloudDesktopAccess, isCompanionNotice } from "../src/routes.ts";
 
 const ask = (method: string, path: string, authenticated = true) =>
   denyReason({ method, path, authenticated });
@@ -167,6 +167,18 @@ describe("what it may not", () => {
     }
     expect(ask("GET", "/api/routines")).toBeNull();
     expect(ask("POST", "/api/routines/routine_1/run")).toBeNull();
+  });
+
+  // The companion tells the harness itself when it unpaired a phone, so the
+  // call that phone holds ends. That notice is the companion's, never a
+  // phone's: no paired device may send it, even about itself.
+  it("keeps the unpaired-phone notice for the companion alone", () => {
+    expect(ask("POST", "/api/live/device-revoked")?.status).toBe(404);
+    expect(ask("POST", "/api/live/device-revoked", false)?.status).toBe(401);
+    expect(isCompanionNotice("POST", "/api/live/device-revoked")).toBe(true);
+    expect(isCompanionNotice("GET", "/api/live/device-revoked")).toBe(false);
+    expect(isCompanionNotice("POST", "/api/live/device-revoked/x")).toBe(false);
+    expect(isCompanionNotice("POST", "/api/live/call/end")).toBe(false);
   });
 
   it("denies the peer-agent endpoints exist at all", () => {

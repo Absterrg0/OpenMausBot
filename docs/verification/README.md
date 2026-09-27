@@ -22,7 +22,12 @@ the URL, PID, data directory, and persistent log path, then stays attached to
 that exact child. The parent shell and the user's OpenMausBot data are
 untouched. Only `FAKE_CLAUDE_*` variables cross from the launcher's
 environment into that child, so a recipe can script the fake engine's mode,
-replies and tool calls without writing a wrapper CLI.
+replies and tool calls without writing a wrapper CLI. Live calls add one
+exception: `OMB_OPENAI_LIVE_URL` crosses when it is a loopback
+`http://127.0.0.1:PORT` (the fake GPT-Live that
+`node --experimental-strip-types server/testing/fake-openai-live.ts` prints),
+and `OMB_OPENAI_LIVE_KEY` crosses only with it, so that key can only ever
+reach the fake.
 
 Pass the printed URL explicitly from a second terminal:
 
