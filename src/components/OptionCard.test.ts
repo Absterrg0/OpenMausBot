@@ -1,7 +1,10 @@
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 
-import { shouldHideOnboardingCard } from "./OptionCard";
-import type { Message } from "@/state/store";
+import { OptionCard, shouldHideOnboardingCard } from "./OptionCard";
+import { t } from "@/lib/i18n";
+import { StoreProvider, type Message } from "@/state/store";
 
 const msg = (partial: Partial<Message> & Pick<Message, "id" | "kind">): Message => ({
   role: "bot",
@@ -63,5 +66,13 @@ describe("shouldHideOnboardingCard", () => {
       },
     });
     expect(shouldHideOnboardingCard(question, [user, question])).toBe(false);
+  });
+});
+
+describe("OptionCard", () => {
+  it("names its icon-only dismiss button", () => {
+    const card = msg({ id: "quiz", kind: "options", card: { title: "Pick one", subtitle: "", options: ["A thing"] } });
+    const markup = renderToStaticMarkup(createElement(StoreProvider, null, createElement(OptionCard, { botId: "atlas", message: card })));
+    expect(markup).toContain(`aria-label="${t("onboarding.card.dismiss")}"`);
   });
 });

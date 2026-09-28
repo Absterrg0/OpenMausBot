@@ -69,6 +69,8 @@ export function OptionCard({
             dispatch({ type: "dismissCard", botId, threadId, messageId: message.id, groupId })
           }
           className="rounded-md p-1 text-ink-secondary hover:bg-control hover:text-ink"
+          aria-label={t("onboarding.card.dismiss")}
+          title={t("onboarding.card.dismiss")}
         >
           <X size={16} />
         </button>
