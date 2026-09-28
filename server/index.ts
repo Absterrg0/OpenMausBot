@@ -1869,7 +1869,7 @@ const listBotSkills = (bot: BotRecord) =>
 const readBotSkillFile = (bot: BotRecord, name: string): string | null => {
   const own = readSkillFile(bot.id, name);
   if (own !== null || !skillsLibraryEnabled(cfg)) return own;
-  return readLibrarySkillFile(name);
+  return bot.assignedSkills?.includes(name) ? readLibrarySkillFile(name) : null;
 };
 
 // Electron's utility-process parent port is private to the desktop main
