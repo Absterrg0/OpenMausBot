@@ -2343,11 +2343,23 @@ describe("live call state", () => {
   it("takes a lookup of the line only if no newer frame landed while it was out", () => {
     const since = initialState.liveCallVersion;
     const framed = reducer(initialState, { type: "liveCall", call });
-    expect(reducer(framed, { type: "liveCallLookup", call: null, since })).toBe(framed);
-    const fresh = reducer(framed, { type: "liveCallLookup", call: { ...call, status: "ended", endReason: "idle" }, since: framed.liveCallVersion });
+    expect(reducer(framed, { type: "liveCallLookup", call: null, since, seq: 1 })).toBe(framed);
+    const fresh = reducer(framed, { type: "liveCallLookup", call: { ...call, status: "ended", endReason: "idle" }, since: framed.liveCallVersion, seq: 2 });
     expect(fresh.liveCall?.status).toBe("ended");
     // a lookup is not newer news than the next lookup
     expect(fresh.liveCallVersion).toBe(framed.liveCallVersion);
+  });
+
+  // Two snapshots can overlap (a reconnect while the first one is out):
+  // both lookups leave at the same version, and the answers can come back
+  // in either order.
+  it("never lets an earlier lookup's answer replace a later one's", () => {
+    const since = initialState.liveCallVersion;
+    const later = reducer(initialState, { type: "liveCallLookup", call, since, seq: 2 });
+    expect(later.liveCall).toEqual(call);
+    expect(reducer(later, { type: "liveCallLookup", call: null, since, seq: 1 })).toBe(later);
+    const inOrder = reducer(reducer(initialState, { type: "liveCallLookup", call: null, since, seq: 1 }), { type: "liveCallLookup", call, since, seq: 2 });
+    expect(inOrder.liveCall).toEqual(call);
   });
 
   it("reads a live.call frame's call, and ignores a frame without one", () => {

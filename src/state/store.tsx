@@ -13,6 +13,7 @@ import {
   useState,
   type ReactNode,
 } from "react";
+import { flushSync } from "react-dom";
 import type { BotVisibility, CardAnswerer, CloudBackend, ConnectorToolGrant, EffortLevel, InstalledPackageMetadata, LiveCallState, LiveSettings, ServerFrame, GroupThreadUsage, SteerQueueReason } from "../../shared/wire";
 import type { TurnDigest } from "../../shared/digest";
 import type { ModelVariantOption, RuntimeEvent } from "../../shared/runtime-events";
@@ -908,6 +909,9 @@ export interface AppState {
   /** Counts the `live.call` frames folded in, so a `/api/live/call` lookup
    * that was out while one landed is known to be older news. */
   liveCallVersion: number;
+  /** The request order of the newest lookup answer applied: an earlier
+   * lookup that comes back after it is older news too. */
+  liveCallLookupSeq: number;
   /** selected chat — a bot id OR a group id */
   selectedId: string;
   activeView: "chat" | "team-map" | "routines";
@@ -1124,9 +1128,10 @@ export type Action =
   | { type: "instances"; instances: InstanceInfo[] }
   | { type: "configStatus"; config: ConfigStatus }
   | { type: "liveCall"; call: LiveCallState | null }
-  /** A `GET /api/live/call` answer, requested at `since` (liveCallVersion):
-   * applied only if no newer frame landed while it was out. */
-  | { type: "liveCallLookup"; call: LiveCallState | null; since: number }
+  /** A `GET /api/live/call` answer, requested at `since` (liveCallVersion)
+   * as lookup number `seq`: applied only if no newer frame landed while it
+   * was out, and no later lookup's answer came back first. */
+  | { type: "liveCallLookup"; call: LiveCallState | null; since: number; seq: number }
   | { type: "profileSaved"; profile: Partial<NonNullable<ConfigStatus["profile"]>> }
   | { type: "select"; id: string }
   | {
@@ -1609,7 +1614,9 @@ export function reducer(state: AppState, action: Action): AppState {
     case "liveCall":
       return { ...state, liveCall: action.call, liveCallVersion: state.liveCallVersion + 1 };
     case "liveCallLookup":
-      return action.since === state.liveCallVersion ? { ...state, liveCall: action.call } : state;
+      return action.since === state.liveCallVersion && action.seq > state.liveCallLookupSeq
+        ? { ...state, liveCall: action.call, liveCallLookupSeq: action.seq }
+        : state;
     case "profileSaved":
       return state.config ? {
         ...state,
@@ -2372,6 +2379,7 @@ export const initialState: AppState = {
   config: null,
   liveCall: null,
   liveCallVersion: 0,
+  liveCallLookupSeq: 0,
   selectedId: "",
   activeView: "chat",
   routines: [],
@@ -2425,6 +2433,14 @@ export function liveCallFromFrame(frame: unknown): { call: LiveCallState | null 
     return null;
   }
   return { call: call as LiveCallState };
+}
+
+let liveCallLookups = 0;
+/** The next `GET /api/live/call` lookup's number, in request order (see
+ * `liveCallLookupSeq`). Take it when the request leaves. */
+export function nextLiveCallLookup(): number {
+  liveCallLookups += 1;
+  return liveCallLookups;
 }
 
 export class ApiError extends Error {
@@ -3739,13 +3755,15 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       // running call still arrives moments later over the SSE `live.call`
       // frame, so this is only for the case where one was already live
       // before this window connected.
-      // Applied only if no live.call frame lands while it is out: a frame
-      // is newer news than this answer.
+      // Applied only if no live.call frame lands while it is out (a frame
+      // is newer news than this answer), and only if the answer to a later
+      // lookup did not come back first. Rendered at once, like a frame.
       const since = stateRef.current.liveCallVersion;
+      const seq = nextLiveCallLookup();
       void api<unknown>("/api/live/call")
         .then((body) => {
           const answer = liveCallFromFrame(body);
-          if (alive && answer) rawDispatch({ type: "liveCallLookup", call: answer.call, since });
+          if (alive && answer) flushSync(() => rawDispatch({ type: "liveCallLookup", call: answer.call, since, seq }));
         })
         .catch(() => {});
       const chat = () =>
@@ -3967,7 +3985,9 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           break;
         case "live.call": {
           const framed = liveCallFromFrame(frame);
-          if (framed) rawDispatch({ type: "liveCall", call: framed.call });
+          // Rendered at once: a bot message frame right behind this one
+          // decides auto-speak from stateRef, which must know the call by then.
+          if (framed) flushSync(() => rawDispatch({ type: "liveCall", call: framed.call }));
           break;
         }
         // a key changed and the fleet hot-reloaded — refresh the picker so

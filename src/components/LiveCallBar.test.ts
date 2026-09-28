@@ -69,7 +69,7 @@ describe("hangUpRemoteCall", () => {
     await hangUpRemoteCall("c9", 3, dispatch, request as never);
     expect(request).toHaveBeenLastCalledWith("/api/live/call");
     // the store drops it if a live.call frame moved the line past version 3
-    expect(dispatch).toHaveBeenCalledWith({ type: "liveCallLookup", call: null, since: 3 });
+    expect(dispatch).toHaveBeenCalledWith({ type: "liveCallLookup", call: null, since: 3, seq: expect.any(Number) });
   });
   it("stays quiet when the harness cannot be reached at all", async () => {
     const dispatch = vi.fn();

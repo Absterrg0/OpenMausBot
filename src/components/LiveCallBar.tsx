@@ -9,7 +9,7 @@ import { isMacPlatform } from "@/lib/keyboard-shortcuts";
 import {
   dismissLiveNotice, hangUpLiveCall, isLiveCallRunning, liveCallChord, setLiveMuted, startLiveCall, useLiveMedia, type LiveMediaState,
 } from "@/lib/live-call-media";
-import { api, liveCallFromFrame, useStore, type Action, type Bot } from "@/state/store";
+import { api, liveCallFromFrame, nextLiveCallLookup, useStore, type Action, type Bot } from "@/state/store";
 import { cn } from "@/lib/cn";
 import type { LiveCallState, LiveClient } from "../../shared/wire";
 import { LiveCallSettings } from "./LiveCallSettings";
@@ -93,8 +93,9 @@ export async function hangUpRemoteCall(
     await request("/api/live/call/end", { method: "POST", body: JSON.stringify({ callId }) });
   } catch {
     try {
+      const seq = nextLiveCallLookup();
       const answer = liveCallFromFrame(await request<unknown>("/api/live/call"));
-      if (answer) dispatch({ type: "liveCallLookup", call: answer.call, since });
+      if (answer) dispatch({ type: "liveCallLookup", call: answer.call, since, seq });
     } catch {
       /* offline: the next connection refreshes the call */
     }
