@@ -251,9 +251,14 @@ export class TurnResources {
 
   /** Whether any live owner holds this resource: the parked-resume drain's
    * gate (#1651) — a resume fires only when the seat it queued on is free. */
-  free(resource: string): boolean {
+  free(resource: string, now = Date.now()): boolean {
     for (const key of this.owners.keys()) {
-      if (overlaps(key, resource)) return false;
+      if (!overlaps(key, resource)) continue;
+      // A quiet-window claim expires the moment anything needs to know
+      // whether the seat is free: the parked-resume gate must not wait on
+      // a claim whose window already elapsed (#1653).
+      this.expireIdle(key, now);
+      if (this.owners.has(key)) return false;
     }
     return true;
   }

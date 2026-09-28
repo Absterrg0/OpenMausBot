@@ -321,3 +321,22 @@ describe("wait estimate history", () => {
     expect(leases.waitEstimateMs("computer:vm:other")).toBeUndefined();
   });
 });
+
+describe("parked-resume idle availability", () => {
+  const policy = new IdleReleasePolicy(90_000, 600_000);
+  const seat = "computer:vm:shared";
+  it("free() expires an elapsed quiet claim instead of reporting the seat busy", () => {
+    const leases = new TurnResources();
+    expect(leases.claim(seat, a, { now: 0, idle: policy })).toBe(true);
+    // Inside the window the parked-resume gate still sees the seat held.
+    expect(leases.free(seat, 89_999)).toBe(false);
+    // Past the quiet window the gate must see the seat free on its own,
+    // without another operation touching the claim first — and the
+    // previous holder keeps its reclaim priority.
+    expect(leases.free(seat, 90_000)).toBe(true);
+    expect(leases.claim(seat, b, { now: 90_000, idle: policy })).toBe(true);
+    leases.release(b);
+    expect(leases.claim(seat, a, { now: 95_000, idle: policy })).toBe(true);
+  });
+  });
+});
