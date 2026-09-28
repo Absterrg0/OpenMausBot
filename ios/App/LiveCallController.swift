@@ -81,14 +81,21 @@ final class LiveCallController: ObservableObject {
             .dropFirst()
             .sink { [weak self] call in self?.dispatch(.serverCall(call)) }
             .store(in: &cancellables)
+        // Before the phone leaves this computer: hang up while the session
+        // still talks to it, so the end request reaches the computer that
+        // holds the call. Session clears its state next, and a call gone
+        // from the state reads as the computer saying it ended, which asks
+        // the computer nothing.
+        session.leavingComputer
+            .sink { [weak self] in self?.dispatch(.hangUp) }
+            .store(in: &cancellables)
         session.$connection
             .map { $0?.id }
             .removeDuplicates()
             .dropFirst()
             .sink { [weak self] _ in
-                // A deliberate hang-up leaves no bar. Session clears its
-                // state before it changes the connection, so the old call
-                // usually reads as "ended" first; dismiss clears that notice.
+                // A deliberate hang-up leaves no bar: dismiss clears the
+                // notice of a call that had already stopped by itself.
                 self?.dispatch(.hangUp)
                 self?.dispatch(.dismiss)
             }
@@ -152,8 +159,11 @@ final class LiveCallController: ObservableObject {
         case let .closeMedia(sendClose):
             closeMedia(sendClose: sendClose)
         case let .endOnServer(callId):
+            // Sent to the computer that holds the call: a change of computers
+            // replaces the session's client right after this effect runs.
+            let end = session?.endLiveCall(callId: callId)
             Task { [weak self] in
-                _ = await self?.session?.endLiveCall(callId: callId)
+                _ = await end?.value
                 self?.dispatch(.ended)
             }
         case .awaitEnd:
@@ -230,12 +240,13 @@ final class LiveCallController: ObservableObject {
                 if let latest = session.state.liveCall { dispatch(.serverCall(latest)) }
             } catch {
                 // A 201 we could not follow through leaves a call on the Mac.
-                // Its own task again: in this one, cancelled by the hang-up,
-                // the end request would be cancelled before it left.
+                // The end runs in a task of its own (`endLiveCall` makes one):
+                // in this one, cancelled by the hang-up, the end request would
+                // be cancelled before it left.
                 if let created {
                     log.info("live call: ending a call whose start did not finish")
                     dispatch(.startAbandoned(callId: created.callId))
-                    _ = await Task { await session.endLiveCall(callId: created.callId) }.value
+                    _ = await session.endLiveCall(callId: created.callId).value
                 }
                 guard !Task.isCancelled else { return }
                 let notice = LiveCallNotice.forStartFailure(error) { [weak session] botId in

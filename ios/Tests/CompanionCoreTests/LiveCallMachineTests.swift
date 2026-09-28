@@ -188,6 +188,20 @@ final class LiveCallMachineTests: XCTestCase {
         XCTAssertTrue(machine.isIdle, "a deliberate hang-up leaves no notice behind")
     }
 
+    func testLeavingTheComputerTellsItOnceAndLeavesNoBar() {
+        // The controller hangs up before Session clears its state (a new
+        // pairing, a switch, forgetting the computer). The cleared state,
+        // the new connection and the end request's return change nothing.
+        var machine = live()
+        XCTAssertEqual(machine.handle(.hangUp), [.closeMedia(sendClose: true), .endOnServer(callId: "c1"), .awaitEnd])
+        XCTAssertEqual(machine.handle(.serverCall(nil)), [])
+        XCTAssertTrue(machine.isIdle)
+        XCTAssertEqual(machine.handle(.hangUp), [])
+        XCTAssertEqual(machine.handle(.dismiss), [])
+        XCTAssertEqual(machine.handle(.ended), [])
+        XCTAssertTrue(machine.isIdle)
+    }
+
     func testLeavingTheForegroundHangsUpAndTellsTheMac() {
         var machine = live()
         XCTAssertEqual(machine.handle(.leaveForeground), [.closeMedia(sendClose: true), .endOnServer(callId: "c1"), .awaitEnd])

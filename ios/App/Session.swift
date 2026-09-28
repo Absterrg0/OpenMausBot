@@ -7,6 +7,7 @@
 // backgrounds, it moves between wifi and cellular. So the stream is torn
 // down deliberately when the app leaves the screen, and on the way back the
 // server is asked what was missed rather than being asked for everything.
+import Combine
 import Foundation
 import OSLog
 import SwiftUI
@@ -89,6 +90,11 @@ final class Session: ObservableObject {
     @Published private(set) var pendingChat: Chat?
 
     private var client: CompanionClient?
+    /// Sent just before the phone stops talking to the active computer (a
+    /// new pairing, a switch, forgetting it), while `client` and `state`
+    /// still belong to it. A Live call hangs up here, so its end request
+    /// reaches the computer that holds the call.
+    let leavingComputer = PassthroughSubject<Void, Never>()
     /// Ciphertext-only operations survive navigation and transient
     /// disconnects so a retry cannot accidentally reseal the same value with
     /// a different HPKE operation id. Nothing here is persisted to disk.
@@ -665,6 +671,7 @@ final class Session: ObservableObject {
     }
 
     private func stopActiveRuntime() {
+        leavingComputer.send()
         resetCredentialEntry()
         streamGeneration += 1
         streamTask?.cancel()
@@ -2198,24 +2205,34 @@ final class Session: ObservableObject {
     /// closing, and the Mac's idle timer ends a call a dead network kept.
     /// This is the controller's end, for this phone's own call; the remote
     /// bar's hang-up is `hangUpRemoteLiveCall`, which does show.
-    func endLiveCall(callId: String) async -> LiveCallState? {
-        guard let client else { return nil }
-        do {
-            let answer = try await client.endLiveCall(callId: callId)
-            // The answer is the Mac's word that the call ended: apply it
-            // now, as the remote bar's hang-up does, rather than leave the
-            // line reading as this call until the frame that follows it.
-            guard self.client?.connection.id == client.connection.id else { return answer }
-            if state.applyLiveCallEnd(callId: callId, answer: answer) {
-                await refreshLiveCall(using: client)
+    ///
+    /// The request goes to the computer connected when this is called, not
+    /// when it is sent: changing computers hangs up first
+    /// (`leavingComputer`), then replaces `client` before the task runs.
+    @discardableResult
+    func endLiveCall(callId: String) -> Task<LiveCallState?, Never> {
+        let client = self.client
+        return Task {
+            guard let client else { return nil }
+            let current = { self.client?.connection.id == client.connection.id }
+            do {
+                let answer = try await client.endLiveCall(callId: callId)
+                // The answer is the Mac's word that the call ended: apply it
+                // now, as the remote bar's hang-up does, rather than leave the
+                // line reading as this call until the frame that follows it.
+                guard current() else { return answer }
+                if state.applyLiveCallEnd(callId: callId, answer: answer) {
+                    await refreshLiveCall(using: client)
+                }
+                return answer
+            } catch let error as APIError where error.isUnauthorized {
+                // A computer this phone just left does not speak for the next one.
+                if current() { status = .unauthorized }
+                return nil
+            } catch {
+                log.error("live call end failed: \(error.localizedDescription, privacy: .public)")
+                return nil
             }
-            return answer
-        } catch let error as APIError where error.isUnauthorized {
-            status = .unauthorized
-            return nil
-        } catch {
-            log.error("live call end failed: \(error.localizedDescription, privacy: .public)")
-            return nil
         }
     }
 
