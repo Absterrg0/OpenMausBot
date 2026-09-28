@@ -30,6 +30,7 @@ import {
   readClaudeAuthSettings,
   claudeCostSnapshot,
   restoredCostBase,
+  STEERED_CONTINUATION_GRACE_MS,
   sumNativeTurnResults,
   turnCostFromRunningTotal,
   type ClaudeConfig,
@@ -2106,6 +2107,36 @@ describe("ClaudeDriver turns (fake CLI)", () => {
     expect(done).toMatchObject({ turnId, ok: false, stopReason: "interrupted" });
     expect(recorder.events.filter((e) => e.type === "turn.completed")).toHaveLength(1);
     expect(recorder.events.filter((e) => e.type === "session.started")).toHaveLength(1);
+  });
+
+  it("keeps a Stop in the held window an interrupt when the grace lapses before the CLI exits", async () => {
+    // taskkill is asynchronous on Windows: the CLI can outlive a Stop by
+    // longer than the hold's grace. The lapsing grace must leave the turn to
+    // the Stop, not settle it on the held result as a success.
+    process.env.FAKE_CLAUDE_STEER_GRACE_SCALE = "0.5";
+    const finishGate = join(scratch, "held-slow-stop-first.gate");
+    const continuationGate = join(scratch, "held-slow-stop-continuation.gate");
+    const initGate = join(scratch, "held-slow-stop-init.gate");
+    const received = join(scratch, "held-slow-stop-received");
+    await create("slow", {
+      FAKE_CLAUDE_SLOW_FINISH_GATE: finishGate,
+      FAKE_CLAUDE_LATE_STEER_GATE: continuationGate,
+      FAKE_CLAUDE_LATE_STEER_INIT_GATE: initGate,
+      FAKE_CLAUDE_STEER_RECEIVED: received,
+      FAKE_CLAUDE_EXIT_DELAY_MS: String(STEERED_CONTINUATION_GRACE_MS),
+    });
+    const threadId = "t-held-slow-stop";
+    const { turnId } = await instance.adapter.sendTurn({ threadId, text: "first" });
+    await recorder.until((e) => e.type === "item.completed" && e.itemType === "tool");
+    await expect(instance.adapter.steer!(threadId, "and also this")).resolves.toBe("steered");
+    await expect.poll(() => existsSync(received)).toBe(true);
+    writeFileSync(finishGate, "finish");
+    const nativeLog = join(NATIVE_DIR, `${threadId}.ndjson`);
+    await expect.poll(() => existsSync(nativeLog) && readFileSync(nativeLog, "utf8").includes('"hold"')).toBe(true);
+    await instance.adapter.interruptTurn(threadId);
+    const done = await recorder.until((e) => e.type === "turn.completed");
+    expect(done).toMatchObject({ turnId, ok: false, stopReason: "interrupted" });
+    expect(recorder.events.filter((e) => e.type === "turn.completed")).toHaveLength(1);
   });
 
   it("closes a steered continuation that announces itself and then stays silent", async () => {

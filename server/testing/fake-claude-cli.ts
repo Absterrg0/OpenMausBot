@@ -102,6 +102,9 @@
 //   FAKE_CLAUDE_RESUMED_API_ERROR 1: a --resume launch plays its first turn
 //                      the `api-error` way — an error result with no cost
 //                      figure — and its later turns normally.
+//   FAKE_CLAUDE_EXIT_DELAY_MS ms this process keeps running after SIGTERM
+//                      before it exits: a CLI that is slow to stop, as one
+//                      can be on Windows, where taskkill is asynchronous.
 //
 // Keep this file dependency-free — it runs as a bare `node` subprocess.
 import { spawnSync } from "node:child_process";
@@ -122,6 +125,12 @@ const mode = process.env.FAKE_CLAUDE_MODE ?? "happy";
     }
   }, 500);
   orphanWatch.unref();
+}
+{
+  const exitDelay = Number(process.env.FAKE_CLAUDE_EXIT_DELAY_MS);
+  if (Number.isFinite(exitDelay) && exitDelay > 0) {
+    process.on("SIGTERM", () => { setTimeout(() => process.exit(0), exitDelay); });
+  }
 }
 const scriptedReplies = (() => {
   try {

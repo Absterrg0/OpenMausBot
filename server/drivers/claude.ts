@@ -1852,6 +1852,8 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
                 if (held.continuationSilence) clearTimeout(held.continuationSilence);
                 held.continuationSilence = setTimeout(() => {
                   if (session.turn !== held || held.settled || !held.deferred) return;
+                  // A Stop or a close settles the turn in finalizeClose.
+                  if (held.stopRequested || session.closing) return;
                   held.continuationSilence = null;
                   emit({
                     ...base(threadId, held.turnId),
@@ -2026,6 +2028,12 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
                 // just finished after all (or a queued send was cancelled),
                 // and the held result is the turn's.
                 if (session.turn !== t || t.settled) return;
+                // A Stop or a close settles the turn in finalizeClose: as
+                // interrupted after a Stop, else on the held result, which
+                // the grace still being set tells it the turn owns. (taskkill
+                // is asynchronous on Windows, so the CLI can outlive a Stop
+                // by longer than this grace.)
+                if (t.stopRequested || session.closing) return;
                 t.continuationGrace = null;
                 if (t.deferred) settleResult(t.deferred);
               }, STEERED_CONTINUATION_GRACE_MS * steerGraceScale());
