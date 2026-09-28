@@ -960,7 +960,7 @@ export function SettingsModal() {
             {section === "computer" && <LocalComputerSection />}
 
             {section === "usage" && <UsageSection />}
-            {section === "skills" && <SkillsSection />}
+            {section === "skills" && skillsLibraryEnabled(state.config) && <SkillsSection />}
             {section === "people" && <PeopleSection />}
             {section === "activity" && <ActivitySection />}
             {section === "workspaces" && <WorkspacesSection />}
