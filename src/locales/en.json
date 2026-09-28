@@ -2320,6 +2320,7 @@
   "routines.unread": "Unseen failure",
   "routines.activeSchedule": "Active",
   "routines.pausedSchedule": "Paused",
+  "routines.paused.close": "Close paused routines",
   "routines.finishedSchedule": "Finished schedule",
   "routines.noNextRun": "No next run scheduled",
   "routines.nextRun": "Next {time}",
