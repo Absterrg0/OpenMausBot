@@ -114,6 +114,7 @@ import { SidebarAttentionPanel } from "./SidebarAttentionPanel";
 import { SidebarPinnedThreadsPanel } from "./SidebarPinnedThreadsPanel";
 import { ShortcutHint } from "./ShortcutHint";
 import { citationPreviewText } from "@/lib/citations";
+import { usePopoverDismiss } from "@/hooks/use-popover-dismiss";
 
 const SECTION_LABEL_KEYS: Record<string, LocaleKey> = {
   [PINNED_SECTION_ID]: "sidebar.section.pinned",
@@ -1770,6 +1771,12 @@ export function Sidebar({ open, onClose, collapseToIcons = false }: {
     return () => document.removeEventListener("keydown", closeOnEscape);
   }, [open, onClose, confirm, deletingRoom]);
 
+  // Each header menu root wraps its trigger and its popover.
+  const attentionMenuRef = useRef<HTMLDivElement>(null);
+  const plusMenuRef = useRef<HTMLDivElement>(null);
+  usePopoverDismiss(attentionOpen, attentionMenuRef, () => setAttentionOpen(false));
+  usePopoverDismiss(plusOpen, plusMenuRef, () => setPlusOpen(false));
+
   useEffect(() => {
     if (remoteClient) return;
     return window.ogb?.onPackageInstall?.((url) => {
@@ -2029,7 +2036,7 @@ export function Sidebar({ open, onClose, collapseToIcons = false }: {
           >
             {density === "icons" ? <PanelLeftOpen size={20} /> : <PanelLeftClose size={20} />}
           </button>}
-          <div className={density === "icons" ? "relative" : "contents"}>
+          <div ref={attentionMenuRef} className={density === "icons" ? "relative" : "contents"}>
             <button
               type="button"
               onClick={() => setAttentionOpen((o) => !o)}
@@ -2044,7 +2051,6 @@ export function Sidebar({ open, onClose, collapseToIcons = false }: {
             </button>
             {attentionMotion.shown && (
               <>
-                <div className={cn("fixed inset-0 z-30", attentionMotion.closing && "pointer-events-none")} onMouseDown={() => setAttentionOpen(false)} />
                 <div className={cn(
                   "absolute top-full z-40 mt-1 overflow-hidden rounded-xl border border-hairline/50 bg-menu py-1.5 shadow-2xl shadow-black/60",
                   density === "icons" ? "left-0" : "right-0",
@@ -2072,6 +2078,8 @@ export function Sidebar({ open, onClose, collapseToIcons = false }: {
               </>
             )}
           </div>
+          {/* `contents` keeps the popover anchored to the header row */}
+          <div ref={plusMenuRef} className="contents">
           <button
             ref={importReturnRef}
             onClick={() => setPlusOpen((o) => !o)}
@@ -2083,7 +2091,6 @@ export function Sidebar({ open, onClose, collapseToIcons = false }: {
           </button>
           {plusMotion.shown && (
             <>
-              <div className={cn("fixed inset-0 z-30", plusMotion.closing && "pointer-events-none")} onMouseDown={() => setPlusOpen(false)} />
               <div className={cn(
                 "absolute top-full z-40 mt-1 w-52 overflow-hidden rounded-xl border border-hairline/50 bg-menu py-1.5 shadow-2xl shadow-black/60",
                 density === "icons" ? "left-0" : "right-0",
@@ -2144,6 +2151,7 @@ export function Sidebar({ open, onClose, collapseToIcons = false }: {
               </div>
             </>
           )}
+          </div>
         </div>
       </div>
 
