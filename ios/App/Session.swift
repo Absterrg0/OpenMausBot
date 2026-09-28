@@ -2246,16 +2246,18 @@ final class Session: ObservableObject {
             actionError = String(localized: "This computer is offline.")
             return
         }
+        let current = { self.client?.connection.id == client.connection.id }
         do {
             let answer = try await client.endLiveCall(callId: callId)
-            guard self.client?.connection.id == client.connection.id else { return }
+            guard current() else { return }
             if state.applyLiveCallEnd(callId: callId, answer: answer) {
                 await refreshLiveCall(using: client)
             }
         } catch let error as APIError where error.isUnauthorized {
-            status = .unauthorized
+            // A computer this phone just left does not speak for the next one.
+            if current() { status = .unauthorized }
         } catch {
-            actionError = error.localizedDescription
+            if current() { actionError = error.localizedDescription }
         }
     }
 
