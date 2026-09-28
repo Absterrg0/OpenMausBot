@@ -1316,7 +1316,7 @@
   "onboarding.tour.error": "Couldn't save your progress. Try again, or skip the tour.",
   "onboarding.maybeLater": "Maybe later",
   "onboarding.engines.title": "Your model providers",
-  "onboarding.engines.intro": "Bots run on AI tools installed on this computer — here’s what we found.",
+  "onboarding.engines.intro": "Bots run on AI tools installed on this computer. Here’s what we found.",
   "onboarding.engines.ready": "Ready",
   "onboarding.engines.needsSetup": "Needs setup",
   "onboarding.engines.readyCount": "{count} ready",
