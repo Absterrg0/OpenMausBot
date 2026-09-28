@@ -227,6 +227,13 @@ final class Session: ObservableObject {
                 config.protocolClasses = [LiveCallPreviewProtocol.self]
                 client = CompanionClient(connection: preview, token: "live-call-fixture-token", session: URLSession(configuration: config))
             }
+            var fleet = fleet
+            if arguments.contains("-live-call-long-name-preview"),
+               let pepper = fleet.bots.firstIndex(where: { $0.id == "preview-pepper" }) {
+                // Forty characters, too long for the call bar's line: the
+                // name gives way there, the clock does not.
+                fleet.bots[pepper].name = "Pepper, the Quarterly Planning Assistant"
+            }
             state.hydrate(fleet)
             if arguments.contains("-live-call-room-preview"),
                let room = try? JSONDecoder().decode(Room.self, from: Data(LiveCallPreviewProtocol.room.utf8)) {

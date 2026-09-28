@@ -31,6 +31,8 @@ final class LiveCallUITests: XCTestCase {
         let caption = app.staticTexts["live-call-caption"]
         expectation(for: NSPredicate(format: "label == %@", "Hello from the preview voice."), evaluatedWith: caption)
         waitForExpectations(timeout: 10)
+        // The caption line made the bar taller; the chat's end is still above it.
+        assertTheChatEndsAbove(bar, app)
 
         // The composer's microphone is not available during a call.
         XCTAssertFalse(app.buttons["Start dictation"].isEnabled)
@@ -333,7 +335,8 @@ final class LiveCallUITests: XCTestCase {
     }
 
     /// The Mac holds a call on this chat: the remote bar, its clock running,
-    /// and a hang-up that takes it down on the Mac's answer.
+    /// where the call is on a line of its own, and a hang-up that takes it
+    /// down on the Mac's answer.
     @MainActor
     func testAnotherDevicesCallShowsARemoteBarWithARunningClock() {
         let app = launch(["-live-call-remote-preview"])
@@ -341,12 +344,19 @@ final class LiveCallUITests: XCTestCase {
 
         let title = app.staticTexts["live-call-remote-title"]
         XCTAssertTrue(title.waitForExistence(timeout: 5))
-        XCTAssertTrue(title.label.hasPrefix("Live with Pepper from your computer · 1:"), title.label)
+        XCTAssertEqual(title.label, "Live with Pepper")
+        let clock = app.staticTexts["live-call-remote-clock"]
+        XCTAssertTrue(clock.label.hasPrefix("1:"), clock.label)
+        XCTAssertEqual(app.staticTexts["live-call-remote-device"].label, "From your computer")
         XCTAssertFalse(app.buttons["live-call-start"].exists, "no call from the header while the Mac holds the line")
+        let bar = remoteBar(app)
+        assertTheLineKeepsTheClock(name: title, clock: clock, before: app.buttons["live-call-remote-hangup"], in: bar)
+        assertWhole(app.staticTexts["live-call-remote-device"], in: bar)
+        assertTheChatEndsAbove(bar, app)
         record("Remote bar", app)
 
-        let first = title.label
-        expectation(for: NSPredicate(format: "label != %@", first), evaluatedWith: title)
+        let first = clock.label
+        expectation(for: NSPredicate(format: "label != %@", first), evaluatedWith: clock)
         waitForExpectations(timeout: 4)
 
         app.buttons["live-call-remote-hangup"].tap()
@@ -354,6 +364,41 @@ final class LiveCallUITests: XCTestCase {
         waitForExpectations(timeout: 5)
         XCTAssertTrue(app.buttons["live-call-start"].waitForExistence(timeout: 5), "the line is free again")
         record("After the remote hang-up", app)
+    }
+
+    /// A bot name too long for the bar's line gives way; the clock, where the
+    /// call is and the buttons never do: on the remote bar, then on this
+    /// phone's own call.
+    @MainActor
+    func testALongBotNameGivesWayToTheClock() {
+        let app = launch(["-live-call-remote-preview", "-live-call-long-name-preview"])
+        openGmail(app)
+
+        let remoteName = app.staticTexts["live-call-remote-title"]
+        XCTAssertTrue(remoteName.waitForExistence(timeout: 5))
+        XCTAssertEqual(remoteName.label, "Live with \(Self.longName)", "the whole name, for VoiceOver")
+        let bar = remoteBar(app)
+        let remoteHangUp = app.buttons["live-call-remote-hangup"]
+        assertTheLineKeepsTheClock(name: remoteName, clock: app.staticTexts["live-call-remote-clock"], before: remoteHangUp, in: bar)
+        let device = app.staticTexts["live-call-remote-device"]
+        XCTAssertEqual(device.label, "From your computer")
+        assertWhole(device, in: bar)
+        record("Remote bar with a long name", app)
+
+        remoteHangUp.tap()
+        expectation(for: NSPredicate(format: "exists == false"), evaluatedWith: remoteName)
+        waitForExpectations(timeout: 5)
+
+        startCall(app)
+        let name = app.staticTexts["live-call-title"]
+        XCTAssertEqual(name.label, "Live with \(Self.longName)")
+        assertTheLineKeepsTheClock(
+            name: name, clock: app.staticTexts["live-call-clock"], before: app.buttons["live-call-settings"],
+            in: app.otherElements["live-call-bar"]
+        )
+        XCTAssertTrue(app.buttons["live-call-hangup"].isHittable)
+        record("Live call bar with a long name", app)
+        app.buttons["live-call-hangup"].tap()
     }
 
     /// While this phone is on a call, a room's chat carries the banner back
@@ -404,6 +449,51 @@ final class LiveCallUITests: XCTestCase {
     /// disclosure, and the typed-replies switch's description).
     private static let disclosure = "A Live call sends your voice to OpenAI, along with the chat's recent messages, the bot's answers and the details of any approval it asks for. The OpenAI key stays on your computer."
     private static let typedRepliesOff = "When this is off, messages you type during a call and the bot's answers to them are not sent to OpenAI."
+    /// Pepper's name under `-live-call-long-name-preview`: 40 characters.
+    private static let longName = "Pepper, the Quarterly Planning Assistant"
+    /// The newest message in Pepper's Gmail thread (the preview's).
+    private static let newestMessage = "Here’s this morning’s triage as a voice note."
+
+    /// The remote bar, by the id it carries on its own or the bars' shared one.
+    @MainActor
+    private func remoteBar(_ app: XCUIApplication) -> XCUIElement {
+        app.otherElements.matching(NSPredicate(format: "identifier IN %@", ["live-call-remote-bar", "live-call-bar"])).firstMatch
+    }
+
+    /// The bar's line gives way at the name only: the name ends where the
+    /// clock starts, and the whole clock sits in the bar before `button`.
+    @MainActor
+    private func assertTheLineKeepsTheClock(
+        name: XCUIElement, clock: XCUIElement, before button: XCUIElement, in bar: XCUIElement,
+        file: StaticString = #filePath, line: UInt = #line
+    ) {
+        XCTAssertTrue(name.exists && clock.exists && button.exists, "the name, the clock and the button are there", file: file, line: line)
+        XCTAssertLessThanOrEqual(name.frame.maxX, clock.frame.minX + 0.5, "the name runs into the clock", file: file, line: line)
+        XCTAssertLessThanOrEqual(clock.frame.maxX, button.frame.minX, "the clock runs into the button", file: file, line: line)
+        assertWhole(clock, in: bar, file: file, line: line)
+        assertWhole(button, in: bar, file: file, line: line)
+    }
+
+    @MainActor
+    private func assertWhole(_ element: XCUIElement, in bar: XCUIElement, file: StaticString = #filePath, line: UInt = #line) {
+        XCTAssertTrue(element.exists, "\(element) is missing", file: file, line: line)
+        XCTAssertFalse(element.frame.isEmpty, "\(element.identifier) has no size", file: file, line: line)
+        XCTAssertTrue(bar.frame.contains(element.frame), "\(element.identifier) \(element.frame) is cut off by the bar \(bar.frame)", file: file, line: line)
+    }
+
+    /// Nothing of the chat's end is under the bar: the newest message and the
+    /// typing dots after it end above the bar's top.
+    @MainActor
+    private func assertTheChatEndsAbove(_ bar: XCUIElement, _ app: XCUIApplication, file: StaticString = #filePath, line: UInt = #line) {
+        XCTAssertTrue(bar.exists, "no bar", file: file, line: line)
+        let newest = Self.text(Self.newestMessage, in: app)
+        XCTAssertTrue(newest.exists, "the newest message is not on screen", file: file, line: line)
+        XCTAssertLessThanOrEqual(newest.frame.maxY, bar.frame.minY, "the newest message runs under the bar", file: file, line: line)
+        let working = app.descendants(matching: .any).matching(NSPredicate(format: "label == %@", "Pepper is working")).firstMatch
+        if working.exists {
+            XCTAssertLessThanOrEqual(working.frame.maxY, bar.frame.minY, "the typing dots run under the bar", file: file, line: line)
+        }
+    }
 
     /// A text found by its whole label. XCTest refuses a subscript identifier
     /// longer than 128 characters, and the disclosure is longer than that.

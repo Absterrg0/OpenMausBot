@@ -5095,12 +5095,12 @@
         }
       }
     },
-    "Live with %@ · %@": {
+    "Live with %@": {
       "localizations": {
         "pt-BR": {
           "stringUnit": {
             "state": "translated",
-            "value": "Ao vivo com %@ · %@"
+            "value": "Ao vivo com %@"
           }
         }
       }
@@ -5345,52 +5345,42 @@
         }
       }
     },
-    "your computer": {
+    "From your computer": {
       "localizations": {
         "pt-BR": {
           "stringUnit": {
             "state": "translated",
-            "value": "seu computador"
+            "value": "Do seu computador"
           }
         }
       }
     },
-    "an iPhone": {
+    "From an iPhone": {
       "localizations": {
         "pt-BR": {
           "stringUnit": {
             "state": "translated",
-            "value": "um iPhone"
+            "value": "De um iPhone"
           }
         }
       }
     },
-    "an Android phone": {
+    "From an Android phone": {
       "localizations": {
         "pt-BR": {
           "stringUnit": {
             "state": "translated",
-            "value": "um celular Android"
+            "value": "De um celular Android"
           }
         }
       }
     },
-    "another device": {
+    "From another device": {
       "localizations": {
         "pt-BR": {
           "stringUnit": {
             "state": "translated",
-            "value": "outro dispositivo"
-          }
-        }
-      }
-    },
-    "Live with %@ from %@ · %@": {
-      "localizations": {
-        "pt-BR": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Ao vivo com %@ de %@ · %@"
+            "value": "De outro dispositivo"
           }
         }
       }

@@ -5,7 +5,8 @@
 //   m:ss", one caption line, settings, mute, hang up; or why it stopped,
 //   with Try again.
 // - RemoteLiveCallBar: a call on this chat that another device holds. The
-//   Mac's word only (state.liveCall), with a hang up that asks the Mac.
+//   Mac's word only (state.liveCall): "Live with Ada · m:ss", where the call
+//   is on a second line, and a hang up that asks the Mac.
 // - LiveCallBanner: a thin line on other screens while this phone is on a
 //   call, tapping back to it.
 import CompanionCore
@@ -26,7 +27,11 @@ struct LiveCallBar: View {
                 // prompt, the offer, the Mac asking OpenAI), and a call the
                 // person no longer wants must not be one they have to wait
                 // out. The controller ends whatever a late 201 created.
-                row(title: Text("Calling \(botName)…"), captions: false, controls: .hangUpOnly)
+                row(
+                    title: Text("Calling \(botName)…").accessibilityIdentifier("live-call-title"),
+                    captions: false,
+                    controls: .hangUpOnly
+                )
             case .live:
                 row(
                     title: LiveCallTitle(
@@ -38,7 +43,7 @@ struct LiveCallBar: View {
                     controls: .full
                 )
             case .ending:
-                row(title: Text("Hanging up…"), captions: false, controls: .none)
+                row(title: Text("Hanging up…").accessibilityIdentifier("live-call-title"), captions: false, controls: .none)
             case let .stopped(_, notice):
                 stoppedRow(notice)
             }
@@ -60,6 +65,8 @@ struct LiveCallBar: View {
     /// hang-up while calling, settings, mute and hang-up once live.
     private enum Controls { case none, hangUpOnly, full }
 
+    /// `title` carries its own accessibility id: "live-call-title" (and
+    /// "live-call-clock" while live).
     private func row(title: some View, captions: Bool, controls: Controls) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 8) {
@@ -69,7 +76,6 @@ struct LiveCallBar: View {
                 title
                     .font(.system(size: 14, weight: .semibold))
                     .lineLimit(1)
-                    .accessibilityIdentifier("live-call-title")
                 Spacer(minLength: 4)
                 if controls == .full {
                     Button { showingSettings = true } label: {
@@ -151,8 +157,34 @@ private struct LiveCallTitle: View {
     var body: some View {
         if connecting {
             Text("Connecting…")
+                .accessibilityIdentifier("live-call-title")
         } else {
-            Text("Live with \(botName) · \(LiveCallClock.text(feed.elapsedSeconds))")
+            LiveCallNameAndClock(botName: botName, clock: LiveCallClock.text(feed.elapsedSeconds), id: "live-call")
+        }
+    }
+}
+
+/// "Live with Ada · m:ss" on one line, on this phone's bar and on the remote
+/// bar. Only the name gives way: the clock takes its whole width first and
+/// the name gets what is left, cut short with "…" when it needs more. The
+/// clock's digits are all one width, so a long name is not cut a letter
+/// shorter or longer every second. `id` names the two parts, "<id>-title"
+/// and "<id>-clock"; VoiceOver reads the whole name and then the time.
+private struct LiveCallNameAndClock: View {
+    let botName: String
+    let clock: String
+    let id: String
+
+    var body: some View {
+        HStack(spacing: 0) {
+            Text("Live with \(botName)")
+                .accessibilityIdentifier("\(id)-title")
+            Text(verbatim: " · \(clock)")
+                .monospacedDigit()
+                .fixedSize()
+                .layoutPriority(1)
+                .accessibilityLabel(Text(verbatim: clock))
+                .accessibilityIdentifier("\(id)-clock")
         }
     }
 }
@@ -177,6 +209,10 @@ private struct LiveCallCaptionLine: View {
 /// Mac's `startedAt`; hanging up asks the Mac, which tells everyone. The bar
 /// goes on the Mac's answer; if the Mac (or the sidecar) refuses, its words
 /// show in the app's alert and the bar stays, so the tap can be tried again.
+///
+/// Where the call is ("From your computer") has a line of its own, where this
+/// phone's own call shows its captions: on the first line it pushed the clock
+/// off a phone's width.
 struct RemoteLiveCallBar: View {
     let call: LiveCallState
     let botName: String
@@ -186,33 +222,43 @@ struct RemoteLiveCallBar: View {
     @State private var hangingUp = false
 
     var body: some View {
-        HStack(spacing: 8) {
-            Image(systemName: "phone.fill")
-                .font(.system(size: 14, weight: .semibold))
-                .foregroundStyle(Color.green)
-            // The clock runs on the timeline, not on a timer held by this
-            // view: the chat re-renders the bar as frames land, and a timer
-            // re-created with each render may never get to fire.
-            TimelineView(.periodic(from: .now, by: 1)) { context in
-                Text("Live with \(botName) from \(LiveCallNotice.devicePhrase(call.client)) · \(LiveCallClock.text(LiveCallClock.elapsed(since: call.startedAt, now: context.date)))")
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 8) {
+                Image(systemName: "phone.fill")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(Color.green)
+                // The clock runs on the timeline, not on a timer held by this
+                // view: the chat re-renders the bar as frames land, and a timer
+                // re-created with each render may never get to fire.
+                TimelineView(.periodic(from: .now, by: 1)) { context in
+                    LiveCallNameAndClock(
+                        botName: botName,
+                        clock: LiveCallClock.text(LiveCallClock.elapsed(since: call.startedAt, now: context.date)),
+                        id: "live-call-remote"
+                    )
                     .font(.system(size: 14, weight: .semibold))
                     .lineLimit(1)
-                    .accessibilityIdentifier("live-call-remote-title")
-            }
-            Spacer(minLength: 4)
-            Button {
-                hangingUp = true
-                Task {
-                    await session.hangUpRemoteLiveCall(callId: call.callId)
-                    hangingUp = false
                 }
-            } label: {
-                HangUpLabel()
+                Spacer(minLength: 4)
+                Button {
+                    hangingUp = true
+                    Task {
+                        await session.hangUpRemoteLiveCall(callId: call.callId)
+                        hangingUp = false
+                    }
+                } label: {
+                    HangUpLabel()
+                }
+                .buttonStyle(.plain)
+                .disabled(hangingUp)
+                .accessibilityLabel("Hang up")
+                .accessibilityIdentifier("live-call-remote-hangup")
             }
-            .buttonStyle(.plain)
-            .disabled(hangingUp)
-            .accessibilityLabel("Hang up")
-            .accessibilityIdentifier("live-call-remote-hangup")
+            Text(LiveCallNotice.fromDevice(call.client))
+                .font(.system(size: 13))
+                .foregroundStyle(LiveCallColor.detail)
+                .lineLimit(1)
+                .accessibilityIdentifier("live-call-remote-device")
         }
         .modifier(BarChrome(tint: LiveCallColor.tint))
         .accessibilityIdentifier("live-call-remote-bar")
@@ -309,6 +355,8 @@ private enum LiveCallColor {
     /// The person's own words on the caption line: grey, yet dark (or light)
     /// enough for small text on either tint, which `.secondary` is not.
     static let ownWords = Color.primary.opacity(0.7)
+    /// Where a remote call is, under its name and clock: the same grey.
+    static let detail = ownWords
     /// Behind a muted microphone: the page's own colour, white or black, so
     /// the red slash stands out in both modes.
     static let mutedBackground = Color(uiColor: .systemBackground)
@@ -378,13 +426,15 @@ extension LiveCallNotice {
         }
     }
 
-    /// "your computer", mid-sentence.
-    static func devicePhrase(_ client: String) -> String {
+    /// Where a call another device holds is: the remote bar's second line.
+    /// The desktop's remote bar says it the same way ("Pepper is on a Live
+    /// call from an iPhone"), and so does Android's.
+    static func fromDevice(_ client: String) -> String {
         switch client {
-        case "desktop": return String(localized: "your computer")
-        case "ios": return String(localized: "an iPhone")
-        case "android": return String(localized: "an Android phone")
-        default: return String(localized: "another device")
+        case "desktop": return String(localized: "From your computer")
+        case "ios": return String(localized: "From an iPhone")
+        case "android": return String(localized: "From an Android phone")
+        default: return String(localized: "From another device")
         }
     }
 }

@@ -345,8 +345,8 @@ interruptions.
 10. **Interruptions.** Receive a phone call during a Live call: the Live
     call ends.
 11. **Two devices.** Start a Live call on the Mac, then open the same bot's
-    chat on the phone: a bar "Live with <bot> from your computer" with a
-    hang-up; the phone icon is hidden. While the Mac is on a call the phone
+    chat on the phone: a bar "Live with <bot> · m:ss" over "From your
+    computer", with a hang-up; the phone icon is hidden. While the Mac is on a call the phone
     icon is hidden in every chat, so the phone can only run into the Mac's
     call when both start at the same moment: it then says "Your computer is
     on a call with <bot>." with no Try again.
