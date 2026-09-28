@@ -211,7 +211,7 @@ export class LiveCallController {
       call.state.startedAt = this.now();
       call.lastActivityAt = this.now();
       call.lastActivity = this.deps.activity(input.botId, input.threadId);
-    if (call.lastActivity === "working") this.beginWork(call);
+      if (call.lastActivity === "working") this.beginWork(call);
       call.unsubscribe = this.deps.store.onChange((change) => this.onStoreChange(call, change));
       this.deps.log(`[live] call started bot=${input.botId} voice=${voice} client=${input.client}`);
       this.emit(call);
@@ -222,7 +222,10 @@ export class LiveCallController {
       this.attach(call);
     } catch (error) {
       // Never leave the one call slot taken by a call that did not start.
+      const sidebandOpened = call.socket !== null;
       this.finish(call, "error", "The call could not start.");
+      // No sideband owns the session OpenAI made: close it, as a cancelled start does.
+      if (!sidebandOpened) this.closeOrphan(session.sessionId, key);
       throw error;
     }
     return { call: { ...call.state }, sdp: session.sdp };

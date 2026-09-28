@@ -275,6 +275,12 @@ describe("LiveCallController lifecycle", () => {
     await expect(t.controller.start({ auth: owner, ...BOT, client: "desktop", sdp: "a" })).rejects.toThrow("no such bot");
     expect(t.controller.current()).toBeNull();
     expect(t.frames.at(-1)).toMatchObject({ status: "ended", endReason: "error" });
+    // no client will attach to the session OpenAI made: it is closed
+    const orphan = t.socket();
+    expect(orphan.url).toBe("ws://fake/sess_1/attach");
+    orphan.open();
+    expect(orphan.sent).toEqual([expect.objectContaining({ type: "session.close" })]);
+    expect(orphan.readyState).toBe(3);
     expect(vi.getTimerCount()).toBe(0);
     fail = false;
     await expect(t.start()).resolves.toBeTruthy();
