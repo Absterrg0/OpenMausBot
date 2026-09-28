@@ -21,7 +21,7 @@ vi.mock("./DesktopCapabilities", () => ({ useDesktopCapabilities: () => ({ capab
 vi.mock("@/state/store", async (importOriginal) => ({
   ...await importOriginal<typeof import("@/state/store")>(),
   api: fixture.api,
-  useStore: () => ({ state: { appSettingsSection: fixture.section }, dispatch: fixture.dispatch }),
+  useStore: () => ({ state: { appSettingsSection: fixture.section, instances: [] }, dispatch: fixture.dispatch }),
 }));
 vi.mock("@/lib/thread-preferences", () => ({
   useShowThreads: () => fixture.showThreads,
@@ -105,6 +105,7 @@ describe("Settings → Appearance", () => {
     expect(html).toContain("Profile");
     expect(html).toContain("Maximum turn length");
     expect(html).toContain("Maximum running threads per bot");
+    expect(html).toContain("Automatic recovery");
     expect(html).toContain('aria-label="App language"');
     expect(html).toContain("Diagnostics");
     expect(html).not.toContain('aria-label="Show threads"');
@@ -171,5 +172,15 @@ describe("Settings → Appearance", () => {
     vi.stubGlobal("window", { ogb: { organization: {}, remoteClient: { active: true } } });
     expect(render()).not.toContain('<option value="organization"');
     expect(render()).toContain("Midnight");
+  });
+  it("offers personal Cloud separately and only through the local desktop bridge", () => {
+    fixture.section = "cloudAccount";
+    vi.stubGlobal("window", { ogb: { cloudAccount: {} } });
+    expect(render()).toContain('<option value="cloudAccount" selected="">OMB Cloud</option>');
+    expect(render()).toContain("Free local use");
+    fixture.section = "appearance";
+    vi.stubGlobal("window", {}); expect(render()).not.toContain('<option value="cloudAccount"');
+    vi.stubGlobal("window", { ogb: { cloudAccount: {}, remoteClient: { active: true } } });
+    expect(render()).not.toContain('<option value="cloudAccount"');
   });
 });

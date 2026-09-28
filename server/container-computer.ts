@@ -7,6 +7,7 @@
 // typing, screenshots, accessibility, or window discovery.
 import { execFile } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
+import { lstatSync } from "node:fs";
 import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -93,6 +94,15 @@ export function perBotLocalVmTarget(botId: string): LocalVmTarget {
     viewerPort: null,
     label: digest,
   };
+}
+
+/** Only provisioning creates this durable directory; idle removal keeps it. */
+export function localVmWorkspaceExists(target: LocalVmTarget): boolean {
+  try {
+    return lstatSync(target.workspaceDir, { throwIfNoEntry: false })?.isDirectory() === true;
+  } catch {
+    return false;
+  }
 }
 
 const LINUX_WHEELS = {

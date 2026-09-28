@@ -41,6 +41,18 @@ export class ProviderError extends Error {
   }
 }
 
+/** The driver proved this attempt never reached a prompt or client-side action,
+ * and its owned process has stopped. The harness may safely recover it. */
+export class TurnNotStartedError extends Error {
+  readonly turnId: TurnId;
+
+  constructor(turnId: TurnId, message: string) {
+    super(message);
+    this.name = "TurnNotStartedError";
+    this.turnId = turnId;
+  }
+}
+
 
 /** Variants are opaque provider IDs, not the cross-engine effort enum. */
 export function isModelVariant(value: unknown): value is string {
@@ -116,6 +128,9 @@ export interface SendTurnInput {
    * process. Takes precedence over resumeCursor. The runtime supplies the
    * active conversation in text/transcript when rebuilding a session. */
   sessionReset?: boolean;
+  /** Hold the startup ACK until prompt dispatch; a safely retired transient
+   * setup failure may reject with TurnNotStartedError instead of completing. */
+  startupRecovery?: boolean;
   /** The turn with the conversation so far replayed inline, attached only
    * alongside resumeCursor. A cursor-resuming driver sends it once, on a
    * fresh session, when the provider refuses the cursor before reading the
@@ -156,9 +171,10 @@ export interface SendTurnInput {
      * bridge harness-controlled lets it turn connection requests into trusted
      * chat cards consistently across provider CLIs. */
     composio?: { command: string; args: string[]; env: Record<string, string> };
-    /** Box's native runner or an explicitly capable driver consumes this
+    /** Boat's native runner or an explicitly capable driver consumes this
      * leased descriptor. Other computers use the stdio descriptor below. */
     computer?: {
+      // kind "box" and field boxId keep their historical names (leased-wire contract).
       kind?: "box";
       boxId: string;
       token: string;
@@ -247,8 +263,19 @@ export interface ProviderAdapter {
      * told it has a computer whose tools its driver cannot mount — it
      * burns turns hunting for tools that aren't there. */
     computerMcp?: boolean;
-    /** Consumes the leased Box descriptor without switching to Box's model. */
+    /** Consumes the leased Boat descriptor without switching to Boat's model. */
     cloudComputerMcp?: boolean;
+    /** True when the whole turn executes on the cloud computer (the Boat native
+     * agent — POST /boxes/{id}/prompt) instead of in the host harness. Such a
+     * driver claims the boat exclusively, cannot use host or Local VM surfaces,
+     * and every tool call acts on that machine's screen (screen pollers start
+     * with screenIsTheWork). Implies a cloud-computer turn even though the
+     * driver mounts no computer descriptor — cloudComputerMcp stays false. */
+    remoteAgent?: boolean;
+    /** True when this driver's turn can run against a cloud computer — natively
+     * (remoteAgent) or by mounting the leased Boat descriptor (cloudComputerMcp).
+     * Gates every cloud attach path (attachBotBoat / attachTeamBoat canMount). */
+    usesCloudComputer?: boolean;
     /** True when the driver mounts turn.integrations.composio (the user's
      * connected apps). Same rule again: a key in the config says the user
      * HAS those connections, not that this driver can reach them. */

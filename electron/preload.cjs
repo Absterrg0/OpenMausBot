@@ -285,6 +285,20 @@ const bridge = {
       return () => ipcRenderer.removeListener("workspaces:open-settings", handler);
     },
   },
+  cloudAccount: process.argv.includes("--omb-company-desktop=1") ? {
+    state: () => ipcRenderer.invoke("cloud-account:state"),
+    begin: () => ipcRenderer.invoke("cloud-account:begin"),
+    reopen: () => ipcRenderer.invoke("cloud-account:reopen"),
+    cancel: () => ipcRenderer.invoke("cloud-account:cancel"),
+    refresh: () => ipcRenderer.invoke("cloud-account:refresh"),
+    signOut: () => ipcRenderer.invoke("cloud-account:signOut"),
+    openDashboard: () => ipcRenderer.invoke("cloud-account:openDashboard"),
+    onState: cb => {
+      const handler = (_event, state) => cb(state);
+      ipcRenderer.on("cloud-account:state-changed", handler);
+      return () => ipcRenderer.removeListener("cloud-account:state-changed", handler);
+    },
+  } : undefined,
   organization: process.argv.includes("--omb-company-desktop=1") ? {
     settingsOpened: () => ipcRenderer.invoke("organization:settings-opened"),
     state: () => ipcRenderer.invoke("organization:state"),
