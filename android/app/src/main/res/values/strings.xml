@@ -184,6 +184,7 @@
     <string name="mobile_remove_computer_name_272e4835">Remove %1$s?</string>
     <string name="mobile_remove_connection_name_e686927b">Remove %1$s?</string>
     <string name="mobile_rename_taskrules_title_task_054bec52">Rename %1$s</string>
+    <string name="mobile_rename_thread">Rename thread</string>
     <string name="mobile_requesting_camera_access_30e104c0">Requesting camera access…</string>
     <string name="mobile_reset_44c57abd">Reset</string>
     <string name="mobile_reset_quick_replies_4d3d1256">Reset quick replies?</string>
@@ -317,7 +318,7 @@
     <string name="mobile_settings_background_off_description">Notifications only arrive while the app is open or was recently backgrounded. Turn this on if you rely on scheduled routines to notify you later — it adds a permanent low-priority notification and uses a little more battery.</string>
     <string name="mobile_settings_change_activity_detail">Change activity detail</string>
     <string name="mobile_settings_not_here">Not here</string>
-    <string name="mobile_settings_notifications_footer">Approvals and finished work appear while OpenMausMobile is connected, including frames replayed after a short background pause. Closed-app push needs a separate push-relay release that does not exist yet.</string>
+    <string name="mobile_settings_notifications_footer">Approvals and finished work appear while MausBot is connected, including frames replayed after a short background pause. Closed-app push needs a separate push-relay release that does not exist yet.</string>
     <string name="mobile_settings_workspace_footer">Routine schedules are safe to manage here. Provider keys, webhook secrets, pairing, revocation, Local VM, and agent execution policy stay on your computer.</string>
     <string name="mobile_settings_unpair_footer">Removes the pairing from this phone only. To stop it reaching the computer at all, remove the device in OpenMausBot → Settings → Phone.</string>
     <string name="mobile_settings_not_here_body">API keys, pairing and the Local VM are managed on the computer. This phone is deliberately not allowed to change them.</string>
@@ -755,5 +756,11 @@
     <string name="mobile_steps_count">%1$d steps</string>
     <string name="mobile_camera_unavailable">This phone\'s camera could not be started. Use its Camera app to read the QR code, or enter the address and code by hand.</string>
     <string name="mobile_thread_snoozed">Snoozed</string>
+    <string name="mobile_snooze_task_rules_title">Snooze %1$s</string>
+    <string name="mobile_stop_this_thread_before_snoozing_it">Stop this thread before snoozing it.</string>
+    <string name="mobile_stop_snoozing">Stop snoozing</string>
+    <string name="mobile_until_new_activity">Until new activity</string>
+    <string name="mobile_until_6_pm">Until 6 PM</string>
+    <string name="mobile_until_9_am_tomorrow">Until 9 AM tomorrow</string>
     <string name="mobile_pairing_code_placeholder">6-digit or ABCD-EFGH-JKLM code</string>
 </resources>

@@ -354,7 +354,7 @@ fun TaskSheet(
         AlertDialog(
             onDismissRequest = { if (!saving) pendingDelete = null },
             title = { Text(stringResource(R.string.mobile_delete_taskrules_title_task_df44dd3a, TaskRules.title(task))) },
-            text = { Text(error ?: stringResource(R.string.mobile_this_conversation_will_be_deleted__af9201c8)) },
+            text = { Text(error?.let { localizedMobileCopy(it) } ?: stringResource(R.string.mobile_this_conversation_will_be_deleted__af9201c8)) },
             confirmButton = {
                 TextButton(enabled = !saving && TaskRules.canDelete(task, current), onClick = {
                     if (!TaskRules.canDelete(task, current)) return@TextButton
@@ -385,14 +385,14 @@ fun TaskSheet(
         val working = TaskRules.isWorking(task)
         AlertDialog(
             onDismissRequest = { if (!saving) pendingSnooze = null },
-            title = { Text("Snooze ${TaskRules.title(task)}") },
+            title = { Text(stringResource(R.string.mobile_snooze_task_rules_title, TaskRules.title(task))) },
             text = {
                 Column {
                     error?.let {
-                        Text(it, color = MaterialTheme.colorScheme.error)
+                        Text(localizedMobileCopy(it), color = MaterialTheme.colorScheme.error)
                     }
                     if (working) {
-                        Text("Stop this thread before snoozing it.", color = secondaryTint)
+                        Text(stringResource(R.string.mobile_stop_this_thread_before_snoozing_it), color = secondaryTint)
                     } else {
                         SnoozeRules.presets.forEach { preset ->
                             TextButton(
@@ -414,7 +414,7 @@ fun TaskSheet(
                                     }
                                 },
                                 modifier = Modifier.fillMaxWidth(),
-                            ) { Text(preset.label) }
+                            ) { Text(localizedMobileCopy(preset.label)) }
                         }
                         if (task.isSnoozed(now)) {
                             TextButton(
@@ -432,7 +432,7 @@ fun TaskSheet(
                                     }
                                 },
                                 modifier = Modifier.fillMaxWidth(),
-                            ) { Text(SnoozeRules.STOP_SNOOZING) }
+                            ) { Text(localizedMobileCopy(SnoozeRules.STOP_SNOOZING)) }
                         }
                     }
                 }
@@ -440,7 +440,7 @@ fun TaskSheet(
             confirmButton = {},
             dismissButton = {
                 TextButton(enabled = !saving, onClick = { pendingSnooze = null; error = null }) {
-                    Text("Cancel")
+                    Text(stringResource(R.string.mobile_cancel_77dfd213))
                 }
             },
         )
@@ -609,7 +609,7 @@ private fun TaskTitleDialog(
         title = { Text(localizedMobileCopy(heading)) },
         text = {
             Column {
-                error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+                error?.let { Text(localizedMobileCopy(it), color = MaterialTheme.colorScheme.error) }
                 OutlinedTextField(
                 value = title,
                 onValueChange = onTitleChange,

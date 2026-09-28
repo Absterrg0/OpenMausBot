@@ -184,6 +184,7 @@
     <string name="mobile_remove_computer_name_272e4835">要移除 %1$s 嗎？</string>
     <string name="mobile_remove_connection_name_e686927b">要移除 %1$s 嗎？</string>
     <string name="mobile_rename_taskrules_title_task_054bec52">重新命名 %1$s</string>
+    <string name="mobile_rename_thread">重新命名執行緒</string>
     <string name="mobile_requesting_camera_access_30e104c0">正在要求相機權限…</string>
     <string name="mobile_reset_44c57abd">重設</string>
     <string name="mobile_reset_quick_replies_4d3d1256">要重設快速回覆嗎？</string>
@@ -317,7 +318,7 @@
     <string name="mobile_settings_background_off_description">只有在應用程式開啟或最近切至背景時才會收到通知。如果你需要稍後收到排程例行工作的通知，請開啟此選項；它會持續顯示一則低優先順序通知，並稍微增加耗電。</string>
     <string name="mobile_settings_change_activity_detail">變更活動詳細程度</string>
     <string name="mobile_settings_not_here">此處不提供</string>
-    <string name="mobile_settings_notifications_footer">OpenMausMobile 連線期間會顯示待處理的核准和已完成的工作，也包括短暫切至背景後補播的更新。應用程式關閉後的推播通知需要另外推出推播中繼功能，目前尚未提供。</string>
+    <string name="mobile_settings_notifications_footer">MausBot 連線期間會顯示待處理的核准和已完成的工作，也包括短暫切至背景後補播的更新。應用程式關閉後的推播通知需要另外推出推播中繼功能，目前尚未提供。</string>
     <string name="mobile_settings_workspace_footer">你可以在此安全地管理例行工作排程。提供者金鑰、Webhook 密鑰、配對、撤銷、本機虛擬機和代理程式執行原則仍由電腦管理。</string>
     <string name="mobile_settings_unpair_footer">這只會移除此手機上的配對。如要完全阻止手機連線電腦，請在 OpenMausBot → 設定 → 手機中移除此裝置。</string>
     <string name="mobile_settings_not_here_body">API 金鑰、配對和本機虛擬機均由電腦管理。此手機無法變更這些設定。</string>
@@ -755,5 +756,11 @@
     <string name="mobile_steps_count">%1$d 個步驟</string>
     <string name="mobile_camera_unavailable">此手機無法啟動相機。請使用手機上的相機 App 讀取 QR Code，或手動輸入位址與代碼。</string>
     <string name="mobile_thread_snoozed">已延後</string>
+    <string name="mobile_snooze_task_rules_title">延後 %1$s</string>
+    <string name="mobile_stop_this_thread_before_snoozing_it">請先停止此執行緒，再設為延後。</string>
+    <string name="mobile_stop_snoozing">停止延後</string>
+    <string name="mobile_until_new_activity">直到有新動態</string>
+    <string name="mobile_until_6_pm">直到下午 6 點</string>
+    <string name="mobile_until_9_am_tomorrow">直到明天上午 9 點</string>
     <string name="mobile_pairing_code_placeholder">6 位數或 ABCD-EFGH-JKLM 代碼</string>
 </resources>
