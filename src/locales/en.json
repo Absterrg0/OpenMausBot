@@ -2907,6 +2907,7 @@
   "companyBackup.phase.ready": "Backup transfer complete.",
   "canvas.description": "Your bots, their teams, and how they work together.",
   "canvas.botCount": "{count} bots",
+  "canvas.botCountOne": "1 bot",
   "canvas.editBot": "Edit {name}",
   "canvas.bot": "Bot",
   "canvas.openChat": "Open chat",
