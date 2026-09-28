@@ -2196,7 +2196,8 @@ final class Session: ObservableObject {
         do {
             return try await client.startLiveCall(botId: botId, threadId: threadId, sdp: sdp)
         } catch let error as APIError where error.isUnauthorized {
-            status = .unauthorized
+            // A computer this phone just left does not speak for the next one.
+            if self.client?.connection.id == client.connection.id { status = .unauthorized }
             throw error
         }
     }
@@ -2268,13 +2269,15 @@ final class Session: ObservableObject {
             actionError = String(localized: "This computer is offline.")
             return nil
         }
+        let current = { self.client?.connection.id == client.connection.id }
         do {
             return try await client.updateLiveSettings(patch)
         } catch let error as APIError where error.isUnauthorized {
-            status = .unauthorized
+            // A computer this phone just left does not speak for the next one.
+            if current() { status = .unauthorized }
             return nil
         } catch {
-            actionError = error.localizedDescription
+            if current() { actionError = error.localizedDescription }
             return nil
         }
     }
