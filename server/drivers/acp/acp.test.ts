@@ -294,6 +294,20 @@ describe("ACP turns (fake CLI)", () => {
     expect(error?.message).not.toContain("managed-alias");
   });
 
+  it("pairs an unkeyed tool call's lifecycle events on one stable itemId", async () => {
+    await create(GrokAgentDriver, "unkeyed-tool");
+    const { turnId } = await instance.adapter.sendTurn({ threadId: "t-unkeyed-tool", text: "go" });
+    await recorder.until((e) => e.type === "turn.completed" && e.turnId === turnId);
+    const started = recorder.events.find((e) => e.type === "item.started" && e.itemType === "tool");
+    const completed = recorder.events.find((e) => e.type === "item.completed" && e.itemType === "tool");
+    // The agent sent no toolCallId: without a synthetic id the completion
+    // would be dropped by the itemId guard and the #1653 computer-call
+    // fence would hold the seat until settle.
+    expect(typeof started?.itemId).toBe("string");
+    expect(started?.itemId).toBeTruthy();
+    expect(completed?.itemId).toBe(started?.itemId);
+  });
+
   it("normalizes a full turn into the canonical event sequence", async () => {
     await create();
     const { turnId } = await instance.adapter.sendTurn({ threadId: "t-happy", text: "hi", model: "grok-4.5" });

@@ -2460,6 +2460,12 @@ const turnResources = new TurnResources();
 const sharedComputerControl = new SharedComputerControl(turnResources, () => store.bots.some(bot => botComputerControlSnapshot(bot.id).held));
 const turnResourceOwners = new Map<string, TurnOwner>();
 const turnComputerResources = new Map<string, { owner: TurnOwner; resource: string }>();
+/** Screen-touching computer calls that started before their turn's computer
+ * claim was bound (#1653 over the lazy attach of #1361): the start event
+ * finds no claim to fence, so it waits here and bindTurnComputer carries it
+ * into the fresh claim, keeping the quiet window from releasing a seat
+ * under a call the desktop is already executing. */
+const pendingComputerCallStarts = new Map<string, { generation: string; count: number }>();
 const teamComputerTurns = new Map<string, { owner: TurnOwner; computerId: string; botId: string; remoteAgent: boolean }>();
 const settlingResourceOwners = new Map<string, string>();
 
@@ -2626,6 +2632,7 @@ function releaseTurnResources(owner: TurnOwner | undefined): void {
   turnResources.release(owner);
   if (turnResourceOwners.get(owner.threadId)?.generation === owner.generation) turnResourceOwners.delete(owner.threadId);
   if (turnComputerResources.get(owner.threadId)?.owner.generation === owner.generation) turnComputerResources.delete(owner.threadId);
+  if (pendingComputerCallStarts.get(owner.threadId)?.generation === owner.generation) pendingComputerCallStarts.delete(owner.threadId);
   const teamTurn = teamComputerTurns.get(owner.threadId);
   if (teamTurn?.owner.generation === owner.generation) {
     stopScreenPoller(teamTurn.botId, owner.threadId);
@@ -2755,6 +2762,14 @@ async function bindTurnComputer(owner: TurnOwner, resource: string, exclusive = 
   }
   turnResourceOwners.set(owner.threadId, owner);
   turnComputerResources.set(owner.threadId, { owner, resource });
+  // A screen call that started before this bind (#1653) fenced nothing
+  // because no claim existed yet: carry its pending start into the fresh
+  // claim so the idle window still defers to the running call.
+  const pendingStarts = pendingComputerCallStarts.get(owner.threadId);
+  if (pendingStarts?.generation === owner.generation && pendingStarts.count > 0) {
+    pendingComputerCallStarts.delete(owner.threadId);
+    for (let i = 0; i < pendingStarts.count; i += 1) turnResources.beginComputerCall(resource, owner);
+  }
 }
 
 function botForThread(botId: string, threadId: string): BotRecord | null {
@@ -7242,6 +7257,15 @@ bus.subscribe((event: RuntimeEvent) => {
               // A quiet window cannot expire while this call executes.
               turnResources.endComputerCall(computer.resource, computer.owner);
               turnResources.activity(computer.resource, computer.owner);
+            } else {
+              // The call never forwarded onto a bound desktop, or the lazy
+              // bind never landed: drop its pending start so it cannot
+              // fence a claim taken later (#1653).
+              const pending = pendingComputerCallStarts.get(event.threadId);
+              if (pending) {
+                if (pending.count > 1) pendingComputerCallStarts.set(event.threadId, { ...pending, count: pending.count - 1 });
+                else pendingComputerCallStarts.delete(event.threadId);
+              }
             }
             // Real cloud-screen work refreshes the #1655 idle stop for
             // that seat; the poller's own frames never arrive here, so
@@ -7277,7 +7301,19 @@ bus.subscribe((event: RuntimeEvent) => {
         // or the turn settling — drops the fence.
         if (screenTouchingTool(name) && screenSurfaceForTool(name) === "computer") {
           const computer = turnComputerResources.get(event.threadId);
-          if (computer) turnResources.beginComputerCall(computer.resource, computer.owner);
+          if (computer) {
+            turnResources.beginComputerCall(computer.resource, computer.owner);
+          } else {
+            // A lazy attach (#1361) may not have seated the claim yet: the
+            // gate finishes the bind before the call forwards, so hold the
+            // start here and let bindTurnComputer fence the fresh claim.
+            const generation = activeInternalGenerationByThread.get(event.threadId);
+            if (generation) {
+              const pending = pendingComputerCallStarts.get(event.threadId);
+              pendingComputerCallStarts.set(event.threadId,
+                pending?.generation === generation ? { generation, count: pending.count + 1 } : { generation, count: 1 });
+            }
+          }
         }
       }
       break;

@@ -146,6 +146,11 @@ interface AcpTurn {
    * such as `sleep` or a quiet build sends nothing while it runs, so the
    * prompt's silence watchdog waits for these as it does for asks. */
   runningTools: Set<string>;
+  /** Synthetic item ids handed to `tool_call` notifications the agent sent
+   * without a `toolCallId`: lifecycle consumers pair a tool's start with
+   * its completion by `itemId` (the #1653 computer-call fence among them),
+   * so an unkeyed call must still carry one stable id across both events. */
+  unkeyedToolIds: string[];
   interruptTimer: ReturnType<typeof setTimeout> | null;
   /** ends the quiet-status watch started with the prompt */
   stopQuietWatch: (() => void) | null;
@@ -425,6 +430,19 @@ function trackRunningTool(current: AcpTurn, update: { toolCallId?: unknown; stat
   const status = update.status ?? defaultStatus;
   if (status === "completed" || status === "failed") current.runningTools.delete(update.toolCallId);
   else if (status === "pending" || status === "in_progress") current.runningTools.add(update.toolCallId);
+}
+
+let unkeyedToolSeq = 0;
+/** Stamp an unkeyed `tool_call` with a synthetic id and queue it for the
+ * call's first terminal update, which carries no id of its own to match.
+ * FIFO is the best available pairing when the agent omits `toolCallId`:
+ * the ids exist to pair start with completion, not to order concurrent
+ * unkeyed calls, and the synthetic id deliberately stays out of
+ * `runningTools` so turn-settle semantics are unchanged. */
+function nextUnkeyedToolId(current: AcpTurn): string {
+  const id = `acp-tool-unkeyed-${++unkeyedToolSeq}`;
+  current.unkeyedToolIds.push(id);
+  return id;
 }
 const CLIENT_FILE_MAX_BYTES = 8 * 1024 * 1024;
 
@@ -1323,7 +1341,7 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
                 ...base(threadId, current.turnId),
                 type: "item.started",
                 itemType: "tool",
-                itemId: u.toolCallId,
+                itemId: (typeof u.toolCallId === "string" && u.toolCallId) ? u.toolCallId : nextUnkeyedToolId(current),
                 title: String(u.rawInput?.command ?? u.title ?? "tool").slice(0, 80),
                 summary: commandSummary(u.rawInput),
                 input: toolDetailPreview(u.rawInput),
@@ -1338,7 +1356,7 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
                   ...base(threadId, current.turnId),
                   type: "item.completed",
                   itemType: "tool",
-                  itemId: u.toolCallId,
+                  itemId: (typeof u.toolCallId === "string" && u.toolCallId) ? u.toolCallId : current.unkeyedToolIds.shift(),
                   ok: u.status !== "failed",
                   output: toolDetailPreview(u.rawOutput ?? u.content),
                 });
@@ -1657,6 +1675,7 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
           acknowledge,
           asks,
           runningTools: new Set(),
+          unkeyedToolIds: [],
           interruptTimer: null,
           stopQuietWatch: null,
           flushAssistantText,
