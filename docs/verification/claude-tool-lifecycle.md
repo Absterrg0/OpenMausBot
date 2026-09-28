@@ -49,8 +49,9 @@ words are answered: one `turn.completed`, the bot busy throughout, and the
 turn's internal tool pass valid until then — never revoked under a running
 continuation and never re-issued. A `result` is held when the CLI reports
 `queued_turn_count` above zero, or when a steer was written since the last
-fold seam (a tool result); 2.1.282 reports 0 for words waiting on stdin, so
-0 decides nothing. A held result stands as the turn's if no `init` follows
+fold seam (a tool result) or less than a second before that seam was read
+(the CLI takes stdin as it writes the seam, a moment before the driver reads
+it); 2.1.282 reports 0 for words waiting on stdin, so 0 decides nothing. A held result stands as the turn's if no `init` follows
 within 2 s (the words were folded after all), or if the continuation's
 `init` is followed by 30 s of silence. Peer asides and the queue-steer
 buttons go through the same `steer()`, so an aside landing in the last
@@ -60,7 +61,7 @@ figure; per-turn token usage adds up.
 
 ```sh
 pnpm exec vitest run server/drivers/claude.test.ts -t "could not fold"
-pnpm exec vitest run server/drivers/claude.test.ts -t "queued_turn_count|held window|stays silent|steered continuation"
+pnpm exec vitest run server/drivers/claude.test.ts -t "queued_turn_count|fold seam|held window|stays silent|steered continuation"
 pnpm exec vitest run server/steer-e2e.test.ts -t "internal tool pass"
 ```
 

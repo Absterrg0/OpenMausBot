@@ -452,6 +452,7 @@ describe("ClaudeDriver turns (fake CLI)", () => {
     delete process.env.FAKE_CLAUDE_TEXT_HANG;
     delete process.env.FAKE_CLAUDE_STEER_GRACE_SCALE;
     delete process.env.FAKE_CLAUDE_STEER_SILENCE_SCALE;
+    delete process.env.FAKE_CLAUDE_STEER_SEAM_SCALE;
     delete process.env.ANTHROPIC_API_KEY;
     delete process.env.XAI_API_KEY;
     delete process.env.COMPOSIO_API_KEY;
@@ -2047,9 +2048,11 @@ describe("ClaudeDriver turns (fake CLI)", () => {
 
   it("holds on the CLI's own queued_turn_count after a fold seam the steer had already missed", async () => {
     // The steer landed once the CLI had drained stdin for its next model
-    // call, but before the driver saw that call's tool result — so the
-    // driver's own count is back at 0 when `result` arrives. A CLI that
-    // reports queued_turn_count > 0 says a turn follows; the driver believes it.
+    // call, but before the driver saw that call's tool result. The seam
+    // margin is scaled down to nothing here, so the driver's own count is
+    // back at 0 when `result` arrives. A CLI that reports
+    // queued_turn_count > 0 says a turn follows; the driver believes it.
+    process.env.FAKE_CLAUDE_STEER_SEAM_SCALE = "0.001";
     const finishGate = join(scratch, "count-first.gate");
     const continuationGate = join(scratch, "count-continuation.gate");
     const received = join(scratch, "count-received");
@@ -2076,6 +2079,61 @@ describe("ClaudeDriver turns (fake CLI)", () => {
     // each native turn made its call and its tail call: four seams, all this turn's
     expect(recorder.events.filter((e) => e.type === "item.completed" && e.itemType === "tool")).toHaveLength(4);
     expect(recorder.events.every((e) => e.turnId === turnId)).toBe(true);
+  });
+
+  it("keeps a steer written just before a fold seam was read counted, without the CLI's count", async () => {
+    // The CLI takes stdin as it writes a tool result, and the driver reads
+    // that frame a moment later: a steer written in between was not folded,
+    // and 2.1.282's queued_turn_count stays 0 for it. The driver keeps a
+    // steer that recent counted (the margin is scaled up so that a slow
+    // worker cannot outrun it) and holds the result for the continuation.
+    process.env.FAKE_CLAUDE_STEER_SEAM_SCALE = "10";
+    const finishGate = join(scratch, "seam-first.gate");
+    const continuationGate = join(scratch, "seam-continuation.gate");
+    const received = join(scratch, "seam-received");
+    await create("slow", {
+      FAKE_CLAUDE_SLOW_FINISH_GATE: finishGate,
+      FAKE_CLAUDE_LATE_STEER_GATE: continuationGate,
+      FAKE_CLAUDE_SLOW_TAIL_TOOL: "1",
+      FAKE_CLAUDE_STEER_RECEIVED: received,
+      FAKE_CLAUDE_QUEUED_TURN_COUNT: "zero",
+    });
+    const threadId = "t-late-steer-seam";
+    const { turnId } = await instance.adapter.sendTurn({ threadId, text: "first" });
+    await recorder.until((e) => e.type === "item.completed" && e.itemType === "tool");
+    await expect(instance.adapter.steer!(threadId, "and also this")).resolves.toBe("steered");
+    await expect.poll(() => existsSync(received)).toBe(true);
+    writeFileSync(continuationGate, "finish");
+    writeFileSync(finishGate, "finish");
+    const answered = await recorder.until(
+      (e) => e.type === "item.completed" && e.itemType === "assistant_text" && (e as { text: string }).text === "reply to: and also this",
+    );
+    const completed = await recorder.until((e) => e.type === "turn.completed");
+    expect(recorder.events.indexOf(completed)).toBeGreaterThan(recorder.events.indexOf(answered));
+    expect(recorder.events.filter((e) => e.type === "turn.completed")).toHaveLength(1);
+    expect(recorder.events.every((e) => e.turnId === turnId)).toBe(true);
+  });
+
+  it("does not hold a steer that a fold seam read well after it took in", async () => {
+    // A steer older than the margin when a fold seam is read was folded in
+    // by that seam's drain: the result closes the turn at once, no hold.
+    process.env.FAKE_CLAUDE_STEER_SEAM_SCALE = "0.001";
+    const finishGate = join(scratch, "folded-first.gate");
+    const received = join(scratch, "folded-received");
+    await create("slow", {
+      FAKE_CLAUDE_SLOW_FINISH_GATE: finishGate,
+      FAKE_CLAUDE_SLOW_TAIL_TOOL: "1",
+      FAKE_CLAUDE_STEER_RECEIVED: received,
+    });
+    const threadId = "t-folded-steer";
+    const { turnId } = await instance.adapter.sendTurn({ threadId, text: "first" });
+    await recorder.until((e) => e.type === "item.completed" && e.itemType === "tool");
+    await expect(instance.adapter.steer!(threadId, "and also this")).resolves.toBe("steered");
+    await expect.poll(() => existsSync(received)).toBe(true);
+    writeFileSync(finishGate, "finish");
+    const completed = await recorder.until((e) => e.type === "turn.completed");
+    expect(completed).toMatchObject({ turnId, ok: true });
+    expect(readFileSync(join(NATIVE_DIR, `${threadId}.ndjson`), "utf8")).not.toContain('"hold"');
   });
 
   it("Stop during the held window, before the continuation's init, settles the one turn as interrupted", async () => {
