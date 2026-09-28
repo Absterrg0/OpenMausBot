@@ -295,7 +295,7 @@ export function ApiKeyRow({
           placeholder={configured ? t("keys.replace") : credential.placeholder}
           aria-label={credential.label}
           autoComplete="off"
-          className="w-full rounded-lg border border-hairline/40 bg-inset px-3 py-2 text-[13px] text-ink placeholder:text-ink-secondary focus:border-hairline focus:outline-none"
+          className="w-full rounded-lg border border-hairline/40 bg-inset px-3 py-2 text-[13px] text-ink placeholder:text-ink-secondary focus:outline-none"
         />
         <button
           onClick={save}
@@ -387,7 +387,7 @@ export function VpsConnection() {
           placeholder="my-vps"
           aria-label={t("keys.vps.aria")}
           autoComplete="off"
-          className="w-full rounded-lg border border-hairline/40 bg-inset px-3 py-2 text-[13px] text-ink placeholder:text-ink-secondary focus:border-hairline focus:outline-none"
+          className="w-full rounded-lg border border-hairline/40 bg-inset px-3 py-2 text-[13px] text-ink placeholder:text-ink-secondary focus:outline-none"
         />
         <button
           onClick={save}
@@ -440,7 +440,7 @@ export function OpenAiCompatUrl() {
           placeholder="https://openrouter.ai/api/v1"
           aria-label={t("keys.openaiCompat.url")}
           spellCheck={false}
-          className="w-full rounded-lg border border-hairline/40 bg-inset px-3 py-2 font-mono text-[12px] text-ink placeholder:text-ink-secondary focus:border-hairline focus:outline-none"
+          className="w-full rounded-lg border border-hairline/40 bg-inset px-3 py-2 font-mono text-[12px] text-ink placeholder:text-ink-secondary focus:outline-none"
         />
         <button
           onClick={save}

@@ -1211,7 +1211,13 @@ export function ComputerPanel({
   return (
     <>
     <aside
-      className="animate-panel-in relative flex h-full shrink-0 flex-col border-l border-hairline/40 bg-panel"
+      className={cn(
+        "animate-panel-in relative flex h-full shrink-0 flex-col border-l border-hairline/40 bg-panel",
+        // Below md (a phone on remote access) the stored width would push the
+        // chat to zero and run off the edge, so cover the window like the
+        // settings and inspector panels. `!` beats the inline width.
+        "max-md:absolute max-md:inset-0 max-md:z-40 max-md:w-full!",
+      )}
       style={{ width: panelWidth }}
     >
       <div
@@ -1228,7 +1234,7 @@ export function ComputerPanel({
         onPointerMove={onResizeMove}
         onPointerUp={onResizeEnd}
         onPointerCancel={onResizeEnd}
-        className="absolute inset-y-0 left-0 z-10 w-1.5 cursor-col-resize hover:bg-accent/40 focus-visible:bg-accent/60"
+        className="absolute inset-y-0 left-0 z-10 w-1.5 cursor-col-resize hover:bg-accent/40 focus-visible:bg-accent/60 max-md:hidden"
       />
       {/* Header */}
       <div className={cn("flex items-center justify-between px-4 py-3", padClass)}>

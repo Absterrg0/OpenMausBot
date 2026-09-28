@@ -1,5 +1,16 @@
 @import "tailwindcss";
 
+/* Phones and tablets have no hover, and Tailwind only applies `hover:` and
+   `group-hover:` under `@media (hover: hover)`. A control revealed on hover
+   (`opacity-0 group-hover:opacity-100`) is therefore invisible there. Pair
+   every such reveal with `touch:` so it stays visible on touch screens; mouse
+   users see no change. src/components/touch-actions.test.ts enforces it. */
+@custom-variant touch {
+  @media (hover: none), (pointer: coarse) {
+    @slot;
+  }
+}
+
 /* Inline mentions keep the surrounding font metrics, including in the
    textarea mirror. No padding/border/font-weight changes that shift the caret. */
 .mention-highlight {
@@ -102,6 +113,13 @@
   --color-hairline: #333333;
   --color-ink: #fcfcfc;
   --color-ink-secondary: #fcfcfc99;
+  /* quiet text: timestamps, hints, placeholders, calendar hours. It used to
+     be `text-ink-secondary/70`, which fades an ink already tuned close to
+     AA and landed at 2.2–4:1. Each skin sets this to the quietest ink that
+     still clears 4.5:1 on every text surface, raised-hover included; on the
+     light skins that leaves little room below the secondary ink, so there
+     size carries the hierarchy. Measured by pnpm check:contrast. */
+  --color-ink-tertiary: #fcfcfc90;
   --color-accent: #1084fe;
   --color-accent-border: #459ffe;
   /* the ring a keyboard user follows; sits on the accent so focus reads as
@@ -159,6 +177,7 @@
   --color-hairline: #333333;
   --color-ink: #fcfcfc;
   --color-ink-secondary: #fcfcfc99;
+  --color-ink-tertiary: #fcfcfc90;
   --color-accent: #1084fe;
   --color-accent-border: #459ffe;
   --color-accent-text: #7fc0ff;
@@ -206,6 +225,7 @@
 
   --color-ink: #1a1a18;           /* 17.4:1 on white */
   --color-ink-secondary: #6b6559; /* #8b8578 was 3.67:1 → 5.78:1 */
+  --color-ink-tertiary: #6d685c;
 
   /* Two accent tones: the fill carries white, the text stands on white. */
   --color-accent: #a05f25;        /* #b06a2c darkened → 5.05:1 */
@@ -264,6 +284,7 @@
 
   --color-ink: #f4efe4;           /* warm off-white, never pure #fff */
   --color-ink-secondary: #b0a696; /* 6.7:1 on raised, 5.9:1 on hover */
+  --color-ink-tertiary: #9c9384;
 
   /* Brass. Bright fill, dark lettering — the inversion described above. */
   --color-accent: #d99a3e;
@@ -329,6 +350,7 @@
   --color-ink: #14201f;           /* dark petrol; a neutral black would read
                                      as a foreign object on a tinted ground */
   --color-ink-secondary: #4d5c5b; /* 7.0:1 on white, 5.8:1 on the ground */
+  --color-ink-tertiary: #566564;
 
   --color-accent: #11736d;        /* deep teal, carries white at 5.68:1 */
   --color-accent-border: #14807a;
@@ -373,6 +395,7 @@
 
   --color-ink: #f2f4f7;
   --color-ink-secondary: #b3b8c2;
+  --color-ink-tertiary: #9fa4ad;
 
   --color-accent: #4f75a2;
   --color-accent-border: #698fbb;
@@ -417,6 +440,7 @@
 
   --color-ink: #1d2229;
   --color-ink-secondary: #59616c;
+  --color-ink-tertiary: #5f6671;
 
   --color-accent: #355f8a;
   --color-accent-border: #4978a6;
@@ -460,6 +484,7 @@
 
   --color-ink: #f4eff6;
   --color-ink-secondary: #b9afbd;
+  --color-ink-tertiary: #a199a5;
 
   --color-accent: #765683;
   --color-accent-border: #9670a3;
@@ -511,6 +536,7 @@
 
   --color-ink: #0d0d0d;
   --color-ink-secondary: #575757;
+  --color-ink-tertiary: #5c5c5c;
 
   /* The upstream blue is #1084fe, which carries white at 3.1:1 — fine for the
      unread dot it is mostly used for, not for a filled button's label. The
@@ -655,11 +681,25 @@ body {
 /* Text fields already sit in a bordered card (the composer pill especially).
    Chromium treats a pointer click as :focus-visible on inputs, so the
    global ring above becomes a sharp blue rectangle inside the rounded
-   chrome. Fields keep their own focus:border-*; buttons still use the
-   :focus-visible ring. */
-:is(input, textarea, select):focus,
-:is(input, textarea, select):focus-visible {
+   chrome. Buttons still use the :focus-visible ring. Checkboxes, radios,
+   sliders, colour wells and file pickers are not text fields: they have no
+   border to repaint, so they keep the ring, or a keyboard user tabbing onto
+   one sees nothing. */
+:is(input:not([type="checkbox"], [type="radio"], [type="range"], [type="color"], [type="file"]), textarea, select):focus,
+:is(input:not([type="checkbox"], [type="radio"], [type="range"], [type="color"], [type="file"]), textarea, select):focus-visible {
   outline: none;
+}
+
+/* In its place a field shows focus on its own border, in the ring's colour.
+   Unlayered, so it wins over the resting `border-hairline/40` every field
+   carries as well as over a faint per-file `focus:border-*`. --color-focus
+   clears 3:1 on every field surface (pnpm check:contrast). A borderless
+   field, such as the composer or a find bar, has no border to paint and is
+   left as it was; its rounded wrapper takes `focus-within:border-focus`.
+   A field reporting an error (aria-invalid) keeps its danger border, so the
+   red does not vanish while the user is fixing it. */
+:is(input, textarea, select):focus-visible:not([aria-invalid="true"]) {
+  border-color: var(--color-focus);
 }
 
 ::selection {
@@ -1346,6 +1386,7 @@ body {
   .bg-bubble-user {
     --color-ink: #fcfcfc;
     --color-ink-secondary: #c4c4c4;
+    --color-ink-tertiary: #aaaaaa;
     --color-panel: #111111;
     --color-inset: #191919;
     --color-raised: #2f2f2f;

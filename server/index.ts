@@ -21681,6 +21681,9 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       return json(res, 200, {
         configured: composio.configured(cfg),
         mode: composio.connectionMode(cfg),
+        // lets the panel say "add a key" on a fresh server instead of
+        // reporting an outage that never happened
+        setup: composio.connectorSetup(cfg),
         source,
         cards,
         ...(pagination ? { pagination } : {}),
