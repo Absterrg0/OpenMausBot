@@ -507,7 +507,11 @@ export class LiveCallController {
       question.submitted = true;
       call.activeDelegation = id;
       call.stats.answers += 1;
-      const result = await this.respond(call, { auth: call.auth, threadId: call.state.threadId, requestId: question.requestId, behavior: "answer", message: said }, id);
+      // The voice reading the question, heard back, is not part of the
+      // answer. When that leaves nothing, the person spoke over the voice:
+      // keep everything heard.
+      const answer = heard.withoutEcho || said;
+      const result = await this.respond(call, { auth: call.auth, threadId: call.state.threadId, requestId: question.requestId, behavior: "answer", message: answer }, id);
       if (!result) return;
       if (result.ok) {
         this.append(call, "thinking", LIVE_COPY.answerPassed, id);

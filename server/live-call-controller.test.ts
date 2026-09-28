@@ -1042,6 +1042,27 @@ describe("LiveCallController relay", () => {
       expect(t.deps.send).not.toHaveBeenCalled();
     });
 
+    it("leaves the voice's own question, heard back, out of the answer", async () => {
+      const t = await live();
+      t.message({ id: "q1", kind: "options", card: { title: "Your bot has a question", subtitle: "Which account?", options: ["Main", "Savings"], requestId: "r7" } });
+      await vi.advanceTimersByTimeAsync(0);
+      t.socket().receive({ type: "session.output_transcript.delta", delta: "Which account? Main or Savings?", start_ms: 4_000, end_ms: 6_000 });
+      hear(t, "which account main or savings ", 4_100, 5_900);
+      hear(t, "savings", 7_000);
+      await delegate(t, "del_2", 7_100);
+      expect(t.deps.respond).toHaveBeenCalledWith({ auth: owner, threadId: "t1", requestId: "r7", behavior: "answer", message: "savings" });
+    });
+
+    it("keeps an answer said over the voice", async () => {
+      const t = await live();
+      t.message({ id: "q1", kind: "options", card: { title: "Your bot has a question", subtitle: "Which account?", options: ["Main", "Savings"], requestId: "r7" } });
+      await vi.advanceTimersByTimeAsync(0);
+      t.socket().receive({ type: "session.output_transcript.delta", delta: "Which account? Main or Savings?", start_ms: 4_000, end_ms: 6_000 });
+      hear(t, "savings", 5_000, 5_500);
+      await delegate(t, "del_2", 5_600);
+      expect(t.deps.respond).toHaveBeenCalledWith({ auth: owner, threadId: "t1", requestId: "r7", behavior: "answer", message: "savings" });
+    });
+
     it("announces a second approval after the first one settles", async () => {
       const t = await live();
       t.message(approval());
