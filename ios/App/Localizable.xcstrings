@@ -9636,13 +9636,13 @@
         "zh-Hant": {
           "stringUnit": {
             "state": "translated",
-            "value": "檢視並管理機器人任務執行緒"
+            "value": "檢視並管理機器人任務對話"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "查看并管理机器人任务线程"
+            "value": "查看并管理机器人任务对话"
           }
         }
       }

@@ -19,7 +19,7 @@
     <string name="mobile_bot_name_s_computer_7637def1">%1$s 的電腦</string>
     <string name="mobile_chat_name_has_a_question_13ca9f26">%1$s 有一個問題</string>
     <string name="mobile_current_name_avatar_de638954">%1$s 的頭像</string>
-    <string name="mobile_current_name_s_threads_d34c7ce0">%1$s 的執行緒</string>
+    <string name="mobile_current_name_s_threads_d34c7ce0">%1$s 的對話</string>
     <string name="mobile_versionindex_1_of_versions_size_91d50e4a">第 %1$s/%2$s 個版本</string>
     <string name="mobile_computer_458a0ead">/computer</string>
     <string name="mobile_diff_c1ee9024">/diff</string>
@@ -123,7 +123,7 @@
     <string name="mobile_label_74341e3c">標籤</string>
     <string name="mobile_load_earlier_messages_4ac08d16">載入較早的訊息</string>
     <string name="mobile_looking_5e65f10e">正在尋找…</string>
-    <string name="mobile_manage_bot_name_s_threads_f3530e9f">管理 %1$s 的執行緒</string>
+    <string name="mobile_manage_bot_name_s_threads_f3530e9f">管理 %1$s 的對話</string>
     <string name="mobile_message_68f4145f">訊息</string>
     <string name="mobile_messaged_it_withname_bd9371e7">%1$s 傳來訊息</string>
     <string name="mobile_model_68c2cc7f">模型</string>
@@ -134,8 +134,8 @@
     <string name="mobile_new_group_f9850c0b">新增群組</string>
     <string name="mobile_new_quick_reply_c5c6238d">新增快速回復</string>
     <string name="mobile_new_routine_32809dc6">新增例行工作</string>
-    <string name="mobile_new_thread_02057e28">新增執行緒</string>
-    <string name="mobile_new_thread_with_bot_name_80fb4510">與 %1$s 建立新執行緒</string>
+    <string name="mobile_new_thread_02057e28">新增對話</string>
+    <string name="mobile_new_thread_with_bot_name_80fb4510">與 %1$s 建立新對話</string>
     <string name="mobile_newer_schedule_c56a41aa">較新的排程</string>
     <string name="mobile_next_bc981983">下一頁</string>
     <string name="mobile_next_version_514439d0">下一個版本</string>
@@ -184,7 +184,7 @@
     <string name="mobile_remove_computer_name_272e4835">要移除 %1$s 嗎？</string>
     <string name="mobile_remove_connection_name_e686927b">要移除 %1$s 嗎？</string>
     <string name="mobile_rename_taskrules_title_task_054bec52">重新命名 %1$s</string>
-    <string name="mobile_rename_thread">重新命名執行緒</string>
+    <string name="mobile_rename_thread">重新命名對話</string>
     <string name="mobile_requesting_camera_access_30e104c0">正在要求相機權限…</string>
     <string name="mobile_reset_44c57abd">重設</string>
     <string name="mobile_reset_quick_replies_4d3d1256">要重設快速回覆嗎？</string>
@@ -243,8 +243,8 @@
     <string name="mobile_this_removes_the_saved_connection__45c7d71e">這隻會從此手機移除已儲存的連接。其他已儲存的電腦仍可使用。</string>
     <string name="mobile_this_restores_the_four_chips_the_a_ca291a72">這會還原 App 隨附的四個選項，並捨棄你新增的選項。</string>
     <string name="mobile_thought_process_1756ad28">思考過程</string>
-    <string name="mobile_threads_bb12e8aa">執行緒</string>
-    <string name="mobile_threads_routines_65d7efcd">執行緒與例行工作</string>
+    <string name="mobile_threads_bb12e8aa">對話</string>
+    <string name="mobile_threads_routines_65d7efcd">對話與例行工作</string>
     <string name="mobile_time_6c82e6dd">時間</string>
     <string name="mobile_title_768e0c1c">標題</string>
     <string name="mobile_touch_and_hold_the_text_to_select__efc64a9c">按住文字以選取其中一部分。</string>
@@ -272,10 +272,10 @@
     <string name="mobile_minutes_starting_288a3d24">分鐘後開始</string>
     <string name="mobile_plus_6a8437dd">新增</string>
     <string name="mobile_sha256_reviewed_take_8_d4013810">SHA-256 %1$s</string>
-    <string name="mobile_a11y_bot_threads">%1$s 的執行緒</string>
+    <string name="mobile_a11y_bot_threads">%1$s 的對話</string>
     <string name="mobile_a11y_folder">%1$s 資料夾</string>
-    <string name="mobile_a11y_thread_state_expanded">已展開，%1$s 個執行緒</string>
-    <string name="mobile_a11y_thread_state_collapsed">已收合，%1$s 個執行緒</string>
+    <string name="mobile_a11y_thread_state_expanded">已展開，%1$s 個對話</string>
+    <string name="mobile_a11y_thread_state_collapsed">已收合，%1$s 個對話</string>
     <string name="mobile_a11y_diff_stats">新增 %1$s 行，移除 %2$s 行</string>
     <string name="mobile_a11y_diff_copy_hint">%1$s。複製的差異內容一律包含所有行</string>
     <string name="mobile_a11y_file_attachment">檔案附件：%1$s。點一下以預覽。</string>
@@ -387,16 +387,16 @@
 
     <string name="mobile_action_add_photo">將照片加入此訊息</string>
     <string name="mobile_action_add_document">從「檔案」新增文件</string>
-    <string name="mobile_action_new_thread_for_bot">與 %1$s 開啟新的對話串</string>
+    <string name="mobile_action_new_thread_for_bot">與 %1$s 開啟新的對話</string>
     <string name="mobile_action_new_conversation_in_channel">在 %1$s 中開啟新對話</string>
-    <string name="mobile_action_manage_threads">切換、重新命名或移除對話串</string>
+    <string name="mobile_action_manage_threads">切換、重新命名或移除對話</string>
     <string name="mobile_action_bot_settings">模型、個人檔案、語音和通知</string>
     <string name="mobile_action_live_computer">即時查看 %1$s 正在進行的操作</string>
-    <string name="mobile_action_markdown_transcript">將此對話串匯出為 Markdown</string>
+    <string name="mobile_action_markdown_transcript">將此對話匯出為 Markdown</string>
     <string name="mobile_action_structured_transcript">結構化對話紀錄資料</string>
     <string name="mobile_action_stop_turn">停止目前回合</string>
     <string name="mobile_slash_computer_description">開啟即時畫面和桌面控制項</string>
-    <string name="mobile_slash_threads_description">檢視和管理對話串</string>
+    <string name="mobile_slash_threads_description">檢視和管理對話</string>
     <string name="mobile_slash_diff_description">檢視最新的 Git 變更和修補程式</string>
     <string name="mobile_slash_retry_description">使用新的上下文重試上一回合</string>
     <string name="mobile_slash_steer_description">引導並調整正在執行的工作</string>
@@ -660,10 +660,10 @@
     <string name="mobile_chat_open_file_failed">無法開啟該檔案，請再試一次。</string>
     <string name="mobile_chat_open_link_failed">此手機無法開啟此連結。</string>
     <string name="mobile_chat_open_link_insecure">無法安全地開啟此連結。</string>
-    <string name="mobile_chat_create_thread_failed">無法建立此對話串，請再試一次。</string>
+    <string name="mobile_chat_create_thread_failed">無法建立此對話，請再試一次。</string>
     <string name="mobile_chat_send_failed">無法傳送此訊息，請再試一次。</string>
     <string name="mobile_chat_opening_file">正在開啟 %1$s…</string>
-    <string name="mobile_chat_thread_update_failed">無法更新此對話串，請再試一次。</string>
+    <string name="mobile_chat_thread_update_failed">無法更新此對話，請再試一次。</string>
     <string name="mobile_chat_attachment_unsupported">%1$s 不是支援的附件格式。請嘗試圖片、PDF、文字、Word、Excel 或 PowerPoint 檔案。</string>
     <string name="mobile_cloud_desktop_open_failed">無法開啟雲端桌面。</string>
     <string name="mobile_connected_apps_no_browser">此手機沒有可用來開啟授權頁面的瀏覽器。</string>
@@ -757,7 +757,7 @@
     <string name="mobile_camera_unavailable">此手機無法啟動相機。請使用手機上的相機 App 讀取 QR Code，或手動輸入位址與代碼。</string>
     <string name="mobile_thread_snoozed">已延後</string>
     <string name="mobile_snooze_task_rules_title">延後 %1$s</string>
-    <string name="mobile_stop_this_thread_before_snoozing_it">請先停止此執行緒，再設為延後。</string>
+    <string name="mobile_stop_this_thread_before_snoozing_it">請先停止此對話，再設為延後。</string>
     <string name="mobile_stop_snoozing">停止延後</string>
     <string name="mobile_until_new_activity">直到有新動態</string>
     <string name="mobile_until_6_pm">直到下午 6 點</string>
