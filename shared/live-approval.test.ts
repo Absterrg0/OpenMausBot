@@ -54,7 +54,7 @@ describe("spoken prompts", () => {
     expect(spokenApprovalPrompt(card({ requestId: "r1", tool: "Bash" }))).toBe("I want to run a command. rm -rf build. May I?");
   });
   it("keeps a long detail short enough to read aloud", () => {
-    const prompt = spokenApprovalPrompt(card({ requestId: "r1", tool: "Bash", subtitle: "x ".repeat(800) }), "Ada");
+    const prompt = spokenApprovalPrompt(card({ requestId: "r1", tool: "Bash", subtitle: "x ".repeat(800) }));
     expect(prompt.length).toBeLessThan(520);
   });
   it("sends reviews to the chat and reads questions with their options", () => {
