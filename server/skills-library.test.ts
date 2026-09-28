@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { describe, expect, it, beforeEach } from "vitest";
-import { existsSync, mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AppConfig } from "./config.ts";
@@ -15,6 +15,8 @@ const config = await import("./config.ts");
 
 const SKILL = (name: string, body = "Do the thing.") =>
   `---\nname: ${name}\ndescription: Reviews a PR the way this team reviews PRs.\n---\n\n# ${name}\n\n${body}\n`;
+const TAGGED = (name: string, tags: string) =>
+  `---\nname: ${name}\ndescription: Browsing tags on chip rows.\ntags: ${tags}\n---\n\n# ${name}\n\nDo the thing.\n`;
 const sha256 = (text: string) => createHash("sha256").update(text).digest("hex");
 
 let bot: string;
@@ -54,6 +56,35 @@ describe("skills library store", () => {
     const clash = library.installLibrarySkill({ name: "deploy", instructions: SKILL("deploy", "Different body."), source: "c", root });
     expect(clash).toEqual({ error: 'a skill named "deploy" is already in the library — choose a different name' });
     expect(Object.keys(library.readSkillLibraryIndex(root))).toEqual(["deploy"]);
+  });
+
+  it("refuses to install over an unreadable or invalid index instead of resetting it", () => {
+    const root = mkdtempSync(join(tmpdir(), "omb-skills-library-"));
+    writeFileSync(join(root, "index.json"), "{not json");
+    const unreadable = library.installLibrarySkill({ name: "deploy", instructions: SKILL("deploy"), source: "a", root });
+    expect(unreadable).toEqual({ error: "the skills library index could not be read" });
+    // nothing was written: the broken index and the skill bytes survive
+    expect(readFileSync(join(root, "index.json"), "utf8")).toBe("{not json");
+    expect(existsSync(join(root, "skills", "deploy"))).toBe(false);
+
+    writeFileSync(join(root, "index.json"), JSON.stringify({ deploy: { not: "an entry" } }));
+    const invalid = library.installLibrarySkill({ name: "deploy", instructions: SKILL("deploy"), source: "a", root });
+    expect(invalid).toEqual({ error: "the skills library index is invalid" });
+    expect(JSON.parse(readFileSync(join(root, "index.json"), "utf8"))).toEqual({ deploy: { not: "an entry" } });
+  });
+
+  it("stores frontmatter tags when the caller passes none, and prefers explicit tags", () => {
+    const root = mkdtempSync(join(tmpdir(), "omb-skills-library-"));
+    const parsed = library.installLibrarySkill({ name: "tag-me", instructions: TAGGED("tag-me", "deploy, ops"), source: "a", root });
+    expect("error" in parsed).toBe(false);
+    if ("error" in parsed) return;
+    expect(parsed.tags).toEqual(["deploy", "ops"]);
+    expect(library.readSkillLibraryIndex(root)["tag-me"]?.tags).toEqual(["deploy", "ops"]);
+
+    const explicit = library.installLibrarySkill({ name: "tag-override", instructions: TAGGED("tag-override", "deploy"), source: "a", root, tags: ["custom"] });
+    expect("error" in explicit).toBe(false);
+    if ("error" in explicit) return;
+    expect(explicit.tags).toEqual(["custom"]);
   });
 
   it("fails closed on tampered bytes: listing disabled with a warning, reads return null", () => {

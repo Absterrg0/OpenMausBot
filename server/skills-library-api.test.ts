@@ -86,6 +86,9 @@ describe("skills library routes through an isolated HTTP fixture", () => {
     const withSkill = await api("GET", `/api/bots/${botId}/skills`);
     expect(withSkill.body.skills).toEqual([expect.objectContaining({ name: "order-audit", origin: "library" })]);
     expect(withSkill.body.library).toEqual([]);
+    // the authoritative assignment list: a same-name private skill would
+    // hide the merged row, but must never hide the assignment itself
+    expect(withSkill.body.assignedSkills).toEqual(["order-audit"]);
 
     // Assigning a name that is not in the library is rejected, not created.
     expect((await api("PUT", `/api/bots/${botId}/skills-library`, { skills: ["nope"] })).status).toBe(422);
@@ -106,5 +109,6 @@ describe("skills library routes through an isolated HTTP fixture", () => {
     const afterRemove = await api("GET", `/api/bots/${botId}/skills`);
     expect(afterRemove.body.skills).toEqual([]);
     expect(afterRemove.body.library.map((entry: { name: string }) => entry.name)).toEqual(["order-audit"]);
+    expect(afterRemove.body.assignedSkills).toEqual([]);
   });
 });

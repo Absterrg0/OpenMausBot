@@ -43,14 +43,23 @@ function sha256Hex(text: string): string {
  * SKILL.md hash before the copy counts as the archive. */
 function archiveSkillDirectory(source: string, archive: string, expectSha256: string): void {
   mkdirSync(dirname(archive), { recursive: true, mode: 0o700 });
-  if (existsSync(archive)) return;
+  // Every source directory gets its own slot: the same sha256 can be
+  // reinstalled after its manifest entry was cleared, so a collision takes
+  // a hash-qualified name, then numeric suffixes, never a silent drop.
+  let destination = archive;
+  if (existsSync(destination)) {
+    const stem = `${archive}.${expectSha256}`;
+    destination = stem;
+    let suffix = 1;
+    while (existsSync(destination)) destination = `${stem}.${suffix++}`;
+  }
   try {
-    renameSync(source, archive);
+    renameSync(source, destination);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "EXDEV") throw error;
-    cpSync(source, archive, { recursive: true, force: false, errorOnExist: true });
+    cpSync(source, destination, { recursive: true, force: false, errorOnExist: true });
   }
-  const archived = readFileSync(join(archive, "SKILL.md"), "utf8");
+  const archived = readFileSync(join(destination, "SKILL.md"), "utf8");
   if (sha256Hex(archived) !== expectSha256) {
     throw new Error("the archived copy does not match the reviewed sha256");
   }

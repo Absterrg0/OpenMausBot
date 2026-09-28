@@ -12,19 +12,14 @@
 // cleared, so until a boot with features.skillsLibrary on applies the
 // pending assignments, bots see those skills gone. Run it only when the
 // flag is on.
-import { mkdtempSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 
 const args = process.argv.slice(2);
 const dataDirFlag = args.indexOf("--data-dir");
 const dataDir = dataDirFlag !== -1 ? resolve(args[dataDirFlag + 1]!) : undefined;
+// A bare invocation runs against the real application data dir: a scratch
+// fallback here would report success while migrating nothing.
 if (dataDir) process.env.OMB_DATA_DIR = dataDir;
-else if (!process.env.OMB_DATA_DIR) {
-  // Default run against the real data dir is the point of the script; the
-  // scratch fallback only keeps an accidental bare invocation honest.
-  process.env.OMB_DATA_DIR = mkdtempSync(resolve(tmpdir(), "omb-skills-library-migration-"));
-}
 
 const { botIdsWithSkillState, migrateBotSkillsToLibrary, readPendingAssignments, writePendingAssignments } =
   await import("../server/skills-library-migration.ts");

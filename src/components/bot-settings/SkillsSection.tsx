@@ -45,6 +45,7 @@ export function SkillsSection({ bot }: { bot: Bot }) {
   const featureEnabled = skillAuthoringEnabled(state.config);
   const libraryOn = skillsLibraryEnabled(state.config);
   const [skills, setSkills] = useState<ManagedSkill[]>([]);
+  const [assignedSkills, setAssignedSkills] = useState<string[]>([]);
   const [libraryPool, setLibraryPool] = useState<LibraryPoolSkill[]>([]);
   const [addFromLibrary, setAddFromLibrary] = useState("");
   const [staged, setStaged] = useState<StagedSkillSummary[]>([]);
@@ -100,11 +101,13 @@ export function SkillsSection({ bot }: { bot: Bot }) {
         skills?: ManagedSkill[];
         staged?: StagedSkillSummary[];
         library?: LibraryPoolSkill[];
+        assignedSkills?: string[];
       };
       if (cancelled?.()) return;
       setSkills(result.skills ?? []);
       setStaged(result.staged ?? []);
       setLibraryPool(result.library ?? []);
+      setAssignedSkills(result.assignedSkills ?? []);
       setAddFromLibrary("");
       setError("");
     } catch (cause) {
@@ -125,10 +128,9 @@ export function SkillsSection({ bot }: { bot: Bot }) {
     };
   }, [bot.id]);
 
-  /** This bot's library assignments, rebuilt from the merged listing: an
-   * assignment can only name a library entry, so the library-origin rows
-   * carry the full list. */
-  const libraryAssignments = () => skills.filter((skill) => skill.origin === "library").map((skill) => skill.name);
+  /** This bot's library assignments, straight from the server's assignment
+   * list: merged rows hide assignments a private skill shadows. */
+  const libraryAssignments = () => assignedSkills;
 
   const putAssignments = async (next: string[]) => {
     await api(`/api/bots/${bot.id}/skills-library`, {

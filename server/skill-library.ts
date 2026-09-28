@@ -246,14 +246,29 @@ export function libraryArchiveDirectory(root: string, botId: string, name: strin
   return join(root, "archive", botId, name);
 }
 
-export function readSkillLibraryIndex(root: string = skillsLibraryRoot()): Record<string, SkillLibraryEntry> {
+type SkillLibraryIndexRead =
+  | { index: Record<string, SkillLibraryEntry> }
+  | { error: string };
+
+/** A missing index is a legitimate empty library; an index that exists but
+ * cannot be read or validated is not, and writers must refuse rather than
+ * replace it and strand every stored skill. */
+function readSkillLibraryIndexState(root: string): SkillLibraryIndexRead {
   try {
     const parsed: unknown = JSON.parse(readFileSync(libraryIndexPath(root), "utf8"));
     const result = skillLibraryIndexSchema.safeParse(parsed);
-    return result.success ? result.data : {};
-  } catch {
-    return {};
+    return result.success
+      ? { index: result.data }
+      : { error: "the skills library index is invalid" };
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return { index: {} };
+    return { error: "the skills library index could not be read" };
   }
+}
+
+export function readSkillLibraryIndex(root: string = skillsLibraryRoot()): Record<string, SkillLibraryEntry> {
+  const result = readSkillLibraryIndexState(root);
+  return "error" in result ? {} : result.index;
 }
 
 function writeSkillLibraryIndex(root: string, index: Record<string, SkillLibraryEntry>): void {
@@ -327,12 +342,17 @@ export function installLibrarySkill(input: {
   if ("error" in parsed) return parsed;
   if (parsed.name !== input.name) return { error: `the skill is named "${parsed.name}", not "${input.name}"` };
   const sha256 = sha256Hex(input.instructions);
-  const index = readSkillLibraryIndex(root);
+  const indexRead = readSkillLibraryIndexState(root);
+  if ("error" in indexRead) return indexRead;
+  const index = indexRead.index;
   const existing = index[input.name];
   if (existing) {
     if (existing.sha256 === sha256) return librarySkillListing(root, existing);
     return { error: `a skill named "${input.name}" is already in the library — choose a different name` };
   }
+  // Callers such as the library migration do not pass tags; frontmatter
+  // tags parsed from the instructions are the source of record then.
+  const tags = input.tags?.length ? input.tags : parsed.tags;
   const entry: SkillLibraryEntry = {
     name: input.name,
     description: input.description?.trim() || parsed.description,
@@ -342,7 +362,7 @@ export function installLibrarySkill(input: {
     reviewState: input.reviewState ?? "disabled",
     ...(input.license ? { license: input.license } : {}),
     ...(input.compatibility ? { compatibility: input.compatibility } : {}),
-    ...(input.tags?.length ? { tags: input.tags } : {}),
+    ...(tags?.length ? { tags } : {}),
     warnings: input.warnings ?? [],
     skippedFiles: [],
     ...(input.package ? { package: { ...input.package } } : {}),

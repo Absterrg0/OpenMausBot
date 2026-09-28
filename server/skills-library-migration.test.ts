@@ -116,6 +116,29 @@ describe("skills library migration", () => {
     expect(skills.listSkills(botA)).toEqual([]);
   });
 
+  it("gives a same-name, same-hash reinstall its own archive slot", () => {
+    const content = SKILL("re-hash", "Same bytes twice.");
+    skills.installSkill(botA, "private:test", [{ path: "SKILL.md", content }]);
+    skills.setSkillEnabled(botA, "re-hash", true);
+    const first = migration.migrateBotSkillsToLibrary(botA);
+    expect(first.outcomes).toEqual([expect.objectContaining({ botId: botA, name: "re-hash", outcome: "migrated" })]);
+    const sha = library.readSkillLibraryIndex()["re-hash"]!.sha256;
+
+    // the same bytes return as a fresh per-bot copy once the manifest entry
+    // was cleared; migration dedups them and must archive this copy too,
+    // not leave it beside the archive as an orphan
+    skills.installSkill(botA, "private:test", [{ path: "SKILL.md", content }]);
+    skills.setSkillEnabled(botA, "re-hash", true);
+    const second = migration.migrateBotSkillsToLibrary(botA);
+    expect(second.outcomes).toEqual([expect.objectContaining({ botId: botA, name: "re-hash", outcome: "deduplicated" })]);
+
+    const archiveRoot = join(library.skillsLibraryRoot(), "archive", botA);
+    expect(readFileSync(join(archiveRoot, "re-hash", "SKILL.md"), "utf8")).toBe(content);
+    expect(readFileSync(join(archiveRoot, `re-hash.${sha}`, "SKILL.md"), "utf8")).toBe(content);
+    expect(existsSync(join(workspaceDir(botA), "skills", "re-hash"))).toBe(false);
+    expect(skills.listSkills(botA)).toEqual([]);
+  });
+
   it("keeps a conflicting per-bot copy in place when the library name is taken", () => {
     skills.installSkill(botA, "private:test", [{ path: "SKILL.md", content: SKILL("conflict", "First copy.") }]);
     skills.installSkill(botB, "private:test", [{ path: "SKILL.md", content: SKILL("conflict", "Second, different copy.") }]);
