@@ -24,6 +24,7 @@ import {
   beatWidth,
   beatsFor,
   completionPatch,
+  flowDotsShown,
   nextBeat,
   previousBeat,
   type BeatId,
@@ -282,7 +283,7 @@ export function WelcomeFlow({
           ) : (
             <span />
           )}
-          <ProgressDots items={beats.map((id) => ({ id }))} index={current - 1} />
+          {flowDotsShown(beat) ? <ProgressDots items={beats.map((id) => ({ id }))} index={current - 1} /> : <span />}
           <span className="text-[11px] text-ink-secondary" aria-live="polite">
             {t("onboarding.progress", { current, total: beats.length })}
           </span>
