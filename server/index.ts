@@ -20335,7 +20335,8 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
     }
     m = path.match(/^\/api\/bots\/([\w-]+)\/skills\/([a-z0-9-]+)$/);
     if (m && method === "GET") {
-      const text = readSkillFile(m[1]!, m[2]!);
+      const bot = store.bot(m[1]);
+      const text = bot ? readBotSkillFile(bot, m[2]!) : null;
       if (text === null) return json(res, 404, { error: "no such skill" });
       return json(res, 200, { text });
     }

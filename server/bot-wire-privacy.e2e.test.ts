@@ -15,6 +15,9 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { freePortBlock } from "./testing/ports.ts";
 import { removeTempDir, waitForExit } from "./testing/cleanup.ts";
 
+// Library store import is root-explicit, so the spawned server’s DATA_DIR never has to match this process.
+import { installLibrarySkill } from "./skill-library.ts";
+
 const SERVER_DIR = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(SERVER_DIR, "..");
 const FAKE_CLI = join(SERVER_DIR, "testing", "fake-acp-cli.ts");
@@ -116,5 +119,42 @@ describe("bot wire privacy against the real server", () => {
     // payloads — the assertion above was not checking an empty bot.
     const stored = (JSON.parse(readFileSync(join(data, "bots.json"), "utf8")) as any[]).find((bot) => bot.id === botId)!;
     expect(stored.assignedSkills).toEqual(["some-library-skill"]);
+  });
+
+  it("serves an assigned library-only skill on the single-skill GET route only while the library is on", async () => {
+    // Install into the spawned server's library root from this process:
+    // the store is plain files under DATA_DIR/skills-library, so the
+    // server sees the entry on its next boot.
+    const instructions = "---\nname: route-library-skill\ndescription: Serves through the assigned-skill route.\n---\n\n# route-library-skill\n\nReads through the library.\n";
+    const installed = installLibrarySkill({
+      name: "route-library-skill",
+      instructions,
+      source: "test",
+      reviewState: "approved",
+      root: join(data, "skills-library"),
+    });
+    expect("error" in installed).toBe(false);
+
+    await start(false);
+    const created = await api("POST", "/api/bots", { name: "Library Route Bot" });
+    expect(created.status, JSON.stringify(created.body)).toBe(201);
+    const botId = created.body.bot.id as string;
+    await stop();
+    const bots = JSON.parse(readFileSync(join(data, "bots.json"), "utf8")) as any[];
+    bots.find((bot) => bot.id === botId)!.assignedSkills = ["route-library-skill"];
+    writeFileSync(join(data, "bots.json"), JSON.stringify(bots, null, 2));
+
+    // Flag off: the route keeps the per-bot behavior — a library-only
+    // skill has no bot-local copy, so the read stays a 404.
+    await start(false);
+    expect(await api("GET", `/api/bots/${botId}/skills/route-library-skill`)).toMatchObject({ status: 404 });
+    await stop();
+
+    // Flag on: the assignment the listing already resolves now reads
+    // through the library instead of 404-ing for want of a local copy.
+    await start(true);
+    expect(await api("GET", `/api/bots/${botId}/skills/route-library-skill`))
+      .toMatchObject({ status: 200, body: { text: instructions } });
+    await stop();
   });
 });
