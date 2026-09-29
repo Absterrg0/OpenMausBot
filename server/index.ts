@@ -286,6 +286,7 @@ import { ManagedDesktopProviders } from "./managed-desktop.ts";
 import { computerKindForResource, ManagedDesktopPolicy } from "./managed-policy.ts";
 import { hostedModelPolicy, HOSTED_MODEL_POLICY_HEADER, HOSTED_PROVIDER_SETTINGS_ERROR } from "./hosted-models.ts";
 import { CLOUD_IGNORED_KEYS, CLOUD_PAIRING_PATH, cloudHomeConfiguration, createCloudPairing, readSignedBody } from "./cloud-home.ts";
+import { holdIncludedServices } from "./included-services.ts";
 import type { ProviderInstance } from "./contracts.ts";
 import { selectDefaultModelSelection, withNewBotEffort } from "./default-model-selection.ts";
 import { cancelPeerApprovalsFor, cancelPeerApprovalsForThread, dismissStalePeerCards, peerApprovalFailure, requestPeerApproval, resolvePeerComms, type ApprovalBus } from "./peer-approval.ts";
@@ -629,6 +630,9 @@ if (CLOUD_HOME) {
   console.log(`cloud home ${CLOUD_HOME.machineId}: bots run on the engines the person signs in to here`);
   for (const warning of CLOUD_HOME.warnings) console.warn(`cloud home: ${warning}`);
 }
+// Cloud Pro's included Boat and voice relay tokens, when the Admin set them:
+// held in memory from here on, like the signing secret.
+holdIncludedServices();
 // Who each thread is for, when a signed-in person can be named (server-private).
 const threadStarters = new ThreadStarters(join(DATA_DIR, "thread-starters.json"));
 const commandAllowlist = new CommandAllowlistStore(join(DATA_DIR, "command-allowlist.json"));
@@ -5683,7 +5687,7 @@ async function attachTeamBoat(computer: TeamComputerRecord, botId: string, owner
   if (turnResourceOwners.get(owner.threadId)?.generation !== owner.generation ||
       !turnResources.owns(`computer:box:${machine.id}`, owner)) throw new Error("This computer turn ended while its machine was starting");
   return {
-    integration: { kind: "box" as const, boxId: machine.id, token: cfg.box!.token!, control: controlIntegration(botId, owner.threadId, owner.generation) },
+    integration: { kind: "box" as const, boxId: machine.id, token: boat.boatAccount(cfg)?.token ?? "", control: controlIntegration(botId, owner.threadId, owner.generation) },
     capture: () => boat.screenshotBoat(cfg, ownerId, machine!.id),
   };
 }
@@ -5795,7 +5799,7 @@ async function attachBotBoat(
   return {
     capture: () => boat.screenshotBoat(cfg, bot.id, machine.id),
     integration: opts.canMount
-      ? { kind: "box" as const, boxId: machine.id, token: cfg.box!.token!, control: controlIntegration(bot.id, owner.threadId, owner.generation) }
+      ? { kind: "box" as const, boxId: machine.id, token: boat.boatAccount(cfg)?.token ?? "", control: controlIntegration(bot.id, owner.threadId, owner.generation) }
       : null,
   };
 }
@@ -13209,7 +13213,9 @@ function configStatus() {
       configured: composio.configured(cfg),
       mode: composio.connectionMode(cfg),
     },
-    box: { configured: Boolean(cfg.box?.token) },
+    // configured = cloud computers work here; included = through Cloud Pro,
+    // not a saved key
+    box: boat.describeBoatAccount(cfg),
     vps: { configured: Boolean(vpsSshAlias(cfg)), sshAlias: vpsSshAlias(cfg) ?? "" },
     opencodeGo: { configured: Boolean(cfg.opencodeGo?.apiKey) },
     // the chosen voice is a setting, not a secret; the key is reported the

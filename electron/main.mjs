@@ -81,6 +81,7 @@ import { acquireDataDirLease } from "./data-dir-lease.mjs";
 import { createManagedDesktopClient, createManagedDesktopRelay, createManagedDesktopStore } from "./managed-desktop.mjs";
 import { createCloudAccountClient, createCloudAccountStore } from "./cloud-account.mjs";
 import { cloudHomeConnectUrl, withCloudHome } from "./cloud-home.mjs";
+import { createCloudEntry } from "./cloud-entry.mjs";
 import { createOrgLibrary } from "./org-library.mjs";
 import { createCompanyBackups } from "./company-backups.mjs";
 import { createCompanyBackupSchedule } from "./company-backup-schedule.mjs";
@@ -111,6 +112,16 @@ let desktopViewerContextId = null;
 let desktopWorkspaceManager = null;
 let desktopWorkspaceOwner = null;
 let pendingOrganizationEntry = takeOrganizationDeepLink(process.argv);
+// openmausbot://cloud, delivered with the organisation action once main can navigate.
+const cloudEntry = createCloudEntry({
+  reveal: () => { if (!desktopTray?.show()) activateExistingWindow(BrowserWindow.getAllWindows()); },
+  open: async () => {
+    let delivered = false;
+    await workspaceMenuAction(async () => { delivered = await openCloudEntry(); });
+    return delivered;
+  },
+});
+cloudEntry.fromLaunch(process.argv);
 let pendingPackageInstallUrl = pendingOrganizationEntry ? null : packageUrlFromCommandLine(process.argv);
 let organizationEntryReady = false;
 let mainWindow = null;
@@ -250,7 +261,7 @@ function queuePackageInstall(rawLink) {
 }
 
 app.on("open-url", (event, url) => {
-  if (!queueOrganizationEntry(url) && !queuePackageInstall(url)) return;
+  if (!queueOrganizationEntry(url) && !cloudEntry.fromUrl(url) && !queuePackageInstall(url)) return;
   event.preventDefault();
 });
 
@@ -259,6 +270,7 @@ app.on("second-instance", (_event, commandLine) => {
     queueOrganizationEntry("openmausbot://organization");
     return;
   }
+  if (cloudEntry.fromArgs(commandLine)) return;
   const packageUrl = packageUrlFromCommandLine(commandLine);
   if (packageUrl) pendingPackageInstallUrl = packageUrl;
   if (!desktopTray?.show()) activateExistingWindow(BrowserWindow.getAllWindows());
@@ -279,6 +291,8 @@ let secureCredentialState = null;
 let desktopDataDirLease = null;
 let managedDesktop = null;
 let cloudAccount = null;
+// Settles once a saved Cloud sign-in is restored and checked (or there is none).
+let cloudAccountStarted = Promise.resolve();
 // The organization library channel: catalog and release bytes for the local runtime only.
 let orgLibrary = null;
 let companyBackupController = null;
@@ -1867,6 +1881,31 @@ async function deliverOrganizationEntry() {
   return delivered;
 }
 
+/** openmausbot://cloud carries nothing, so all it does is bring this app to
+ * Settings → OMB Cloud. Opened this way, that view signs in or connects to
+ * My Cloud by itself (CloudAccountSettings). No prompt: a hosted server left
+ * for it stays saved under Servers, and the Cloud replaces it anyway. */
+async function openCloudEntry() {
+  if (!app.isPackaged) throw new Error("OMB Cloud requires the installed desktop app.");
+  if (desktopRemoteAccess) throw new Error("This app is connected to another computer. Disconnect it to use OMB Cloud on this computer.");
+  if (!serverReady) throw new Error("This installation is unavailable. Restart the app and open your Cloud again.");
+  // Let a saved sign-in finish restoring (a local read and one check with OMB
+  // Cloud) first: the view must not take it for signed out and start another.
+  await Promise.race([cloudAccountStarted, new Promise(resolve => setTimeout(resolve, 5_000).unref?.())]);
+  const active = activeEnvironment(environmentsState);
+  const showingCloud = Boolean(active) && active.origin === cloudAccount?.homeTarget()?.origin;
+  if (active && !showingCloud) persistEnvironments(withActive(environmentsState, LOCAL_ID));
+  const win = mainWindow && !mainWindow.isDestroyed() ? mainWindow : createWindow({ deferNavigation: !showingCloud });
+  // Already on the person's Cloud: bringing it forward is the whole action.
+  if (showingCloud) return true;
+  if (!win.webContents.isLoadingMainFrame() && senderIsLocal({ sender: win.webContents })) {
+    win.webContents.send("app:open-settings", "cloud");
+  } else {
+    await win.loadURL(`${rendererOrigin()}/?desktop-settings=cloud`);
+  }
+  return true;
+}
+
 function openWorkspaceSettings(computerId) {
   if (!mainWindow || mainWindow.isDestroyed()) return;
   if (senderIsLocal({ sender: mainWindow.webContents })) {
@@ -3063,7 +3102,7 @@ app.whenReady().then(async () => {
   if (desktopShutdownStarted) return;
   if (app.isPackaged && !desktopRemoteAccess) void ensureManagedDesktop().start().then(() => companyBackupSchedule.start()).catch(() => {});
   // Fresh local use never makes a Cloud request; start only restores an existing grant.
-  if (app.isPackaged && !desktopRemoteAccess) void ensureCloudAccount().start().catch(() => {});
+  if (app.isPackaged && !desktopRemoteAccess) cloudAccountStarted = ensureCloudAccount().start().catch(() => {});
   // The companion the user left on comes back without anyone finding the
   // toggle again — one attempt, after the harness port is settled, with the
   // exact options the IPC handler uses. A failure surfaces in companionState
@@ -3097,7 +3136,8 @@ app.whenReady().then(async () => {
   // A cold-start action owns its first navigation. Starting the default load
   // first would let the action abort that unawaited navigation immediately.
   const deliveredOrganizationEntry = await deliverOrganizationEntry();
-  if (!restoredOrganizationEntry && !deliveredOrganizationEntry && (!mainWindow || mainWindow.isDestroyed())) createWindow();
+  const deliveredCloudEntry = await cloudEntry.ready();
+  if (!restoredOrganizationEntry && !deliveredOrganizationEntry && !deliveredCloudEntry && (!mainWindow || mainWindow.isDestroyed())) createWindow();
   // Reconcile incomplete setup and resume interrupted sign-out only after the
   // local app is usable. This background network work never gates LAN pairing
   // or the first window.

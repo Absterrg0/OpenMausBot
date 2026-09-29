@@ -1033,6 +1033,47 @@ describe("credential env preference", () => {
     expect(cfg.imageGen).toEqual({ key: "env-image" });
   });
 
+  it("uses a preset voice only when the person has not chosen one or another provider", () => {
+    process.env.OMB_TTS_DEFAULT_VOICE = " preset-voice ";
+    expect(loadConfig().tts?.voice).toBe("preset-voice");
+    writeFileSync(join(DATA_DIR, "config.json"), JSON.stringify({ tts: { voice: "chosen" } }));
+    expect(loadConfig().tts?.voice).toBe("chosen");
+    writeFileSync(join(DATA_DIR, "config.json"), JSON.stringify({ tts: { provider: "system" } }));
+    expect(loadConfig().tts?.voice).toBeUndefined();
+    writeFileSync(join(DATA_DIR, "config.json"), JSON.stringify({ tts: { provider: "elevenlabs" } }));
+    expect(loadConfig().tts?.voice).toBe("preset-voice");
+  });
+
+  it("never takes Cloud Pro's included tokens for the person's own keys, in config or an engine's environment", () => {
+    const included = {
+      OMB_CLOUD_BOAT_URL: "https://cloud.example.test/api/cloud/services/boat/api/box/v1",
+      OMB_CLOUD_BOAT_TOKEN: "box_omb_included-relay-token",
+      OMB_CLOUD_VOICE_URL: "https://cloud.example.test/api/cloud/services/voice/v1",
+      OMB_CLOUD_VOICE_TOKEN: "omb_voice_included-relay-token",
+    };
+    for (const [name, value] of Object.entries(included)) vi.stubEnv(name, value);
+    try {
+      const cfg = loadConfig();
+      expect(cfg.box?.token).toBeUndefined();
+      expect(cfg.tts?.key).toBeUndefined();
+      expect(instanceConfigs(cfg).computer?.environment).toEqual({});
+      saveConfig({ tts: { voice: "chosen" }, box: { token: "" } });
+      const disk = readFileSync(join(DATA_DIR, "config.json"), "utf8");
+      const runtime = JSON.stringify([loadConfig(), instanceConfigs(loadConfig()), persistableInstanceConfigs(loadConfig())]);
+      for (const token of [included.OMB_CLOUD_BOAT_TOKEN, included.OMB_CLOUD_VOICE_TOKEN]) {
+        expect(disk).not.toContain(token);
+        expect(runtime).not.toContain(token);
+      }
+      // The person's own keys, from the environment here, are theirs as ever.
+      process.env.BOX_TOKEN = "box_own";
+      process.env.OMB_TTS_KEY = "sk-own";
+      expect(loadConfig()).toMatchObject({ box: { token: "box_own" }, tts: { key: "sk-own" } });
+      expect(instanceConfigs(loadConfig()).computer?.environment).toEqual({ BOX_TOKEN: "box_own" });
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
   it("saves and removes the verified domain without replacing existing settings", () => {
     saveConfig({ profile: { name: "Workspace owner" }, customDomain: "https://bots.example.com" });
     expect(loadConfig().customDomain).toBe("https://bots.example.com");
@@ -1367,6 +1408,10 @@ describe("workspace credential env strip", () => {
     // consumed in-process (Computer driver / voice module), never by a CLI
     expect(WORKSPACE_CREDENTIAL_ENV).toContain("BOX_TOKEN");
     expect(WORKSPACE_CREDENTIAL_ENV).toContain("OMB_TTS_KEY");
+    // Cloud Pro's included relay tokens (the server also drops them from its
+    // own environment at startup; included-services.ts)
+    expect(WORKSPACE_CREDENTIAL_ENV).toContain("OMB_CLOUD_BOAT_TOKEN");
+    expect(WORKSPACE_CREDENTIAL_ENV).toContain("OMB_CLOUD_VOICE_TOKEN");
     expect(WORKSPACE_CREDENTIAL_ENV).toContain("OMB_FISH_AUDIO_API_KEY");
     expect(WORKSPACE_CREDENTIAL_ENV).toContain("OMB_OPENAI_IMAGE_KEY");
     expect(WORKSPACE_CREDENTIAL_ENV).toContain("OMB_BROWSER_CONNECTION");

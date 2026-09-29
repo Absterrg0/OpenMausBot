@@ -26,6 +26,7 @@ import { RemoteComputerSection } from "./RemoteComputerSection";
 import { ConnectedWorkspacesSettings } from "./ConnectedWorkspacesSettings";
 import { OrganizationSettings } from "./OrganizationSettings";
 import { CloudAccountSettings } from "./CloudAccountSettings";
+import { ProSettingsCard } from "./ProIntroduction";
 import { Card, SettingRow, Switch } from "./SettingsPrimitives";
 import { effortLabel } from "./ModelPicker";
 import { EFFORT_LEVELS, isEffortLevel } from "../../shared/wire";
@@ -761,9 +762,10 @@ export function SettingsModal() {
             <LicenseExpiryBanner config={state.config} />
             {section === "desktopWorkspaces" && <ConnectedWorkspacesSettings />}
             {section === "organization" && window.ogb?.organization && !remoteActive && <OrganizationSettings />}
-            {section === "cloudAccount" && window.ogb?.cloudAccount && !remoteActive && <CloudAccountSettings />}
+            {section === "cloudAccount" && window.ogb?.cloudAccount && !remoteActive && <CloudAccountSettings linkRequest={state.appSettingsCloudLink} />}
             {section === "general" && (
               <>
+                <ProSettingsCard />
                 <Card title={t("settings.profile.title")} subtitle={t("settings.profile.sharedSubtitle")}>
                   <ProfileFields />
                 </Card>

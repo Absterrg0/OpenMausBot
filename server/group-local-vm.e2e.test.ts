@@ -370,7 +370,9 @@ describe("Group Local VM ownership on the real isolated server", () => {
       expect(boatPrompts.length).toBe(count + 1);
       const state = await api("GET", "/api/bots?messages=0");
       expect(state.bots.find((candidate: any) => candidate.id === bot.id).busy).toBe(true);
-      const decisions = await api("GET", "/api/decisions");
+      // Cards reach the transcript before the asynchronous audit log reaches disk.
+      const decisions = await until(() => api("GET", "/api/decisions"), value =>
+        value.decisions.some((row: any) => row.requestId === card.requestId && row.decision === "card-shown"));
       expect(decisions.decisions).toContainEqual(expect.objectContaining({ botId: bot.id, source: "question", origin: "output" }));
 
       boatReply = "Cloud fixture completed";

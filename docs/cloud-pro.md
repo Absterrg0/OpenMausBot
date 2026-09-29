@@ -56,6 +56,49 @@ problem**, **Could not be set up yet**. Only Ready can be connected to.
 Signed out of Cloud, the app makes no Cloud request and nothing on this page
 runs.
 
+### Open in the app: `openmausbot://cloud`
+
+The Cloud page (`https://cloud.openmausbot.com/cloud`) can offer **Open in the
+app** as a link to exactly `openmausbot://cloud`. The app accepts that string
+and nothing else: no path, query, fragment or trailing slash, and it ignores
+any other form. Like `openmausbot://organization`, it is an action, not a
+router. It never carries an address, a pairing code or a credential; the app
+decides everything from its own verified state (`electron/cloud-entry.mjs`).
+
+1. The link starts the app, or brings it forward if it is already running
+   (launch argument, a second instance, or macOS `open-url`, including one
+   that arrives before the app is ready). If the window already shows
+   **My Cloud**, coming forward is all it does.
+2. Otherwise the window returns to this computer (a hosted server that was
+   showing stays saved under **Servers**) and opens **Settings → OMB Cloud**.
+   Before that view acts, the app gives a saved Cloud sign-in up to five
+   seconds to finish restoring, so it is never mistaken for signed out.
+3. Opened this way, the view acts on its own, with no confirmation:
+   - signed out: it starts the existing device sign-in at once, which opens
+     the browser approval page with the code filled in
+     (`/cloud/desktop?code=…`);
+   - signed in and the Cloud is **Ready**: it connects to **My Cloud**,
+     exactly like **Connect to my Cloud**;
+   - after that sign-in completes, or when the Cloud becomes **Ready** while
+     the view is still open, it connects then;
+   - anything else: the card shows the status and the person decides.
+
+It starts at most one sign-in (only when signed out on arrival; a later
+sign-out in that view starts nothing) and one automatic connection per link.
+A failed connection shows the card's error; clicking the link again retries.
+Closing Settings or choosing another section ends it. While it is open, the
+first-run welcome waits, as it does for Organization settings. A normal visit
+to **Settings → OMB Cloud** never signs in or connects by itself.
+
+The link does nothing in development builds, and in companion client mode it
+explains that the app must be disconnected from the other computer first.
+The `openmausbot` scheme belongs to the installed app: on macOS through the
+app bundle, on Linux through the `.deb`'s desktop entry, and on Windows (and
+for an AppImage) once the installed app has started at least once, since it
+registers itself at startup. Before that, or if the app is not installed, the
+browser has nothing to open (it shows nothing or an error), so the Cloud page
+should keep a download link next to the button.
+
 ## The image
 
 `deploy/fly/Dockerfile` builds on the published server image
@@ -139,6 +182,58 @@ ignores them:
   Cloud home whatever they hold, so no instance is routed to a gateway;
 - no `included.*` or other read-only instance is served; the person's own
   engines are the only way to a model.
+
+### Included Boat computers and voice
+
+Pro includes Boat cloud computers and ElevenLabs voice with no key to paste.
+When the Admin has both services configured, it also sets:
+
+| Variable | Fly | Value |
+| --- | --- | --- |
+| `OMB_CLOUD_BOAT_URL` | env | `https://cloud.openmausbot.com/api/cloud/services/boat/api/box/v1`, the Admin's Boat relay. It keeps Boat's own `/api/box/v1` ending, so the Computer engine's model catalog (`<root>/api/provider-models`) resolves through the relay too. |
+| `OMB_CLOUD_BOAT_TOKEN` | secret | This machine's Boat relay token (`box_omb_…`). It is not a Boat key and works only through the relay. |
+| `OMB_CLOUD_VOICE_URL` | env | `https://cloud.openmausbot.com/api/cloud/services/voice/v1`, the Admin's voice relay. |
+| `OMB_CLOUD_VOICE_TOKEN` | secret | This machine's voice relay token (`omb_voice_…`). |
+| `OMB_TTS_DEFAULT_VOICE` | env | An ElevenLabs voice id, used until the person picks a voice or another speech provider in Settings. |
+
+A service is included only when both its URL and its token are set
+(`server/included-services.ts`). The real Boat and ElevenLabs keys stay on the
+Admin, which checks the subscription, the monthly caps and which computers
+belong to this machine on every request.
+
+- **The person's own key always wins.** An included token is a fallback, used
+  only while the person has no key of their own: none saved in Settings
+  (`box.token`, `tts.key`) and no `BOX_TOKEN` or `OMB_TTS_KEY` in the
+  environment. Adding a key switches to it at once; removing it falls back to
+  the included service again (for Boat, once that key's cloud computers are
+  deleted: removing a Boat key that still has computers is refused). The
+  choice is made on every request.
+- **Each credential goes to one place.** The relays know only the Admin's
+  accounts, so an own key goes only to the provider (`OMB_BOX_API` or
+  `OMB_ELEVENLABS_API` when set, for development and tests, else Boat's and
+  ElevenLabs' own APIs) and an included token only to its relay.
+- **An included token is never the person's key.** It is never written to
+  `config.json`, never sent to a client (Settings sees `configured` and
+  `included: true`, and says "Included with Cloud Pro"), and Settings never
+  verifies, rotates or clears it. Boat's account-change rules still apply:
+  adding an own Boat key while included cloud computers exist is refused until
+  they are deleted, because the new account cannot reach them.
+- **What holding the tokens does and does not do.** The server reads both
+  tokens at startup, keeps them in memory and removes them from its
+  environment, like the bootstrap secret, and they are on the credential list.
+  So no process the server starts inherits them, including tools that copy
+  its environment as it is (the browser, docker, ssh, MCP bridges). It does
+  not make them unreadable: the launcher starts the server with them, so the
+  server's `/proc/<pid>/environ` keeps its startup environment, and an engine
+  running as the same user (a bot with a shell) can read a relay token there.
+  That is accepted because a relay token is only this customer's own Cloud Pro
+  allowance: it works only through the Admin, only on this machine's cloud
+  computers and voice, and only up to the monthly caps. Whoever holds it can
+  at worst use up this month's included hours or voice characters; it opens
+  no other customer's data and none of the Admin's provider keys.
+- A refusal from the relay (for example, the month's cloud computer hours are
+  used up) is shown as the relay's own message. A resume that fails with a
+  server error is retried on the next poll, as Boat asks.
 
 ## Pairing: the Admin's signed request
 

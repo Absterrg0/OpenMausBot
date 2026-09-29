@@ -15,14 +15,16 @@ ipcRenderer.on("package:install", (_event, url) => {
 });
 
 // Main can finish loading the document before React subscribes. Retain only
-// the fixed Organisation action, never a destination supplied by a renderer.
-let pendingOrganizationSettings = false;
+// the fixed actions (Organisation, and the openmausbot://cloud link), never a
+// destination supplied by a renderer.
+const FIXED_SETTINGS_ACTIONS = new Set(["organization", "cloud"]);
+let pendingSettingsAction = null;
 const appSettingsListeners = new Set();
 ipcRenderer.on("app:open-settings", (_event, section) => {
-  const fixedSection = section === "organization" ? "organization" : undefined;
-  if (fixedSection && !appSettingsListeners.size) pendingOrganizationSettings = true;
+  const fixedSection = FIXED_SETTINGS_ACTIONS.has(section) ? section : undefined;
+  if (fixedSection && !appSettingsListeners.size) pendingSettingsAction = fixedSection;
   if (!appSettingsListeners.size) return;
-  pendingOrganizationSettings = false;
+  pendingSettingsAction = null;
   for (const listener of appSettingsListeners) listener(fixedSection);
 });
 
@@ -155,9 +157,10 @@ const bridge = {
   onOpenAppSettings: (cb) => {
     appSettingsListeners.add(cb);
     queueMicrotask(() => {
-      if (!pendingOrganizationSettings || !appSettingsListeners.size) return;
-      pendingOrganizationSettings = false;
-      for (const listener of appSettingsListeners) listener("organization");
+      const section = pendingSettingsAction;
+      if (!section || !appSettingsListeners.size) return;
+      pendingSettingsAction = null;
+      for (const listener of appSettingsListeners) listener(section);
     });
     return () => appSettingsListeners.delete(cb);
   },

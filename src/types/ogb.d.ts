@@ -240,8 +240,9 @@ const __APP_VERSION__: string;
       onPackageInstall?(cb: (url: string) => void): () => void;
       /** The desktop shell's app-menu Preferences… item was activated; open
        * app Settings. Local-shell only: remote server pages never receive
-       * the channel, and the bridge is absent in the browser. */
-      onOpenAppSettings?(cb: (section?: "organization") => void): () => void;
+       * the channel, and the bridge is absent in the browser. "cloud" is the
+       * openmausbot://cloud link (Settings → OMB Cloud, opened by the link). */
+      onOpenAppSettings?(cb: (section?: "organization" | "cloud") => void): () => void;
       /** Updates the native Dock/taskbar unread indicator. */
       setUnreadCount?(count: number): void;
       /** Opens a live desktop as a sandboxed window owned by OpenMausBot. */

@@ -14,13 +14,23 @@ export type TestableProvider = "anthropic" | "openaiCompat" | "xai" | "mistral";
 
 const SECTIONS: Record<
   ConfigSection,
-  { body: (value: string) => unknown; flag: (config: ConfigStatus) => boolean }
+  {
+    body: (value: string) => unknown;
+    /** A key is saved. */
+    flag: (config: ConfigStatus) => boolean;
+    /** Works with no saved key: Cloud Pro includes it. */
+    included?: (config: ConfigStatus) => boolean;
+  }
 > = {
   composio: {
     body: (v) => ({ composio: { apiKey: v } }),
     flag: (c) => c.composio.configured,
   },
-  box: { body: (v) => ({ box: { token: v } }), flag: (c) => c.box.configured },
+  box: {
+    body: (v) => ({ box: { token: v } }),
+    flag: (c) => c.box.configured && c.box.included !== true,
+    included: (c) => c.box.included === true,
+  },
   opencodeGo: { body: (v) => ({ opencodeGo: { apiKey: v } }), flag: (c) => c.opencodeGo?.configured ?? false },
   anthropic: { body: (v) => ({ anthropic: { key: v } }), flag: (c) => c.anthropic?.configured ?? false },
   openaiCompat: { body: (v) => ({ openaiCompat: { key: v } }), flag: (c) => c.openaiCompat?.configured ?? false },
@@ -218,6 +228,7 @@ export function ApiKeyRow({
   }, [state.config]);
 
   const configured = state.config ? SECTIONS[section].flag(state.config) : false;
+  const included = state.config ? SECTIONS[section].included?.(state.config) === true : false;
   const clearing = !value.trim() && configured;
   const emptyDraft = edited && !value.trim();
   const credential = credentialCopy(section);
@@ -275,7 +286,7 @@ export function ApiKeyRow({
   return (
     <div>
       <div className="mb-1.5 flex items-center gap-2 text-[13px] text-ink-secondary">
-        <span className={cn("size-1.5 rounded-full", configured ? "bg-success" : "bg-raised-hover")} />
+        <span className={cn("size-1.5 rounded-full", configured || included ? "bg-success" : "bg-raised-hover")} />
         <span>{credential.label}</span>
         {credential.optional && (
           <span className="rounded bg-control px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-ink-secondary">
@@ -283,6 +294,7 @@ export function ApiKeyRow({
           </span>
         )}
         {configured && <span className="text-[11px] text-ink-secondary">{t("keys.configured")}</span>}
+        {included && <span className="text-[11px] text-ink-secondary">{t("keys.includedWithCloudPro")}</span>}
         <CredentialHelp section={section} />
       </div>
       <div className="flex gap-2">

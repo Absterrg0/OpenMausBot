@@ -997,6 +997,10 @@ export function loadConfig(): AppConfig {
   if (process.env.OPENCODE_API_KEY !== undefined) cfg.opencodeGo.apiKey = process.env.OPENCODE_API_KEY;
   cfg.tts = { ...cfg.tts };
   if (process.env.OMB_TTS_KEY !== undefined) cfg.tts.key = process.env.OMB_TTS_KEY;
+  // A preset ElevenLabs voice (Cloud Pro sets one) is only a default: a voice or
+  // another speech provider the person picked in Settings always wins.
+  const presetVoice = process.env.OMB_TTS_DEFAULT_VOICE?.trim();
+  if (presetVoice && !cfg.tts.voice?.trim() && (cfg.tts.provider ?? "elevenlabs") === "elevenlabs") cfg.tts.voice = presetVoice;
   if (process.env.OMB_FISH_AUDIO_API_KEY !== undefined) cfg.tts.fishKey = process.env.OMB_FISH_AUDIO_API_KEY;
   cfg.imageGen = { ...cfg.imageGen };
   if (process.env.OMB_OPENAI_IMAGE_KEY !== undefined) cfg.imageGen.key = process.env.OMB_OPENAI_IMAGE_KEY;
@@ -1075,6 +1079,10 @@ export const WORKSPACE_CREDENTIAL_ENV = [
   "OMB_CUSTOM_IMAGE_KEY",
   "COMPOSIO_API_KEY",
   "OMB_COMPOSIO_BROKER_TOKEN",
+  // Cloud Pro's included Boat and voice relay tokens (included-services.ts),
+  // used only in-process by the Boat and voice modules.
+  "OMB_CLOUD_BOAT_TOKEN",
+  "OMB_CLOUD_VOICE_TOKEN",
   // Harness-private filesystem hints are not credentials themselves, but
   // exposing them to a shell-capable agent points straight at app-owned
   // state. The built-in browser master is delivered privately in memory.
@@ -1368,6 +1376,8 @@ function injectedEnvironment(cfg: AppConfig, driver: string): Map<string, string
   if (driver === "openai-compat" && cfg.openaiCompat?.url)
     environment.set("OPENAI_COMPAT_URL", cfg.openaiCompat.url);
   // driverKind "boxAgent" and env BOX_TOKEN keep their historical names.
+  // Only the person's own token: without one the driver itself falls back
+  // to Cloud Pro's included token, which never enters an environment map.
   if (driver === "boxAgent" && cfg.box?.token) environment.set("BOX_TOKEN", cfg.box.token);
   if (driver === "opencodeGo" && cfg.opencodeGo?.apiKey) environment.set("OPENCODE_API_KEY", cfg.opencodeGo.apiKey);
   return environment;

@@ -3,7 +3,9 @@
 // sent (OMB_HOSTED_*). Cloud Pro includes no AI: the machine boots, says once
 // that it ignores them, serves no gateway models, never hands them (or its
 // signing secret) to an engine, and tells the app it pairs that its first run
-// is the engine sign-in. Disposable home; no network; a synthetic Claude CLI.
+// is the engine sign-in. It also carries Pro's included Boat computers and
+// voice: offered with no key, their relay tokens never shown, saved or passed
+// on. Disposable home; no network; a synthetic Claude CLI.
 import { randomBytes } from "node:crypto";
 import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
@@ -24,6 +26,15 @@ const gateway = {
   OMB_HOSTED_MODEL_TOKEN: token,
   OMB_HOSTED_MODELS: JSON.stringify({ anthropic: [], openai: ["gpt-fixture"], openrouter: ["anthropic/claude-fixture"] }),
 };
+// Cloud Pro's included Boat computers and voice (included-services.ts).
+const included = {
+  OMB_CLOUD_BOAT_URL: "https://cloud.example.test/api/cloud/services/boat/api/box/v1",
+  OMB_CLOUD_BOAT_TOKEN: `box_omb_${randomBytes(24).toString("base64url")}`,
+  OMB_CLOUD_VOICE_URL: "https://cloud.example.test/api/cloud/services/voice/v1",
+  OMB_CLOUD_VOICE_TOKEN: `omb_voice_${randomBytes(24).toString("base64url")}`,
+  OMB_TTS_DEFAULT_VOICE: "preset0voice0id",
+};
+const includedTokens = [included.OMB_CLOUD_BOAT_TOKEN, included.OMB_CLOUD_VOICE_TOKEN];
 let home: string;
 let base: string;
 let child: ChildProcess;
@@ -77,6 +88,7 @@ await import(${JSON.stringify(pathToFileURL(join(SERVER_DIR, "testing", "fake-cl
       OMB_CLOUD_ROLE: "home", OMB_CLOUD_MACHINE_ID: "3f9c2a4e-8b1d-4c6e-9a7f-2d5e8c1b0a93", OMB_CLOUD_ADMIN_URL: "https://cloud.example.test",
       OMB_CLOUD_BOOTSTRAP_SECRET: secret, OMB_PUBLIC_URL: `https://${HOST}`,
       ...gateway,
+      ...included,
     },
     stdio: ["ignore", "pipe", "pipe"],
   });
@@ -100,6 +112,19 @@ it("boots with a gateway's settings, says once that it ignores them, and never l
   expect(log.match(/cloud home: ignoring OMB_HOSTED_MODEL_URL, OMB_HOSTED_MODEL_TOKEN, OMB_HOSTED_MODELS: Cloud Pro includes no AI/g)).toHaveLength(1);
   expect(log).not.toContain(token);
   expect(log).not.toContain(secret);
+  for (const includedToken of includedTokens) expect(log).not.toContain(includedToken);
+});
+
+it("offers the included computers and voice with no key, and never shows or saves their tokens", async () => {
+  const status = await api("GET", "/api/config");
+  expect(status.status).toBe(200);
+  expect(status.body.box).toEqual({ configured: true, included: true });
+  expect(status.body.tts).toMatchObject({ configured: true, ready: true, provider: "elevenlabs", voice: "preset0voice0id", included: true });
+  const saved = readFileSync(join(home, ".openmausbot", "config.json"), "utf8");
+  for (const includedToken of includedTokens) {
+    expect(JSON.stringify(status.body)).not.toContain(includedToken);
+    expect(saved).not.toContain(includedToken);
+  }
 });
 
 it("pairs the app on a signed request and tells it its first run is the engine sign-in; no gateway models are served", async () => {
@@ -122,6 +147,26 @@ it("pairs the app on a signed request and tells it its first run is the engine s
   expect(JSON.stringify(instances)).not.toContain("cloud.example.test");
 });
 
+it("drops the included tokens from its own environment, so a tool started with it raw never sees them", async () => {
+  // POST /api/cli-test runs `<cli> --version` with a copy of the server's own
+  // environment (a fixed list removed): one of the paths that relies on the
+  // server no longer holding the tokens, like agent-browser, docker and ssh.
+  const dump = join(home, "cli-env.json");
+  const cli = join(home, "dump-env.mjs");
+  writeFileSync(cli, `#!/usr/bin/env node
+import { writeFileSync } from "node:fs";
+writeFileSync(${JSON.stringify(dump)}, JSON.stringify(process.env));
+console.log("dump-env 1.0.0");
+`, { mode: 0o755 });
+  const probe = await api("POST", "/api/cli-test", { body: { cli } });
+  expect(probe.body, JSON.stringify(probe.body)).toMatchObject({ ok: true, version: "dump-env 1.0.0" });
+  const env = JSON.parse(readFileSync(dump, "utf8"));
+  // Proves the dump is the server's environment, not an empty one.
+  expect(env.OMB_CLOUD_BOAT_URL).toBe(included.OMB_CLOUD_BOAT_URL);
+  for (const key of ["OMB_CLOUD_BOAT_TOKEN", "OMB_CLOUD_VOICE_TOKEN", "OMB_CLOUD_BOOTSTRAP_SECRET"]) expect(env).not.toHaveProperty(key);
+  for (const value of [...includedTokens, secret]) expect(JSON.stringify(env)).not.toContain(value);
+});
+
 it("never hands a gateway's settings or the signing secret to an engine", async () => {
   const created = await api("POST", "/api/bots", { body: {
     name: "Cloud fixture", modelSelection: { instanceId: "claude", model: "claude-sonnet-5" }, requireAvailableModel: true,
@@ -132,7 +177,8 @@ it("never hands a gateway's settings or the signing secret to an engine", async 
   await expect.poll(() => existsSync(dump), { timeout: 15_000 }).toBe(true);
   const { env } = JSON.parse(readFileSync(dump, "utf8"));
   expect(env.HOME).toBe(home);
-  for (const key of [...CLOUD_IGNORED_KEYS, "OMB_CLOUD_BOOTSTRAP_SECRET"]) expect(env).not.toHaveProperty(key);
+  for (const key of [...CLOUD_IGNORED_KEYS, "OMB_CLOUD_BOOTSTRAP_SECRET", "OMB_CLOUD_BOAT_TOKEN", "OMB_CLOUD_VOICE_TOKEN"]) expect(env).not.toHaveProperty(key);
   expect(JSON.stringify(env)).not.toContain(token);
   expect(JSON.stringify(env)).not.toContain(secret);
+  for (const includedToken of includedTokens) expect(JSON.stringify(env)).not.toContain(includedToken);
 });
