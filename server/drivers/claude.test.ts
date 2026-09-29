@@ -452,7 +452,6 @@ describe("ClaudeDriver turns (fake CLI)", () => {
     delete process.env.FAKE_CLAUDE_TEXT_HANG;
     delete process.env.FAKE_CLAUDE_STEER_GRACE_SCALE;
     delete process.env.FAKE_CLAUDE_STEER_SILENCE_SCALE;
-    delete process.env.FAKE_CLAUDE_STEER_SEAM_SCALE;
     delete process.env.ANTHROPIC_API_KEY;
     delete process.env.XAI_API_KEY;
     delete process.env.COMPOSIO_API_KEY;
@@ -2048,11 +2047,9 @@ describe("ClaudeDriver turns (fake CLI)", () => {
 
   it("holds on the CLI's own queued_turn_count after a fold seam the steer had already missed", async () => {
     // The steer landed once the CLI had drained stdin for its next model
-    // call, but before the driver saw that call's tool result. The seam
-    // margin is scaled down to nothing here, so the driver's own count is
-    // back at 0 when `result` arrives. A CLI that reports
-    // queued_turn_count > 0 says a turn follows; the driver believes it.
-    process.env.FAKE_CLAUDE_STEER_SEAM_SCALE = "0.001";
+    // call, before the driver saw that call's tool result. A CLI that
+    // reports queued_turn_count > 0 says a turn follows, and the driver's
+    // own count of the steer agrees: the result is held.
     const finishGate = join(scratch, "count-first.gate");
     const continuationGate = join(scratch, "count-continuation.gate");
     const received = join(scratch, "count-received");
@@ -2081,13 +2078,12 @@ describe("ClaudeDriver turns (fake CLI)", () => {
     expect(recorder.events.every((e) => e.turnId === turnId)).toBe(true);
   });
 
-  it("keeps a steer written just before a fold seam was read counted, without the CLI's count", async () => {
+  it("holds for a steer that the next tool result did not take in, without the CLI's count", async () => {
     // The CLI takes stdin as it writes a tool result, and the driver reads
     // that frame a moment later: a steer written in between was not folded,
-    // and 2.1.282's queued_turn_count stays 0 for it. The driver keeps a
-    // steer that recent counted (the margin is scaled up so that a slow
-    // worker cannot outrun it) and holds the result for the continuation.
-    process.env.FAKE_CLAUDE_STEER_SEAM_SCALE = "10";
+    // and 2.1.282's queued_turn_count stays 0 for it. A tool result says
+    // nothing about which steers it took in, so the driver keeps counting
+    // the steer and holds the result for the continuation.
     const finishGate = join(scratch, "seam-first.gate");
     const continuationGate = join(scratch, "seam-continuation.gate");
     const received = join(scratch, "seam-received");
@@ -2114,10 +2110,10 @@ describe("ClaudeDriver turns (fake CLI)", () => {
     expect(recorder.events.every((e) => e.turnId === turnId)).toBe(true);
   });
 
-  it("does not hold a steer that a fold seam read well after it took in", async () => {
-    // A steer older than the margin when a fold seam is read was folded in
-    // by that seam's drain: the result closes the turn at once, no hold.
-    process.env.FAKE_CLAUDE_STEER_SEAM_SCALE = "0.001";
+  it("holds a folded steer's result for the grace, then closes the turn on it", async () => {
+    // Nothing the CLI prints says a steer was folded in: the result waits
+    // the grace for an `init` that does not come, then stands as the turn's.
+    process.env.FAKE_CLAUDE_STEER_GRACE_SCALE = "0.05";
     const finishGate = join(scratch, "folded-first.gate");
     const received = join(scratch, "folded-received");
     await create("slow", {
@@ -2133,7 +2129,9 @@ describe("ClaudeDriver turns (fake CLI)", () => {
     writeFileSync(finishGate, "finish");
     const completed = await recorder.until((e) => e.type === "turn.completed");
     expect(completed).toMatchObject({ turnId, ok: true });
-    expect(readFileSync(join(NATIVE_DIR, `${threadId}.ndjson`), "utf8")).not.toContain('"hold"');
+    expect(recorder.events.filter((e) => e.type === "turn.completed")).toHaveLength(1);
+    expect(recorder.events.filter((e) => e.type === "session.started")).toHaveLength(1);
+    expect(readFileSync(join(NATIVE_DIR, `${threadId}.ndjson`), "utf8")).toContain('"hold"');
   });
 
   it("Stop during the held window, before the continuation's init, settles the one turn as interrupted", async () => {

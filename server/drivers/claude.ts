@@ -576,8 +576,8 @@ export function sumNativeTurnResults(earlier: NativeTurnResult | null, latest: N
  * the turn it starts for a user message steered in after this turn's last
  * model call. The message is already buffered on its stdin, so this takes
  * milliseconds (about 60 ms on 2.1.282). If nothing comes, the message was
- * folded into the call that just finished after all, and the held result
- * is the turn's. */
+ * folded into one of this turn's model calls after all, and the held result
+ * is the turn's: every result with a steer outstanding waits this long. */
 export const STEERED_CONTINUATION_GRACE_MS = 2_000;
 
 /** How long a steered continuation may stay silent after its `init` before
@@ -588,18 +588,12 @@ export const STEERED_CONTINUATION_GRACE_MS = 2_000;
  * stall watchdog. */
 export const STEERED_CONTINUATION_SILENCE_MS = 30_000;
 
-/** How recent a steer may be, when a fold seam is read, to count as having
- * missed it. The CLI takes queued stdin as it writes a top-level tool result
- * and the driver reads that frame a moment later, so a steer written in
- * between was not folded. A steer older than this at the seam was. */
-export const STEER_SEAM_MARGIN_MS = 1_000;
 /** Tests scale each steer timer on its own, the way FAKE_CLAUDE_RETRY_SCALE
  * scales the retry backoff — a test that shortens the silence bound must not
  * also shorten the grace `init` has to arrive in. Production runs at 1. */
 const fakeTimerScale = (name: string) => Number(process.env[name] ?? "1") || 1;
 const steerGraceScale = () => fakeTimerScale("FAKE_CLAUDE_STEER_GRACE_SCALE");
 const steerSilenceScale = () => fakeTimerScale("FAKE_CLAUDE_STEER_SILENCE_SCALE");
-const steerSeamScale = () => fakeTimerScale("FAKE_CLAUDE_STEER_SEAM_SCALE");
 
 /** Where the hook helper reads this thread's current turn token. Stable per
  * thread (so the CLI's environment can name it once) and private. */
@@ -1194,14 +1188,12 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
         authFailed?: boolean;
         updateRequired?: boolean;
         stopRequested?: boolean;
-        /** User messages steered in since the CLI last showed a fold seam — a
-         * tool result, which it follows with a model call that takes queued
-         * stdin first. Words that land after the LAST seam run as the CLI's
-         * next native turn instead, so a `result` with this above zero does
-         * not end the logical turn (see the `result` handling). */
+        /** User messages steered in (or being written) since the last held
+         * result. The CLI folds one in before a model call that has not
+         * started yet, or runs it as its next native turn when none is left,
+         * and its output does not say which: a `result` with this above zero
+         * is held either way (see the `result` handling). */
         pendingSteers: number;
-        /** When the newest of those steers was written (epoch ms; 0: none). */
-        lastSteerAt: number;
         /** Native results already produced by this logical turn, held while
          * a steered continuation is expected; summed into `turn.completed`. */
         deferred: NativeTurnResult | null;
@@ -1576,7 +1568,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
       const live = sessions.get(threadId);
       if (!turn.sessionReset && live && !live.turn && !live.closing && live.child.exitCode === null && live.argsKey === argsKey && (!sessionId || sessionId === live.sessionId)) {
         if (live.idleTimer) clearTimeout(live.idleTimer);
-        live.turn = { turnId, input: turn, retryAbort, settled: false, sawStreamDelta: false, pendingSteers: 0, lastSteerAt: 0, deferred: null, continuationGrace: null, continuationSilence: null };
+        live.turn = { turnId, input: turn, retryAbort, settled: false, sawStreamDelta: false, pendingSteers: 0, deferred: null, continuationGrace: null, continuationSilence: null };
         active.set(threadId, { stop: () => {
           if (live.turn) live.turn.stopRequested = true;
           closeSession(threadId, "interrupted");
@@ -1755,7 +1747,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
         sessionId: sessionId ?? newSessionId,
         sawInit: false,
         nativePermissionMode: null,
-        turn: { turnId, input: turn, retryAbort, settled: false, sawStreamDelta: false, pendingSteers: 0, lastSteerAt: 0, deferred: null, continuationGrace: null, continuationSilence: null },
+        turn: { turnId, input: turn, retryAbort, settled: false, sawStreamDelta: false, pendingSteers: 0, deferred: null, continuationGrace: null, continuationSilence: null },
         idleTimer: null,
         closing: false,
         stderr: "",
@@ -1952,26 +1944,13 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
             break;
           }
           case "user": {
-            let toolResult = false;
             for (const b of Array.isArray(o.message?.content) ? o.message.content : []) {
               if (b.type === "tool_result") {
-                toolResult = true;
                 emit({ ...base(threadId, currentTurnId()), type: "item.completed", itemType: "tool", itemId: b.tool_use_id, ok: !b.is_error, output: toolDetailPreview(b.content) });
                 for (const img of extractMcpImages(b.content)) {
                   emit({ ...base(threadId, currentTurnId()), type: "item.completed", itemType: "assistant_image", data: img.data });
                 }
               }
-            }
-            // The CLI follows a tool result with a model call and takes queued
-            // stdin before it: whatever was steered so far is folded in. A
-            // subagent's tool result is inside a Task, not a seam of this loop.
-            // It takes stdin as it writes this frame, which is read a moment
-            // later: a steer written just before now may have missed that
-            // drain, so the count stays until the newest steer is older than
-            // STEER_SEAM_MARGIN_MS, and the result holds on it meanwhile.
-            const seamTurn = session.turn;
-            if (toolResult && !o.parent_tool_use_id && seamTurn && Date.now() - seamTurn.lastSteerAt >= STEER_SEAM_MARGIN_MS * steerSeamScale()) {
-              seamTurn.pendingSteers = 0;
             }
             break;
           }
@@ -2021,14 +2000,13 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
             // stdin is not in that queue when the result is written — the
             // incident's result said 0 and the CLI ran the message 58 ms later
             // — so 0, like an absent field, decides nothing; the driver's own
-            // count of steers since the last fold seam does. A steer written
-            // within STEER_SEAM_MARGIN_MS before a seam was read stays counted,
-            // since the CLI may have drained stdin before it (a folded one then
-            // costs the grace below). One window stays, which the CLI's figure
-            // would close if it covered stdin: a turn ending right after a tool
-            // result (error_max_turns, budget) with a steer it never got to
-            // fold settles early, as before this fix. A steer landing while a
-            // result is held extends the hold.
+            // count of steers since the last hold does. Nothing the CLI prints
+            // says whether a steer was folded into a model call or waits to
+            // run next (the time a tool result is read proves nothing about
+            // when stdin was taken), so any steer holds the result: if no
+            // `init` follows within the grace, it was folded, and the held
+            // result is the turn's. A steer landing while a result is held
+            // extends the hold.
             const queuedTurns = typeof o.queued_turn_count === "number" ? o.queued_turn_count : 0;
             if (t && !t.settled && (queuedTurns > 0 || t.pendingSteers > 0)) {
               // The CLI runs the queued message next, in this process, with
@@ -2332,13 +2310,12 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
       const s = sessions.get(threadId);
       if (!s || !s.turn || s.turn.settled || s.closing || s.child.exitCode !== null) return "refused";
       const turn = s.turn;
-      if (!(await writeUser(s, threadId, claudeUserMessage(text, undefined)))) return "refused";
-      // Count the words until a fold seam shows, so `result` knows whether
-      // the turn is really over. A turn that settled while the write was in
-      // flight has nothing left to count them against.
-      if (s.turn === turn && !turn.settled) {
-        turn.pendingSteers += 1;
-        turn.lastSteerAt = Date.now();
+      // Counted before the write: a `result` read while the words are still
+      // on their way must hold for them too. A failed write gives it back.
+      turn.pendingSteers += 1;
+      if (!(await writeUser(s, threadId, claudeUserMessage(text, undefined)))) {
+        if (!turn.settled && turn.pendingSteers > 0) turn.pendingSteers -= 1;
+        return "refused";
       }
       return "steered";
     };
