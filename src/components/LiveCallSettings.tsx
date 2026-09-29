@@ -80,7 +80,7 @@ export function LiveCallSettings({ onClose }: { onClose: () => void }) {
           {LIVE_VOICE_OPTIONS.map((option) => <option key={option.id} value={option.id}>{option.label}</option>)}
         </select>
       </label>
-      <div className="-mt-2 text-[11.5px] text-ink-secondary/80">{t("call.live.voiceNext")}</div>
+      <div className="-mt-2 text-[11.5px] text-ink-tertiary">{t("call.live.voiceNext")}</div>
       <label className="flex items-center justify-between gap-2">
         <span className="text-ink-secondary">{t("call.live.readTyped")}</span>
         <input
@@ -91,7 +91,7 @@ export function LiveCallSettings({ onClose }: { onClose: () => void }) {
           onChange={(event) => void save({ readTypedReplies: event.target.checked })}
         />
       </label>
-      <div id={typedHintId} className="-mt-2 text-[11.5px] text-ink-secondary/80">{t("call.live.readTypedHint")}</div>
+      <div id={typedHintId} className="-mt-2 text-[11.5px] text-ink-tertiary">{t("call.live.readTypedHint")}</div>
       <label className="flex items-center justify-between gap-2">
         <span className="text-ink-secondary">{t("call.live.idle")}</span>
         <select
@@ -119,7 +119,7 @@ export function LiveCallSettings({ onClose }: { onClose: () => void }) {
         </span>
       </div>
       {changingKey && <LiveKeySetup compact onSaved={() => setChangingKey(false)} />}
-      <div className="text-[11.5px] text-ink-secondary/70">{t("call.live.disclosure")} {t("call.live.cost")}</div>
+      <div className="text-[11.5px] text-ink-tertiary">{t("call.live.disclosure")} {t("call.live.cost")}</div>
       {error && <div className="text-[12px] text-danger">{error}</div>}
     </div>
   );

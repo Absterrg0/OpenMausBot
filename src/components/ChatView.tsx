@@ -511,7 +511,7 @@ function Bubble({
                 </div>
               )}
               {message.via === "call" && (
-                <span className="mt-1 text-[11px] text-ink-secondary/70" title={t("chat.viaCall")}>
+                <span className="mt-1 text-[11px] text-ink-tertiary" title={t("chat.viaCall")}>
                   {t("chat.viaCall")}
                 </span>
               )}

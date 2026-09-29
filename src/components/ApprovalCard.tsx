@@ -98,7 +98,7 @@ export function ApprovalCard({
   const settled = card.answered;
   const expired = card.expired === true;
   // decided by voice on a Live call rather than tapped
-  const byVoice = card.answeredBy?.via === "call" ? <span className="text-ink-secondary/70">· {t("approval.status.byVoice")}</span> : null;
+  const byVoice = card.answeredBy?.via === "call" ? <span className="text-ink-tertiary">· {t("approval.status.byVoice")}</span> : null;
   const isRoutineRequest = Boolean(card.routineRequest);
   const isSkillRequest = Boolean(card.skillRequest);
   const isProfileRequest = Boolean(card.profileRequest);

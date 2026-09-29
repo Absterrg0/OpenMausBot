@@ -197,7 +197,7 @@ export function LiveCallBar({ bot }: { bot: Bot }) {
       <span
         className={cn(
           "order-last w-full min-w-0 truncate text-left [direction:rtl] sm:order-none sm:w-auto sm:flex-1",
-          view.heard ? "text-ink-secondary/60" : "text-ink-secondary",
+          view.heard ? "text-ink-tertiary" : "text-ink-secondary",
         )}
         title={spoken || undefined}
       >
