@@ -694,9 +694,10 @@ process.stdin.on("data", (c) => {
     } catch {
       continue;
     }
-    if (turnRunning) {
+    if (turnRunning || lateTurnWaiting) {
       // folded into the running turn, unless it landed after that turn's
-      // last model call — then the real CLI queues it for the next turn
+      // last model call — then the real CLI queues it for the next turn,
+      // behind any queued message whose turn has not been announced yet
       if (process.env.FAKE_CLAUDE_LATE_STEER_GATE) lateSteers.push(prompt);
       else steered.push(promptText(prompt));
       if (process.env.FAKE_CLAUDE_STEER_RECEIVED) writeFileSync(process.env.FAKE_CLAUDE_STEER_RECEIVED, "received");

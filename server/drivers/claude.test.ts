@@ -2195,6 +2195,45 @@ describe("ClaudeDriver turns (fake CLI)", () => {
     expect(recorder.events.filter((e) => e.type === "turn.completed")).toHaveLength(1);
   });
 
+  it("gives a steer that lands while a result is held the whole grace", async () => {
+    // A second message steered in near the end of the first one's grace
+    // must get a whole grace of its own to be announced, not what is left
+    // of the first: grace 3 s, the second steer 2 s in, the continuations
+    // let out 3.8 s in.
+    process.env.FAKE_CLAUDE_STEER_GRACE_SCALE = "1.5";
+    const finishGate = join(scratch, "regrace-first.gate");
+    const continuationGate = join(scratch, "regrace-continuation.gate");
+    const initGate = join(scratch, "regrace-init.gate");
+    const received = join(scratch, "regrace-received");
+    await create("slow", {
+      FAKE_CLAUDE_SLOW_FINISH_GATE: finishGate,
+      FAKE_CLAUDE_LATE_STEER_GATE: continuationGate,
+      FAKE_CLAUDE_LATE_STEER_INIT_GATE: initGate,
+      FAKE_CLAUDE_STEER_RECEIVED: received,
+    });
+    const threadId = "t-held-regrace";
+    const { turnId } = await instance.adapter.sendTurn({ threadId, text: "first" });
+    await recorder.until((e) => e.type === "item.completed" && e.itemType === "tool");
+    await expect(instance.adapter.steer!(threadId, "and also this")).resolves.toBe("steered");
+    await expect.poll(() => existsSync(received)).toBe(true);
+    writeFileSync(finishGate, "finish");
+    const nativeLog = join(NATIVE_DIR, `${threadId}.ndjson`);
+    await expect.poll(() => existsSync(nativeLog) && readFileSync(nativeLog, "utf8").includes('"hold"'), { interval: 20 }).toBe(true);
+    const heldAt = Date.now();
+    await new Promise((resolve) => setTimeout(resolve, 2_000));
+    await expect(instance.adapter.steer!(threadId, "and one more")).resolves.toBe("steered");
+    await new Promise((resolve) => setTimeout(resolve, Math.max(0, heldAt + 3_800 - Date.now())));
+    writeFileSync(continuationGate, "finish");
+    writeFileSync(initGate, "init");
+    const second = await recorder.until(
+      (e) => e.type === "item.completed" && e.itemType === "assistant_text" && (e as { text: string }).text === "reply to: and one more",
+    );
+    const completed = await recorder.until((e) => e.type === "turn.completed");
+    expect(completed).toMatchObject({ turnId, ok: true });
+    expect(recorder.events.indexOf(completed)).toBeGreaterThan(recorder.events.indexOf(second));
+    expect(recorder.events.filter((e) => e.type === "turn.completed")).toHaveLength(1);
+  });
+
   it("closes a steered continuation that announces itself and then stays silent", async () => {
     // A held result waits for the continuation's `init`; after that its
     // first frame — status, thinking, text — must follow within a bound, or

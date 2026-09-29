@@ -1200,6 +1200,9 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
         /** Armed after a held result: the CLI announces the continuation with
          * `init` within milliseconds, or never — then the held result stands. */
         continuationGrace: ReturnType<typeof setTimeout> | null;
+        /** (Re)starts that grace; set with it. A steer that lands while it
+         * runs restarts it, so each queued message gets the whole grace. */
+        armGrace?: () => void;
         /** Armed by the continuation's `init`: a frame of any other kind must
          * follow within STEERED_CONTINUATION_SILENCE_MS, or the held result stands. */
         continuationSilence: ReturnType<typeof setTimeout> | null;
@@ -2017,22 +2020,25 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
               // result until the continuation's own arrives.
               t.pendingSteers = 0;
               t.deferred = sumNativeTurnResults(t.deferred, native);
-              if (t.continuationGrace) clearTimeout(t.continuationGrace);
-              t.continuationGrace = setTimeout(() => {
-                // No `init` came: the message was folded into the call that
-                // just finished after all (or a queued send was cancelled),
-                // and the held result is the turn's.
-                if (session.turn !== t || t.settled) return;
-                // A Stop or a close settles the turn in finalizeClose: as
-                // interrupted after a Stop, else on the held result, which
-                // the grace still being set tells it the turn owns. (taskkill
-                // is asynchronous on Windows, so the CLI can outlive a Stop
-                // by longer than this grace.)
-                if (t.stopRequested || session.closing) return;
-                t.continuationGrace = null;
-                if (t.deferred) settleResult(t.deferred);
-              }, STEERED_CONTINUATION_GRACE_MS * steerGraceScale());
-              t.continuationGrace.unref?.();
+              t.armGrace = () => {
+                if (t.continuationGrace) clearTimeout(t.continuationGrace);
+                t.continuationGrace = setTimeout(() => {
+                  // No `init` came: the message was folded into the call that
+                  // just finished after all (or a queued send was cancelled),
+                  // and the held result is the turn's.
+                  if (session.turn !== t || t.settled) return;
+                  // A Stop or a close settles the turn in finalizeClose: as
+                  // interrupted after a Stop, else on the held result, which
+                  // the grace still being set tells it the turn owns. (taskkill
+                  // is asynchronous on Windows, so the CLI can outlive a Stop
+                  // by longer than this grace.)
+                  if (t.stopRequested || session.closing) return;
+                  t.continuationGrace = null;
+                  if (t.deferred) settleResult(t.deferred);
+                }, STEERED_CONTINUATION_GRACE_MS * steerGraceScale());
+                t.continuationGrace.unref?.();
+              };
+              t.armGrace();
               appendNative(threadId, { dir: "out", source: "claude.session", msg: { hold: `result: a steered message is still queued (queued_turn_count ${o.queued_turn_count ?? "absent"})` } });
               break;
             }
@@ -2317,6 +2323,9 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
         if (!turn.settled && turn.pendingSteers > 0) turn.pendingSteers -= 1;
         return "refused";
       }
+      // Written while a held result waits for a continuation's `init`: these
+      // words get the whole grace to be announced too.
+      if (!turn.settled && turn.continuationGrace) turn.armGrace?.();
       return "steered";
     };
 
