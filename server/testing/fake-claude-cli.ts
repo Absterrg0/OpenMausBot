@@ -337,6 +337,23 @@ const permissionMode =
 let dumped = false;
 let turnRunning = false;
 let steered: string[] = [];
+/** The folded steers as they were sent, echoed when the reply takes them in. */
+let steeredMessages: JsonValue[] = [];
+// --replay-user-messages (2.1.282): each stdin user message is echoed, with
+// the uuid it was sent with, as a turn takes it in — the prompt as its turn
+// starts, a folded steer before the reply that answers it, a late steer as
+// its own turn starts.
+const replayUserMessages = argv.includes("--replay-user-messages");
+let replayCount = 0;
+const replay = (sent: JsonValue) => {
+  if (!replayUserMessages) return;
+  const message = (sent ?? {}) as { uuid?: unknown; message?: unknown };
+  const uuid = typeof message.uuid === "string" ? message.uuid : `fake-replay-${process.pid}-${++replayCount}`;
+  out({ type: "user", message: message.message ?? null, uuid, session_id: sessionId, parent_tool_use_id: null, isReplay: true });
+};
+const replaySteered = () => {
+  for (const message of steeredMessages.splice(0)) replay(message);
+};
 // Messages that landed after the running turn's last model call
 // (FAKE_CLAUDE_LATE_STEER_GATE): each becomes the next turn once it ends.
 const lateSteers: JsonValue[] = [];
@@ -411,6 +428,7 @@ const playTurn = (prompt: JsonValue, late = false) => {
   turnRunning = true;
   lateContinuation = late;
   steered = [];
+  steeredMessages = [];
   // Every prompt this process receives, one JSON object per line. FAKE_CLAUDE_DUMP
   // records only the first, which cannot show what a REUSED session was sent on
   // its second and later turns.
@@ -488,6 +506,7 @@ const playTurn = (prompt: JsonValue, late = false) => {
     setInterval(() => {}, 1_000);
     return;
   }
+  replay(prompt);
 
   // The CLI accepted the resumed session — it read the prompt — and then
   // died with nothing to show. The prompt may already have run tools, so
@@ -608,6 +627,8 @@ const playTurn = (prompt: JsonValue, late = false) => {
   // total_cost_usd is the process's running total (2.1.282: "read the latest
   // result rather than summing across results"); usage is this turn's own.
   const finish = () => {
+    // anything steered in was taken in before this turn's result
+    replaySteered();
     runHooks("Stop", { stop_hook_active: false });
     runningCost.total = Number((runningCost.total + 0.01).toFixed(2));
     const counted = (runningCost.modelUsage[model] ??= { inputTokens: 0, outputTokens: 0, cacheReadInputTokens: 0, cacheCreationInputTokens: 0, costUSD: 0 });
@@ -654,6 +675,7 @@ const playTurn = (prompt: JsonValue, late = false) => {
         out({ type: "user", message: { content: [{ type: "tool_result", tool_use_id: id, is_error: false, content: [{ type: "text", text: "tail" }] }] } });
       }
       const tail = steered.length ? ` + steered: ${steered.join(" | ")}` : "";
+      replaySteered();
       out({ type: "assistant", message: { content: [{ type: "text", text: `reply to: ${promptText(prompt)}${tail}` }] } });
       finish();
     };
@@ -699,7 +721,10 @@ process.stdin.on("data", (c) => {
       // last model call — then the real CLI queues it for the next turn,
       // behind any queued message whose turn has not been announced yet
       if (process.env.FAKE_CLAUDE_LATE_STEER_GATE) lateSteers.push(prompt);
-      else steered.push(promptText(prompt));
+      else {
+        steered.push(promptText(prompt));
+        steeredMessages.push(prompt);
+      }
       if (process.env.FAKE_CLAUDE_STEER_RECEIVED) writeFileSync(process.env.FAKE_CLAUDE_STEER_RECEIVED, "received");
     } else {
       playTurn(prompt);

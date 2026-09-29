@@ -2110,10 +2110,9 @@ describe("ClaudeDriver turns (fake CLI)", () => {
     expect(recorder.events.every((e) => e.turnId === turnId)).toBe(true);
   });
 
-  it("holds a folded steer's result for the grace, then closes the turn on it", async () => {
-    // Nothing the CLI prints says a steer was folded in: the result waits
-    // the grace for an `init` that does not come, then stands as the turn's.
-    process.env.FAKE_CLAUDE_STEER_GRACE_SCALE = "0.05";
+  it("closes the turn at once on a steer the CLI echoed as taken in", async () => {
+    // --replay-user-messages: the CLI echoes a folded steer before the reply
+    // that answers it, so the result has nothing left to wait for.
     const finishGate = join(scratch, "folded-first.gate");
     const received = join(scratch, "folded-received");
     await create("slow", {
@@ -2130,7 +2129,38 @@ describe("ClaudeDriver turns (fake CLI)", () => {
     const completed = await recorder.until((e) => e.type === "turn.completed");
     expect(completed).toMatchObject({ turnId, ok: true });
     expect(recorder.events.filter((e) => e.type === "turn.completed")).toHaveLength(1);
+    const nativeLog = readFileSync(join(NATIVE_DIR, `${threadId}.ndjson`), "utf8");
+    expect(nativeLog).toContain('"isReplay":true');
+    expect(nativeLog).not.toContain('"hold"');
+  });
+
+  it("holds a folded steer's result for the grace on a CLI that does not echo", async () => {
+    // Before CLAUDE_REPLAY_FLOOR the driver does not ask for the echo, and
+    // nothing the CLI prints says a steer was folded in: the result waits the
+    // grace for an `init` that does not come, then stands as the turn's.
+    process.env.FAKE_CLAUDE_STEER_GRACE_SCALE = "0.05";
+    const finishGate = join(scratch, "folded-old-first.gate");
+    const received = join(scratch, "folded-old-received");
+    const dump = join(scratch, "folded-old-dump.json");
+    await create("slow", {
+      FAKE_CLAUDE_SLOW_FINISH_GATE: finishGate,
+      FAKE_CLAUDE_SLOW_TAIL_TOOL: "1",
+      FAKE_CLAUDE_STEER_RECEIVED: received,
+      FAKE_CLAUDE_DUMP: dump,
+      FAKE_CLAUDE_VERSION: "2.1.281",
+    });
+    await instance.snapshot();
+    const threadId = "t-folded-steer-old";
+    const { turnId } = await instance.adapter.sendTurn({ threadId, text: "first" });
+    await recorder.until((e) => e.type === "item.completed" && e.itemType === "tool");
+    await expect(instance.adapter.steer!(threadId, "and also this")).resolves.toBe("steered");
+    await expect.poll(() => existsSync(received)).toBe(true);
+    writeFileSync(finishGate, "finish");
+    const completed = await recorder.until((e) => e.type === "turn.completed");
+    expect(completed).toMatchObject({ turnId, ok: true });
+    expect(recorder.events.filter((e) => e.type === "turn.completed")).toHaveLength(1);
     expect(recorder.events.filter((e) => e.type === "session.started")).toHaveLength(1);
+    expect(JSON.parse(readFileSync(dump, "utf8")).argv).not.toContain("--replay-user-messages");
     expect(readFileSync(join(NATIVE_DIR, `${threadId}.ndjson`), "utf8")).toContain('"hold"');
   });
 

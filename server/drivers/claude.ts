@@ -8,7 +8,7 @@
 //   - Composio Sessions (connected apps → tools) over streamable HTTP
 //   - the bot's cloud computer (boat.dev) via server/computer-proxy.ts
 //     — screenshot/exec/open_url, the CUA-on-the-boat bridge
-import { createHash, randomBytes } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { createServer as createNetServer } from "node:net";
 import { homedir, tmpdir } from "node:os";
@@ -338,6 +338,15 @@ export type ClaudeCliVersion = readonly [number, number, number];
  * harness sends. Below it the engine still works, minus the flags the CLI
  * predates, and the Engines page suggests an update. */
 export const CLAUDE_CONTEXT_CONTROL_MIN_VERSION: ClaudeCliVersion = CLAUDE_FLAG_FLOORS["--system-prompt-snapshot"];
+
+/** The first CLI this driver has seen echo a stdin user message, with the
+ * uuid it was sent with, as a model call takes it in (`--replay-user-messages`,
+ * checked on 2.1.282): a steer written during a tool call is echoed right
+ * after that tool's result, one written during the turn's last model call
+ * only after the turn's `result`, as its own turn starts. That tells a folded
+ * steer from one that runs next. Below it, every steer holds its turn's
+ * result for the grace. */
+export const CLAUDE_REPLAY_FLOOR: ClaudeCliVersion = [2, 1, 282];
 
 /** `claude --version` prints "2.1.232 (Claude Code)"; the first dotted triple
  * is the version. Null when nothing parses, e.g. a wrapper that prints its
@@ -1028,6 +1037,8 @@ type ClaudeUserContent =
   | { type: "text"; text: string };
 type ClaudeUserMessage = {
   type: "user";
+  /** echoed back with --replay-user-messages; set on steers */
+  uuid?: string;
   message: { role: "user"; content: string | ClaudeUserContent[] };
 };
 
@@ -1178,6 +1189,8 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
        * Sonnet 4.5, an org that disabled it), so the flag we passed is not
        * the truth — this is. null until init, or on a CLI that omits it. */
       nativePermissionMode: string | null;
+      /** launched with --replay-user-messages (see CLAUDE_REPLAY_FLOOR) */
+      replaysUserMessages: boolean;
       /** the running turn, or null between turns */
       turn: {
         turnId: string;
@@ -1188,12 +1201,13 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
         authFailed?: boolean;
         updateRequired?: boolean;
         stopRequested?: boolean;
-        /** User messages steered in (or being written) since the last held
-         * result. The CLI folds one in before a model call that has not
-         * started yet, or runs it as its next native turn when none is left,
-         * and its output does not say which: a `result` with this above zero
-         * is held either way (see the `result` handling). */
-        pendingSteers: number;
+        /** Steered messages, by the uuid this driver sent them with, that no
+         * model call has taken in yet as far as the driver can tell. With
+         * --replay-user-messages the CLI echoes each one as a call takes it
+         * in; without it, nothing the CLI prints says whether a steer was
+         * folded in or runs next, so each one counts until a result holds on
+         * it. A `result` with any left is held (see the `result` handling). */
+        pendingSteers: Set<string>;
         /** Native results already produced by this logical turn, held while
          * a steered continuation is expected; summed into `turn.completed`. */
         deferred: NativeTurnResult | null;
@@ -1357,6 +1371,10 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
           cliVersionChecked = true;
         }
       }
+      // Each stdin message echoed as a model call takes it in: how a turn
+      // tells a folded steer from one that runs next (CLAUDE_REPLAY_FLOOR).
+      const replaysUserMessages = cliVersion === null || versionAtLeast(cliVersion, CLAUDE_REPLAY_FLOOR);
+      if (replaysUserMessages) args.push("--replay-user-messages");
       const isolated = !inheritsUserConfig(turnEnvironment);
       if (isolated) {
         // A bot gets the tools and instructions its owner gave it, not
@@ -1571,7 +1589,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
       const live = sessions.get(threadId);
       if (!turn.sessionReset && live && !live.turn && !live.closing && live.child.exitCode === null && live.argsKey === argsKey && (!sessionId || sessionId === live.sessionId)) {
         if (live.idleTimer) clearTimeout(live.idleTimer);
-        live.turn = { turnId, input: turn, retryAbort, settled: false, sawStreamDelta: false, pendingSteers: 0, deferred: null, continuationGrace: null, continuationSilence: null };
+        live.turn = { turnId, input: turn, retryAbort, settled: false, sawStreamDelta: false, pendingSteers: new Set(), deferred: null, continuationGrace: null, continuationSilence: null };
         active.set(threadId, { stop: () => {
           if (live.turn) live.turn.stopRequested = true;
           closeSession(threadId, "interrupted");
@@ -1750,7 +1768,8 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
         sessionId: sessionId ?? newSessionId,
         sawInit: false,
         nativePermissionMode: null,
-        turn: { turnId, input: turn, retryAbort, settled: false, sawStreamDelta: false, pendingSteers: 0, deferred: null, continuationGrace: null, continuationSilence: null },
+        replaysUserMessages,
+        turn: { turnId, input: turn, retryAbort, settled: false, sawStreamDelta: false, pendingSteers: new Set(), deferred: null, continuationGrace: null, continuationSilence: null },
         idleTimer: null,
         closing: false,
         stderr: "",
@@ -1832,10 +1851,13 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
         } catch {
           return;
         }
-        appendNative(threadId, { dir: "in", source: "claude.sdk.message", msg: o });
+        // A stdin message echoed back (--replay-user-messages) carries its
+        // images again: keep their bytes out of the log, as when it was sent.
+        appendNative(threadId, { dir: "in", source: "claude.sdk.message", msg: o?.type === "user" && o.isReplay === true && o.message ? diagnosticClaudeUserMessage(o) : o });
         // The continuation a held result waits for has spoken: any frame
-        // after its `init` — status, thinking, text, its own result.
-        if (session.turn?.continuationSilence && !(o.type === "system" && o.subtype === "init")) {
+        // after its `init` — status, thinking, text, its own result. The
+        // echo of its own message is not speech: it comes before the call.
+        if (session.turn?.continuationSilence && !(o.type === "system" && o.subtype === "init") && !(o.type === "user" && o.isReplay === true)) {
           clearTimeout(session.turn.continuationSilence);
           session.turn.continuationSilence = null;
         }
@@ -1947,6 +1969,12 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
             break;
           }
           case "user": {
+            // --replay-user-messages: a model call took this stdin message in.
+            // A steer echoed before its turn's `result` was folded into it.
+            if (o.isReplay === true) {
+              if (typeof o.uuid === "string") session.turn?.pendingSteers.delete(o.uuid);
+              break;
+            }
             for (const b of Array.isArray(o.message?.content) ? o.message.content : []) {
               if (b.type === "tool_result") {
                 emit({ ...base(threadId, currentTurnId()), type: "item.completed", itemType: "tool", itemId: b.tool_use_id, ok: !b.is_error, output: toolDetailPreview(b.content) });
@@ -2002,23 +2030,26 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
             // 2.1.282) counts its command queue. A message steered in over
             // stdin is not in that queue when the result is written — the
             // incident's result said 0 and the CLI ran the message 58 ms later
-            // — so 0, like an absent field, decides nothing; the driver's own
-            // count of steers since the last hold does. Nothing the CLI prints
-            // says whether a steer was folded into a model call or waits to
-            // run next (the time a tool result is read proves nothing about
-            // when stdin was taken), so any steer holds the result: if no
-            // `init` follows within the grace, it was folded, and the held
-            // result is the turn's. A steer landing while a result is held
-            // extends the hold.
+            // — so 0, like an absent field, decides nothing; the steers the
+            // driver has not seen taken in do. With --replay-user-messages the
+            // CLI echoes a steer as a model call takes it in, so one still
+            // pending here runs next. Without it (an older CLI), nothing says
+            // whether a steer was folded in or runs next (the time a tool
+            // result is read proves nothing about when stdin was taken), so
+            // any steer holds the result: if no `init` follows within the
+            // grace, it was folded, and the held result is the turn's. A steer
+            // landing while a result is held extends the hold.
             const queuedTurns = typeof o.queued_turn_count === "number" ? o.queued_turn_count : 0;
-            if (t && !t.settled && (queuedTurns > 0 || t.pendingSteers > 0)) {
+            if (t && !t.settled && (queuedTurns > 0 || t.pendingSteers.size > 0)) {
               // The CLI runs the queued message next, in this process, with
               // this turn's tools, and the harness recorded it as part of this
               // turn. A `turn.completed` now would revoke the turn's
               // capabilities under that continuation (its internal tools would
               // answer 401) and show the bot idle while it works. Hold this
               // result until the continuation's own arrives.
-              t.pendingSteers = 0;
+              // Echoed steers leave the set as their turn takes them in;
+              // without the echo, this hold answers for every steer so far.
+              if (!session.replaysUserMessages) t.pendingSteers.clear();
               t.deferred = sumNativeTurnResults(t.deferred, native);
               t.armGrace = () => {
                 if (t.continuationGrace) clearTimeout(t.continuationGrace);
@@ -2317,10 +2348,12 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
       if (!s || !s.turn || s.turn.settled || s.closing || s.child.exitCode !== null) return "refused";
       const turn = s.turn;
       // Counted before the write: a `result` read while the words are still
-      // on their way must hold for them too. A failed write gives it back.
-      turn.pendingSteers += 1;
-      if (!(await writeUser(s, threadId, claudeUserMessage(text, undefined)))) {
-        if (!turn.settled && turn.pendingSteers > 0) turn.pendingSteers -= 1;
+      // on their way must hold for them too. A failed write takes it back.
+      // The uuid is what the CLI's echo names when a model call takes it in.
+      const id = randomUUID();
+      turn.pendingSteers.add(id);
+      if (!(await writeUser(s, threadId, { ...claudeUserMessage(text, undefined), uuid: id }))) {
+        turn.pendingSteers.delete(id);
         return "refused";
       }
       // Written while a held result waits for a continuation's `init`: these
