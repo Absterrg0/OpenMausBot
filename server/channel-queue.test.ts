@@ -23,7 +23,9 @@ describe("channel queue", () => {
     restoreHeldChannelQueue(held);
     const run = vi.fn();
     drainChannelMessages(() => false, run);
-    expect(run).toHaveBeenCalledWith(expect.objectContaining({ text: prompt }));
+    expect(run).toHaveBeenCalledWith(expect.objectContaining({
+      items: [expect.objectContaining({ text: prompt })],
+    }));
   });
 
   it("keeps messages off the running channel and drains one follow-up at a time", () => {
