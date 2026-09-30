@@ -889,9 +889,7 @@ function cloudLendingTurn(capability: Pick<InternalCapability, "botId" | "thread
         triggerSource: run.triggerSource ?? (run.manual ? "manual" : "schedule"),
         ownerStarted: ownerStartedRoutineRuns.has(run.id),
         // What the run snapshotted, on the schedule its routine has now.
-        ownerAuthored: ((routine) => Boolean(routine) && cloudRoutineAuthors?.authored(run.routineId, {
-          ...routine!, prompt: run.prompt, target: run.target, botId: run.botId, groupId: run.groupId, attachments: run.attachments, runOn: run.runOn,
-        }) === true)(routines?.listRoutines().find((candidate) => candidate.id === run.routineId)),
+        ownerAuthored: cloudRoutineRunIsOwners(run, capability.botId, capability.threadId),
       };
     },
   };
@@ -1056,6 +1054,19 @@ function cloudRoutineIsOwners(routineId: string | undefined): boolean {
   if (!routine || !cloudRoutineAuthors || !CLOUD_OWNER_KEY) return false;
   return cloudRoutineAuthors.authored(routine.id, routine) ||
     (cloudRoutineAuthors.writer(routine.id) === CLOUD_OWNER_KEY && !cloudRoutineAuthors.recorded(routine.id));
+}
+
+/** On a Cloud home: a routine run that acts for the owner. Only in the run's
+ * own thread, and only while the owner's fingerprint matches what the run
+ * snapshotted, the same test as lending the Mac. A routine that is the
+ * owner's but not yet cleared for the Mac (no fingerprint: a v0.1.91
+ * approval, a template, a restore) can't clear itself or others this way. */
+function cloudRoutineRunIsOwners(run: RoutineRun | null | undefined, botId: string, threadId: string): boolean {
+  if (!run || run.threadId !== threadId || store.taskByThread(botId, threadId)?.routineRunId !== run.id || !cloudRoutineAuthors) return false;
+  const routine = routines?.listRoutines().find((candidate) => candidate.id === run.routineId);
+  return Boolean(routine) && cloudRoutineAuthors.authored(run.routineId, {
+    ...routine!, prompt: run.prompt, target: run.target, botId: run.botId, groupId: run.groupId, attachments: run.attachments, runOn: run.runOn,
+  }) === true;
 }
 
 /** After the owner approved a routine request (its card, or at once in their
@@ -15513,7 +15524,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         // routine that is theirs), both before the change.
         const wasOwners = proposedInput.action !== "create" && typeof proposedInput.routineId === "string" ? cloudRoutineIsOwners(proposedInput.routineId) : false;
         const run = activeRoutineRunForThread(fromThreadId);
-        const ownersTurn = cloudOwnerOnlyThread(fromThreadId) || (run != null && run.threadId === fromThreadId && cloudRoutineIsOwners(run.routineId));
+        const ownersTurn = cloudOwnerOnlyThread(fromThreadId) || cloudRoutineRunIsOwners(run, from.id, fromThreadId);
         const proposed = await routineRequests.submit({
           botId: from.id,
           threadId: fromThreadId,
