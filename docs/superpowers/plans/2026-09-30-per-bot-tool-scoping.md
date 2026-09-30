@@ -80,11 +80,11 @@
 
 **Consumes:** Existing `RemoteMcpClient` and scoped gate. **Produces:** URL-backed descriptors can be gated without credential-bearing argv.
 
-- [ ] Add real HTTP and SSE fixture tests for filtered lists, pagination, required auth headers, allowed/denied calls, cancellation and orderly close; blocked calls must be absent from the remote call log.
-- [ ] Run the focused remote/gate tests; expect missing implementation or bypass failures.
-- [ ] Implement a stdio facade using existing request/notify/close methods; scope wraps the facade, and remote errors never expose headers. Register the helper for packaged builds.
-- [ ] Re-run focused tests and packaged-helper checks; expect correct transports and no orphan sessions.
-- [ ] Commit remote transport enforcement.
+- [x] Add real HTTP and SSE fixture tests for filtered lists, pagination, required auth headers, allowed/denied calls, cancellation and orderly close; blocked calls must be absent from the remote call log.
+- [x] Run the focused remote/gate tests; expect missing implementation or bypass failures.
+- [x] Implement a stdio facade using existing request/notify/close methods; scope wraps the facade, and remote errors never expose headers. Register the helper for packaged builds.
+- [x] Re-run focused tests and packaged-helper checks; expect correct transports and no orphan sessions.
+- [x] Commit remote transport enforcement.
 
 ### Task 4: Persist scope and dispatch it everywhere
 

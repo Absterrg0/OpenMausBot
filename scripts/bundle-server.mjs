@@ -65,6 +65,7 @@ const ENTRY_POINTS = [
   "permission-proxy.ts",
   "connector-proxy.ts",
   "mcp-gate.ts",
+  "mcp-remote-proxy.ts",
   "browser-proxy.ts",
   "drivers/agents-proxy.ts",
   "drivers/dweb-proxy.ts",
