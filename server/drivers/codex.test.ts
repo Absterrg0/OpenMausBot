@@ -127,6 +127,45 @@ describe("CodexDriver turns (fake app-server)", () => {
     scratch = mkdtempSync(join(tmpdir(), "omb-codex-test-"));
   });
 
+  it("refuses native selection before a Codex prompt, including resumed Full-access turns", async () => {
+    const dump = join(scratch, "scope-refused.json"); process.env.FAKE_CODEX_DUMP = dump;
+    await create({ fullAuto: true, environment: { HOME: scratch, CODEX_HOME: join(scratch, ".codex") } });
+    await expect(instance.adapter.sendTurn({ threadId: "scope-refused", text: "Must not run", resumeCursor: "old-session", approvalMode: "full", toolScope: { allow: [] } })).rejects.toThrow(/native tool selection.*not supported/i);
+    expect(existsSync(dump)).toBe(false);
+  });
+
+  it("gates raw custom identities before mount renaming and disables ambient MCP servers", async () => {
+    const dump = join(scratch, "scope-mcp.json"); process.env.FAKE_CODEX_DUMP = dump;
+    mkdirSync(join(scratch, ".codex")); writeFileSync(join(scratch, ".codex/config.toml"), '[mcp_servers.notes]\nurl="https://example.test/ambient"\n');
+    await create({ environment: { HOME: scratch, CODEX_HOME: join(scratch, ".codex"), FAKE_CODEX_MCP_CONFIG: JSON.stringify({ notes: { enabled: false }, notes_openmausbot: { command: process.execPath, args: [join(dirname(fileURLToPath(import.meta.url)), "../mcp-gate.ts")] } }) } });
+    await instance.adapter.sendTurn({ threadId: "scope-mcp", text: "Fixture", toolScope: { allow: ["native:*", "mcp:notes:read"] }, integrations: { custom: { notes: { type: "sse", url: "https://example.test/notes", headers: {} } } } });
+    await recorder.until((event) => event.type === "turn.completed");
+    const seen = JSON.parse(readFileSync(dump, "utf8"));
+    expect(seen.argv).toContain("mcp_servers.notes.enabled=false");
+    expect(JSON.stringify(seen.argv)).toContain("OMB_GATE_TOOL_SCOPE");
+    expect(JSON.stringify(seen.argv)).not.toContain("https://example.test/notes");
+    const before = seen.calls.filter((call: { method: string }) => call.method === "turn/start").length;
+    expect(before).toBe(1);
+    expect(Object.keys(seen.calls.find((call: { method: string }) => call.method === "thread/start").params.config.mcp_servers)).toEqual(["notes_openmausbot"]);
+    expect(seen.calls.find((call: { method: string }) => call.method === "thread/start").params.config.mcp_servers.notes_openmausbot.default_tools_approval_mode).toBe("prompt");
+    recorder.events.length = 0;
+    await instance.adapter.sendTurn({ threadId: "scope-mcp", text: "Continue", resumeCursor: "old-session", toolScope: { allow: ["native:*", "mcp:notes:read"] }, integrations: { custom: { notes: { type: "sse", url: "https://example.test/notes", headers: {} } } } });
+    await recorder.until((event) => event.type === "turn.completed");
+    const restored = JSON.parse(readFileSync(dump, "utf8"));
+    expect(Object.keys(restored.calls.find((call: { method: string }) => call.method === "thread/resume").params.config.mcp_servers)).toEqual(["notes_openmausbot"]);
+    expect(restored.calls.find((call: { method: string }) => call.method === "thread/resume").params.config.mcp_servers.notes_openmausbot.default_tools_approval_mode).toBe("prompt");
+  });
+
+  it("refuses a scoped prompt when effective Codex configuration still has an ambient MCP server", async () => {
+    const dump = join(scratch, "scope-ambient.json"); process.env.FAKE_CODEX_DUMP = dump;
+    await create({ environment: { HOME: scratch, CODEX_HOME: join(scratch, ".codex") } });
+    await instance.adapter.sendTurn({ threadId: "scope-ambient", text: "Must not run", toolScope: { allow: ["native:*"] } });
+    await recorder.until((event) => event.type === "turn.completed");
+    const seen = existsSync(dump) ? JSON.parse(readFileSync(dump, "utf8")) : { calls: [] };
+    expect(seen.calls.some((call: { method: string }) => call.method === "turn/start")).toBe(false);
+    expect(recorder.events.some((event) => event.type === "runtime.error" && /outside the selected configuration/.test(event.message))).toBe(true);
+  });
+
   afterEach(async () => {
     vi.restoreAllMocks();
     vi.unstubAllEnvs();

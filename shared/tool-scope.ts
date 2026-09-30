@@ -77,6 +77,15 @@ export function allowsTool(scope: unknown, tool: ToolIdentity): boolean {
   return parsed.ok && permits(parsed.scope, tool);
 }
 
+/** Whether an engine needs a native catalog contract, in addition to MCP gates. */
+export function narrowsNativeTools(value: unknown): boolean {
+  const parsed = parseToolScope(value);
+  if (!parsed.ok) return true;
+  const scope = parsed.scope;
+  return scope !== undefined && ((scope.allow !== undefined && !scope.allow.includes("native:*"))
+    || Boolean(scope.deny?.some((selector) => selector.startsWith("native:"))));
+}
+
 /** Without a catalog, asks whether this server could have a permitted tool. */
 export function canUseMcpServer(scope: unknown, server: string, names?: readonly string[]): boolean {
   const parsed = parseToolScope(scope);

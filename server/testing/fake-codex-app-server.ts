@@ -357,7 +357,7 @@ process.stdin.on("data", (chunk) => {
                   approval_policy: "never",
                   approvals_reviewer: "auto_review",
                   sandbox_mode: "read-only",
-                  mcp_servers: {
+                  mcp_servers: process.env.FAKE_CODEX_MCP_CONFIG ? JSON.parse(process.env.FAKE_CODEX_MCP_CONFIG) : {
                     harmless_name: { env: { DISPLAY_LABEL: "innocuous-config-secret-7a9c" } },
                   },
                 }),

@@ -1,8 +1,12 @@
 import { describe, expect, it } from "vitest";
 
-import { allowsTool, canUseMcpServer, parseToolScope, toolScopeWidens } from "./tool-scope.ts";
+import { allowsTool, canUseMcpServer, narrowsNativeTools, parseToolScope, toolScopeWidens } from "./tool-scope.ts";
 
 describe("per-bot tool selection", () => {
+  it("distinguishes native restrictions from an MCP-only clamp", () => {
+    for (const scope of [undefined, {}, { deny: [] }, { allow: ["native:*", "mcp:notes:read"] }, { deny: ["mcp:notes:*"] }]) expect(narrowsNativeTools(scope)).toBe(false);
+    for (const scope of [{ allow: [] }, { allow: ["mcp:notes:read"] }, { deny: ["native:read"] }, { allow: ["native:*"], deny: ["native:bash"] }, { allow: "all" }]) expect(narrowsNativeTools(scope)).toBe(true);
+  });
   it("keeps legacy tools available when no selection exists", () => {
     expect(allowsTool(undefined, { kind: "native", name: "bash" })).toBe(true);
     expect(allowsTool(undefined, { kind: "mcp", server: "computer", name: "click" })).toBe(true);
