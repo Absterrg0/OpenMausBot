@@ -5,6 +5,7 @@ import { useEffect, useId, useRef, useState } from "react";
 import { Check, CircleHelp, ExternalLink, Loader2, TriangleAlert } from "lucide-react";
 import { api, useStore, type ConfigStatus } from "@/state/store";
 import { cn } from "@/lib/cn";
+import { useMenuMotion } from "./MenuMotion";
 import { t } from "@/lib/i18n";
 import type { LocaleKey } from "@/locales";
 
@@ -135,6 +136,7 @@ function credentialCopy(section: ConfigSection) {
 function CredentialHelp({ section }: { section: ConfigSection }) {
   const credential = credentialCopy(section);
   const [open, setOpen] = useState(false);
+  const motion = useMenuMotion(open);
   const rootRef = useRef<HTMLDivElement>(null);
   const buttonRef = useRef<HTMLButtonElement>(null);
   const popoverId = useId();
@@ -172,12 +174,12 @@ function CredentialHelp({ section }: { section: ConfigSection }) {
       >
         <CircleHelp size={14} aria-hidden="true" />
       </button>
-      {open && (
+      {motion.shown && (
         <div
           id={popoverId}
           role="group"
           aria-label={t("keys.helpAria", { label: credential.label })}
-          className="animate-pop-in absolute right-0 z-30 mt-1.5 w-[270px] rounded-xl border border-hairline bg-panel p-3 text-left shadow-2xl"
+          className={cn("absolute right-0 z-30 mt-1.5 w-[270px] rounded-xl border border-hairline bg-panel p-3 text-left shadow-2xl", motion.className)} {...motion.exitProps}
         >
           <div className="text-[12px] leading-[1.45] text-ink-secondary">{credential.description}</div>
           {credential.warning && (

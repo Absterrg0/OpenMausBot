@@ -407,13 +407,16 @@ export function EngineSetup({
   const signInCommand = install?.signInCommand;
   const signInOnly = intent === "cloud" && needsSignIn(instance);
   const deviceSignIn = signInOnly && instance.authentication?.method === "device-code";
+  const browserSignIn = signInOnly && instance.authentication?.method === "browser-pkce";
   const pasteSignIn = signInOnly && instance.authentication?.method === "paste-code";
   const command = signInOnly ? signInCommand : installCommand;
   const title = signInOnly
     ? t("engineSetup.signInTitle", { name: instance.displayName })
     : t("engineSetup.installTitle", { name: instance.displayName });
   const description = descriptionOverride ?? (signInOnly
-    ? deviceSignIn
+    ? browserSignIn
+      ? t("engineSetup.chatgpt.description")
+      : deviceSignIn
       ? t("engineSetup.device.description")
       : pasteSignIn
       ? t("engineSetup.claude.description")
@@ -432,12 +435,12 @@ export function EngineSetup({
 
   // Some engines are configured elsewhere (for example, a cloud computer
   // token) and intentionally have no install descriptor.
-  if (!install) {
+  if (!install || instance.snapshot.authenticationUnavailableReason) {
     return (
       <div className={cn(!unframed && "rounded-xl border border-hairline/40 bg-control/30 p-3", className)}>
         <div className="text-[13px] font-semibold text-ink">{t("engineSetup.notReady", { name: instance.displayName })}</div>
         <p className="mt-1 text-[12px] leading-relaxed text-ink-secondary">
-          {instance.snapshot.reason ?? t("engineSetup.noReason")}
+          {instance.snapshot.authenticationUnavailableReason ?? instance.snapshot.reason ?? t("engineSetup.noReason")}
         </p>
       </div>
     );
@@ -461,8 +464,8 @@ export function EngineSetup({
         </p>
       )}
 
-      {deviceSignIn ? (
-        <CodexDeviceSignIn key={instance.instanceId} instanceId={instance.instanceId} />
+      {deviceSignIn || browserSignIn ? (
+        <CodexDeviceSignIn key={instance.instanceId} instanceId={instance.instanceId} browserPkce={browserSignIn} />
       ) : pasteSignIn ? (
         <ClaudeSignIn key={instance.instanceId} instanceId={instance.instanceId} />
       ) : install.server && !signInOnly ? (

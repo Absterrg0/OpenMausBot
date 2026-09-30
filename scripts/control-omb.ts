@@ -331,8 +331,8 @@ export interface VerificationServer {
 
 /** The environment of a verification server child: a temporary home in
  * `dataDir`, the fake engine's knobs from `parentEnv`, node on PATH, and
- * nothing else from the parent shell. A test that restarts its own fixture
- * server on the same data uses this too. */
+ * nothing else from the parent shell or this machine's installed CLIs. A
+ * test that restarts its own fixture server on the same data uses this too. */
 export function verificationServerEnvironment(parentEnv: NodeJS.ProcessEnv, dataDir: string, port: number): NodeJS.ProcessEnv {
   const childEnv: NodeJS.ProcessEnv = {};
   const platformKeys = new Set(["SYSTEMROOT", "WINDIR", "COMSPEC", "PATHEXT", "LANG", "LC_ALL", "TZ"]);
@@ -366,6 +366,11 @@ export function verificationServerEnvironment(parentEnv: NodeJS.ProcessEnv, data
     // fake CLI's `#!/usr/bin/env node` shebang. Windows resolves that same
     // fixture through spawnCli without a shell.
     PATH: dirname(process.execPath),
+    // ...and keep engine discovery to that PATH and this home. Without it the
+    // server also scans /opt/homebrew/bin, /usr/local/bin and the login
+    // shell's PATH, so a developer's own `codex` (or any engine CLI) becomes
+    // an "available" engine that CI never has (#2035).
+    OMB_TEST_SEALED_PATH: "1",
   });
   // The fake engine's own knobs (mode, replies, tool calls) are the one thing
   // a caller may script into the child: FAKE_CLAUDE_* crosses, nothing else.

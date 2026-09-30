@@ -15,7 +15,8 @@
 //                      | api-error (the CLI reports a non-auth API error as
 //                        assistant text, then an error result; no model output)
 //   FAKE_CLAUDE_API_ERROR text for the api-error frame (default: overloaded).
-//   FAKE_CLAUDE_DUMP   path to write {argv, env, prompt, systemPrompt,
+//   FAKE_CLAUDE_RELEASE with hang: the turn ends normally once this file exists.
+//   FAKE_CLAUDE_DUMP   path to write {argv, env, cwd, prompt, systemPrompt,
 //                      mcpConfig} as JSON,
 //                      so the test can assert on argv shape and env hygiene.
 //                      mcpConfig is read back from the --mcp-config file the
@@ -303,6 +304,12 @@ const requestedPermissionMode = argAfter("--permission-mode") ?? "default";
 const autoUnavailableFor = (process.env.FAKE_CLAUDE_AUTO_UNAVAILABLE_MODELS ?? "").split(",").filter(Boolean);
 const permissionMode =
   requestedPermissionMode === "auto" && autoUnavailableFor.includes(model) ? "default" : requestedPermissionMode;
+// The built-in tools init reports, as the real CLI does: --tools when given,
+// else its default set. FAKE_CLAUDE_KEEP_BASH=1 plays a CLI that keeps Bash
+// whatever it was told.
+const toolsFlag = argAfter("--tools");
+const tools = [...new Set([...(toolsFlag ? toolsFlag.split(",") : ["Bash", "Read", "Edit", "Write", "Glob", "Grep", "WebFetch", "WebSearch"]),
+  ...(process.env.FAKE_CLAUDE_KEEP_BASH === "1" ? ["Bash"] : [])])];
 let dumped = false;
 let turnRunning = false;
 let steered: string[] = [];
@@ -378,7 +385,7 @@ const playTurn = (prompt: JsonValue) => {
     }
     writeFileSync(
       process.env.FAKE_CLAUDE_DUMP,
-      JSON.stringify({ pid: process.pid, argv, env: process.env, prompt, systemPrompt, mcpConfig, settings, settingsMode }, null, 2),
+      JSON.stringify({ pid: process.pid, argv, env: process.env, cwd: process.cwd(), prompt, systemPrompt, mcpConfig, settings, settingsMode }, null, 2),
     );
   }
 
@@ -408,7 +415,7 @@ const playTurn = (prompt: JsonValue) => {
     } catch {}
     const quota = Number(process.env.FAKE_CLAUDE_TRANSIENTS) || 0;
     writeFileSync(process.env.FAKE_CLAUDE_STATE, String(launched + 1));
-    out({ type: "system", subtype: "init", session_id: sessionId, model, permissionMode });
+    out({ type: "system", subtype: "init", session_id: sessionId, model, permissionMode, tools });
     if (launched < quota) {
       if (process.env.FAKE_CLAUDE_PARTIAL_FAILS) {
         out({ type: "stream_event", event: { type: "content_block_delta", delta: { type: "text_delta", text: "half an answer" } } });
@@ -419,7 +426,7 @@ const playTurn = (prompt: JsonValue) => {
   }
 
   // the real CLI re-announces init on every turn of a live process
-  out({ type: "system", subtype: "init", session_id: sessionId, model, permissionMode });
+  out({ type: "system", subtype: "init", session_id: sessionId, model, permissionMode, tools });
 
   // The CLI accepted the resumed session — it read the prompt — and then
   // died with nothing to show. The prompt may already have run tools, so
@@ -455,8 +462,17 @@ const playTurn = (prompt: JsonValue) => {
 
   if (mode === "hang") {
     // stay alive until killed — lets tests exercise interrupt + the
-    // permission broker while a turn is officially in flight
-    setInterval(() => {}, 1_000);
+    // permission broker while a turn is officially in flight. With
+    // FAKE_CLAUDE_RELEASE, the turn ends normally once that file exists.
+    const release = process.env.FAKE_CLAUDE_RELEASE;
+    const held = setInterval(() => {
+      if (!release || !existsSync(release)) return;
+      clearInterval(held);
+      out({ type: "assistant", message: { content: [{ type: "text", text: "released" }] } });
+      out({ type: "result", is_error: false, stop_reason: "end_turn", usage: { input_tokens: 10, output_tokens: 5 } });
+      turnRunning = false;
+      finishIfDone();
+    }, 100);
     return;
   }
 

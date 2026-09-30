@@ -1738,11 +1738,31 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
             // gemini put it under _meta. Read both rather than lose the count.
             const usage = result?.usage ?? result?._meta ?? {};
             if (typeof usage.inputTokens === "number" || typeof usage.outputTokens === "number") {
+              // opencode 1.18.25 keeps only the uncached share in inputTokens
+              // and reports cache reads beside it (omitted when 0); some
+              // agents count them inside inputTokens. `input` is the whole
+              // prompt with `cachedInput` naming its cached part — the same
+              // convention as the Claude driver and the store — and
+              // totalTokens tells the two wire shapes apart. Cache writes
+              // stay out of `input`, exactly as in the Claude driver, and an
+              // absent cache count emits the bare shape with no cachedInput
+              // key: absent is not zero.
+              const input = usage.inputTokens ?? 0;
+              const output = usage.outputTokens ?? 0;
+              const cachedRead = typeof usage.cachedReadTokens === "number" && usage.cachedReadTokens > 0
+                ? usage.cachedReadTokens
+                : null;
+              const exclusive = cachedRead !== null
+                && (typeof usage.totalTokens !== "number"
+                  || usage.totalTokens >= input + output + cachedRead);
               emit({
                 ...base(threadId, turnId),
                 type: "thread.token-usage.updated",
-                input: usage.inputTokens ?? 0,
-                output: usage.outputTokens ?? 0,
+                input: cachedRead !== null && exclusive ? input + cachedRead : input,
+                output,
+                ...(cachedRead !== null
+                  ? { cachedInput: exclusive ? cachedRead : Math.min(cachedRead, input) }
+                  : {}),
               });
             }
             const reason = result?.stopReason;

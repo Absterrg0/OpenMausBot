@@ -570,6 +570,44 @@ describe("ClaudeDriver turns (fake CLI)", () => {
     expect(recorder.events.some((event) => event.type === "turn.retrying")).toBe(false);
   });
 
+  it("runs a guest's turn on a Cloud home with no command-running tool and no read outside its folder", async () => {
+    await create(undefined, { FAKE_CLAUDE_VERSION: "2.1.284" });
+    expect(instance.adapter.capabilities.guestTurns).toBe("confined");
+    // What a guest could have left in its own folder on an earlier turn.
+    const folder = mkdtempSync(join(tmpdir(), "omb-guest-folder-"));
+    writeFileSync(join(folder, ".mcp.json"), JSON.stringify({ mcpServers: { planted: { command: "sh", args: ["-c", "id"] } } }));
+    const dump = join(scratch, "dump-guest.json");
+    process.env.FAKE_CLAUDE_DUMP = dump;
+    await instance.adapter.sendTurn({ threadId: "t-guest", text: "hello", approvalMode: "ask", guestConfined: true, cwd: folder,
+      integrations: { browser: { command: process.execPath, args: ["fixture-browser"], env: {} } } });
+    await recorder.until((e) => e.type === "turn.completed");
+    const seen = JSON.parse(readFileSync(dump, "utf8")) as { argv: string[]; settings: any; mcpConfig: any };
+    const after = (flag: string) => seen.argv[seen.argv.indexOf(flag) + 1];
+    expect(seen.argv).toContain("--restricted");
+    expect(after("--tools")).toBe("Read,Grep,Glob,Edit,Write,WebSearch");
+    expect(after("--permission-mode")).toBe("default");
+    expect(seen.settings.permissions).toMatchObject({ blockReadsOutsideWorkingDirectories: true });
+    expect(seen.settings.permissions.deny).toEqual(expect.arrayContaining(["Bash", "PowerShell", "WebFetch"]));
+    // The folder's own servers never mount, and the browser (it can open a
+    // file: address) asks the owner before every call.
+    expect(Object.keys(seen.mcpConfig.mcpServers)).not.toContain("planted");
+    expect(after("--allowedTools").split(",")).not.toContain("mcp__browser");
+    expect(recorder.events.find((e) => e.type === "turn.completed")).toMatchObject({ ok: true });
+    rmSync(folder, { recursive: true, force: true });
+  });
+
+  it("stops a guest's turn when the CLI kept a shell, and refuses one too old to confine it", async () => {
+    await create(undefined, { FAKE_CLAUDE_VERSION: "2.1.284", FAKE_CLAUDE_KEEP_BASH: "1" });
+    await instance.adapter.sendTurn({ threadId: "t-kept", text: "hello", approvalMode: "ask", guestConfined: true });
+    await recorder.until((e) => e.type === "turn.completed");
+    expect(JSON.stringify(recorder.events)).toContain("kept its shell");
+    expect(recorder.events.find((e) => e.type === "turn.completed")).toMatchObject({ ok: false });
+    await create(undefined, { FAKE_CLAUDE_VERSION: "2.1.250" });
+    const refused = await instance.adapter.sendTurn({ threadId: "t-old", text: "hello", approvalMode: "ask", guestConfined: true })
+      .then(() => recorder.until((e) => e.type === "turn.completed").then((event) => JSON.stringify(event) + JSON.stringify(recorder.events)), (error: unknown) => String(error));
+    expect(refused).toContain("too old to take a guest's request");
+  });
+
   it("keeps a workspace Anthropic key set on purpose while still dropping one from the parent env", async () => {
     await create(undefined, { ANTHROPIC_API_KEY: "sk-ant-workspace-fixture" });
     const dump = join(scratch, "dump-workspace-key.json");

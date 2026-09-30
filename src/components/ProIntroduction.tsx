@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { ArrowUpRight, CalendarClock, Cloud, Crown, MessageSquare, X } from "lucide-react";
+import { ArrowUpRight, CalendarClock, Cloud, Crown, Monitor, Sparkles, X } from "lucide-react";
 import type { CloudAccountState } from "../../electron/cloud-account.mjs";
 import { api, useStore, useStreaming } from "@/state/store";
 import { openExternalLink, PRO_URL } from "@/lib/app-links";
@@ -9,8 +9,14 @@ import { hintSeen, hintSeenPatch, welcomeDue } from "@/lib/onboarding";
 import { useUpdaterState } from "@/lib/updater";
 import { t } from "@/lib/i18n";
 
-// Not versioned: updates and replaying the welcome tour must never reset this.
-export const PRO_DISMISSED = "pro-introduction-dismissed";
+// Versioned once, for the launch price: a dismissal of the first card
+// ("pro-introduction-dismissed") no longer counts, so everyone sees it once
+// more. After that, updates and replaying the welcome tour never reset it.
+export const PRO_DISMISSED = "pro-introduction-dismissed-v2";
+
+/** The launch price, and the regular price shown struck through beside it. */
+export const PRO_LAUNCH_PRICE = "$49";
+export const PRO_REGULAR_PRICE = "$89";
 
 export function proOfferAvailable(account: CloudAccountState | null): boolean {
   return account?.status === "signed-out" || (account?.status === "connected" && account.entitlement?.plan === "free");
@@ -70,10 +76,16 @@ export function ProIntroductionCard({ onDismiss }: { onDismiss: () => void }) {
     </div>
     <p className="mt-1 text-[12.5px] text-ink-secondary">{t("pro.headline")}</p>
     <ul className="my-3 space-y-2 text-[12.5px]">
+      <li className="flex items-center gap-2.5"><Sparkles size={17} className="shrink-0 text-ink-secondary" aria-hidden="true" />{t("pro.priority")}</li>
       <li className="flex items-center gap-2.5"><Cloud size={17} className="shrink-0 text-ink-secondary" aria-hidden="true" />{t("pro.alwaysOn")}</li>
-      <li className="flex items-center gap-2.5"><MessageSquare size={17} className="shrink-0 text-ink-secondary" aria-hidden="true" />{t("pro.slack")}</li>
+      <li className="flex items-center gap-2.5"><Monitor size={17} className="shrink-0 text-ink-secondary" aria-hidden="true" />{t("pro.computers")}</li>
       <li className="flex items-center gap-2.5"><CalendarClock size={17} className="shrink-0 text-ink-secondary" aria-hidden="true" />{t("pro.schedule")}</li>
     </ul>
+    <p className="mb-3 text-[12.5px]">
+      <span role="img" aria-label={t("pro.launchPriceLabel", { was: PRO_REGULAR_PRICE, price: PRO_LAUNCH_PRICE })}>
+        <s className="text-ink-secondary">{PRO_REGULAR_PRICE}</s> {t("pro.launchPrice", { price: PRO_LAUNCH_PRICE })}
+      </span>
+    </p>
     <div className="flex flex-wrap items-center gap-3">
       <ProLink onOpened={onDismiss} />
       <button type="button" className="py-2 text-[12px] text-ink-secondary hover:text-ink" onClick={onDismiss}>{t("pro.noThanks")}</button>

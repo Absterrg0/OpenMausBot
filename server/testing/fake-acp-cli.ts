@@ -48,6 +48,10 @@
 //                   | stall-after-tool (finish a tool call, then go fully
 //                     silent forever: the guard must still fire once no tool
 //                     is running)
+//                   | lend-question (call list_shared_computers through the
+//                     injected agents MCP, ask a question card, call it again
+//                     once the card is answered, and reply
+//                     "before: <first> | after: <second>" — the lent-Mac e2e)
 //   FAKE_ACP_MCP_TRANSPORTS  comma list of remote MCP transports the agent
 //                       advertises in initialize (mcpCapabilities), e.g. "http,sse"
 //   FAKE_ACP_PERMISSION_OPTIONS JSON options override in permission mode
@@ -1030,6 +1034,25 @@ function handle(msg: any) {
             ],
           },
         });
+        return;
+      }
+      if (mode === "lend-question" && agentsMcp) {
+        const entry = agentsMcp;
+        const list = () => driveMcp(entry, [{ name: "list_shared_computers", args: () => ({}) }]).catch((e) => `error ${(e as Error).message}`);
+        void (async () => {
+          const before = await list();
+          pendingPermissionId = 9003;
+          onPermissionAnswered = () => {
+            void list().then((after) => {
+              out({ jsonrpc: "2.0", method: "session/update", params: { update: { sessionUpdate: "agent_message_chunk", content: { text: `before: ${before} | after: ${after}` } } } });
+              complete();
+            });
+          };
+          out({ jsonrpc: "2.0", id: pendingPermissionId, method: "session/request_permission", params: {
+            toolCall: { toolCallId: "interaction_folder", kind: "other", title: "Which folder should I read?" },
+            options: [{ optionId: "docs-id", kind: "allow_once", name: "Docs" }, { optionId: "other-id", kind: "allow_once", name: "Other" }],
+          } });
+        })();
         return;
       }
       if (mode === "question") {

@@ -15,6 +15,9 @@ vi.mock("@/state/store", () => ({ useStore: () => ({ state: f.state, dispatch: v
 vi.mock("@/lib/analytics", () => ({ emailGateDone: () => false }));
 vi.mock("@/lib/updater", () => ({ useUpdaterState: () => f.updater }));
 import { PRO_DISMISSED, ProIntroduction, ProSettingsCard, proOfferAvailable } from "./ProIntroduction";
+
+/** The first card's dismissal id, in browser storage and the workspace hint record. */
+const OLD_DISMISSED = "pro-introduction-dismissed";
 import { api } from "@/state/store";
 
 let storage: Map<string, string>;
@@ -32,12 +35,41 @@ afterEach(() => vi.unstubAllGlobals());
 
 it("shows the live benefits without enrolling, charging or refreshing an account", () => {
   const html = render();
-  for (const text of ["Get Pro", "always-on", "Slack", "scheduled tasks", "Don’t show again"]) expect(html).toContain(text);
+  for (const text of ["Get Pro", "New features first and priority support", "always-on", "Cloud computers and voice", "scheduled tasks", "Don’t show again"]) expect(html).toContain(text);
+  expect(html).not.toContain("Slack");
+  expect(html.indexOf("New features first")).toBeLessThan(html.indexOf("always-on"));
   expect(html).not.toContain("bg-gradient"); expect(html).not.toContain("amber-");
   expect(html).not.toContain("Coming soon"); expect(api).not.toHaveBeenCalled();
   expect(html).not.toContain('aria-modal="true"');
 });
-it("persists dismissal without a version and still offers Pro in Settings", async () => {
+it("shows the $49 launch price beside the struck-through $89", () => {
+  const html = render();
+  expect(html).toContain('<span role="img" aria-label="Was $89, now $49 a month: launch price for the first 100 users"><s class="text-ink-secondary">$89</s> $49/month: launch price for the first 100 users</span>');
+  // Below the benefits, above Get Pro.
+  expect(html.indexOf("Cloud scheduled tasks")).toBeLessThan(html.indexOf("$49/month"));
+  expect(html.indexOf("$49/month")).toBeLessThan(html.indexOf("Get Pro"));
+});
+it("shows once more to someone who dismissed the first card, then stays dismissed", async () => {
+  storage.set(OLD_DISMISSED, "1");
+  f.state.config.onboarding.hintsSeen.push(OLD_DISMISSED);
+  expect(PRO_DISMISSED).not.toBe(OLD_DISMISSED);
+  expect(render()).toContain("$49/month");
+  f.index = 0;
+  ProIntroduction({})!.props.onDismiss(); await Promise.resolve();
+  expect(storage.get(PRO_DISMISSED)).toBe("1");
+  expect(api).toHaveBeenCalledWith("/api/config", { method: "PUT", body: JSON.stringify({ onboarding: { hintsSeen: [...f.state.config.onboarding.hintsSeen, PRO_DISMISSED] } }) });
+  expect(render()).toBe("");
+  // A new mount (the signed-out account kept, the dismissed flag re-read) stays hidden.
+  f.values = [signedOut];
+  expect(render()).toBe("");
+  // Browser storage gone and only the old workspace hint left: it would show again...
+  storage.clear(); f.values = [signedOut];
+  expect(render()).toContain("$49/month");
+  // ...so the workspace record carries the new dismissal too.
+  f.state.config.onboarding.hintsSeen.push(PRO_DISMISSED); f.values = [signedOut];
+  expect(render()).toBe("");
+});
+it("persists dismissal and still offers Pro in Settings", async () => {
   f.index = 0;
   const card = ProIntroduction({})!;
   card.props.onDismiss(); await Promise.resolve();
