@@ -215,12 +215,14 @@ import { recoveryCapabilityError } from "./automatic-recovery.ts";
 import { decodeGeneratedImage } from "./generated-image.ts";
 import {
   MAX_MCP_SERVERS,
+  isRemoteMcpServer,
   listMcpServers,
   mcpServerNameError,
   parseMcpServerMutation,
   parseMcpServersImport,
   parseStoredMcpServer,
 } from "./mcp-registry.ts";
+import { McpOAuthError, McpOAuthManager, withMcpSignIn, withoutPendingSignIn } from "./mcp-oauth.ts";
 import { probeMcpServer } from "./mcp-probe.ts";
 import {
   GROUP_GOAL_MAX_TURNS,
@@ -9075,7 +9077,7 @@ async function startTurn(
       // composio — only to a driver that can mount them. Their tools are
       // never pre-allowed, so every call rides the normal permission flow.
       if (instance.adapter.capabilities.customMcp === true) {
-        const custom = engineMcpServers(bot);
+        const custom = await withMcpSignIn(engineMcpServers(bot), mcpOAuth);
         if (Object.keys(custom).length) integrations.custom = custom;
       }
       // CLI engines work inside the bot's own workspace directory rather
@@ -11521,7 +11523,7 @@ async function runGroupMemberTurn(
   }
   // user-configured MCP servers: same gating as the 1:1 site above.
   if (instance.adapter.capabilities.customMcp === true) {
-    const custom = engineMcpServers(bot);
+    const custom = await withMcpSignIn(engineMcpServers(bot), mcpOAuth);
     if (Object.keys(custom).length) integrations.custom = custom;
   }
   // Connected-app discovery is intentionally awaited before a provider owns
@@ -14141,7 +14143,10 @@ function mcpServerResponse() {
   // While enrolled with custom servers off, say which servers stay configured
   // but never reach bots, and why. Nothing here is written to config.json.
   const policy = managedPolicy.current();
-  const servers = listMcpServers(cfg.mcpServers).map(server =>
+  const servers = listMcpServers(cfg.mcpServers).map((server) => {
+    const auth = "url" in server ? mcpOAuth.authState(server.name, server.url) : "none";
+    return auth === "none" ? server : { ...server, auth };
+  }).map(server =>
     managedPolicy.mcpAllowed(server.name, "url" in server ? server.url : undefined) ? server : { ...server, managedBy: policy!.organizationName });
   return { servers, ...(policy && !policy.mcp.allowCustom ? { managed: { organizationName: policy.organizationName, allowlist: policy.mcp.allowlist } } : {}) };
 }
@@ -14166,7 +14171,7 @@ function mcpServerBody(body: unknown): Record<string, unknown> {
 /** Configured MCP servers that may reach this bot's engine. While enrolled,
  * the organisation's allow-list filters them; config.json is never changed. */
 function engineMcpServers(bot: BotRecord) {
-  return managedPolicy.filterMcp(customMcpServers(cfg, bot.mcpServers));
+  return withoutPendingSignIn(managedPolicy.filterMcp(customMcpServers(cfg, bot.mcpServers)), mcpOAuth);
 }
 
 function persistMcpServers(next: Record<string, unknown>): void {
@@ -14358,6 +14363,8 @@ async function reloadProviders() {
 let providerConfigBusy = false;
 const providerInstancesChanging = new Set<string>();
 let mcpConfigBusy = false;
+/** OAuth sign-in for URL servers; tokens live in their own owner-only file. */
+const mcpOAuth = new McpOAuthManager({ file: join(DATA_DIR, "mcp-oauth.json") });
 const MAX_CONCURRENT_MCP_PROBES = 2;
 let mcpProbesInFlight = 0;
 // One updater per executable: multiple Claude instances can point at the same
@@ -22138,11 +22145,55 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       res.once("close", disconnect);
       mcpProbesInFlight += 1;
       try {
-        return json(res, 200, await probeMcpServer(parsed.server, undefined, controller.signal));
+        const name = mcpTest[1];
+        let target = parsed.server;
+        if (isRemoteMcpServer(target) && mcpOAuth.authState(name, target.url) === "signed-in") {
+          const signedIn = (await withMcpSignIn({ [name]: target }, mcpOAuth))[name];
+          if (signedIn) target = { ...signedIn, enabled: target.enabled } as typeof target;
+        }
+        const result = await probeMcpServer(target, undefined, controller.signal);
+        if (!result.ok && result.auth === "required" && isRemoteMcpServer(target)) mcpOAuth.markNeedsSignIn(name, target.url);
+        return json(res, 200, result);
       } finally {
         res.off("close", disconnect);
         mcpProbesInFlight -= 1;
       }
+    }
+
+    // OAuth sign-in for a URL server. The browser returns to a listener on
+    // this machine, so it starts only from a client on this machine.
+    const mcpSignIn = /^\/api\/mcp\/servers\/([a-z][a-z0-9_-]{0,31})\/(sign-in|sign-out)(?:\/([0-9a-f-]{36}))?$/.exec(path);
+    if (mcpSignIn) {
+      const [, name, action, flowId] = mcpSignIn;
+      const raw = cfg.mcpServers?.[name!];
+      const parsed = raw === undefined ? null : parseStoredMcpServer(name!, raw);
+      if (!parsed?.ok) return json(res, 404, { error: "MCP server not found." });
+      if (!isRemoteMcpServer(parsed.server)) return json(res, 400, { error: "Only servers reached by URL can be signed in to." });
+      const url = parsed.server.url;
+      if (action === "sign-out" && method === "POST" && !flowId) {
+        await mcpOAuth.signOut(name!, url);
+        return json(res, 200, mcpServerResponse());
+      }
+      if (action === "sign-in" && method === "GET" && flowId) {
+        const auth = mcpOAuth.status(name!, flowId);
+        return auth ? json(res, 200, { auth }) : json(res, 404, { error: "This sign-in is no longer available. Start again." });
+      }
+      if (action === "sign-in" && method === "DELETE" && !flowId) {
+        mcpOAuth.cancel(name!);
+        return json(res, 200, { ok: true });
+      }
+      if (action === "sign-in" && method === "POST" && !flowId) {
+        if (isProxied(req) || !isLoopbackHost(req.socket.remoteAddress)) {
+          return json(res, 409, { error: "Sign in from the computer running this workspace.", code: "remote_workspace" });
+        }
+        try {
+          return json(res, 200, { auth: await mcpOAuth.start(name!, url) });
+        } catch (error) {
+          if (error instanceof McpOAuthError) return json(res, 400, { error: error.message, code: error.code });
+          return json(res, 502, { error: error instanceof Error ? error.message : "Sign-in could not start." });
+        }
+      }
+      return json(res, 405, { error: "method not allowed" });
     }
 
     if (method === "POST" && path === "/api/mcp/servers") {
@@ -22220,6 +22271,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
           const next = { ...current };
           delete next[name];
           persistMcpServers(next);
+          mcpOAuth.forget(name);
           return json(res, 200, mcpServerResponse());
         }
 
@@ -22240,6 +22292,12 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         const refusal = mcpPolicyRefusal(name, parsed.server);
         if (refusal) return json(res, 403, { error: refusal, code: "managed_policy" });
         persistMcpServers({ ...current, [name]: parsed.server });
+        // a sign-in belongs to one address; a token never follows the entry elsewhere
+        const before = isRemoteMcpServer(existing.server) ? existing.server.url : null;
+        const after = isRemoteMcpServer(parsed.server) ? parsed.server.url : null;
+        // Any other edit (a new header, say) drops a sign-in request that has
+        // no tokens behind it; the next Test asks again if it still applies.
+        if (before !== after || (after && mcpOAuth.authState(name, after) === "needs-sign-in")) mcpOAuth.forget(name);
         return json(res, 200, mcpServerResponse());
       } finally {
         mcpConfigBusy = false;
@@ -23458,6 +23516,7 @@ const gracefulShutdown = createGracefulShutdown({
       code = 1;
     }
     closeMessageDb();
+    mcpOAuth.dispose();
     releaseDataDirLeaseAtExit();
     // A Cloud home's launcher starts the server again on this code only.
     process.exit(cloudHomeRestartRequested && code === 0 ? CLOUD_HOME_RESTART_EXIT_CODE : code);
