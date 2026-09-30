@@ -116,11 +116,11 @@
 
 **Consumes:** Scope and scoped stdio/remote descriptors. **Produces:** custom-MCP capability, selected registration, active native tools and repeated execution checks.
 
-- [ ] Add tests for mail-only custom servers, native read/edit/write-only drafting, no-tools without MCP, denied package tools, unavailable enforcement APIs, corrupt config, alias collisions, late tool activation and resume/model changes. Real MCP tools record actual execution.
-- [ ] Run Pi tests; expect missing custom integration and unrestricted native/catalog failures.
-- [ ] Mount custom descriptors, load the extension whenever scope is present, filter before TypeBox conversion, intersect active tools on request lifecycle, and block excluded native/MCP execution. Preserve human approval for host and custom tools.
-- [ ] Re-run Pi/gate/selection tests; expect pass. Verify extension APIs on an isolated official Pi CLI without changing project dependencies.
-- [ ] Commit Pi integration.
+- [x] Add tests for mail-only custom servers, native read/edit/write-only drafting, no-tools without MCP, denied package tools, unavailable enforcement APIs, corrupt config, alias collisions, late tool activation and resume/model changes. Real MCP tools record actual execution.
+- [x] Run Pi tests; expect missing custom integration and unrestricted native/catalog failures.
+- [x] Mount custom descriptors, load the extension whenever scope is present, filter before TypeBox conversion, intersect active tools on request lifecycle, and block excluded native/MCP execution. Preserve human approval for host and custom tools.
+- [x] Re-run Pi/gate/selection tests; expect pass. Verify extension APIs on an isolated official Pi CLI without changing project dependencies.
+- [x] Commit Pi integration.
 
 ### Task 7: Grok and engine coverage
 
