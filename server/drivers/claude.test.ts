@@ -593,7 +593,7 @@ describe("ClaudeDriver turns (fake CLI)", () => {
     expect(Object.keys(seen.mcpConfig.mcpServers)).not.toContain("planted");
     expect(after("--allowedTools").split(",")).not.toContain("mcp__browser");
     expect(recorder.events.find((e) => e.type === "turn.completed")).toMatchObject({ ok: true });
-    rmSync(folder, { recursive: true, force: true });
+    await removeTempDir(folder);
   });
 
   it("stops a guest's turn when the CLI kept a shell, and refuses one too old to confine it", async () => {
