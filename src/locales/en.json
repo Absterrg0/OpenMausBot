@@ -743,6 +743,7 @@
   "sidebar.archived.restoredOne": "1 bot restored",
   "sidebar.archived.restoredMany": "{count} bots restored",
   "sidebar.density.expand": "Expand sidebar",
+  "sidebar.resize": "Resize sidebar",
   "sidebar.density.collapseAria": "Collapse sidebar to avatars",
   "sidebar.density.collapse": "Collapse to avatars",
   "sidebar.density.chooseAria": "Choose sidebar density",
