@@ -186,6 +186,19 @@ describe("CodexDriver turns (fake app-server)", () => {
     expect(recorder.events.find((event) => event.type === "turn.completed")).toMatchObject({ ok: true });
   });
 
+  it("names Custom rather than Auto when Custom uses native automatic review", async () => {
+    process.env.FAKE_CODEX_REVIEW_EVENTS = JSON.stringify([{
+      method: "item/autoApprovalReview/completed",
+      params: { threadId: "codex-thread-1", turnId: "turn-1", reviewId: "custom-1", review: { status: "timedOut" } },
+    }]);
+    await create({ mode: "review-events", fullAuto: true });
+    await instance.adapter.sendTurn({ threadId: "app-thread", text: "check", approvalMode: "custom" });
+    await recorder.until((event) => event.type === "turn.completed");
+    const notices = recorder.events.filter((event) => event.type === "runtime.error" && event.message.includes("automatic review"));
+    expect(notices).toHaveLength(1);
+    expect(notices[0]).toMatchObject({ message: expect.stringContaining("Retry stays Custom") });
+  });
+
   it.each([
     { name: "thread warning only", events: [
       { method: "guardianWarning", params: { threadId: "codex-thread-1", message: "Automatic approval review timed out." } },

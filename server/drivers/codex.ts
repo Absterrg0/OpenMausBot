@@ -1139,10 +1139,11 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
       const seenReviews = new Set<string>();
       let reviewWarning = false;
       let timedOutReview = false;
+      const retryMode = approvalMode[0].toUpperCase() + approvalMode.slice(1);
       const reviewNotice = (status: "warning" | "timedOut" | "denied", action?: any) => {
         if (status === "warning") {
           emit({ ...base(threadId, turnId), type: "runtime.error",
-            message: "Codex automatic review reported a timeout. Check what ran before retrying. Retry stays Auto. Select Ask for human approval in approval settings.",
+            message: `Codex automatic review reported a timeout. Check what ran before retrying. Retry stays ${retryMode}. Select Ask for human approval in approval settings.`,
           });
           return;
         }
@@ -1150,7 +1151,7 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
         const target = command ? `: "${command.slice(0, 30)}"` : " for the requested action";
         const outcome = status === "timedOut" ? "timed out" : "denied";
         emit({ ...base(threadId, turnId), type: "runtime.error",
-          message: `Codex automatic review ${outcome}${target}. Action did not run. Retry stays Auto. Select Ask for human approval in approval settings.`,
+          message: `Codex automatic review ${outcome}${target}. Action did not run. Retry stays ${retryMode}. Select Ask for human approval in approval settings.`,
         });
       };
       const handleNotification = (msg: any) => {
