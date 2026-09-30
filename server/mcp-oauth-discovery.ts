@@ -126,13 +126,15 @@ export async function discoverMcpAuth(
   if (typeof tokenEndpoint !== "string" || !isAllowedAuthUrl(tokenEndpoint)) return null;
   if (!stringList(metadata.code_challenge_methods_supported)?.includes("S256")) return null;
 
+  // RFC 8414 §3.3: the metadata must be for the issuer it was fetched for.
+  if (typeof metadata.issuer === "string" && metadata.issuer.replace(/\/+$/, "") !== issuer.replace(/\/+$/, "")) return null;
   const optionalEndpoint = (value: unknown) => typeof value === "string" && isAllowedAuthUrl(value) ? value : undefined;
   const registrationEndpoint = optionalEndpoint(metadata.registration_endpoint);
   const revocationEndpoint = optionalEndpoint(metadata.revocation_endpoint);
   const scopes = stringList(resource?.scopes_supported);
   target.hash = "";
   return {
-    issuer: typeof metadata.issuer === "string" ? metadata.issuer : issuer,
+    issuer,
     authorizationEndpoint,
     tokenEndpoint,
     ...(registrationEndpoint ? { registrationEndpoint } : {}),

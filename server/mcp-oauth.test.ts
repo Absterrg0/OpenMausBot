@@ -204,3 +204,60 @@ describe("turn servers", () => {
     expect(out).toEqual({});
   });
 });
+
+describe("review fixes", () => {
+  it("keeps no tokens when the server is removed while the code is being exchanged", async () => {
+    await setup({ tokenDelayMs: 150 });
+    const started = await manager.start("docs", mcp.url);
+    const browser = approve(started);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    manager.forget("docs");
+    await browser;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(manager.authState("docs", mcp.url)).toBe("none");
+  });
+
+  it("keeps no tokens when sign-in is cancelled while the code is being exchanged", async () => {
+    await setup({ tokenDelayMs: 150 });
+    const started = await manager.start("docs", mcp.url);
+    const browser = approve(started);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    manager.cancel("docs");
+    await browser;
+    expect(manager.status("docs", started.flowId)?.phase).toBe("cancelled");
+    expect(manager.authState("docs", mcp.url)).toBe("none");
+  });
+
+  it("does not expire a sign-in whose code is already being exchanged", async () => {
+    await setup({ tokenDelayMs: 200 }, 100);
+    const started = await manager.start("docs", mcp.url);
+    await approve(started);
+    expect((await settled("docs", started.flowId)).phase).toBe("succeeded");
+    expect(manager.authState("docs", mcp.url)).toBe("signed-in");
+  });
+
+  it("stays signed in when a refresh fails for a reason other than a dead grant", async () => {
+    await setup({ expiresIn: 60, refreshStatus: 429 });
+    const started = await manager.start("docs", mcp.url);
+    await approve(started);
+    await settled("docs", started.flowId);
+    const token = await manager.accessToken("docs", mcp.url);
+    expect(oauth.isValid(`Bearer ${token}`)).toBe(true);
+    expect(manager.authState("docs", mcp.url)).toBe("signed-in");
+  });
+
+  it("registers a fresh client for every sign-in", async () => {
+    await setup();
+    for (let i = 0; i < 2; i++) {
+      const started = await manager.start("docs", mcp.url);
+      await approve(started);
+      await settled("docs", started.flowId);
+    }
+    expect(oauth.counts.register).toBe(2);
+  });
+
+  it("refuses metadata that claims another issuer", async () => {
+    await setup({ claimIssuer: "https://someone-else.example.com" });
+    await expect(manager.start("docs", mcp.url)).rejects.toMatchObject({ code: "not-oauth" });
+  });
+});

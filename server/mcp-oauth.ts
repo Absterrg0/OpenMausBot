@@ -44,6 +44,8 @@ const DEFAULT_LIFETIME_MS = 5 * 60_000;
 const REFRESH_MARGIN_MS = 2 * 60_000;
 const REQUEST_TIMEOUT_MS = 10_000;
 const CALLBACK_PATH = "/mcp-oauth/callback";
+/** complete()'s answer for a flow that ended while its code was spent. */
+const DISCARDED = "discarded";
 
 interface Flow {
   name: string;
@@ -217,7 +219,11 @@ export class McpOAuthManager {
     }
     const next = answer.status >= 200 && answer.status < 300 ? tokensFrom(answer.body, tokens) : null;
     if (!next) {
-      if (answer.status >= 500) return stillValid ? tokens.access : null;
+      // Only a refused grant or client means the sign-in is over; a rate
+      // limit, a proxy page or an outage keeps what still works.
+      const dead = (answer.status === 400 || answer.status === 401)
+        && (answer.body.error === "invalid_grant" || answer.body.error === "invalid_client");
+      if (!dead) return stillValid ? tokens.access : null;
       this.markNeedsSignIn(name, record.url);
       return null;
     }
@@ -244,9 +250,10 @@ export class McpOAuthManager {
     }
   }
 
+  /** A fresh public client per sign-in. Sign-ins are rare, and a cached id
+   * goes stale when an authorization server prunes idle clients, after
+   * which every sign-in would fail at its authorize page. */
   private async register(meta: McpAuthMetadata, redirectUri: string): Promise<string> {
-    const cached = this.store.client(meta.issuer, redirectUri);
-    if (cached) return cached;
     if (!meta.registrationEndpoint) {
       throw new McpOAuthError("no-registration", "This server needs an app registration OpenMausBot doesn't have yet.");
     }
@@ -267,7 +274,6 @@ export class McpOAuthManager {
     if (!response.ok || typeof body.client_id !== "string" || !body.client_id) {
       throw new Error("This server would not register OpenMausBot for sign-in. Try again later.");
     }
-    this.store.putClient(meta.issuer, redirectUri, body.client_id);
     return body.client_id;
   }
 
@@ -324,6 +330,9 @@ export class McpOAuthManager {
     response.setHeader("Cache-Control", "no-store");
     response.setHeader("Content-Type", "text/plain; charset=utf-8");
     response.setHeader("Referrer-Policy", "no-referrer");
+    // A kept-alive browser connection would carry the next sign-in's
+    // callback to this listener after it has closed to new connections.
+    response.setHeader("Connection", "close");
     let callback: URL;
     try {
       const expected = new URL(flow.redirectUri);
@@ -342,7 +351,13 @@ export class McpOAuthManager {
       return;
     }
     flow.consumed = true;
+    // the code is being spent: the lifetime no longer applies
+    clearTimeout(flow.expiry);
     const failure = await this.complete(flow, params);
+    if (failure === DISCARDED) {
+      response.writeHead(409).end("This sign-in was cancelled in OpenMausBot. You can close this tab.");
+      return;
+    }
     if (failure) {
       this.finish(flow, "failed", failure);
       response.writeHead(400).end(`${failure} You can close this tab.`);
@@ -368,6 +383,14 @@ export class McpOAuthManager {
       });
       const tokens = answer.status >= 200 && answer.status < 300 ? tokensFrom(answer.body) : null;
       if (!tokens) return "The server did not accept this sign-in. Start again.";
+      // Cancelled, signed out or removed while the code was being spent:
+      // hand the tokens back rather than resurrect a sign-in.
+      if (this.flows.get(flow.name) !== flow || flow.status.phase !== "waiting") {
+        if (flow.meta.revocationEndpoint) {
+          void postForm(flow.meta.revocationEndpoint, { token: tokens.refresh ?? tokens.access, client_id: flow.clientId }).catch(() => undefined);
+        }
+        return DISCARDED;
+      }
       this.store.put(flow.name, {
         url: flow.url,
         state: "signed-in",
@@ -388,6 +411,7 @@ export class McpOAuthManager {
     if (flow.status.phase !== "waiting") return;
     clearTimeout(flow.expiry);
     flow.server.close();
+    flow.server.closeIdleConnections();
     flow.status = { ...flow.status, phase, authorizationUrl: null, ...(message ? { message } : {}) };
   }
 }

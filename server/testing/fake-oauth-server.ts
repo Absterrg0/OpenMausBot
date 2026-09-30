@@ -15,6 +15,12 @@ export interface FakeOAuthOptions {
   rejectRefresh?: boolean;
   /** /authorize answers ?error=access_denied instead of a code */
   deny?: boolean;
+  /** hold every token response this long */
+  tokenDelayMs?: number;
+  /** answer refreshes with this status and a non-grant error */
+  refreshStatus?: number;
+  /** metadata claims this issuer instead of its own address */
+  claimIssuer?: string;
 }
 
 export interface FakeOAuth {
@@ -23,6 +29,8 @@ export interface FakeOAuth {
   /** `WWW-Authenticate` value an MCP server behind this issuer would send */
   challenge: string;
   isValid(authorization: string | undefined): boolean;
+  /** a valid access token, as if issued out of band (a personal token) */
+  mint(): string;
   counts: { register: number; token: number; refresh: number; revoke: number };
   lastAuthorize: URLSearchParams | null;
   options: FakeOAuthOptions;
@@ -65,7 +73,7 @@ export async function startFakeOAuth(options: FakeOAuthOptions = {}): Promise<Fa
       }
       if (req.method === "GET" && url.pathname === "/.well-known/oauth-authorization-server") {
         return json(res, 200, {
-          issuer,
+          issuer: options.claimIssuer ?? issuer,
           authorization_endpoint: `${issuer}/authorize`,
           token_endpoint: `${issuer}/token`,
           ...(options.noRegistration ? {} : { registration_endpoint: `${issuer}/register` }),
@@ -100,6 +108,7 @@ export async function startFakeOAuth(options: FakeOAuthOptions = {}): Promise<Fa
       }
       if (req.method === "POST" && url.pathname === "/token") {
         const form = new URLSearchParams(await readBody(req));
+        if (options.tokenDelayMs) await new Promise((resolve) => setTimeout(resolve, options.tokenDelayMs));
         if (form.get("grant_type") === "authorization_code") {
           counts.token += 1;
           const entry = codes.get(form.get("code") ?? "");
@@ -113,6 +122,7 @@ export async function startFakeOAuth(options: FakeOAuthOptions = {}): Promise<Fa
         }
         if (form.get("grant_type") === "refresh_token") {
           counts.refresh += 1;
+          if (options.refreshStatus) return json(res, options.refreshStatus, { error: "slow_down" });
           const token = form.get("refresh_token") ?? "";
           if (options.rejectRefresh || !refresh.has(token)) return json(res, 400, { error: "invalid_grant" });
           refresh.delete(token);
@@ -137,6 +147,7 @@ export async function startFakeOAuth(options: FakeOAuthOptions = {}): Promise<Fa
     issuer,
     prmUrl: `${issuer}/.well-known/oauth-protected-resource`,
     challenge: `Bearer resource_metadata="${issuer}/.well-known/oauth-protected-resource"`,
+    mint: () => issue().access_token,
     isValid: (authorization: string | undefined) => Boolean(authorization?.startsWith("Bearer ") && access.has(authorization.slice(7))),
     counts,
     options,

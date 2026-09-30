@@ -44,11 +44,4 @@ describe("McpOAuthStore", () => {
     store.put("docs", { url: URL_A, state: "needs-sign-in" });
     expect(store.get("docs", URL_A)?.state).toBe("needs-sign-in");
   });
-
-  it("caches a registered client per issuer and redirect URI", () => {
-    const store = new McpOAuthStore(file);
-    store.putClient("https://auth.example.com", "http://127.0.0.1:20001/mcp-oauth/callback", "client_1");
-    expect(store.client("https://auth.example.com", "http://127.0.0.1:20001/mcp-oauth/callback")).toBe("client_1");
-    expect(store.client("https://auth.example.com", "http://127.0.0.1:20002/mcp-oauth/callback")).toBeUndefined();
-  });
 });

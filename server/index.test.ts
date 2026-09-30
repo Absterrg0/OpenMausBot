@@ -7190,6 +7190,13 @@ describe("harness HTTP API", () => {
       expect(moved.status).toBe(200);
       expect(moved.body.servers[0].auth).toBeUndefined();
 
+      // a personal token pasted as a header, same address: it is used again
+      await api("POST", "/api/mcp/servers/hf/test");
+      expect((await api("GET", "/api/mcp/servers")).body.servers[0].auth).toBe("needs-sign-in");
+      const pasted = await api("PUT", "/api/mcp/servers/hf", { type: "http", url: `${fake.url}?v=2`, headers: { Authorization: `Bearer ${oauth.mint()}` } });
+      expect(pasted.body.servers[0].auth).toBeUndefined();
+      expect((await api("POST", "/api/mcp/servers/hf/test")).body.ok).toBe(true);
+
       const local = await api("POST", "/api/mcp/servers/nope/sign-in");
       expect(local.status).toBe(404);
     } finally {

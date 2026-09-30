@@ -22035,7 +22035,9 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         // a sign-in belongs to one address; a token never follows the entry elsewhere
         const before = isRemoteMcpServer(existing.server) ? existing.server.url : null;
         const after = isRemoteMcpServer(parsed.server) ? parsed.server.url : null;
-        if (before !== after) mcpOAuth.forget(name);
+        // Any other edit (a new header, say) drops a sign-in request that has
+        // no tokens behind it; the next Test asks again if it still applies.
+        if (before !== after || (after && mcpOAuth.authState(name, after) === "needs-sign-in")) mcpOAuth.forget(name);
         return json(res, 200, mcpServerResponse());
       } finally {
         mcpConfigBusy = false;
