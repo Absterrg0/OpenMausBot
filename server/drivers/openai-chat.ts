@@ -9,6 +9,7 @@ import type {
 } from "../contracts.ts";
 import { newEventId, newId } from "../contracts.ts";
 import { ASK_USER_TOOL, ASK_USER_TOOL_DEFINITION, askQuestionSummary, parseAskQuestions, questionChoices } from "../../shared/ask-question.ts";
+import { allowsTool, parseToolScope } from "../../shared/tool-scope.ts";
 import { redactSecretsInText } from "../redact.ts";
 import { toolDetailPreview } from "../tool-summary.ts";
 import { ChatToolSessionError, mountChatTools, type ChatToolDefinition, type ChatToolSession, type ChatToolResult } from "./chat-mcp-tools.ts";
@@ -450,14 +451,18 @@ export function createOpenAIChatRuntime<Config>(options: RuntimeOptions<Config>)
       const denials: string[] = [];
       const seenCalls = new Set<string>();
       try {
-        tools = await mountChatTools(options.tools === false ? undefined : turn.integrations, abort.signal, options.computerUse);
-        let optionalQuestionOnly = options.tools !== false && tools.definitions.length === 0;
+        const parsed = parseToolScope(turn.toolScope);
+        if (!parsed.ok) throw new Error(parsed.error);
+        const scope = parsed.scope;
+        tools = await mountChatTools(options.tools === false ? undefined : turn.integrations, abort.signal, options.computerUse, scope);
+        const questionAllowed = options.tools !== false && allowsTool(scope, { kind: "native", name: ASK_USER_TOOL });
+        let optionalQuestionOnly = questionAllowed && tools.definitions.length === 0;
         // The runtime's one built-in tool rides the same list: ask_user is
         // how a chat-completions engine reaches a person. An MCP server that
         // squats the name cannot shadow it — dispatch intercepts the name
         // before validate — but the definition is then skipped so the list
         // never advertises two.
-        if (options.tools !== false && !tools.definitions.some((definition) => definition.function.name === ASK_USER_TOOL)) {
+        if (questionAllowed && !tools.definitions.some((definition) => definition.function.name === ASK_USER_TOOL)) {
           tools.definitions.push(ASK_USER_TOOL_DEFINITION);
         }
         for (let round = 0; round < 16; round++) {
@@ -576,6 +581,7 @@ export function createOpenAIChatRuntime<Config>(options: RuntimeOptions<Config>)
               if (!object(args)) throw new ChatProtocolError("tool arguments must be a JSON object");
               const inputPreview = preview(args);
               if (call.function.name === ASK_USER_TOOL) {
+                if (!questionAllowed || !allowsTool(scope, { kind: "native", name: ASK_USER_TOOL })) throw new Error("Tool selection excludes this tool");
                 // A question is the person's card, not a permission, so it is
                 // handled before the gate below: under Full access that gate
                 // would auto-run an unanswered ask, and under Ask it would

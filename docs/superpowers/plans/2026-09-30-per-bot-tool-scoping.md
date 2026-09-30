@@ -104,11 +104,11 @@
 
 **Consumes:** Task 1 identities and scoped integrations. **Produces:** filtered provider definitions and call-time policy checks for all four shared API drivers.
 
-- [ ] Add fake-provider capture tests asserting literal tool names, no excluded schemas, no withheld MCP execution, denial of an excluded `ask_user`, selected cloud-computer tools, and legacy behavior. Verify current schema/call limits apply to the selected catalog.
-- [ ] Run focused executor/e2e tests; expect excluded definitions or calls on current code.
-- [ ] Filter before schema conversion/serialization and before approvals or execution; retain original identity mapping through alias collisions.
-- [ ] Re-run focused tests for OpenAI compatible, Grok API, Mistral and MiniMax; expect pass.
-- [ ] Commit shared API filtering.
+- [x] Add fake-provider capture tests asserting literal tool names, no excluded schemas, no withheld MCP execution, denial of an excluded `ask_user`, selected cloud-computer tools, and legacy behavior. Verify current schema/call limits apply to the selected catalog.
+- [x] Run focused executor/e2e tests; expect excluded definitions or calls on current code.
+- [x] Filter before schema conversion/serialization and before approvals or execution; retain original identity mapping through alias collisions.
+- [x] Re-run focused tests for OpenAI compatible, Grok API, Mistral and MiniMax; expect pass.
+- [x] Commit shared API filtering.
 
 ### Task 6: Pi native and custom MCP tools
 
