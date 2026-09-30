@@ -2033,7 +2033,7 @@ export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void 
                 <div className={cn(
                   "absolute top-full z-40 mt-1 overflow-hidden rounded-xl border border-hairline/50 bg-menu py-1.5 shadow-2xl shadow-black/60",
                   density === "icons" ? "left-0" : "right-0",
-                  density === "icons" ? "w-72" : density === "compact" ? "w-[min(240px,calc(var(--sidebar-width)_-_32px))]" : "w-[min(288px,calc(var(--sidebar-width)_-_32px))]",
+                  density === "icons" ? "w-72" : density === "compact" ? "w-60 md:w-[min(240px,calc(var(--sidebar-width)_-_32px))]" : "w-72 md:w-[min(288px,calc(var(--sidebar-width)_-_32px))]",
                   attentionMotion.className,
                 )} {...attentionMotion.exitProps}>
                   <div className="flex items-center gap-1 pb-1 pl-3.5 pr-2 pt-1.5">
@@ -2150,7 +2150,9 @@ export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void 
           setResizing(true);
         }}
         onPointerMove={(event) => {
-          if (event.currentTarget.hasPointerCapture(event.pointerId)) resizeTo(event.clientX - (sidebarRef.current?.getBoundingClientRect().left ?? 0));
+          if (!event.currentTarget.hasPointerCapture(event.pointerId)) return;
+          const next = resizeTo(event.clientX - (sidebarRef.current?.getBoundingClientRect().left ?? 0));
+          if (next !== null) event.currentTarget.setAttribute("aria-valuenow", String(next));
         }}
         onPointerUp={(event) => {
           if (event.currentTarget.hasPointerCapture(event.pointerId)) finishResize();
@@ -2159,7 +2161,8 @@ export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void 
         onKeyDown={(event) => {
           if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
           event.preventDefault();
-          const next = resizeTo((sidebarRef.current?.getBoundingClientRect().width ?? defaultWidth) + (event.key === "ArrowRight" ? 16 : -16));
+          const limit = sidePanelOpen ? defaultWidth : Math.min(480, window.innerWidth - 320);
+          const next = resizeTo(Math.min(widthRef.current ?? defaultWidth, limit) + (event.key === "ArrowRight" ? 16 : -16));
           if (next === null) return;
           setSidebarWidth(next);
           saveSidebarWidth(next);
