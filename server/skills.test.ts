@@ -125,12 +125,15 @@ describe("skills prompt index budget", () => {
     } finally { warn.mockRestore(); }
   });
 
-  it("reports the 30-entry limit and excludes disabled skills", () => {
+  it("reports the applicable entry or byte limit and excludes disabled skills", () => {
     const descriptions = Object.fromEntries(Array.from({ length: 32 }, (_, i) => [`skill-${String(i).padStart(2, "0")}`, "x"]));
     manifestSkills(descriptions, ["skill-31"]);
     const prompt = skillsSystemPrompt(bot);
+    const indexed = prompt.match(/^- skill-\d{2}:/gm) ?? [];
+    const omitted = 31 - indexed.length;
     expect(Buffer.byteLength(prompt, "utf8")).toBeLessThanOrEqual(INDEX_MAX_BYTES);
-    expect(prompt).toContain("1 enabled skill omitted");
+    expect(prompt).toContain(`${omitted} enabled skill${omitted === 1 ? "" : "s"} omitted`);
+    expect(prompt).toContain(indexed.length === 30 ? "30-skill cap" : "4000-byte cap");
     expect(prompt).not.toContain("skill-31");
   });
 
