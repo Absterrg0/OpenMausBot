@@ -76,7 +76,7 @@ async function protectedResource(mcpUrl: URL, hint: string | null, options: Disc
     `${mcpUrl.origin}/.well-known/oauth-protected-resource${path}`,
     `${mcpUrl.origin}/.well-known/oauth-protected-resource`,
   ];
-  for (const candidate of [...new Set(candidates)]) {
+  for (const candidate of new Set(candidates)) {
     const document = await getJson(candidate, options);
     if (document) return document;
   }
