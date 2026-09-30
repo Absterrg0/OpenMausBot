@@ -18,3 +18,10 @@ hpke-js, Copyright 2023-2024 Ajitomi Daisuke, used under the MIT License.
 Selected provider icon paths are from Simple Icons, used under CC0 1.0.
 The Cohere provider icon path is from Lobe Icons, Copyright 2023 LobeHub,
 used under the MIT License.
+
+The model provider catalog bundles provider and model data from models.dev,
+https://github.com/anomalyco/models.dev, Copyright (c) 2025 models.dev, used
+under the MIT License. Its cache and refresh logic is adapted from OpenCode,
+https://github.com/anomalyco/opencode, Copyright (c) 2025 opencode, used under
+the MIT License. The full license texts are in third_party/models-dev/LICENSE
+and third_party/opencode/LICENSE.
