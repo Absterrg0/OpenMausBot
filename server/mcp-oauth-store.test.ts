@@ -19,7 +19,8 @@ describe("McpOAuthStore", () => {
   it("writes an owner-only file and reads a record back", () => {
     const store = new McpOAuthStore(file);
     store.put("docs", { url: URL_A, state: "signed-in", clientId: "c1", tokens: { access: "at", refresh: "rt", expiresAt: 5 } });
-    expect(statSync(file).mode & 0o777).toBe(0o600);
+    // Windows has no POSIX permission bits; stat reports 0o666 there.
+    if (process.platform !== "win32") expect(statSync(file).mode & 0o777).toBe(0o600);
     expect(new McpOAuthStore(file).get("docs", URL_A)).toEqual({ url: URL_A, state: "signed-in", clientId: "c1", tokens: { access: "at", refresh: "rt", expiresAt: 5 } });
   });
 

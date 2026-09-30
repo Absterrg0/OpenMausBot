@@ -7171,7 +7171,8 @@ describe("harness HTTP API", () => {
       expect(tested.body).toEqual({ ok: true, tools: [{ name: "read_notes", description: "Read saved notes" }] });
 
       const file = join(home, ".openmausbot", "mcp-oauth.json");
-      expect(statSync(file).mode & 0o777).toBe(0o600);
+      // Windows has no POSIX permission bits; stat reports 0o666 there.
+      if (process.platform !== "win32") expect(statSync(file).mode & 0o777).toBe(0o600);
       const stored = JSON.parse(readFileSync(file, "utf8")).servers.hf.tokens.access as string;
       expect(oauth.isValid(`Bearer ${stored}`)).toBe(true);
       for (const response of [started, listed, tested]) expect(JSON.stringify(response.body)).not.toContain(stored);
