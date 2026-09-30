@@ -60,7 +60,10 @@ describe("a bot's memory and a lent Mac (server/lending-memory.ts)", () => {
     expect(statSync(file).size).toBe(size);
     expect(memoryFingerprint(ws)).not.toBe(before);
   });
-  it("a link is judged by where it points, and swapping one in is a change", () => {
+  // The tracker only runs on Cloud homes (Linux). NTFS can report a folder's
+  // modified time late, so the folder-listing cache can miss a link added a
+  // moment earlier there; that made this flake on Windows CI.
+  it.skipIf(process.platform === "win32")("a link is judged by where it points, and swapping one in is a change", () => {
     const ws = workspace();
     const outside = join(dir, "guest.md");
     writeFileSync(outside, "- a guest's instruction\n");
