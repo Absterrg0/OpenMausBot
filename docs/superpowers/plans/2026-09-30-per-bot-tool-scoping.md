@@ -128,12 +128,12 @@
 
 **Consumes:** Scoped turn input, descriptor gate and native identity matcher. **Produces:** engine capability matrix and strict native control contracts.
 
-- [ ] Capture real Grok provider payloads against a synthetic endpoint for empty allow, unknown allow, drafting-only and MCP-only profiles; request excluded native/MCP tools and prove absence of execution markers. Verify both new and resumed sessions.
-- [ ] Add failing ACP pool, permission/full-auto, Claude instance/guest intersection, Codex override, optional native-tool and registry-coverage tests. Enumerate all 18 adapters explicitly.
-- [ ] Implement the verified Grok native contract with profile restrictions intersected; include scope in session fingerprints and reapply on resume. Apply the common MCP boundary across mounting adapters.
-- [ ] Implement native contracts where verified. For unsupported restrictions, fail before a provider request with a clear setup error; do not count refusal as usable native support or claim whole-issue completion. Record external contract limitations for resolution with upstream.
-- [ ] Run affected driver tests and real Grok contract fixture; expect selected payloads and blocked execution. Recheck all engine coverage requirements before declaring Task 7 complete.
-- [ ] Commit tested driver integration and coverage evidence.
+- [x] Capture real Grok provider payloads against a synthetic endpoint for empty allow, unknown allow, drafting-only and MCP-only profiles; request excluded native/MCP tools and prove absence of execution markers. Verify both new and resumed sessions.
+- [x] Add failing ACP pool, permission/full-auto, Claude instance/guest intersection, Codex override, optional native-tool and registry-coverage tests. Enumerate all 18 adapters explicitly.
+- [x] Implement the verified Grok native contract with profile restrictions intersected; include scope in session fingerprints and reapply on resume. Apply the common MCP boundary across mounting adapters.
+- [x] Implement native contracts where verified. For unsupported restrictions, fail before a provider request with a clear setup error; do not count refusal as usable native support or claim whole-issue completion. Record external contract limitations for resolution with upstream.
+- [x] Run affected driver tests and real Grok contract fixture; expect selected payloads and blocked execution. Recheck all engine coverage requirements before declaring Task 7 complete.
+- [x] Commit tested driver integration and coverage evidence.
 
 ### Task 8: Owner settings and screenshots
 
@@ -141,12 +141,12 @@
 
 **Consumes:** Wire scope and settings PATCH. **Produces:** All/custom selection, Allow/Exclude lists, explicit no-tools status and actionable errors.
 
-- [ ] Capture the before screenshot from the real isolated settings fixture.
-- [ ] Add behavior tests for editing/saving/clearing, explicit empty allow, invalid input, unsupported engine status, busy/errors, switching bots during pending saves, and duplication retaining restrictions from the creation request onward.
-- [ ] Run focused settings/client tests; expect missing controls or lost fields.
-- [ ] Implement the small advanced Access section, reuse custom-server selection and save/error patterns, add localized copy and concise examples.
-- [ ] Run focused tests and locale generation/check; capture after screenshots and verify persisted state in the real fixture.
-- [ ] Commit UI, docs and screenshots needed for review.
+- [x] Capture the before screenshot from the real isolated settings fixture.
+- [x] Add behavior tests for editing/saving/clearing, explicit empty allow, invalid input, unsupported engine status, busy/errors, switching bots during pending saves, and duplication retaining restrictions from the creation request onward.
+- [x] Run focused settings/client tests; expect missing controls or lost fields.
+- [x] Implement the small advanced Access section, reuse custom-server selection and save/error patterns, add localized copy and concise examples.
+- [x] Run focused tests and locale generation/check; capture after screenshots and verify persisted state in the real fixture.
+- [x] Commit UI, docs and screenshots needed for review.
 
 ### Task 9: Live model proof and upstream submission
 

@@ -15,6 +15,7 @@ import {
 } from "react";
 import type { BotVisibility, CloudBackend, ConnectorToolGrant, EffortLevel, InstalledPackageMetadata, ServerFrame, GroupThreadUsage, SteerQueueReason } from "../../shared/wire";
 import type { TurnDigest } from "../../shared/digest";
+import type { ToolScope } from "../../shared/tool-scope";
 import type { ModelVariantOption, RuntimeEvent } from "../../shared/runtime-events";
 import type { MausColor, MausMotion } from "@/lib/mascot";
 import type { BotAvatarCrop } from "../../shared/bot-avatar";
@@ -361,6 +362,8 @@ export interface TaskUsage {
 }
 
 export interface Bot {
+  /** Owner selection, independent of engine approval mode. */
+  toolScope?: ToolScope;
   waitingForTeammates?: boolean;
   id: string;
   threadId: string;
@@ -1716,7 +1719,7 @@ export function reducer(state: AppState, action: Action): AppState {
         // The slim deletion broadcast can arrive before the full snapshot.
         // Finish that switch once, replaying any events received in between.
         // Later duplicate HTTP snapshots must not overwrite newer messages.
-        return reducer(switching, { type: "taskSwitched", bot: { ...before, ...action.bot, computer: action.bot.computer, section: action.bot.section, messages: action.bot.messages, browserProfile: action.bot.browserProfile } });
+        return reducer(switching, { type: "taskSwitched", bot: { ...before, ...action.bot, computer: action.bot.computer, section: action.bot.section, toolScope: action.bot.toolScope, messages: action.bot.messages, browserProfile: action.bot.browserProfile } });
       }
       const patched = updateBot(switching, action.bot.id, (b) => ({
         ...b,
@@ -1731,6 +1734,7 @@ export function reducer(state: AppState, action: Action): AppState {
         // Resetting Works on to Auto removes the field from the complete
         // server frame; merging alone would keep the old target highlighted.
         computer: action.bot.computer,
+        toolScope: action.bot.toolScope,
         // A complete frame omits section after another client moves the bot
         // into General. Retaining the old label strands an empty team in UI.
         section: action.bot.section,
@@ -2286,6 +2290,7 @@ export function reducer(state: AppState, action: Action): AppState {
         ...bot,
         ...action.bot,
         computer: action.bot.computer,
+        toolScope: action.bot.toolScope,
         messages: action.bot.messages ?? [],
         // The snapshot decides whether this thread has scrollback. Merging
         // would carry the previous thread's answer onto a new one.
@@ -3308,7 +3313,10 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           // A copy of a restricted bot is restricted from its first moment.
           api("/api/bots", {
             method: "POST",
-            ...(source.visibility && source.visibility !== "everyone" ? { body: JSON.stringify({ visibility: source.visibility }) } : {}),
+            body: JSON.stringify({
+              ...(source.visibility && source.visibility !== "everyone" ? { visibility: source.visibility } : {}),
+              ...(Object.hasOwn(source, "toolScope") ? { settings: { toolScope: source.toolScope } } : {}),
+            }),
           })
             .then(({ bot }) =>
               api(`/api/bots/${bot.id}`, {
