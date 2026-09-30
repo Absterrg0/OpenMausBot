@@ -101,8 +101,12 @@ export const OpenAICompatDriver: ProviderDriver<OpenAICompatConfig> = {
     access: "api",
   },
   models: DEFAULT_MODELS,
+  // Nothing to install: the key and base URL are saved in the app. The old
+  // descriptor offered a config.json sentence as an "Open install in
+  // Terminal" command.
   install: {
     docsUrl: "https://openrouter.ai/keys",
+    settings: "connections",
     signInCommand: "Save an OpenAI-compatible API key in Settings → API keys, or set OPENAI_COMPAT_API_KEY on the server.",
   },
   decodeConfig,
@@ -110,14 +114,22 @@ export const OpenAICompatDriver: ProviderDriver<OpenAICompatConfig> = {
 
   async create(input) {
     const { config } = input;
-    const shared = !OWN_KEY_ENVS.has(config.apiKeyEnv);
+    // An instance that names its own key variable reads only that one: the
+    // workspace key (OPENAI_COMPAT_API_KEY) belongs to the workspace's
+    // endpoint and must not reach this instance's host.
+    const ownKeyVariable = config.apiKeyEnv !== DEFAULT_KEY_ENV;
     const apiKey =
       config.key ??
       input.environment[config.apiKeyEnv] ??
-      (shared ? input.environment[DEFAULT_KEY_ENV] : undefined) ??
+      (ownKeyVariable ? undefined : input.environment[DEFAULT_KEY_ENV]) ??
       process.env[config.apiKeyEnv] ??
-      (shared ? process.env[DEFAULT_KEY_ENV] : undefined) ??
+      (ownKeyVariable ? undefined : process.env[DEFAULT_KEY_ENV]) ??
       "";
+    // The default key and the built-in providers' keys are saved in
+    // Settings → API keys; any other variable is configured where it was written.
+    const missingKey = !ownKeyVariable || OWN_KEY_ENVS.has(config.apiKeyEnv)
+      ? "No API key — open Settings → API keys."
+      : `no API key — set ${config.apiKeyEnv} or add it to the instance config`;
     const seeded = config.catalog === "openai" ? OPENAI_MODELS : DEFAULT_MODELS;
     let catalog: ModelCatalog = config.managedModels
       ? { default: config.managedModels[0], options: config.managedModels.map(id => ({ id, label: id })) }
@@ -192,8 +204,8 @@ export const OpenAICompatDriver: ProviderDriver<OpenAICompatConfig> = {
           : {}),
       }),
       httpErrorLabel: "upstream",
-      missingKeyError: `Save an API key in Settings → API keys, or set ${config.apiKeyEnv}.`,
-      unavailableReason: "No API key — open Settings → API keys.",
+      missingKeyError: missingKey,
+      unavailableReason: missingKey,
       timeoutMs: idleTimeoutMs(),
       reasoning: true,
       billing: "metered",

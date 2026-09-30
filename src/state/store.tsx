@@ -759,6 +759,8 @@ export interface EngineInstall {
   managed?: { label: string; downloadBytes: number };
   /** the server can install or update this engine itself, no terminal */
   server?: { package: string };
+  /** configured with a key in Settings → API keys, not in a terminal */
+  settings?: "connections";
 }
 
 /** One row of GET /api/instances — the model picker's data. */

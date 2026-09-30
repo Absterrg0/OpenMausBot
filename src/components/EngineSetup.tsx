@@ -471,7 +471,8 @@ export function EngineSetup({
         ? t("engineSetup.installDescSignIn")
         : t("engineSetup.installDesc"));
 
-  if (isApiKeyEngine(instance) && (instance.snapshot.state !== "available" || instance.snapshot.authenticated === false)) {
+  if ((isApiKeyEngine(instance) || install?.settings === "connections") && !instance.snapshot.authenticationUnavailableReason
+    && (instance.snapshot.state !== "available" || instance.snapshot.authenticated === false)) {
     return <ApiKeyEngineSetup instance={instance} className={className} unframed={unframed} />;
   }
 
