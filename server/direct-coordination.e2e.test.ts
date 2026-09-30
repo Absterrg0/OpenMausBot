@@ -653,6 +653,9 @@ it("stops a waiting source without reaching into the teammate already working", 
   await expect.poll(() => f.nodes().find((node: any) => node.parentId)?.status, { timeout: 20_000 }).toBe("completed");
   expect(f.nodes().find((node: any) => node.parentId).result).toContain("Finished after the source was stopped");
   await expect.poll(async () => (await f.messages(f.chief.activeTaskId)).some((message: any) => message.tool?.name === "Engineering lead replied")).toBe(true);
+  // The chip carries the report, so a phone can show it without the thread.
+  const replied = (await f.messages(f.chief.activeTaskId)).find((message: any) => message.tool?.name === "Engineering lead replied");
+  expect(replied.tool.output).toContain("Finished after the source was stopped");
   // ...but nothing resumes the conversation the person stopped.
   expect(f.evidence().filter((turn: any) => turn.botId === f.chief.id)).toHaveLength(1);
   expect((await f.messages(f.chief.activeTaskId)).some((message: any) => message.text === "The requested CSV export is implemented and verified")).toBe(false);
