@@ -68,11 +68,11 @@
 
 **Consumes:** Task 1 parser/matcher. **Produces:** `gateServer` accepts optional scope; private `OMB_GATE_TOOL_SCOPE` config enforces lists and calls even at budget zero.
 
-- [ ] Add real-process tests with two tools and an upstream call log: filtered paginated discovery, allowed execution, no blocked execution marker, malformed scope exit before upstream startup, malformed frames fail closed, legacy pass-through, budget-zero enforcement, typed request-ID correlation and scope env not leaked upstream.
-- [ ] Run the two gate test files; expect behavioral failures on current code.
-- [ ] Validate scope before starting upstream, distinguish call/list responses, filter original names and reject blocked requests before forwarding. Preserve legacy pass-through without a scope.
-- [ ] Re-run gate tests and Task 1; expect all pass.
-- [ ] Commit the scoped stdio boundary.
+- [x] Add real-process tests with two tools and an upstream call log: filtered paginated discovery, allowed execution, no blocked execution marker, malformed scope exit before upstream startup, malformed frames fail closed, legacy pass-through, budget-zero enforcement, typed request-ID correlation and scope env not leaked upstream.
+- [x] Run the two gate test files; expect behavioral failures on current code.
+- [x] Validate scope before starting upstream, distinguish call/list responses, filter original names and reject blocked requests before forwarding. Preserve legacy pass-through without a scope.
+- [x] Re-run gate tests and Task 1; expect all pass.
+- [x] Commit the scoped stdio boundary.
 
 ### Task 3: Remote MCP transport
 

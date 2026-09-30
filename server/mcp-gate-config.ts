@@ -4,6 +4,7 @@
 // what a tool may put into a model's context is written once. The gate itself
 // is mcp-gate.ts; the policy it applies is mcp-trim.ts.
 import { join } from "node:path";
+import { parseToolScope, type ToolScope } from "../shared/tool-scope.ts";
 
 import { DATA_DIR } from "./config.ts";
 import { DEFAULT_RESULT_BUDGET } from "./mcp-trim.ts";
@@ -48,15 +49,25 @@ export function gateServer(input: {
   server: unknown;
   threadId: string;
   budget: number;
+  toolScope?: ToolScope;
   /** node flags the harness spawns its own helpers with */
   nodeEnv?: Record<string, string>;
   execPath?: string;
 }): { command: string; args: string[]; env: Record<string, string> } | null {
   const { name, server, budget } = input;
-  if (budget <= 0) return null;
-  if (!server || typeof server !== "object" || Array.isArray(server)) return null;
+  const parsed = parseToolScope(input.toolScope);
+  if (!parsed.ok) throw new Error(parsed.error);
+  const scoped = parsed.scope !== undefined;
+  if (budget <= 0 && !scoped) return null;
+  if (!server || typeof server !== "object" || Array.isArray(server)) {
+    if (scoped) throw new Error("Tool selection requires a supported MCP server.");
+    return null;
+  }
   const spec = server as StdioServer;
-  if (typeof spec.command !== "string" || !spec.command) return null;
+  if (typeof spec.command !== "string" || !spec.command) {
+    if (scoped) throw new Error("Tool selection requires a supported MCP server.");
+    return null;
+  }
   return {
     command: input.execPath ?? process.execPath,
     args: [SPAWNED_PROXIES.mcpGate],
@@ -66,6 +77,7 @@ export function gateServer(input: {
       OMB_GATE_UPSTREAM: JSON.stringify({ command: spec.command, args: spec.args ?? [], env: spec.env ?? {} }),
       OMB_GATE_SPILL_DIR: spillDir(input.threadId),
       OMB_GATE_BUDGET: String(budget),
+      ...(scoped ? { OMB_GATE_TOOL_SCOPE: JSON.stringify(parsed.scope) } : {}),
     },
   };
 }
