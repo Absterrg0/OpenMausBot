@@ -12,7 +12,7 @@ import { useStore, currentTaskBot, type Bot, type InstanceInfo, type ModelSelect
 import type { EffortLevel } from "../../shared/wire";
 import type { ModelVariantOption } from "../../shared/runtime-events";
 import { filterCustomModels, partitionCustomModels, suggestedModels } from "@/lib/custom-models";
-import { configuredModelInstances, isClaudeAccount, isCustomOnly, splitEngineRail } from "@/lib/engine-rail";
+import { configuredModelInstances, isClaudeAccount, isCustomOnly, SIGN_IN_FAMILY_LABEL, signInFamily, splitEngineRail, type SignInFamily } from "@/lib/engine-rail";
 import { InstanceProviderMark } from "./ProviderIcons";
 import { EngineSetup, EngineUpdateNotice, needsCli, needsSignIn } from "./EngineSetup";
 import { EngineGroupLabel } from "./EngineGroupLabel";
@@ -330,24 +330,33 @@ function ModelSearch({
   );
 }
 
-export function ModelEngineRail({ instances, selectedInstance, claudeInstance, onSelect, onAddApiKeys }: {
+export function ModelEngineRail({ instances, selectedInstance, claudeInstance, openaiInstance, onSelect, onAddApiKeys }: {
   instances: InstanceInfo[];
   selectedInstance?: InstanceInfo;
+  /** The account a folded button opens on (the last one browsed). */
   claudeInstance?: InstanceInfo;
+  openaiInstance?: InstanceInfo;
   onSelect: (instance: InstanceInfo) => void;
   /** Ends the API keys group with a way to add one; absent where Settings
    * has no keys section (a remote client). */
   onAddApiKeys?: () => void;
 }) {
-  const firstClaude = instances.find((instance) => isClaudeAccount(instance) && instance.claudeAccount?.isDefault)
-    ?? instances.find(isClaudeAccount);
-  const providers = instances.filter((instance) => !isClaudeAccount(instance) || instance === firstClaude);
+  const firstOf: Record<SignInFamily, InstanceInfo | undefined> = {
+    claude: instances.find((instance) => isClaudeAccount(instance) && instance.claudeAccount?.isDefault)
+      ?? instances.find(isClaudeAccount),
+    openai: instances.find((instance) => signInFamily(instance) === "openai"),
+  };
+  const opensOn: Record<SignInFamily, InstanceInfo | undefined> = { claude: claudeInstance, openai: openaiInstance };
+  const providers = instances.filter((instance) => {
+    const family = signInFamily(instance);
+    return !family || instance === firstOf[family];
+  });
   const { subscription, api, custom: local } = splitEngineRail(providers);
   const railButton = (instance: InstanceInfo) => {
-    const claude = isClaudeAccount(instance);
-    const target = claude ? claudeInstance ?? instance : instance;
-    const selected = claude ? isClaudeAccount(selectedInstance) : instance.instanceId === selectedInstance?.instanceId;
-    const label = claude ? "Claude" : instance.displayName;
+    const family = signInFamily(instance);
+    const target = family ? opensOn[family] ?? instance : instance;
+    const selected = family ? signInFamily(selectedInstance) === family : instance.instanceId === selectedInstance?.instanceId;
+    const label = family ? SIGN_IN_FAMILY_LABEL[family] : instance.displayName;
     const attention = needsCli(target) || needsSignIn(target) || Boolean(target.snapshot.update);
     const managedBy = target.policy ? t("policy.managedBy", { organization: target.policy.organizationName }) : undefined;
     return (
@@ -361,6 +370,12 @@ export function ModelEngineRail({ instances, selectedInstance, claudeInstance, o
         className={cn("relative flex size-9 items-center justify-center rounded-lg", selected ? "bg-control ring-1 ring-hairline/50" : "hover:bg-control/60", managedBy && "opacity-40")}
       >
         <InstanceProviderMark instance={target} size={18} />
+        {/* the same provider can sit in Cloud and API keys: the key marks which */}
+        {target.access === "api" && (
+          <span data-rail-key-badge className="absolute bottom-0 left-0 flex size-3.5 items-center justify-center rounded-full bg-panel text-ink-secondary">
+            <KeyRound size={9} aria-hidden="true" />
+          </span>
+        )}
         {attention && <span className="absolute bottom-0.5 right-0.5 size-1.5 rounded-full bg-warning ring-2 ring-panel" />}
       </button>
     );
@@ -443,6 +458,7 @@ export function ModelPicker({
   const [placement, setPlacement] = useState<{ left: number; maxHeight: number }>();
   const refreshingRef = useRef(false);
   const lastClaudeIdRef = useRef<string | null>(null);
+  const lastOpenaiIdRef = useRef<string | null>(null);
 
   useLayoutEffect(() => {
     if (!open || contained) return;
@@ -466,6 +482,9 @@ export function ModelPicker({
       ?? { id: selection.variant, label: selection.variant },
   );
   const claudeAccounts = pickerInstances.filter(isClaudeAccount);
+  const openaiAccounts = pickerInstances.filter((instance) => signInFamily(instance) === "openai");
+  const openaiRailInstance = openaiAccounts.find((instance) => instance.instanceId === lastOpenaiIdRef.current)
+    ?? openaiAccounts.find((instance) => instance.instanceId === selection.instanceId) ?? openaiAccounts[0];
   const multipleClaudeAccounts = state.instances.filter(isClaudeAccount).length > 1;
   const showActiveAccount = (multipleClaudeAccounts && isClaudeAccount(active)) || Boolean(active?.snapshot.chatgptPlan);
   const claudeRailInstance = claudeAccounts.find((instance) => instance.instanceId === lastClaudeIdRef.current)
@@ -577,6 +596,7 @@ export function ModelPicker({
 
   const selectRail = (instance: InstanceInfo) => {
     if (isClaudeAccount(instance)) lastClaudeIdRef.current = instance.instanceId;
+    if (signInFamily(instance) === "openai") lastOpenaiIdRef.current = instance.instanceId;
     setRailId(instance.instanceId);
     const official = instance.models.options.filter((option) => !option.custom);
     setPane(isCustomOnly(instance) || (official.length === 0 && !instance.snapshot.chatgptPlan) ? "custom" : "main");
@@ -649,6 +669,7 @@ export function ModelPicker({
       onClick={() => {
         if (bot.busy) return;
         if (active && isClaudeAccount(active)) lastClaudeIdRef.current = active.instanceId;
+        if (active && signInFamily(active) === "openai") lastOpenaiIdRef.current = active.instanceId;
         const initial = pickerInstances.find((instance) => instance.instanceId === selection.instanceId) ?? pickerInstances[0];
         setRailId(initial?.instanceId ?? null);
         setOpen((wasOpen) => {
@@ -738,7 +759,7 @@ export function ModelPicker({
             motion.className,
           )}
         >
-          {pickerInstances.length > 0 && <ModelEngineRail instances={pickerInstances} selectedInstance={railInstance} claudeInstance={claudeRailInstance} onSelect={selectRail}
+          {pickerInstances.length > 0 && <ModelEngineRail instances={pickerInstances} selectedInstance={railInstance} claudeInstance={claudeRailInstance} openaiInstance={openaiRailInstance} onSelect={selectRail}
             onAddApiKeys={window.ogb?.remoteClient?.active === true ? undefined : openApiKeys} />}
 
           <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto">
@@ -761,7 +782,7 @@ export function ModelPicker({
               <>
                 <div className="shrink-0 px-4 pb-2 pt-3.5">
                   <div className="flex items-center justify-between gap-3">
-                    <div className="truncate text-[14px] font-semibold text-ink">{isClaudeAccount(railInstance) ? "Claude" : railInstance.displayName}</div>
+                    <div className="truncate text-[14px] font-semibold text-ink">{signInFamily(railInstance) ? SIGN_IN_FAMILY_LABEL[signInFamily(railInstance)!] : railInstance.displayName}</div>
                     <div className="flex shrink-0 items-center gap-1">
                       <button
                         type="button"
@@ -794,6 +815,9 @@ export function ModelPicker({
                   </div>
                   {isClaudeAccount(railInstance) && claudeAccounts.length > 1 && (
                     <ClaudeAccountSelect accounts={claudeAccounts} selectedId={railInstance.instanceId} onSelect={selectRail} />
+                  )}
+                  {signInFamily(railInstance) === "openai" && openaiAccounts.length > 1 && (
+                    <ClaudeAccountSelect accounts={openaiAccounts} selectedId={railInstance.instanceId} onSelect={selectRail} />
                   )}
                   {railInstance.snapshot.authenticated && railInstance.snapshot.account && (
                     <p className="mt-1 truncate text-[11px] text-ink-secondary" title={[railInstance.snapshot.account.email, railInstance.snapshot.account.organization].filter(Boolean).join(" · ")}>

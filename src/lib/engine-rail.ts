@@ -23,10 +23,24 @@ export function isCustomOnly(instance: { access?: InstanceInfo["access"] } | und
   return instance?.access === "custom";
 }
 
-/** A Claude sign-in (one of possibly several accounts the picker folds into
- * one "Claude" button). Claude on the workspace API key is its own engine. */
+/** Sign-ins the picker folds into one rail button with an account choice:
+ * every Claude account under "Claude", and Codex and the ChatGPT plan (both
+ * the Codex CLI) under "OpenAI". An engine on a pasted API key is never
+ * folded; it sits in its own group. */
+export type SignInFamily = "claude" | "openai";
+
+export function signInFamily(instance: { driverKind: string; access?: InstanceInfo["access"] } | undefined): SignInFamily | undefined {
+  if (!instance || instance.access === "api") return undefined;
+  if (instance.driverKind === "claudeAgent") return "claude";
+  if (instance.driverKind === "codex") return "openai";
+  return undefined;
+}
+
+export const SIGN_IN_FAMILY_LABEL: Record<SignInFamily, string> = { claude: "Claude", openai: "OpenAI" };
+
+/** A Claude sign-in (one of possibly several accounts). */
 export function isClaudeAccount(instance: { driverKind: string; access?: InstanceInfo["access"] } | undefined): boolean {
-  return instance?.driverKind === "claudeAgent" && instance.access !== "api";
+  return signInFamily(instance) === "claude";
 }
 
 /** Rail groups: sign-in plans ("Cloud"), a provider's own pasted key ("API
