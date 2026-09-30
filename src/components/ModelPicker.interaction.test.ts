@@ -188,6 +188,17 @@ describe("ModelPicker with a signed-out or missing Claude", () => {
   });
 });
 
+describe("the way into API keys", () => {
+  it("opens Settings on the API keys section from the picker footer", () => {
+    fixture.instances = [codex];
+    const opened = open(bot("codex", "gpt-5.6"));
+    const entry = opened.nodes.find((node) => node.props["data-model-add-api-keys"]);
+    expect(opened.html).toContain("Add API keys");
+    (entry!.props.onClick as () => void)();
+    expect(fixture.dispatch).toHaveBeenCalledWith({ type: "toggleAppSettings", open: true, section: "connections" });
+  });
+});
+
 describe("the way into local models", () => {
   it.each([["signed in", signedIn], ["signed out", signedOut]])("shows for a %s Claude with no local models found yet, and re-probes when opened", async (_state, make) => {
     fixture.instances = [make()];

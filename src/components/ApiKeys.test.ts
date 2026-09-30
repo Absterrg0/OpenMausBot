@@ -49,6 +49,15 @@ describe("provider key rows", () => {
     expect(render(createElement(ApiKeyRow, { section: "xai", testProvider: "xai" }))).toContain("xAI API key");
   });
 
+  it("saves on paste instead of a Save button, and keeps key effects in view", () => {
+    const anthropic = render(createElement(ApiKeyRow, { section: "anthropic", testProvider: "anthropic" }));
+    expect(anthropic).not.toContain(">Save<");
+    // The login override is on the row, not tucked into the help popover.
+    expect(anthropic).toContain("instead of a Claude login");
+    const openai = render(createElement(ApiKeyRow, { section: "openaiCompat", testProvider: "openaiCompat" }));
+    expect(openai).toContain("Codex doesn&#x27;t use this key");
+  });
+
   it("shows Cloud Pro's included computers as included, not as a saved key the person could clear", () => {
     const withBox = (box: store.ConfigStatus["box"]) => vi.spyOn(store, "useStore").mockReturnValue({
       state: { ...store.initialState, config: { ...store.initialState.config, box } as store.ConfigStatus },

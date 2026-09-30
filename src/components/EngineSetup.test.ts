@@ -187,3 +187,31 @@ describe("server device-code sign-in", () => {
     expect(markup).toContain("npm install");
   });
 });
+
+describe("API-key engine setup", () => {
+  function keyEngine(driverKind: string, snapshot: InstanceInfo["snapshot"]): InstanceInfo {
+    return { ...instance(snapshot), instanceId: driverKind, driverKind, displayName: "Grok (API)", install: { docsUrl: "https://console.x.ai" } };
+  }
+  const render = (engine: InstanceInfo, ogb: Record<string, unknown> = { platform: "darwin" }) => {
+    vi.stubGlobal("window", { ogb });
+    return renderToStaticMarkup(createElement(StoreProvider, null, createElement(EngineSetup, { instance: engine })));
+  };
+
+  it("sends a missing key to Settings → API keys, not to a config file", () => {
+    const html = render(keyEngine("grok", { state: "unavailable", reason: "No xAI API key — open Settings → API keys." }));
+    expect(html).toContain("data-engine-setup-api-key");
+    expect(html).toContain("Grok (API) needs an API key");
+    expect(html).toContain("Open API keys");
+    expect(html).not.toContain("config.json");
+  });
+
+  it("has no button on a remote client, whose settings hide the keys", () => {
+    const html = render(keyEngine("openai-compat", { state: "unavailable" }), { platform: "darwin", remoteClient: { active: true } });
+    expect(html).toContain("on the computer running OpenMausBot");
+    expect(html).not.toContain("Open API keys");
+  });
+
+  it("leaves CLI engines on their install card", () => {
+    expect(render(instance({ state: "unavailable", reason: "`kimi` CLI not found" }))).not.toContain("data-engine-setup-api-key");
+  });
+});

@@ -9381,9 +9381,9 @@ async function startTurn(
         !computerSelectionTurns.has(threadId)
       ) {
         const hint = opts?.automationSource
-          ? "This scheduled run tried to start the VPS computer and could not reach it. Check the VPS connection in App Settings → Connections."
+          ? "This scheduled run tried to start the VPS computer and could not reach it. Check the VPS connection in Settings → API keys."
           : bot.autoStartVps
-            ? "Check the VPS connection in App Settings → Connections."
+            ? "Check the VPS connection in Settings → API keys."
             : "Open Computer and enable Start VPS automatically, or choose Cloud to start it manually.";
         throw new Error(`${autoVpsProblem}. ${hint}`);
       }

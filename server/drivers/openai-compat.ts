@@ -73,16 +73,7 @@ export const OpenAICompatDriver: ProviderDriver<OpenAICompatConfig> = {
   models: DEFAULT_MODELS,
   install: {
     docsUrl: "https://openrouter.ai/keys",
-    signInCommand:
-      "add {\"openaiCompat\":{\"key\":\"sk-or-v1-…\"}} to ~/.openmausbot/config.json (or set OPENAI_COMPAT_API_KEY)",
-    command: {
-      darwin:
-        "Get a free key at https://openrouter.ai/keys (or https://console.groq.com) then add it to ~/.openmausbot/config.json under openaiCompat.key",
-      linux:
-        "Get a free key at https://openrouter.ai/keys (or https://console.groq.com) then add it to ~/.openmausbot/config.json under openaiCompat.key",
-      win32:
-        "Get a free key at https://openrouter.ai/keys (or https://console.groq.com) then add it to %USERPROFILE%\\.openmausbot\\config.json under openaiCompat.key",
-    },
+    signInCommand: "Save an OpenAI-compatible API key in Settings → API keys, or set OPENAI_COMPAT_API_KEY on the server.",
   },
   decodeConfig,
   defaultConfig: () => decodeConfig({}),
@@ -160,8 +151,8 @@ export const OpenAICompatDriver: ProviderDriver<OpenAICompatConfig> = {
           : {}),
       }),
       httpErrorLabel: "upstream",
-      missingKeyError: `no API key — set ${config.apiKeyEnv} or add it to the instance config`,
-      unavailableReason: `no API key — set ${config.apiKeyEnv} or add it to the instance config`,
+      missingKeyError: `Save an API key in Settings → API keys, or set ${config.apiKeyEnv}.`,
+      unavailableReason: "No API key — open Settings → API keys.",
       timeoutMs: idleTimeoutMs(),
       reasoning: true,
       billing: "metered",

@@ -200,7 +200,7 @@ function claudeEnvironment(
   // env-injected at boot); none of them are this CLI's to see.
   stripWorkspaceCredentialEnv(env);
   const applied = applyClaudeInject(env, model);
-  // A key set on purpose for this workspace (Settings → Connections, carried
+  // A key set on purpose for this workspace (Settings → API keys, carried
   // in the instance environment) stays. One riding along in the parent's
   // env never does: it would flip a subscription login to pay-as-you-go.
   if (!applied.injected && !instanceEnvironment.ANTHROPIC_API_KEY) delete env.ANTHROPIC_API_KEY;

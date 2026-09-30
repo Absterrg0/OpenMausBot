@@ -2,7 +2,7 @@
 // errors. The command has one inline copy action and one primary next step;
 // unusable model lists stay out of the way until the engine is ready.
 import { useEffect, useState } from "react";
-import { AlertTriangle, Check, Copy, Download, ExternalLink, Loader2, LogIn, TerminalSquare } from "lucide-react";
+import { AlertTriangle, Check, Copy, Download, ExternalLink, KeyRound, Loader2, LogIn, TerminalSquare } from "lucide-react";
 import { api, type EngineInstall, type InstanceInfo, useStore } from "@/state/store";
 import { cn } from "@/lib/cn";
 import { t } from "@/lib/i18n";
@@ -385,6 +385,44 @@ function ManagedEngineSetup({ instance, signInOnly }: { instance: InstanceInfo; 
   );
 }
 
+/** Engines that run on a pasted API key rather than an installed CLI. Their
+ * setup is the key row in Settings → API keys, never a terminal command. */
+const API_KEY_ENGINES = new Set(["openai-compat", "grok", "mistral"]);
+
+export function isApiKeyEngine(instance: InstanceInfo | undefined): boolean {
+  return Boolean(instance && API_KEY_ENGINES.has(instance.driverKind) && !instance.managed);
+}
+
+function ApiKeyEngineSetup({ instance, className, unframed }: { instance: InstanceInfo; className?: string; unframed: boolean }) {
+  const { dispatch } = useStore();
+  const remote = window.ogb?.remoteClient?.active === true;
+  return (
+    <div data-engine-setup-api-key className={cn(!unframed && "rounded-xl border border-hairline/40 bg-control/30 p-3", className)}>
+      <div className="flex items-start gap-2.5">
+        <span className="mt-0.5 flex size-7 shrink-0 items-center justify-center rounded-lg bg-inset text-ink-secondary">
+          <KeyRound size={14} />
+        </span>
+        <div className="min-w-0">
+          <div className="text-[13px] font-semibold text-ink">{t("engineSetup.apiKey.title", { name: instance.displayName })}</div>
+          <p className="mt-0.5 text-[12px] leading-relaxed text-ink-secondary">
+            {remote ? t("engineSetup.apiKey.remote") : t("engineSetup.apiKey.description")}
+          </p>
+        </div>
+      </div>
+      {!remote && (
+        <button
+          type="button"
+          onClick={() => dispatch({ type: "toggleAppSettings", open: true, section: "connections" })}
+          className="mt-3 flex items-center gap-1.5 rounded-lg bg-raised px-3 py-1.5 text-[12.5px] font-medium text-ink hover:bg-raised-hover"
+        >
+          <KeyRound size={13} aria-hidden="true" />
+          {t("engineSetup.apiKey.open")}
+        </button>
+      )}
+    </div>
+  );
+}
+
 export function EngineSetup({
   instance,
   className,
@@ -432,6 +470,10 @@ export function EngineSetup({
       : signInCommand
         ? t("engineSetup.installDescSignIn")
         : t("engineSetup.installDesc"));
+
+  if (isApiKeyEngine(instance) && (instance.snapshot.state !== "available" || instance.snapshot.authenticated === false)) {
+    return <ApiKeyEngineSetup instance={instance} className={className} unframed={unframed} />;
+  }
 
   // Some engines are configured elsewhere (for example, a cloud computer
   // token) and intentionally have no install descriptor.

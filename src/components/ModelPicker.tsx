@@ -7,7 +7,7 @@
 // the person making it, so the chat header and the settings dialog render the
 // same row and write through the same action.
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
-import { Check, ChevronDown, ChevronLeft, ChevronRight, Loader2, RefreshCw, Search } from "lucide-react";
+import { Check, ChevronDown, ChevronLeft, ChevronRight, KeyRound, Loader2, RefreshCw, Search } from "lucide-react";
 import { useStore, currentTaskBot, type Bot, type InstanceInfo, type ModelSelection } from "@/state/store";
 import type { EffortLevel } from "../../shared/wire";
 import type { ModelVariantOption } from "../../shared/runtime-events";
@@ -959,12 +959,25 @@ export function ModelPicker({
             ) : (
               <div className="px-4 py-5 text-[13px] text-ink-secondary">{t("model.noProviders")}</div>
             )}
-            <button type="button" onClick={() => {
-              setOpen(false);
-              dispatch({ type: "toggleAppSettings", open: true, section: "engines" });
-            }} className="shrink-0 border-t border-hairline/40 px-4 py-2 text-left text-[12px] text-ink-secondary hover:bg-control/60 hover:text-ink">
-              {t("settings.engines.title")}
-            </button>
+            <div className="flex shrink-0 border-t border-hairline/40">
+              <button type="button" onClick={() => {
+                setOpen(false);
+                dispatch({ type: "toggleAppSettings", open: true, section: "engines" });
+              }} className="flex-1 px-4 py-2 text-left text-[12px] text-ink-secondary hover:bg-control/60 hover:text-ink">
+                {t("settings.engines.title")}
+              </button>
+              {/* A remote client's settings hide the keys section, so the
+                  shortcut would land somewhere else. */}
+              {window.ogb?.remoteClient?.active !== true && (
+                <button type="button" data-model-add-api-keys onClick={() => {
+                  setOpen(false);
+                  dispatch({ type: "toggleAppSettings", open: true, section: "connections" });
+                }} className="flex shrink-0 items-center gap-1.5 px-4 py-2 text-[12px] text-ink-secondary hover:bg-control/60 hover:text-ink">
+                  <KeyRound size={12} aria-hidden="true" />
+                  {t("model.addApiKeys")}
+                </button>
+              )}
+            </div>
           </div>
         </div>
       )}
