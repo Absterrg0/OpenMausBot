@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { allowsTool, canUseMcpServer, parseToolScope } from "./tool-scope.ts";
+import { allowsTool, canUseMcpServer, parseToolScope, toolScopeWidens } from "./tool-scope.ts";
 
 describe("per-bot tool selection", () => {
   it("keeps legacy tools available when no selection exists", () => {
@@ -86,5 +86,18 @@ describe("per-bot tool selection", () => {
     expect(canUseMcpServer({ allow: ["mcp:agents:unknown"] }, "agents", ["ask_bot", "list_bots"])).toBe(false);
     expect(canUseMcpServer({ allow: ["mcp:agents:ask_bot"] }, "agents", ["ask_bot", "list_bots"])).toBe(true);
     expect(canUseMcpServer(undefined, "agents", [])).toBe(false);
+  });
+
+  it("detects added authority without mistaking narrower or equivalent selections for widening", () => {
+    expect(toolScopeWidens({ allow: ["native:read"] }, { allow: ["native:edit", "native:read"] })).toBe(true);
+    expect(toolScopeWidens({ allow: ["native:*"] }, { allow: ["native:read"] })).toBe(false);
+    expect(toolScopeWidens({ allow: ["native:read", "native:edit"] }, { allow: ["native:edit", "native:read"] })).toBe(false);
+    expect(toolScopeWidens({ allow: ["mcp:notes:read"] }, { allow: ["mcp:notes:*"] })).toBe(true);
+    expect(toolScopeWidens({ allow: ["mcp:notes:*"] }, { allow: ["mcp:notes:read"] })).toBe(false);
+    expect(toolScopeWidens({ deny: ["mcp:notes:*"] }, { deny: ["mcp:notes:write"] })).toBe(true);
+    expect(toolScopeWidens(undefined, { deny: ["native:bash"] })).toBe(false);
+    expect(toolScopeWidens({ allow: ["native:read"] }, undefined)).toBe(true);
+    expect(toolScopeWidens({ allow: null }, { allow: [] })).toBe(false);
+    expect(toolScopeWidens({ allow: null }, { allow: ["native:read"] })).toBe(true);
   });
 });

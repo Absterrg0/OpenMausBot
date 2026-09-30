@@ -1,7 +1,7 @@
-export interface ToolScope {
+export type ToolScope = {
   allow?: string[];
   deny?: string[];
-}
+};
 
 export type ToolIdentity =
   | { kind: "native"; name: string }
@@ -91,4 +91,35 @@ export function canUseMcpServer(scope: unknown, server: string, names?: readonly
     return selected?.kind === "mcp" && selected.server === server
       && (selected.name === "*" || permits(parsed.scope, selected));
   });
+}
+
+/** Compare the selector partitions, including a tool/server outside all exact names. */
+export function toolScopeWidens(previous: unknown, next: unknown): boolean {
+  const before = parseToolScope(previous);
+  const after = parseToolScope(next);
+  if (!after.ok) return false;
+  const namespaces = new Map<string, Set<string>>([["native", new Set()]]);
+  const scopes = [before.ok ? before.scope : undefined, after.scope];
+  for (const scope of scopes) {
+    for (const selector of [...(scope?.allow ?? []), ...(scope?.deny ?? [])]) {
+      const tool = selectorIdentity(selector)!;
+      const namespace = tool.kind === "native" ? "native" : `mcp:${tool.server}`;
+      if (!namespaces.has(namespace)) namespaces.set(namespace, new Set());
+      if (tool.name !== "*") namespaces.get(namespace)!.add(tool.name);
+    }
+  }
+  let server = "unlisted";
+  for (let i = 0; namespaces.has(`mcp:${server}`); i++) server = `unlisted${i}`;
+  namespaces.set(`mcp:${server}`, new Set());
+  for (const [namespace, names] of namespaces) {
+    let other = "__unlisted_tool__";
+    for (let i = 0; names.has(other); i++) other = `__unlisted_tool_${i}__`;
+    names.add(other);
+    for (const name of names) {
+      const tool: ToolIdentity = namespace === "native" ? { kind: "native", name }
+        : { kind: "mcp", server: namespace.slice(4), name };
+      if (permits(after.scope, tool) && (!before.ok || !permits(before.scope, tool))) return true;
+    }
+  }
+  return false;
 }

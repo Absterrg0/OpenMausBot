@@ -7,6 +7,7 @@ import { chmodSync, existsSync, readFileSync, mkdirSync, rmSync, statSync, unlin
 import { join } from "node:path";
 
 import { writeFileAtomic } from "./atomic.ts";
+import { parseToolScope } from "../shared/tool-scope.ts";
 import { ensureSections, readSections, changeEmptySection } from "./section-context.ts";
 import type { TeamComputers } from "./team-computers.ts";
 import { removeBotFolder, soulFile, soulHash, writeSoulMirror } from "./bot-folder.ts";
@@ -1929,6 +1930,11 @@ export class Store {
       const parsed = parseConnectorTools(patch.connectorTools);
       if (!parsed.ok) throw new Error(parsed.error);
       patch = { ...patch, connectorTools: parsed.grants };
+    }
+    if (Object.hasOwn(patch, "toolScope")) {
+      const parsed = parseToolScope(patch.toolScope);
+      if (!parsed.ok) throw new Error(parsed.error);
+      patch = { ...patch, toolScope: parsed.scope };
     }
     // Runtime revocations must become effective in memory even when disk is
     // unavailable. Profile edits use the separate atomic path below.

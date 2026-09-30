@@ -19,12 +19,34 @@ import { Store, toWireTask, type BotRecord } from "./store.ts";
 import type { TeamSetupRequest } from "../shared/team-setup.ts";
 import { SECTION_CONTEXTS_FILE, readSectionContext, writeSectionContext } from "./section-context.ts";
 import { TeamComputers } from "./team-computers.ts";
+import { allowsTool } from "../shared/tool-scope.ts";
 
 const selection = (): ModelSelection => ({ instanceId: "claude", model: "claude-sonnet-5" });
 
 describe("Store", () => {
   beforeEach(() => {
     rmSync(DATA_DIR, { recursive: true, force: true });
+  });
+
+  it("retains tool selection across restarts and distinguishes clearing from no tools", () => {
+    const store = new Store(selection);
+    const bot = store.createBot({ name: "Scoped drafter" });
+    store.patchBot(bot.id, { toolScope: { allow: [], deny: ["native:bash", "native:bash"] } } as never);
+    expect(new Store(selection).bot(bot.id)).toMatchObject({ toolScope: { allow: [], deny: ["native:bash"] } });
+    expect(() => store.patchBot(bot.id, { toolScope: { allow: null } } as never)).toThrow(/tool selection/i);
+    store.patchBot(bot.id, { toolScope: undefined } as never);
+    expect(new Store(selection).bot(bot.id)).not.toHaveProperty("toolScope");
+  });
+
+  it("retains corrupt persisted tool selection as denied access instead of inheriting all tools", () => {
+    const store = new Store(selection);
+    const bot = store.createBot({ name: "Corrupt selection fixture" });
+    const bots = JSON.parse(readFileSync(join(DATA_DIR, "bots.json"), "utf8"));
+    bots[0].toolScope = { allow: "all" };
+    writeFileSync(join(DATA_DIR, "bots.json"), JSON.stringify(bots));
+    const restored = new Store(selection).bot(bot.id)!;
+    expect(restored).toHaveProperty("toolScope", { allow: "all" });
+    expect(allowsTool((restored as unknown as { toolScope: unknown }).toolScope, { kind: "native", name: "read" })).toBe(false);
   });
 
   it("renames populated teams without changing members, conversations, grants or computer identity", () => {

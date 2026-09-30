@@ -9,6 +9,7 @@
  * fails compilation until it is either declared here or explicitly listed
  * as server-private. */
 import type { ApprovalMode } from "./approval-mode.ts";
+import type { ToolScope } from "./tool-scope.ts";
 import type { CommandAllowlistCandidate } from "./command-allowlist.ts";
 import type { TurnDigest } from "./digest.ts";
 import type { BotAvatarCrop } from "./bot-avatar.ts";
@@ -319,6 +320,8 @@ export interface WireBot {
   memoryUpkeep?: boolean;
   /** Which of the app-wide MCP servers this bot mounts, by name. */
   mcpServers?: string[];
+  /** Owner-selected original tool identities. An empty allowlist permits none. */
+  toolScope?: ToolScope;
   /** Id of a named browser profile; absent = the bot's own private session. */
   browserProfile?: string;
   /** Public, package-authored playbooks installed for this bot. */

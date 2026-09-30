@@ -1550,7 +1550,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
       // bounded and are deliberately left alone.
       const budget = resultBudget(turnEnvironment);
       for (const name of botOwned) {
-        const gated = gateServer({ name, server: mcpServers[name], threadId, budget, nodeEnv: NODE_ENV_FLAG });
+        const gated = gateServer({ name, server: mcpServers[name], threadId, budget, nodeEnv: NODE_ENV_FLAG, toolScope: turn.toolScope });
         if (gated) mcpServers[name] = gated;
       }
       // Keep ask_user available even in Full access. Native bypass skips

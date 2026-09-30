@@ -92,11 +92,11 @@
 
 **Consumes:** Task 1 `ToolScope` and parser. **Produces:** owner-only PATCH field and validated scope on direct/group/queued/resumed turns.
 
-- [ ] Add restart/persistence tests, explicit clear versus empty allow, corrupt persisted scope, invalid PATCH rejection, bot proposal rejection, busy-save refusal, trusted widening checks, safe duplication/defaults/backup round trips, and literal scope receipt from fake direct and group drivers.
-- [ ] Run the new API tests and relevant store/defaults/backup tests; expect field loss or invalid settings acceptance on current code.
-- [ ] Preserve malformed-present restrictions as a failed setup or deny-all state, never an absent field. Wire both sendTurn sites and authenticated settings authority checks. Keep proposal and import authority boundaries intact.
-- [ ] Re-run focused API and persistence tests; expect pass.
-- [ ] Commit persistence and dispatch.
+- [x] Add restart/persistence tests, explicit clear versus empty allow, corrupt persisted scope, invalid PATCH rejection, bot proposal rejection, busy-save refusal, trusted widening checks, safe defaults/backup round trips, and literal scope receipt from fake direct and group drivers. Client duplication is verified with the real owner settings workflow in Task 8.
+- [x] Run the new API tests and relevant store/defaults/backup tests; expect field loss or invalid settings acceptance on current code.
+- [x] Preserve malformed-present restrictions as a failed setup or deny-all state, never an absent field. Wire both sendTurn sites and authenticated settings authority checks. Keep proposal and import authority boundaries intact.
+- [x] Re-run focused API and persistence tests; expect pass.
+- [x] Commit persistence and dispatch.
 
 ### Task 5: Shared API executor
 
@@ -142,7 +142,7 @@
 **Consumes:** Wire scope and settings PATCH. **Produces:** All/custom selection, Allow/Exclude lists, explicit no-tools status and actionable errors.
 
 - [ ] Capture the before screenshot from the real isolated settings fixture.
-- [ ] Add behavior tests for editing/saving/clearing, explicit empty allow, invalid input, unsupported engine status, busy/errors and switching bots during pending saves.
+- [ ] Add behavior tests for editing/saving/clearing, explicit empty allow, invalid input, unsupported engine status, busy/errors, switching bots during pending saves, and duplication retaining restrictions from the creation request onward.
 - [ ] Run focused settings/client tests; expect missing controls or lost fields.
 - [ ] Implement the small advanced Access section, reuse custom-server selection and save/error patterns, add localized copy and concise examples.
 - [ ] Run focused tests and locale generation/check; capture after screenshots and verify persisted state in the real fixture.
