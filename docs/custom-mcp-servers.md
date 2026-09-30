@@ -102,11 +102,12 @@ every compatible bot can search the web on its next task — `you-search` result
 arrive like any other tool result, through the approval cards.
 
 If the free limits are too small, [you.com/platform](https://you.com/platform)
-issues an API key with a higher quota and extra tools (`you-contents` for
-full-page extraction, `you-research` for multi-step reports). Add the same
-address without `?profile=free` and one header line,
-`Authorization: Bearer <your key>` — the key is kept write-only like every
-other header value.
+issues an API key with a higher quota and the `you-contents` tool for
+full-page extraction. Add the same address without `?profile=free` and one
+header line, `Authorization: Bearer <your key>` — the key is kept write-only
+like every other header value. `you-research` (multi-step cited reports) is
+served by its own dedicated server, `https://api.you.com/mcp/research` — add
+it the same way, with the same header.
 
 ### Import and choose tools per bot
 
