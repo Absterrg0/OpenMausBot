@@ -9,14 +9,15 @@ import { useMenuMotion } from "./MenuMotion";
 import { t } from "@/lib/i18n";
 import type { LocaleKey } from "@/locales";
 
-export type ConfigSection = "composio" | "box" | "opencodeGo" | "anthropic" | "openaiCompat" | "xai" | "mistral";
+export type ConfigSection = "composio" | "box" | "opencodeGo" | "anthropic" | "openai" | "openrouter" | "openaiCompat" | "xai" | "mistral";
 /** Sections whose key can be tried against the provider from the server. */
-export type TestableProvider = "anthropic" | "openaiCompat" | "xai" | "mistral";
+export type TestableProvider = "anthropic" | "openai" | "openrouter" | "openaiCompat" | "xai" | "mistral";
 
 const SECTIONS: Record<
   ConfigSection,
   {
-    body: (value: string) => unknown;
+    /** `firstKey`: nothing was saved before this value. */
+    body: (value: string, firstKey: boolean) => unknown;
     /** A key is saved. */
     flag: (config: ConfigStatus) => boolean;
     /** Works with no saved key: Cloud Pro includes it. */
@@ -33,7 +34,14 @@ const SECTIONS: Record<
     included: (c) => c.box.included === true,
   },
   opencodeGo: { body: (v) => ({ opencodeGo: { apiKey: v } }), flag: (c) => c.opencodeGo?.configured ?? false },
-  anthropic: { body: (v) => ({ anthropic: { key: v } }), flag: (c) => c.anthropic?.configured ?? false },
+  // A key first saved here runs only "Claude (API key)"; signed-in Claude
+  // bots stay on their plan unless the person turns that on below the row.
+  anthropic: {
+    body: (v, firstKey) => ({ anthropic: { key: v, ...(firstKey && v ? { everyClaudeBot: false } : {}) } }),
+    flag: (c) => c.anthropic?.configured ?? false,
+  },
+  openai: { body: (v) => ({ openai: { key: v } }), flag: (c) => c.openai?.configured ?? false },
+  openrouter: { body: (v) => ({ openrouter: { key: v } }), flag: (c) => c.openrouter?.configured ?? false },
   openaiCompat: { body: (v) => ({ openaiCompat: { key: v } }), flag: (c) => c.openaiCompat?.configured ?? false },
   mistral: { body: (v) => ({ mistral: { key: v } }), flag: (c) => c.mistral?.configured ?? false },
   xai: { body: (v) => ({ xai: { key: v } }), flag: (c) => c.xai?.configured ?? false },
@@ -97,16 +105,31 @@ const CREDENTIALS: Record<
     href: "https://console.anthropic.com/settings/keys",
     linkLabelKey: "keys.anthropic.link",
     optional: true,
-    warningKey: "keys.anthropic.warning",
+  },
+  openai: {
+    labelKey: "keys.openai.label",
+    placeholder: "sk-…",
+    descriptionKey: "keys.openai.desc",
+    href: "https://platform.openai.com/api-keys",
+    linkLabelKey: "keys.openai.link",
+    optional: true,
+    noteKey: "keys.openai.note",
+  },
+  openrouter: {
+    labelKey: "keys.openrouter.label",
+    placeholder: "sk-or-v1-…",
+    descriptionKey: "keys.openrouter.desc",
+    href: "https://openrouter.ai/keys",
+    linkLabelKey: "keys.openrouter.link",
+    optional: true,
   },
   openaiCompat: {
     labelKey: "keys.openaiCompat.label",
-    placeholder: "sk-or-v1-…",
+    placeholderKey: "keys.openaiCompat.placeholder",
     descriptionKey: "keys.openaiCompat.desc",
-    href: "https://openrouter.ai/keys",
+    href: "https://platform.openai.com/docs/api-reference",
     linkLabelKey: "keys.openaiCompat.link",
     optional: true,
-    noteKey: "keys.openaiCompat.note",
   },
   mistral: {
     labelKey: "keys.mistral.label",
@@ -269,7 +292,7 @@ export function ApiKeyRow({
       ? window.ogb.setCredential(electronSlot, next)
       : api("/api/config", {
           method: "PUT",
-          body: JSON.stringify(SECTIONS[section].body(next)),
+          body: JSON.stringify(SECTIONS[section].body(next, !configured)),
         });
     request
       .then((status: ConfigStatus) => {
@@ -354,6 +377,45 @@ export function ApiKeyRow({
       {credential.note && <p className="mt-1.5 text-[11.5px] leading-[1.4] text-ink-secondary">{credential.note}</p>}
       {error && <div className="mt-1 text-[12px] text-danger">{error}</div>}
       {verdict && <div role="status" className="mt-1 text-[12px] text-ink-secondary">{verdict}</div>}
+    </div>
+  );
+}
+
+/** Whether the Anthropic key also runs signed-in Claude bots. Off, only
+ * "Claude (API key)" bills per token; on, every Claude bot does. */
+export function AnthropicEveryClaudeBot() {
+  const { state, dispatch } = useStore();
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  if (!state.config?.anthropic?.configured) return null;
+  const on = state.config.anthropic.everyClaudeBot === true;
+  const toggle = () => {
+    if (saving) return;
+    setSaving(true);
+    setError(null);
+    api("/api/config", { method: "PUT", body: JSON.stringify({ anthropic: { everyClaudeBot: !on } }) })
+      .then((status: ConfigStatus) => dispatch({ type: "configStatus", config: status }))
+      .catch((e) => setError(e.message))
+      .finally(() => setSaving(false));
+  };
+  return (
+    <div data-anthropic-every-claude-bot className="-mt-2">
+      <label className="flex cursor-pointer items-start gap-2 text-[12.5px] text-ink">
+        <input type="checkbox" checked={on} disabled={saving} onChange={toggle} className="mt-0.5 accent-accent" />
+        <span>
+          {t("keys.anthropic.everyBot")}
+          <span className="block text-[11.5px] leading-[1.4] text-ink-secondary">
+            {on ? t("keys.anthropic.everyBotOn") : t("keys.anthropic.everyBotOff")}
+          </span>
+        </span>
+      </label>
+      {on && (
+        <div className="mt-1.5 flex gap-1.5 text-[11.5px] leading-[1.4] text-warning">
+          <TriangleAlert size={13} className="mt-px shrink-0" aria-hidden="true" />
+          <span>{t("keys.anthropic.warning")}</span>
+        </div>
+      )}
+      {error && <div className="mt-1 text-[12px] text-danger">{error}</div>}
     </div>
   );
 }
@@ -471,7 +533,7 @@ export function OpenAiCompatUrl() {
           onChange={(e) => setValue(e.target.value)}
           onBlur={save}
           onKeyDown={(e) => e.key === "Enter" && save()}
-          placeholder="https://openrouter.ai/api/v1"
+          placeholder="https://api.groq.com/openai/v1"
           aria-label={t("keys.openaiCompat.url")}
           spellCheck={false}
           className="w-full rounded-lg border border-hairline/40 bg-inset px-3 py-2 pr-8 font-mono text-[12px] text-ink placeholder:text-ink-secondary focus:outline-none"

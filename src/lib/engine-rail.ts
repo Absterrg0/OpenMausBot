@@ -1,6 +1,6 @@
-// Split engines into Cloud (first-party catalog + Custom) and Local
-// (no catalog — inject a model). A missing `access` is Cloud so older
-// payloads stay in the top group. VibeCoder would join Local later.
+// Split engines into Cloud (sign-in plans), API keys (a provider's own key)
+// and Local (no catalog — inject a model). A missing `access` is Cloud so
+// older payloads stay in the top group.
 import type { InstanceInfo } from "@/state/store";
 
 /** The picker lists engines someone can use or finish setting up; the full
@@ -23,15 +23,27 @@ export function isCustomOnly(instance: { access?: InstanceInfo["access"] } | und
   return instance?.access === "custom";
 }
 
+/** A Claude sign-in (one of possibly several accounts the picker folds into
+ * one "Claude" button). Claude on the workspace API key is its own engine. */
+export function isClaudeAccount(instance: { driverKind: string; access?: InstanceInfo["access"] } | undefined): boolean {
+  return instance?.driverKind === "claudeAgent" && instance.access !== "api";
+}
+
+/** Rail groups: sign-in plans ("Cloud"), a provider's own pasted key ("API
+ * keys"), and engines with no catalog of their own ("Local"). */
 export function splitEngineRail<T>(instances: readonly T[]): {
   subscription: T[];
+  api: T[];
   custom: T[];
 } {
   const subscription: T[] = [];
+  const api: T[] = [];
   const custom: T[] = [];
   for (const instance of instances) {
-    if (isCustomOnly(instance as { access?: InstanceInfo["access"] })) custom.push(instance);
+    const access = (instance as { access?: InstanceInfo["access"] }).access;
+    if (access === "custom") custom.push(instance);
+    else if (access === "api") api.push(instance);
     else subscription.push(instance);
   }
-  return { subscription, custom };
+  return { subscription, api, custom };
 }

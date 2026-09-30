@@ -190,7 +190,7 @@ describe("server device-code sign-in", () => {
 
 describe("API-key engine setup", () => {
   function keyEngine(driverKind: string, snapshot: InstanceInfo["snapshot"]): InstanceInfo {
-    return { ...instance(snapshot), instanceId: driverKind, driverKind, displayName: "Grok (API)", install: { docsUrl: "https://console.x.ai" } };
+    return { ...instance(snapshot), instanceId: driverKind, driverKind, displayName: "Grok (API)", access: "api", install: { docsUrl: "https://console.x.ai" } };
   }
   const render = (engine: InstanceInfo, ogb: Record<string, unknown> = { platform: "darwin" }) => {
     vi.stubGlobal("window", { ogb });

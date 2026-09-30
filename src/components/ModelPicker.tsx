@@ -12,7 +12,7 @@ import { useStore, currentTaskBot, type Bot, type InstanceInfo, type ModelSelect
 import type { EffortLevel } from "../../shared/wire";
 import type { ModelVariantOption } from "../../shared/runtime-events";
 import { filterCustomModels, partitionCustomModels, suggestedModels } from "@/lib/custom-models";
-import { configuredModelInstances, isCustomOnly, splitEngineRail } from "@/lib/engine-rail";
+import { configuredModelInstances, isClaudeAccount, isCustomOnly, splitEngineRail } from "@/lib/engine-rail";
 import { InstanceProviderMark } from "./ProviderIcons";
 import { EngineSetup, EngineUpdateNotice, needsCli, needsSignIn } from "./EngineSetup";
 import { EngineGroupLabel } from "./EngineGroupLabel";
@@ -336,14 +336,14 @@ export function ModelEngineRail({ instances, selectedInstance, claudeInstance, o
   claudeInstance?: InstanceInfo;
   onSelect: (instance: InstanceInfo) => void;
 }) {
-  const firstClaude = instances.find((instance) => instance.driverKind === "claudeAgent" && instance.claudeAccount?.isDefault)
-    ?? instances.find((instance) => instance.driverKind === "claudeAgent");
-  const providers = instances.filter((instance) => instance.driverKind !== "claudeAgent" || instance === firstClaude);
-  const { subscription, custom: local } = splitEngineRail(providers);
+  const firstClaude = instances.find((instance) => isClaudeAccount(instance) && instance.claudeAccount?.isDefault)
+    ?? instances.find(isClaudeAccount);
+  const providers = instances.filter((instance) => !isClaudeAccount(instance) || instance === firstClaude);
+  const { subscription, api, custom: local } = splitEngineRail(providers);
   const railButton = (instance: InstanceInfo) => {
-    const claude = instance.driverKind === "claudeAgent";
+    const claude = isClaudeAccount(instance);
     const target = claude ? claudeInstance ?? instance : instance;
-    const selected = claude ? selectedInstance?.driverKind === "claudeAgent" : instance.instanceId === selectedInstance?.instanceId;
+    const selected = claude ? isClaudeAccount(selectedInstance) : instance.instanceId === selectedInstance?.instanceId;
     const label = claude ? "Claude" : instance.displayName;
     const attention = needsCli(target) || needsSignIn(target) || Boolean(target.snapshot.update);
     const managedBy = target.policy ? t("policy.managedBy", { organization: target.policy.organizationName }) : undefined;
@@ -364,9 +364,11 @@ export function ModelEngineRail({ instances, selectedInstance, claudeInstance, o
   };
   return (
     <div className="flex w-14 shrink-0 flex-col gap-1 overflow-y-auto border-r border-hairline/40 bg-panel p-2">
-      {subscription.length > 0 && <EngineGroupLabel className="px-0 pb-0.5 pt-0.5 text-center text-[9px]">Cloud</EngineGroupLabel>}
+      {subscription.length > 0 && <EngineGroupLabel className="px-0 pb-0.5 pt-0.5 text-center text-[9px]">{t("model.rail.cloud")}</EngineGroupLabel>}
       {subscription.map(railButton)}
-      {local.length > 0 && <EngineGroupLabel className="px-0 pb-0.5 pt-2 text-center text-[9px]">Local</EngineGroupLabel>}
+      {api.length > 0 && <EngineGroupLabel className={cn("px-0 pb-0.5 text-center text-[9px] leading-tight", subscription.length > 0 ? "pt-2" : "pt-0.5")}>{t("model.rail.apiKeys")}</EngineGroupLabel>}
+      {api.map(railButton)}
+      {local.length > 0 && <EngineGroupLabel className="px-0 pb-0.5 pt-2 text-center text-[9px]">{t("model.rail.local")}</EngineGroupLabel>}
       {local.map(railButton)}
     </div>
   );
@@ -448,9 +450,9 @@ export function ModelPicker({
     active?.models.options.find((option) => option.id === selection.model)?.variants?.find((option) => option.id === selection.variant)
       ?? { id: selection.variant, label: selection.variant },
   );
-  const claudeAccounts = pickerInstances.filter((instance) => instance.driverKind === "claudeAgent");
-  const multipleClaudeAccounts = state.instances.filter((instance) => instance.driverKind === "claudeAgent").length > 1;
-  const showActiveAccount = (multipleClaudeAccounts && active?.driverKind === "claudeAgent") || Boolean(active?.snapshot.chatgptPlan);
+  const claudeAccounts = pickerInstances.filter(isClaudeAccount);
+  const multipleClaudeAccounts = state.instances.filter(isClaudeAccount).length > 1;
+  const showActiveAccount = (multipleClaudeAccounts && isClaudeAccount(active)) || Boolean(active?.snapshot.chatgptPlan);
   const claudeRailInstance = claudeAccounts.find((instance) => instance.instanceId === lastClaudeIdRef.current)
     ?? claudeAccounts.find((instance) => instance.instanceId === selection.instanceId) ?? claudeAccounts[0];
   const railInstance =
@@ -554,7 +556,7 @@ export function ModelPicker({
   };
 
   const selectRail = (instance: InstanceInfo) => {
-    if (instance.driverKind === "claudeAgent") lastClaudeIdRef.current = instance.instanceId;
+    if (isClaudeAccount(instance)) lastClaudeIdRef.current = instance.instanceId;
     setRailId(instance.instanceId);
     const official = instance.models.options.filter((option) => !option.custom);
     setPane(isCustomOnly(instance) || (official.length === 0 && !instance.snapshot.chatgptPlan) ? "custom" : "main");
@@ -626,7 +628,7 @@ export function ModelPicker({
       disabled={Boolean(bot.busy)}
       onClick={() => {
         if (bot.busy) return;
-        if (active?.driverKind === "claudeAgent") lastClaudeIdRef.current = active.instanceId;
+        if (active && isClaudeAccount(active)) lastClaudeIdRef.current = active.instanceId;
         const initial = pickerInstances.find((instance) => instance.instanceId === selection.instanceId) ?? pickerInstances[0];
         setRailId(initial?.instanceId ?? null);
         setOpen((wasOpen) => {
@@ -738,7 +740,7 @@ export function ModelPicker({
               <>
                 <div className="shrink-0 px-4 pb-2 pt-3.5">
                   <div className="flex items-center justify-between gap-3">
-                    <div className="truncate text-[14px] font-semibold text-ink">{railInstance.driverKind === "claudeAgent" ? "Claude" : railInstance.displayName}</div>
+                    <div className="truncate text-[14px] font-semibold text-ink">{isClaudeAccount(railInstance) ? "Claude" : railInstance.displayName}</div>
                     <div className="flex shrink-0 items-center gap-1">
                       <button
                         type="button"
@@ -769,7 +771,7 @@ export function ModelPicker({
                       </span>
                     </div>
                   </div>
-                  {railInstance.driverKind === "claudeAgent" && claudeAccounts.length > 1 && (
+                  {isClaudeAccount(railInstance) && claudeAccounts.length > 1 && (
                     <ClaudeAccountSelect accounts={claudeAccounts} selectedId={railInstance.instanceId} onSelect={selectRail} />
                   )}
                   {railInstance.snapshot.authenticated && railInstance.snapshot.account && (

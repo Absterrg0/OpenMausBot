@@ -86,6 +86,9 @@ export interface InstanceConfig {
   icon?: ProviderIcon;
   environment?: Record<string, string>;
   enabled?: boolean;
+  /** Picker group for this instance, over its driver's default: an
+   * `openai-compat` instance on a provider's own key is "api", not "custom". */
+  access?: EngineAccess;
   config?: unknown;
 }
 

@@ -385,12 +385,12 @@ function ManagedEngineSetup({ instance, signInOnly }: { instance: InstanceInfo; 
   );
 }
 
-/** Engines that run on a pasted API key rather than an installed CLI. Their
- * setup is the key row in Settings → API keys, never a terminal command. */
-const API_KEY_ENGINES = new Set(["openai-compat", "grok", "mistral"]);
-
+/** Engines that run on a pasted API key. Their setup is the key row in
+ * Settings → API keys, never a terminal command or a sign-in. Claude on the
+ * workspace key still needs its CLI first, which the install card covers. */
 export function isApiKeyEngine(instance: InstanceInfo | undefined): boolean {
-  return Boolean(instance && API_KEY_ENGINES.has(instance.driverKind) && !instance.managed);
+  if (!instance || instance.access !== "api" || instance.managed) return false;
+  return instance.driverKind !== "claudeAgent" || Boolean(instance.snapshot.version);
 }
 
 function ApiKeyEngineSetup({ instance, className, unframed }: { instance: InstanceInfo; className?: string; unframed: boolean }) {

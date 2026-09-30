@@ -3,7 +3,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { StoreProvider } from "@/state/store";
 import * as store from "@/state/store";
-import { ApiKeyRow, OpenAiCompatUrl } from "./ApiKeys";
+import { AnthropicEveryClaudeBot, ApiKeyRow, OpenAiCompatUrl } from "./ApiKeys";
 
 afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 
@@ -42,9 +42,11 @@ describe("provider key rows", () => {
     // Nothing to test until a key is typed or saved.
     expect(anthropic).not.toContain(">Test<");
 
-    const openai = render(createElement(ApiKeyRow, { section: "openaiCompat", testProvider: "openaiCompat" }));
-    expect(openai).toContain("OpenAI-compatible API key");
-    expect(openai).toContain("sk-or-v1-…");
+    const compat = render(createElement(ApiKeyRow, { section: "openaiCompat", testProvider: "openaiCompat" }));
+    expect(compat).toContain("OpenAI-compatible API key");
+    expect(compat).toContain("Paste the server&#x27;s API key");
+    expect(render(createElement(ApiKeyRow, { section: "openai", testProvider: "openai" }))).toContain("OpenAI API key");
+    expect(render(createElement(ApiKeyRow, { section: "openrouter", testProvider: "openrouter" }))).toContain("sk-or-v1-…");
 
     expect(render(createElement(ApiKeyRow, { section: "xai", testProvider: "xai" }))).toContain("xAI API key");
   });
@@ -52,9 +54,7 @@ describe("provider key rows", () => {
   it("saves on paste instead of a Save button, and keeps key effects in view", () => {
     const anthropic = render(createElement(ApiKeyRow, { section: "anthropic", testProvider: "anthropic" }));
     expect(anthropic).not.toContain(">Save<");
-    // The login override is on the row, not tucked into the help popover.
-    expect(anthropic).toContain("instead of a Claude login");
-    const openai = render(createElement(ApiKeyRow, { section: "openaiCompat", testProvider: "openaiCompat" }));
+    const openai = render(createElement(ApiKeyRow, { section: "openai", testProvider: "openai" }));
     expect(openai).toContain("Codex doesn&#x27;t use this key");
   });
 
@@ -80,10 +80,27 @@ describe("provider key rows", () => {
     expect(own).not.toContain("Included with Cloud Pro");
   });
 
+  it("warns about per-token billing only while the Anthropic key runs every Claude bot", () => {
+    const withAnthropic = (everyClaudeBot: boolean) => vi.spyOn(store, "useStore").mockReturnValue({
+      state: { ...store.initialState, config: { ...store.initialState.config, anthropic: { configured: true, everyClaudeBot } } as store.ConfigStatus },
+      dispatch: vi.fn(),
+      flushBotPatches: vi.fn(),
+      refreshInstances: vi.fn(),
+      refreshModels: vi.fn(),
+    });
+    withAnthropic(false);
+    const off = render(createElement(AnthropicEveryClaudeBot));
+    expect(off).toContain("Use this key for every Claude bot");
+    expect(off).toContain("Signed-in Claude bots stay on their plan");
+    expect(off).not.toContain("instead of a Claude login");
+    withAnthropic(true);
+    expect(render(createElement(AnthropicEveryClaudeBot))).toContain("instead of a Claude login");
+  });
+
   it("offers the base URL as a setting next to the key", () => {
     const html = render(createElement(OpenAiCompatUrl));
     expect(html).toContain("OpenAI-compatible base URL");
-    expect(html).toContain('placeholder="https://openrouter.ai/api/v1"');
-    expect(html).toContain("api.openai.com/v1");
+    expect(html).toContain('placeholder="https://api.groq.com/openai/v1"');
+    expect(html).toContain("localhost:11434/v1");
   });
 });
