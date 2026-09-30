@@ -56,11 +56,11 @@
 `allowsTool(scope: unknown, tool: ToolIdentity): boolean`;
 `canUseMcpServer(scope: unknown, server: string, names?: readonly string[]): boolean`.
 
-- [ ] Write literal tests for legacy unrestricted tools; allow-only native drafting; mail-server wildcard; deny precedence; explicit no-tools; original names/case/collisions; invalid object, selectors and limits; server eligibility after overlapping allow/deny.
-- [ ] Run `corepack pnpm exec vitest run shared/tool-scope.test.ts`; expect missing implementation failure.
-- [ ] Implement strict bounded parsing and exact matching. Limit each list to 256 selectors, each selector to 1024 characters; accept only complete native or final MCP wildcards.
-- [ ] Re-run the focused tests; expect all pass.
-- [ ] Commit the shared contract and tests.
+- [x] Write literal tests for legacy unrestricted tools; allow-only native drafting; mail-server wildcard; deny precedence; explicit no-tools; original names/case/collisions; invalid object, selectors and limits; server eligibility after overlapping allow/deny.
+- [x] Run `corepack pnpm exec vitest run shared/tool-scope.test.ts`; expect missing implementation failure.
+- [x] Implement strict bounded parsing and exact matching. Limit each list to 256 selectors, each selector to 1024 characters; accept only complete native or final MCP wildcards.
+- [x] Re-run the focused tests; expect all pass.
+- [x] Commit the shared contract and tests.
 
 ### Task 2: MCP list and call boundary
 
