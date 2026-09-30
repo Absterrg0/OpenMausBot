@@ -2684,6 +2684,7 @@
   "remote.serverPairing.copied": "Copied",
   "remote.serverPairing.noLink": "This server has no public address for a link yet: open /pair on the address you use and type the code.",
   "remote.serverPairing.chatOnly": "This device is connected with chat and approvals only, so it cannot pair others. On the computer running the server, run `openmausbot pair` (or open Settings there) to make a full-access code, and connect this device again with it.",
+  "remote.serverPairing.cloudPersonal": "Cloud Pro is personal: only your own devices can connect, each with full access.",
   "remote.serverPairing.devices": "Paired devices",
   "remote.serverPairing.noDevices": "No devices paired yet.",
   "remote.serverPairing.thisBrowser": "this browser",

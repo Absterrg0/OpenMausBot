@@ -123,6 +123,10 @@ export interface SendTurnInput {
    * only to a driver whose capabilities.guestTurns is "confined"; the harness
    * refuses the turn for any other (docs/cloud-pro.md). */
   guestConfined?: boolean;
+  /** Why this turn is confined, in the owner's words, for a refusal to end
+   * with (on a personal Cloud home, what came before it: a routine or a
+   * conversation from before this update). */
+  confinedWhy?: string;
   /** Images attached to this user turn only. They are deliberately kept out
    * of replay transcripts: the provider's native session owns earlier image
    * context, while a fresh replay retains the visible attachment marker. */

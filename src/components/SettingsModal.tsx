@@ -613,8 +613,9 @@ export function SettingsModal() {
     .filter((entry) => entry.id !== "cloudAccount" || Boolean(window.ogb?.cloudAccount))
     // the operator's screen for other workspaces exists only where a fleet agent does
     .filter((entry) => entry.id !== "workspaces" || workspacesAvailable(state.config))
-    // sign-in by email is a hosted server's; the desktop app pairs devices under Remote access
-    .filter((entry) => entry.id !== "people" || !window.ogb)
+    // sign-in by email is a hosted server's; the desktop app pairs devices under Remote access,
+    // and an OMB Cloud home is personal: nobody is invited to it
+    .filter((entry) => entry.id !== "people" || (!window.ogb && state.config?.cloudHome !== true))
     // the activity log belongs to a workspace served to a browser, and to its admins
     .filter((entry) => entry.id !== "activity" || (!window.ogb && ownerOrAdmin === true));
   const visibleSections = availableSections.filter((entry) => sectionMatches(entry, q));
@@ -868,7 +869,7 @@ export function SettingsModal() {
                     a remote client of a hosted workspace: its requests carry that server's session, and
                     Settings there is the only place that server's phones can be paired from (MOCA-84).
                     The server decides who may act — an owner or an admin session — not this gate. */}
-                <ServerPairingCard />
+                <ServerPairingCard cloudHome={state.config?.cloudHome === true} />
                 {!remoteActive && <CompanionSection profileEmail={state.config?.profile?.email} />}
               </>
             )}

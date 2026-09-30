@@ -639,14 +639,14 @@ describe("ClaudeDriver turns (fake CLI)", () => {
 
   it("stops a guest's turn when the CLI kept a shell, and refuses one too old to confine it", async () => {
     await create(undefined, { FAKE_CLAUDE_VERSION: "2.1.284", FAKE_CLAUDE_KEEP_BASH: "1" });
-    await instance.adapter.sendTurn({ threadId: "t-kept", text: "hello", approvalMode: "ask", guestConfined: true });
+    await instance.adapter.sendTurn({ threadId: "t-kept", text: "hello", approvalMode: "ask", guestConfined: true, confinedWhy: "This routine was made before this update." });
     await recorder.until((e) => e.type === "turn.completed");
-    expect(JSON.stringify(recorder.events)).toContain("kept its shell");
+    expect(JSON.stringify(recorder.events)).toContain("kept its shell, so it can't run this turn. Update Claude Code. This routine was made before this update.");
     expect(recorder.events.find((e) => e.type === "turn.completed")).toMatchObject({ ok: false });
     await create(undefined, { FAKE_CLAUDE_VERSION: "2.1.250" });
     const refused = await instance.adapter.sendTurn({ threadId: "t-old", text: "hello", approvalMode: "ask", guestConfined: true })
       .then(() => recorder.until((e) => e.type === "turn.completed").then((event) => JSON.stringify(event) + JSON.stringify(recorder.events)), (error: unknown) => String(error));
-    expect(refused).toContain("too old to take a guest's request");
+    expect(refused).toContain("too old to run this turn without a shell");
   });
 
   it("keeps a workspace Anthropic key set on purpose while still dropping one from the parent env", async () => {
