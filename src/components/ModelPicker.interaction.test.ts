@@ -197,6 +197,15 @@ describe("the way into API keys", () => {
     (entry!.props.onClick as () => void)();
     expect(fixture.dispatch).toHaveBeenCalledWith({ type: "toggleAppSettings", open: true, section: "connections" });
   });
+
+  it("ends the rail's API keys group with a way to add one", () => {
+    fixture.instances = [codex];
+    const opened = open(bot("codex", "gpt-5.6"));
+    expect(opened.html).toContain(">API keys<");
+    const add = rail(opened)!.props as { onAddApiKeys?: () => void };
+    add.onAddApiKeys!();
+    expect(fixture.dispatch).toHaveBeenCalledWith({ type: "toggleAppSettings", open: true, section: "connections" });
+  });
 });
 
 describe("the way into local models", () => {

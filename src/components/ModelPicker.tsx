@@ -7,7 +7,7 @@
 // the person making it, so the chat header and the settings dialog render the
 // same row and write through the same action.
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
-import { Check, ChevronDown, ChevronLeft, ChevronRight, KeyRound, Loader2, RefreshCw, Search } from "lucide-react";
+import { Check, ChevronDown, ChevronLeft, ChevronRight, KeyRound, Loader2, Plus, RefreshCw, Search } from "lucide-react";
 import { useStore, currentTaskBot, type Bot, type InstanceInfo, type ModelSelection } from "@/state/store";
 import type { EffortLevel } from "../../shared/wire";
 import type { ModelVariantOption } from "../../shared/runtime-events";
@@ -330,11 +330,14 @@ function ModelSearch({
   );
 }
 
-export function ModelEngineRail({ instances, selectedInstance, claudeInstance, onSelect }: {
+export function ModelEngineRail({ instances, selectedInstance, claudeInstance, onSelect, onAddApiKeys }: {
   instances: InstanceInfo[];
   selectedInstance?: InstanceInfo;
   claudeInstance?: InstanceInfo;
   onSelect: (instance: InstanceInfo) => void;
+  /** Ends the API keys group with a way to add one; absent where Settings
+   * has no keys section (a remote client). */
+  onAddApiKeys?: () => void;
 }) {
   const firstClaude = instances.find((instance) => isClaudeAccount(instance) && instance.claudeAccount?.isDefault)
     ?? instances.find(isClaudeAccount);
@@ -366,8 +369,20 @@ export function ModelEngineRail({ instances, selectedInstance, claudeInstance, o
     <div className="flex w-14 shrink-0 flex-col gap-1 overflow-y-auto border-r border-hairline/40 bg-panel p-2">
       {subscription.length > 0 && <EngineGroupLabel className="px-0 pb-0.5 pt-0.5 text-center text-[9px]">{t("model.rail.cloud")}</EngineGroupLabel>}
       {subscription.map(railButton)}
-      {api.length > 0 && <EngineGroupLabel className={cn("px-0 pb-0.5 text-center text-[9px] leading-tight", subscription.length > 0 ? "pt-2" : "pt-0.5")}>{t("model.rail.apiKeys")}</EngineGroupLabel>}
+      {(api.length > 0 || onAddApiKeys) && <EngineGroupLabel className={cn("px-0 pb-0.5 text-center text-[9px] leading-tight", subscription.length > 0 ? "pt-2" : "pt-0.5")}>{t("model.rail.apiKeys")}</EngineGroupLabel>}
       {api.map(railButton)}
+      {onAddApiKeys && (
+        <button
+          type="button"
+          data-rail-add-api-key
+          onClick={onAddApiKeys}
+          aria-label={t("model.addApiKeys")}
+          title={t("model.addApiKeys")}
+          className="flex size-9 items-center justify-center rounded-lg border border-dashed border-hairline text-ink-secondary hover:bg-control/60 hover:text-ink"
+        >
+          <Plus size={16} aria-hidden="true" />
+        </button>
+      )}
       {local.length > 0 && <EngineGroupLabel className="px-0 pb-0.5 pt-2 text-center text-[9px]">{t("model.rail.local")}</EngineGroupLabel>}
       {local.map(railButton)}
     </div>
@@ -555,6 +570,11 @@ export function ModelPicker({
       setProbingLocal((current) => (current === instance.instanceId ? null : current)));
   };
 
+  const openApiKeys = () => {
+    setOpen(false);
+    dispatch({ type: "toggleAppSettings", open: true, section: "connections" });
+  };
+
   const selectRail = (instance: InstanceInfo) => {
     if (isClaudeAccount(instance)) lastClaudeIdRef.current = instance.instanceId;
     setRailId(instance.instanceId);
@@ -718,7 +738,8 @@ export function ModelPicker({
             motion.className,
           )}
         >
-          {pickerInstances.length > 0 && <ModelEngineRail instances={pickerInstances} selectedInstance={railInstance} claudeInstance={claudeRailInstance} onSelect={selectRail} />}
+          {pickerInstances.length > 0 && <ModelEngineRail instances={pickerInstances} selectedInstance={railInstance} claudeInstance={claudeRailInstance} onSelect={selectRail}
+            onAddApiKeys={window.ogb?.remoteClient?.active === true ? undefined : openApiKeys} />}
 
           <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto">
             {threadId && (
@@ -767,7 +788,7 @@ export function ModelPicker({
                           blocked ? "bg-warning/10 text-warning" : "bg-success/10 text-success",
                         )}
                       >
-                        {pane === "custom" && !blocked ? t("model.localModels") : engineStatus(railInstance)}
+                        {pane === "custom" && !blocked && railInstance.access !== "api" ? t("model.localModels") : engineStatus(railInstance)}
                       </span>
                     </div>
                   </div>
@@ -782,7 +803,9 @@ export function ModelPicker({
                   {railInstance.snapshot.chatgptPlan && railInstance.snapshot.authenticated && (
                     <ChatGptPlanStatus key={railInstance.instanceId} instanceId={railInstance.instanceId} />
                   )}
-                  {pane === "custom" && <div className="mt-0.5 text-[11.5px] text-ink-secondary">{t("model.localHint")}</div>}
+                  {railInstance.access === "api"
+                    ? <div className="mt-0.5 text-[11.5px] text-ink-secondary">{t("model.apiKeyHint")}</div>
+                    : pane === "custom" && <div className="mt-0.5 text-[11.5px] text-ink-secondary">{t("model.localHint")}</div>}
                 </div>
 
                 {pane === "custom" && canReturnToOfficial && (
@@ -971,10 +994,7 @@ export function ModelPicker({
               {/* A remote client's settings hide the keys section, so the
                   shortcut would land somewhere else. */}
               {window.ogb?.remoteClient?.active !== true && (
-                <button type="button" data-model-add-api-keys onClick={() => {
-                  setOpen(false);
-                  dispatch({ type: "toggleAppSettings", open: true, section: "connections" });
-                }} className="flex shrink-0 items-center gap-1.5 px-4 py-2 text-[12px] text-ink-secondary hover:bg-control/60 hover:text-ink">
+                <button type="button" data-model-add-api-keys onClick={openApiKeys} className="flex shrink-0 items-center gap-1.5 px-4 py-2 text-[12px] text-ink-secondary hover:bg-control/60 hover:text-ink">
                   <KeyRound size={12} aria-hidden="true" />
                   {t("model.addApiKeys")}
                 </button>
