@@ -3,7 +3,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { StoreProvider } from "@/state/store";
 import * as store from "@/state/store";
-import { AnthropicEveryClaudeBot, ApiKeyRow, OpenAiCompatUrl } from "./ApiKeys";
+import { AnthropicEveryClaudeBot, ApiKeyRow, looksLikeKey, OpenAiCompatUrl } from "./ApiKeys";
 
 afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 
@@ -95,6 +95,12 @@ describe("provider key rows", () => {
     expect(off).not.toContain("instead of a Claude login");
     withAnthropic(true);
     expect(render(createElement(AnthropicEveryClaudeBot))).toContain("instead of a Claude login");
+  });
+
+  it("refuses pasted text that is not a key", () => {
+    expect(looksLikeKey("sk-proj-abc123_DEF")).toBe(true);
+    expect(looksLikeKey("The mascots are ready")).toBe(false);
+    expect(looksLikeKey("sk-abc\n")).toBe(false);
   });
 
   it("offers the base URL as a setting next to the key", () => {

@@ -1492,6 +1492,7 @@
   "keys.replace": "••••••••  (paste to replace)",
   "keys.removeKey": "Remove the saved key",
   "keys.clear": "Clear",
+  "keys.notAKey": "That doesn't look like an API key — keys have no spaces. Copy the key again and paste it here.",
   "keys.providers.title": "Model providers",
   "keys.providers.subtitle": "Keys every bot in this installation runs on, billed per token to your provider account.",
   "keys.integrations.title": "Integrations",

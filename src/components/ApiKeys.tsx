@@ -228,6 +228,13 @@ function CredentialHelp({ section }: { section: ConfigSection }) {
   );
 }
 
+/** A paste saves at once, so a clipboard holding a sentence instead of the
+ * key would otherwise be stored and then "rejected". No provider key or
+ * token has spaces in it. */
+export function looksLikeKey(value: string): boolean {
+  return value.length > 0 && !/\s/.test(value);
+}
+
 export function ApiKeyRow({
   section,
   onSaved,
@@ -282,6 +289,10 @@ export function ApiKeyRow({
   const save = (remove = false) => {
     const next = remove ? "" : value.trim();
     if (savingRef.current || (!remove && !next)) return;
+    if (!remove && !looksLikeKey(next)) {
+      setError(t("keys.notAKey"));
+      return;
+    }
     savingRef.current = true;
     setSaving(true);
     setError(null);
