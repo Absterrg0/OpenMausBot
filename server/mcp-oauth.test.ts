@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { McpOAuthError, McpOAuthManager, type McpSignInStatus } from "./mcp-oauth.ts";
+import { McpOAuthError, McpOAuthManager, type McpSignInStatus, withMcpSignIn, withoutPendingSignIn } from "./mcp-oauth.ts";
 import { startFakeHttpMcp, type FakeHttpMcp } from "./testing/fake-http-mcp-server.ts";
 import { startFakeOAuth, type FakeOAuth, type FakeOAuthOptions } from "./testing/fake-oauth-server.ts";
 
@@ -164,5 +164,43 @@ describe("McpOAuthManager tokens", () => {
     expect(manager.authState("docs", mcp.url)).toBe("needs-sign-in");
     manager.forget("docs");
     expect(manager.authState("docs", mcp.url)).toBe("none");
+  });
+});
+
+describe("turn servers", () => {
+  const stdio = { command: "npx", args: ["notes"], env: {} };
+
+  it("leaves out a URL server that needs sign-in, keeps the rest", async () => {
+    await setup();
+    manager.markNeedsSignIn("docs", mcp.url);
+    const servers = { docs: { type: "http" as const, url: mcp.url, headers: {} }, notes: stdio };
+    expect(withoutPendingSignIn(servers, manager)).toEqual({ notes: stdio });
+  });
+
+  it("sends a signed-in server its bearer token in place of any Authorization header", async () => {
+    await setup();
+    const started = await manager.start("docs", mcp.url);
+    await approve(started);
+    await settled("docs", started.flowId);
+    const servers = {
+      docs: { type: "http" as const, url: mcp.url, headers: { authorization: "Bearer stale", "X-Org": "acme" } },
+      plain: { type: "http" as const, url: "https://plain.example.com/mcp", headers: { Authorization: "Bearer mine" } },
+      notes: stdio,
+    };
+    const out = await withMcpSignIn(servers, manager);
+    const token = await manager.accessToken("docs", mcp.url);
+    expect(out.docs).toEqual({ type: "http", url: mcp.url, headers: { "X-Org": "acme", Authorization: `Bearer ${token}` } });
+    expect(out.plain).toEqual(servers.plain);
+    expect(out.notes).toEqual(stdio);
+    expect(servers.docs.headers.authorization).toBe("Bearer stale");
+  });
+
+  it("drops a signed-in server whose token cannot be refreshed", async () => {
+    await setup({ expiresIn: 60, rejectRefresh: true });
+    const started = await manager.start("docs", mcp.url);
+    await approve(started);
+    await settled("docs", started.flowId);
+    const out = await withMcpSignIn({ docs: { type: "http" as const, url: mcp.url, headers: {} } }, manager);
+    expect(out).toEqual({});
   });
 });

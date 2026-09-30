@@ -39,7 +39,11 @@ type StoreFile = z.infer<typeof fileSchema>;
 const clientKey = (issuer: string, redirectUri: string) => `${issuer} ${redirectUri}`;
 
 export class McpOAuthStore {
-  constructor(private readonly file: string) {}
+  private readonly file: string;
+
+  constructor(file: string) {
+    this.file = file;
+  }
 
   /** The record for this server, only while it is still for this URL. */
   get(name: string, url: string): McpOAuthRecord | undefined {

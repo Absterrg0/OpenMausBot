@@ -11,6 +11,7 @@
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { createServer, type Server } from "node:http";
 
+import type { McpServerSpec } from "./contracts.ts";
 import { discoverMcpAuth, type McpAuthMetadata } from "./mcp-oauth-discovery.ts";
 import { McpOAuthStore, type McpOAuthRecord, type McpOAuthTokens } from "./mcp-oauth-store.ts";
 
@@ -389,4 +390,37 @@ export class McpOAuthManager {
     flow.server.close();
     flow.status = { ...flow.status, phase, authorizationUrl: null, ...(message ? { message } : {}) };
   }
+}
+
+const isUrlServer = (server: McpServerSpec): server is Extract<McpServerSpec, { url: string }> => "url" in server;
+
+/** The servers a turn may mount: a URL server waiting for sign-in would
+ * only answer 401 mid-turn, so it stays out until someone signs in. */
+export function withoutPendingSignIn(
+  servers: Record<string, McpServerSpec>,
+  manager: McpOAuthManager,
+): Record<string, McpServerSpec> {
+  return Object.fromEntries(Object.entries(servers).filter(([name, server]) =>
+    !isUrlServer(server) || manager.authState(name, server.url) !== "needs-sign-in"));
+}
+
+/** Give each signed-in URL server a fresh bearer token, replacing any
+ * Authorization header it was configured with. A server whose token can
+ * no longer be had is left out. The input is not modified. */
+export async function withMcpSignIn(
+  servers: Record<string, McpServerSpec>,
+  manager: McpOAuthManager,
+): Promise<Record<string, McpServerSpec>> {
+  const out: Record<string, McpServerSpec> = {};
+  for (const [name, server] of Object.entries(withoutPendingSignIn(servers, manager))) {
+    if (!isUrlServer(server) || manager.authState(name, server.url) !== "signed-in") {
+      out[name] = server;
+      continue;
+    }
+    const token = await manager.accessToken(name, server.url);
+    if (!token) continue;
+    const headers = Object.fromEntries(Object.entries(server.headers).filter(([key]) => key.toLowerCase() !== "authorization"));
+    out[name] = { ...server, headers: { ...headers, Authorization: `Bearer ${token}` } };
+  }
+  return out;
 }
