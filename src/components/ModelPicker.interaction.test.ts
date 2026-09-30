@@ -184,7 +184,7 @@ describe("ModelPicker with a signed-out or missing Claude", () => {
     const opened = open(bot("codex", "gpt-5.6"));
     expect(rail(opened)!.props.instances.map((instance) => instance.instanceId)).toEqual(["codex"]);
     expect(opened.html).not.toContain('aria-label="Claude"');
-    expect(opened.html).toContain("Engines and accounts");
+    expect(opened.html).toContain("Model providers and accounts");
   });
 });
 

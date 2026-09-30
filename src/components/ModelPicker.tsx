@@ -140,7 +140,7 @@ export function EffortRow({
             aria-pressed={selection.effort === level}
             title={
               level === undefined
-                ? "Send no effort level and let the engine decide"
+                ? "Send no effort level and let the provider decide"
                 : `Ask for ${effortLabel(level)} reasoning effort`
             }
             onClick={() => dispatch({ type: "setModel", botId: bot.id, threadId, ...(updateBotDefault ? { updateBotDefault: true } : {}), selection: { ...selection, effort: level } })}

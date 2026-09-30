@@ -6157,7 +6157,7 @@ async function teamComputersPayload(): Promise<TeamComputersPayload> {
 /** The same named Boat identity and whole-turn lease in chats and rooms.
  * Assignment authorizes waking, never replacing a missing paid machine. */
 async function attachTeamBoat(computer: TeamComputerRecord, botId: string, owner: TurnOwner, canMount: boolean, remoteAgent: boolean) {
-  if (!canMount) throw new Error("This model engine cannot use the team's Boat computer; choose an engine with computer tools or an explicit bot destination");
+  if (!canMount) throw new Error("This model cannot use the team's Boat computer; choose a model provider with computer tools or an explicit bot destination");
   if (!boat.boatConfigured(cfg)) throw new Error("The team's Boat account is not configured; reconnect it in Settings");
   const ownerId = teamComputerOwner(computer.id);
   if (boatLifecycleBusyBots.has(ownerId)) throw new Error("The team computer is being changed; wait for it to finish");
@@ -6188,7 +6188,7 @@ async function mountHostComputer(owner: TurnOwner, botId: string, providerSuppor
     // ACP engine" while already on one has nowhere to go.
     throw new Error(providerSupportsLocal
       ? `local computer control is not available on ${process.platform} — select another destination`
-      : "this model engine cannot control this computer — choose Claude or an ACP engine, or select another destination");
+      : "this model cannot control this computer — choose Claude or an ACP model provider, or select another destination");
   }
   const cua = readCuaConnection();
   if (!cua) {
@@ -6460,7 +6460,7 @@ async function selectableComputers(bot: BotRecord) {
           providerSupportsLocal: caps?.localComputerMcp === true }) && Boolean(readCuaConnection());
       } else if (surface === "browser") {
         ready = caps?.browserMcp === true && builtInBrowserEnabled(cfg) && bot.browser !== false && browserEngineStatus().kind === "ready";
-        reason = "The built-in browser is disabled, not installed, or unsupported by this model engine.";
+        reason = "The built-in browser is disabled, not installed, or unsupported by this model.";
       }
     } catch (error) { reason = error instanceof Error ? error.message : String(error); }
     // Not offered at all when the organisation disallows it.
@@ -9153,7 +9153,7 @@ async function startTurn(
       const attachLocalVm = async (strict: boolean): Promise<boolean> => {
         if (!mountsComputerMcp || instance.adapter.capabilities.remoteAgent === true) {
           if (!strict) return false;
-          throw new Error("this model engine cannot use the Local VM — choose Claude or an ACP engine, or select another computer destination");
+          throw new Error("this model cannot use the Local VM — choose Claude or an ACP model provider, or select another computer destination");
         }
         if (!strict && localVmMode(cfg) === "pool") {
           // localVmTargetForThread records pool affinity, so a turn the
@@ -10226,7 +10226,7 @@ async function cloudRoutineReadiness(botId: string, threadId?: string): Promise<
   if (!instance) return { ready: false, reason: "The Cloud VM runner is unavailable. Restart OpenMausBot and try again." };
   try {
     if ((await instance.snapshot()).state !== "available") {
-      return { ready: false, reason: "The target bot's model engine is not ready to use the Boat cloud computer." };
+      return { ready: false, reason: "The target bot's model is not ready to use the Boat cloud computer." };
     }
     const teamComputer = inheritedTeamComputer(bot);
     const ownerId = teamComputer ? teamComputerOwner(teamComputer.id) : bot.id;
@@ -11533,7 +11533,7 @@ async function runGroupMemberTurn(
   // Claim the same lease as direct turns before asynchronous VM setup.
   if (readyBot.computer === "vm") {
     if (instance.adapter.capabilities.computerMcp !== true || instance.adapter.capabilities.remoteAgent === true) {
-      throw new Error("this model engine cannot use the Local VM");
+      throw new Error("this model cannot use the Local VM");
     }
     // A distinct identity fences cleanup even in shared mode on the same room thread.
     const target = { ...localVmTargetForThread(readyBot.id, threadId) };

@@ -1328,7 +1328,7 @@ export function vpsDriverError(driverKind: string, computerMcp: boolean): string
     return "The Computer engine runs its agent on Boat and cannot use a self-hosted VPS — choose Claude or an ACP engine";
   }
   if (!computerMcp) {
-    return "This model engine cannot mount a self-hosted VPS computer — choose Claude or an ACP engine";
+    return "This model cannot mount a self-hosted VPS computer — choose Claude or an ACP model provider";
   }
   return null;
 }
