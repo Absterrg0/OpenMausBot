@@ -16,14 +16,21 @@ remembers a tool from an earlier turn. Selecting a tool does not approve
 its execution or override existing computer, connector, managed-workspace,
 guest, or human-approval restrictions.
 
-This design targets complete native-tool and MCP behavior on Pi and Grok
-CLI, the two engines in the issue's title and reproductions. The shared
-model can support other engines, but their native controls need explicit
-adapter support. An unsupported adapter must reject a restricted turn;
-it must never silently ignore the selection. The broader proposal to
-support every other engine remains separate unless upstream requests it.
-The PR must describe that boundary and use `Refs #2047` if the maintainer
-considers wider engine support part of closing the issue.
+Pi and Grok CLI are the first required live reproductions. The issue also
+asks for a boundary across engines: the shared scope must reach every
+registered adapter, with MCP enforcement and native enforcement treated
+separately. Each adapter needs an explicit capability and a verified
+native contract, or a visible refusal before a restricted turn starts.
+An unsupported adapter must never silently ignore the selection. Such a
+refusal is a safety fallback, not proof that usable native tool selection
+has been delivered on that engine.
+
+Completion requires an engine coverage table backed by adapter tests and
+provider evidence. Do not declare the whole issue fixed by demonstrating
+only Pi, only Grok's API driver, or only MCP schema filtering. If an external
+engine cannot implement part of the proposal, document the exact contract
+limitation and seek agreement on the contribution boundary before claiming
+completion or closing the issue.
 
 ## Current evidence
 
@@ -39,6 +46,15 @@ considers wider engine support part of closing the issue.
   a way around tool selection.
 - Existing connected-app grants and custom-server selection already have
   their own authority boundaries. They remain authoritative.
+- The existing `verify-grok-images.ts` fixture passed on the installed Grok
+  1.0.41 CLI using a disposable HOME and synthetic loopback completions.
+  It proves that this real runtime can complete an isolated ACP turn without
+  cloud credentials. It does not test tool selection or a real local model.
+- The installed Codex 0.159.0 CLI exported its experimental app-server
+  protocol schemas successfully under a disposable HOME. Thread start and
+  resume accept configuration overrides; the exported protocol does not
+  advertise a native tool allowlist field. `dynamicTools` adds tools and
+  must not be mistaken for restricting the existing native catalog.
 
 These observations establish the integration defects, not successful
 execution of a fix. No new behavior has been implemented or validated yet.
@@ -175,6 +191,16 @@ denial, MCP-only bots, and restored sessions. If a runtime cannot represent
 the scope safely, reject the restricted turn before contacting the model
 and explain the required runtime support. Do not silently approximate it.
 
+The public source revision inspected during design is
+`2bdd1d6a6369de0e8c68132ea4539e9abd9e14a8`; it is not the installed binary's
+reported build revision. In that source, an empty profile allowlist inherits
+all tools, and unresolved allowlist entries can preserve the full toolset.
+Therefore forwarding arbitrary owner strings into that field is not a safe
+implementation. The real-CLI contract tests must prove a strict alternative,
+including preservation of any existing profile restriction. The repository
+already depends on `yaml`; reusing it for profile parsing needs no new runtime
+dependency if the selected contract requires temporary profiles.
+
 Include scope in the ACP session fingerprint and apply it on both new and
 resumed sessions. A changed scope must retire stale pooled tool state.
 The shared MCP gate remains the authority for individual MCP calls.
@@ -183,6 +209,34 @@ Primary contracts to verify, with source revision recorded in test evidence:
 [Grok agent profiles](https://github.com/xai-org/grok-build/blob/main/crates/codegen/xai-grok-agent/src/config.rs),
 [Grok assembly filters](https://github.com/xai-org/grok-build/blob/main/crates/codegen/xai-grok-agent/src/builder.rs),
 [Grok ACP guide](https://github.com/xai-org/grok-build/blob/main/crates/codegen/xai-grok-pager/docs/user-guide/15-agent-mode.md).
+
+## Engine coverage and remaining contract work
+
+The current registry contains 18 adapters. This inventory records existing
+paths, not completed support for the proposed setting:
+
+| Adapter(s) | Existing tool path | Required selection boundary |
+| --- | --- | --- |
+| Pi | RPC CLI plus the OMB MCP extension | Active native/package tools, native call hook, filtered custom and built-in MCP registration and execution |
+| Grok CLI | ACP core plus Grok session/model configuration | Verified ACP native filter, fresh/resumed session checks, scoped MCP descriptors and calls |
+| OpenAI compatible, Grok API, Mistral, MiniMax | Shared `openai-chat.ts` executor | Filter definitions before provider serialization, including the executor's question tool and leased cloud-computer tools; check calls before approval/execution |
+| Claude | Per-process CLI native `tools` / `disallowedTools`, MCP configuration and permission callbacks | Intersect owner, instance, guest, and bot restrictions; filter all mounted MCP transports; reject excluded native calls |
+| Codex | App-server configuration, MCP descriptors and approval requests | Verify native catalog controls against the installed app-server contract; preserve existing scoped computer overrides; filter MCP descriptors and calls |
+| Gemini, Qwen, Kimi, Hermes, Droid, Cursor, OpenCode, Antigravity | Shared ACP core with provider-specific setup | Common MCP gate and session fingerprints; investigate each provider's native catalog controls and enforce or refuse unsupported restrictions explicitly |
+| Custom ACP | User-supplied ACP process with no assumed native contract | Scope supplied MCP servers; require advertised/verifiable native selection support before accepting native restrictions |
+| Boat native agent | Remote prompt API runs the whole turn on the leased computer | Verify the remote API accepts and enforces a tool subset; do not confuse shared chat computer tools with this remote-agent path |
+
+Native-only selection and MCP-only selection must remain distinguishable.
+A provider can apply MCP restrictions while retaining all native tools when
+the scope explicitly allows those native tools. If the scope excludes a
+native tool and the provider cannot enforce that exclusion before exposing
+schemas and before execution, reject the turn with a named setup error.
+Do not infer native restriction support from ACP permission prompts alone.
+
+The final test matrix must enumerate these adapters rather than relying on
+one shared-core test to claim every provider's native behavior works. Keep
+provider credentials, native profiles, and ambient MCP servers out of the
+isolated tests; inherited restrictions must still intersect with bot scope.
 
 ## Settings surface
 
