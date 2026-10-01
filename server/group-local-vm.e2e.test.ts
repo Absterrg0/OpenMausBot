@@ -133,12 +133,21 @@ afterAll(async () => {
   if (boatServer) await new Promise<void>(resolve => boatServer.close(() => resolve()));
   if (fixtureHome) await removeTempDir(fixtureHome);
 });
-const rooms: string[] = [];
-afterEach(async () => {
+const rooms = new Map<string, string[]>();
+async function cleanupRooms() {
+  // Stop before releasing shared fixture gates: a cancelled setup must not
+  // dispatch just as the next test starts using the same dump and finish files.
+  for (const id of rooms.keys()) await stop(id);
   vmState();
   writeFileSync(finishFile, "finish");
-  for (const id of rooms.splice(0)) await stop(id);
-});
+  for (const [id, members] of rooms) {
+    for (const botId of members) await idle(botId);
+    await api("DELETE", `/api/groups/${id}`);
+    for (const botId of members) await api("DELETE", `/api/bots/${botId}`);
+    rooms.delete(id);
+  }
+}
+afterEach(cleanupRooms);
 async function room() {
   vmState(); rmSync(dumpFile, { force: true }); rmSync(finishFile, { force: true });
   const bots = [];
@@ -149,13 +158,33 @@ async function room() {
   }
   const { group } = await api("POST", "/api/groups", { name: "Fixture VM room", memberIds: bots.map(b => b.id),
     setup: { bulletin: "", defaultResponder: { kind: "member", botId: bots[0].id } } });
-  rooms.push(group.id);
+  rooms.set(group.id, bots.map(bot => bot.id));
   return { bots, group };
 }
 const send = (id: string) => api("POST", `/api/groups/${id}/messages`, { text: "Reply once." });
 const stop = (id: string) => api("POST", `/api/groups/${id}/interrupt`, {});
 
 describe("Group Local VM ownership on the real isolated server", () => {
+  it("removes an interrupted fixture room before another room takes the shared desktop", async () => {
+    const first = await room();
+    await send(first.group.id);
+    const previous = computer(await dump());
+    expect((await gate(previous)).status).toBe(200);
+
+    await cleanupRooms();
+    const state = await api("GET", "/api/bots?messages=0");
+    expect(state.groups.some((group: any) => group.id === first.group.id)).toBe(false);
+    expect(state.bots.some((bot: any) => first.bots.some(member => member.id === bot.id))).toBe(false);
+    expect((await gate(previous)).status).toBe(401);
+
+    const next = await room();
+    await send(next.group.id);
+    const current = computer(await dump());
+    expect(current.env.OMB_CONTROL_URL).toContain(next.bots[0].id);
+    expect((await gate(current)).status).toBe(200);
+    expect((await gate(previous)).status).toBe(401);
+  });
+
   it.each([false, true])("provisions concurrent cold pool seats (existing per-bot desktops: %s)", async (existingPerBot) => {
     vmState({ containers: [] });
     rmSync(dumpFile, { force: true }); rmSync(finishFile, { force: true });
