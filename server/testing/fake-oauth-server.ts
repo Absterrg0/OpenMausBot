@@ -9,6 +9,9 @@ import type { AddressInfo } from "node:net";
 export interface FakeOAuthOptions {
   /** seconds until an access token expires (default 3600) */
   expiresIn?: number;
+  /** Deterministic barriers for cancellation/revocation races. */
+  beforeRegister?: () => Promise<void>;
+  beforeToken?: () => Promise<void>;
   /** omit registration_endpoint from the metadata */
   noRegistration?: boolean;
   /** answer every refresh with invalid_grant */
@@ -125,6 +128,7 @@ export async function startFakeOAuth(options: FakeOAuthOptions = {}): Promise<Fa
       }
       if (req.method === "POST" && url.pathname === "/register") {
         counts.register += 1;
+        await options.beforeRegister?.();
         const body = JSON.parse(await readBody(req)) as { redirect_uris?: string[] };
         const clientId = `client_${counts.register}`;
         clients.add(clientId);
@@ -158,6 +162,7 @@ export async function startFakeOAuth(options: FakeOAuthOptions = {}): Promise<Fa
         if (!client) return json(res, 401, { error: "invalid_client" });
         if (form.get("grant_type") === "authorization_code") {
           counts.token += 1;
+          await options.beforeToken?.();
           const entry = codes.get(form.get("code") ?? "");
           codes.delete(form.get("code") ?? "");
           const verifier = form.get("code_verifier") ?? "";

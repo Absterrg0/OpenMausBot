@@ -224,7 +224,7 @@ import {
   parseMcpServersImport,
   parseStoredMcpServer,
 } from "./mcp-registry.ts";
-import { McpOAuthError, McpOAuthManager, mcpOAuthRedirectUri, withMcpSignIn, withoutPendingSignIn } from "./mcp-oauth.ts";
+import { McpOAuthError, McpSignInError, McpOAuthManager, mcpOAuthRedirectUri, withMcpSignIn, withoutPendingSignIn } from "./mcp-oauth.ts";
 import { probeMcpServer } from "./mcp-probe.ts";
 import {
   GROUP_GOAL_MAX_TURNS,
@@ -1801,6 +1801,17 @@ function queuedTurnTrigger(item: { trigger?: UsageTrigger; sender?: ResolvedSend
   return item.sender ? { kind: "user", label: item.sender.name } : { kind: "owner" };
 }
 const providerAuthSessions = new ProviderAuthSessions();
+/** OAuth sign-in for URL servers; tokens live in their own owner-only file. */
+const mcpOAuth = new McpOAuthManager({
+  file: join(DATA_DIR, "mcp-oauth.json"),
+  isOwnerLive: (owner) => owner === "loopback" || sessions.isLive(owner),
+  // Read the registered app when needed; never copy its secret into the token store.
+  clients: (name, url) => {
+    const raw = cfg.mcpServers?.[name];
+    const parsed = raw === undefined ? null : parseStoredMcpServer(name, raw);
+    return parsed?.ok && isRemoteMcpServer(parsed.server) && parsed.server.url === url ? parsed.server.oauth : undefined;
+  },
+});
 // OpenCode reads provider keys (ANTHROPIC_API_KEY, OPENAI_API_KEY, …) from
 // its environment, as it does in a terminal, but only where that environment
 // is the person's own shell (openCodeProviderKeysAllowed). Wired before the
@@ -5309,6 +5320,7 @@ function closeSessionStreams(sessionId: string): void {
 }
 sessions.onSessionRevoked((sessionId) => {
   providerAuthSessions.revokeOwner(sessionId);
+  mcpOAuth.revokeOwner(sessionId);
   closeSessionStreams(sessionId);
   // A revoked owner device no longer vouches for its lines (cloudOwnerPerson).
   ownerOnlyCache.clear();
@@ -14408,17 +14420,6 @@ async function reloadProviders() {
 let providerConfigBusy = false;
 const providerInstancesChanging = new Set<string>();
 let mcpConfigBusy = false;
-/** OAuth sign-in for URL servers; tokens live in their own owner-only file. */
-const mcpOAuth = new McpOAuthManager({
-  file: join(DATA_DIR, "mcp-oauth.json"),
-  // the app registered for a server at this address, read from config.json
-  // when a sign-in or refresh needs it; its secret is never copied out
-  clients: (name, url) => {
-    const raw = cfg.mcpServers?.[name];
-    const parsed = raw === undefined ? null : parseStoredMcpServer(name, raw);
-    return parsed?.ok && isRemoteMcpServer(parsed.server) && parsed.server.url === url ? parsed.server.oauth : undefined;
-  },
-});
 const MAX_CONCURRENT_MCP_PROBES = 2;
 let mcpProbesInFlight = 0;
 // One updater per executable: multiple Claude instances can point at the same
@@ -22216,8 +22217,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       }
     }
 
-    // OAuth sign-in for a URL server. The browser returns to a listener on
-    // this machine, so it starts only from a client on this machine.
+    // The loopback listener and authenticated paste-back complete the same flow.
     const mcpSignIn = /^\/api\/mcp\/servers\/([a-z][a-z0-9_-]{0,31})\/(sign-in|sign-out)(?:\/([0-9a-f-]{36}))?$/.exec(path);
     if (mcpSignIn) {
       const [, name, action, flowId] = mcpSignIn;
@@ -22230,24 +22230,38 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         await mcpOAuth.signOut(name!, url);
         return json(res, 200, mcpServerResponse());
       }
-      if (action === "sign-in" && method === "GET" && flowId) {
-        const auth = mcpOAuth.status(name!, flowId);
-        return auth ? json(res, 200, { auth }) : json(res, 404, { error: "This sign-in is no longer available. Start again." });
-      }
-      if (action === "sign-in" && method === "DELETE" && !flowId) {
-        mcpOAuth.cancel(name!);
-        return json(res, 200, { ok: true });
-      }
-      if (action === "sign-in" && method === "POST" && !flowId) {
-        if (isProxied(req) || !isLoopbackHost(req.socket.remoteAddress)) {
-          return json(res, 409, { error: "Sign in from the computer running this workspace.", code: "remote_workspace" });
+      const owner = auth.kind === "session" ? auth.session.id : "loopback";
+      res.setHeader("Cache-Control", "no-store");
+      try {
+        if (action === "sign-in" && method === "GET" && flowId) {
+          const status = mcpOAuth.status(name!, flowId, owner);
+          return status ? json(res, 200, { auth: status }) : json(res, 404, { error: "This sign-in is no longer available in this browser. Start again." });
         }
-        try {
-          return json(res, 200, { auth: await mcpOAuth.start(name!, url) });
-        } catch (error) {
-          if (error instanceof McpOAuthError) return json(res, 400, { error: error.message, code: error.code });
-          return json(res, 502, { error: error instanceof Error ? error.message : "Sign-in could not start." });
+        if (action === "sign-in" && method === "DELETE") {
+          mcpOAuth.cancelFlow(name!, owner, flowId);
+          return json(res, 200, { ok: true });
         }
+        if (action === "sign-in" && method === "POST" && flowId) {
+          if (!String(req.headers["content-type"] ?? "").toLowerCase().startsWith("application/json")) {
+            return json(res, 415, { error: "content-type must be application/json" });
+          }
+          const body = await readBody(req, 20_480);
+          if (typeof body?.callbackUrl !== "string") return json(res, 400, { error: "A complete callbackUrl is required." });
+          return json(res, 200, { auth: await mcpOAuth.completeCallback(name!, flowId, body.callbackUrl, owner) });
+        }
+        if (action === "sign-in" && method === "POST" && !flowId) {
+          const started = await mcpOAuth.start(name!, url, undefined, owner);
+          if (auth.kind === "session" && !sessions.isLive(auth.session.id)) {
+            mcpOAuth.revokeOwner(owner);
+            return json(res, 401, { error: "Your session ended. Start a new sign-in." });
+          }
+          return json(res, 200, { auth: started });
+        }
+      } catch (error) {
+        if (error instanceof McpSignInError) return json(res, error.status, { error: error.message });
+        if (error instanceof McpOAuthError) return json(res, 400, { error: error.message, code: error.code });
+        if (method === "POST" && !flowId) return json(res, 502, { error: error instanceof Error ? error.message : "Sign-in could not start." });
+        throw error;
       }
       return json(res, 405, { error: "method not allowed" });
     }

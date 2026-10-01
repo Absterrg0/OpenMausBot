@@ -21,7 +21,7 @@ import { claudeUserMcpEnabled } from "@/lib/feature-flags";
 import { t } from "@/lib/i18n";
 import type { LocaleKey } from "@/locales";
 import { updateMcpServers } from "@/lib/mcp-servers";
-import { runMcpSignIn } from "@/lib/mcp-sign-in";
+import { completeMcpSignIn, mcpSignInLink, runMcpSignIn, type McpSignInStatus } from "@/lib/mcp-sign-in";
 import { api, useStore, type ConfigStatus } from "@/state/store";
 
 import { Switch } from "./SettingsPrimitives";
@@ -209,6 +209,11 @@ export function McpServersPanel() {
   /** the server whose browser sign-in is open, and how to cancel it */
   const [signingIn, setSigningIn] = useState<string | null>(null);
   const signInAbort = useRef<AbortController | null>(null);
+  const signInComplete = useRef<((result: McpSignInStatus) => void) | null>(null);
+  const [signInFlow, setSignInFlow] = useState<McpSignInStatus | null>(null);
+  const [callbackUrl, setCallbackUrl] = useState("");
+  const [callbackError, setCallbackError] = useState<string | null>(null);
+  const [completingSignIn, setCompletingSignIn] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
   const [importText, setImportText] = useState("");
   const loadGeneration = useRef(0);
@@ -375,6 +380,9 @@ export function McpServersPanel() {
     const controller = new AbortController();
     signInAbort.current = controller;
     setSigningIn(server.name);
+    setSignInFlow(null);
+    setCallbackUrl("");
+    setCallbackError(null);
     setError(null);
     setNotice(null);
     setProbe((current) => {
@@ -383,7 +391,10 @@ export function McpServersPanel() {
       return next;
     });
     try {
-      const result = await runMcpSignIn(server.name, { api, open: openExternalLink, signal: controller.signal });
+      const result = await runMcpSignIn(server.name, { api, open: openExternalLink, signal: controller.signal, onStarted: (status, complete) => {
+        setSignInFlow(status);
+        signInComplete.current = complete;
+      } });
       if (result.phase === "succeeded") setNotice({ key: "mcp.auth.done", params: { name: server.name } });
       else if (result.phase !== "cancelled") {
         setProbe((current) => ({ ...current, [server.name]: { ok: false, error: result.message || t("mcp.auth.failed") } }));
@@ -391,9 +402,31 @@ export function McpServersPanel() {
     } catch (cause) {
       setProbe((current) => ({ ...current, [server.name]: { ok: false, error: cause instanceof Error ? cause.message : String(cause) } }));
     } finally {
-      if (signInAbort.current === controller) signInAbort.current = null;
-      setSigningIn(null);
-      void load();
+      if (signInAbort.current === controller) {
+        signInAbort.current = null;
+        signInComplete.current = null;
+        setCompletingSignIn(false);
+        setSigningIn(null);
+        setSignInFlow(null);
+        setCallbackUrl("");
+        setCallbackError(null);
+        void load();
+      }
+    }
+  };
+
+  const completeSignIn = async () => {
+    if (!signingIn || !signInFlow?.flowId || completingSignIn) return;
+    const controller = signInAbort.current;
+    setCompletingSignIn(true);
+    setCallbackError(null);
+    try {
+      const result = await completeMcpSignIn(signingIn, signInFlow.flowId, callbackUrl, api);
+      if (signInAbort.current === controller) signInComplete.current?.(result);
+    } catch (cause) {
+      if (signInAbort.current === controller) setCallbackError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      if (signInAbort.current === controller) setCompletingSignIn(false);
     }
   };
 
@@ -770,8 +803,31 @@ export function McpServersPanel() {
                     </div>
                   </div>
                   {signingIn === server.name && (
-                    <div role="status" className="mt-3 flex items-center gap-2 rounded-lg bg-raised px-3 py-2 text-[12px] text-ink-secondary">
-                      <Loader2 size={13} className="animate-spin" /> {t("mcp.auth.waiting")}
+                    <div className="mt-3 space-y-3 rounded-lg bg-raised px-3 py-3 text-[12px] text-ink-secondary">
+                      <div role="status" className="flex items-center gap-2">
+                        <Loader2 size={13} className="animate-spin" /> {t("mcp.auth.waiting")}
+                      </div>
+                      {signInFlow?.authorizationUrl && mcpSignInLink(signInFlow.authorizationUrl) && (
+                        <button type="button" onClick={() => void openExternalLink(signInFlow.authorizationUrl!).catch(() => setCallbackError(t("mcp.auth.openFailed")))} className="text-accent hover:underline">
+                          {t("mcp.auth.openAgain")}
+                        </button>
+                      )}
+                      {signInFlow?.flowId && (
+                        <details>
+                          <summary className="cursor-pointer font-medium text-ink">{t("mcp.auth.otherComputer")}</summary>
+                          <p className="mt-2 leading-relaxed">{t("mcp.auth.otherComputerHint")}</p>
+                          <label className="mt-3 block" htmlFor={`mcp-callback-${server.name}`}>{t("mcp.auth.callbackUrl")}</label>
+                          <input id={`mcp-callback-${server.name}`} type="text" value={callbackUrl} disabled={completingSignIn} onChange={(event) => setCallbackUrl(event.target.value)}
+                            autoComplete="off" spellCheck={false} placeholder="http://127.0.0.1:…/mcp-oauth/callback?…"
+                            className="mt-1 w-full rounded-lg border border-hairline bg-inset px-3 py-2 text-ink outline-none focus:border-accent" />
+                          <button type="button" disabled={!callbackUrl.trim() || completingSignIn} aria-busy={completingSignIn} onClick={() => void completeSignIn()}
+                            className="mt-2 inline-flex items-center gap-2 rounded-lg bg-accent px-3 py-2 font-medium text-white disabled:opacity-40">
+                            {completingSignIn && <Loader2 size={14} className="animate-spin" aria-hidden="true" />}
+                            {t(completingSignIn ? "mcp.auth.completing" : "mcp.auth.complete")}
+                          </button>
+                        </details>
+                      )}
+                      {callbackError && <p role="alert" className="text-danger">{callbackError}</p>}
                     </div>
                   )}
                   {result && signingIn !== server.name && (

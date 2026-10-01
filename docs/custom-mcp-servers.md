@@ -32,9 +32,8 @@ lists its tools.
   OpenMausBot registers a fresh app for each sign-in. If it only accepts an
   app registered in advance, add that app as described below. A 401 without
   sign-in details keeps the old message: check the address and headers.
-- **Where you can sign in.** Only on the computer running the workspace,
-  because the browser comes back to a listener there. From another device
-  the app asks you to sign in from that computer.
+- **Where you can sign in.** On the workspace computer or from another
+  device using the redirect URL paste-back flow described below.
 - **Bots never sign in.** A server that needs sign-in is left out of every
   turn until someone signs in from this page. A signed-in server gets
   `Authorization: Bearer …` in place of any `Authorization` header you set,
@@ -46,6 +45,21 @@ lists its tools.
   the server offers that, then forgets them.
 - **Refresh.** A token is refreshed shortly before it expires. If the server
   refuses the refresh, the server goes back to **Needs sign-in**.
+
+For a headless or remote workspace (including an SSH tunnel), open **Signing
+in from another computer?** while sign-in is waiting. Finish approval in your
+browser. If it redirects to a localhost page that cannot connect, copy the
+**entire URL from the address bar**, paste it into **Redirect URL**, and choose
+**Complete sign-in**. The connection error is expected: that address refers to
+your computer, while OpenMausBot is on the server. No extra port forwarding or
+public callback address is needed. **Open sign-in page** reopens the approval
+page if your browser blocked the first attempt.
+
+Keep the redirect URL private. Complete the flow in the same OMB browser/session
+that started it, within five minutes. Cancellation or logging out ends the
+pending flow; a URL cannot be reused. Existing same-machine sign-in still
+finishes automatically. This works with dynamically registered and
+pre-registered sign-in apps.
 
 #### Servers that need an app registered in advance
 
@@ -70,6 +84,29 @@ After you save, the editor shows the redirect URI to register with the app:
 the server's address. Sign-in with a registered app always uses that port; if
 another program holds it, sign-in stops and says so. Changing the client ID
 or the scopes signs the server out; a new secret for the same app does not.
+
+### Example: give your bots web search
+
+A good first URL server is You.com's search server, because the free profile
+needs no token at all. Add a URL server with the address
+
+```
+https://api.you.com/mcp?profile=free
+```
+
+leave the headers empty, and press **Test** — the handshake completes and the
+server advertises `you-search` (web search) and `you-discover` (a directory of
+other MCP servers). The free profile is read-only and rate-limited to 100
+searches a day; there is no key, so none is stored. Turn the server on and
+every compatible bot can search the web on its next task — `you-search` results
+arrive like any other tool result, through the approval cards.
+
+If the free limits are too small, [you.com/platform](https://you.com/platform)
+issues an API key with a higher quota and extra tools (`you-contents` for
+full-page extraction, `you-research` for multi-step reports). Add the same
+address without `?profile=free` and one header line,
+`Authorization: Bearer <your key>` — the key is kept write-only like every
+other header value.
 
 ### Import and choose tools per bot
 
