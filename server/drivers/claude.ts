@@ -475,7 +475,7 @@ function extrasFromUnknown(value: unknown): Array<{ id: string; label: string }>
   });
 }
 
-/** Extra ids from ~/.claude/settings.json. Official cloud rows stay untagged.
+/** Extra ids from ~/.claude/settings.json. Official extraModels stay untagged.
  *  `model` is Claude Code's last-used slug, not a catalog — listing it as
  *  Custom put a non-inject id in the picker and the turn then had no
  *  ANTHROPIC_API_KEY ("Not logged in · Please run /login"). Live injects
@@ -492,22 +492,24 @@ export function readClaudeModelCatalog(env: Record<string, string | undefined> =
   }
 
   const extras = [
-    ...extrasFromUnknown(settings.availableModels),
-    ...extrasFromUnknown(settings.customModels),
-    ...extrasFromUnknown(settings.extraModels),
+    ...extrasFromUnknown(settings.availableModels).map((extra) => ({ ...extra, custom: true })),
+    ...extrasFromUnknown(settings.customModels).map((extra) => ({ ...extra, custom: true })),
+    ...extrasFromUnknown(settings.extraModels).map((extra) => ({ ...extra, custom: !OFFICIAL_CLAUDE_ID.test(extra.id) })),
   ];
   const nestedEnv = settings.env && typeof settings.env === "object" ? (settings.env as Record<string, unknown>) : {};
   const envModel = nestedEnv.ANTHROPIC_MODEL ?? env.ANTHROPIC_MODEL;
-  if (typeof envModel === "string") extras.push(...extrasFromUnknown([envModel]));
+  if (typeof envModel === "string") extras.push(...extrasFromUnknown([envModel]).map((extra) => ({ ...extra, custom: true })));
 
   const options = STATIC_CLAUDE_MODELS.options.map((option) => ({ ...option }));
   const seen = new Set(options.map((option) => option.id));
   for (const extra of extras) {
     if (seen.has(extra.id)) continue;
     seen.add(extra.id);
-    // An Anthropic model id (claude-*) runs on the signed-in account like the
-    // static rows; only other ids are local/custom models for the Local pane.
-    options.push(OFFICIAL_CLAUDE_ID.test(extra.id) ? { id: extra.id, label: extra.label } : { id: extra.id, label: extra.label, custom: true });
+    // Only extraModels adds official cloud rows. An explicit endpoint model
+    // override stays custom even when its id also appears in that list.
+    options.push(extra.custom || extra.id === envModel
+      ? { id: extra.id, label: extra.label, custom: true }
+      : { id: extra.id, label: extra.label });
   }
   return { default: STATIC_CLAUDE_MODELS.default, options };
 }
