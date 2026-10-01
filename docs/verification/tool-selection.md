@@ -95,7 +95,9 @@ is excluded from main-turn counts. Its synthetic default-catalog comparison
 was 25 schemas / 44415 bytes; the live drafting turn's reduced catalog was
 3 / 3516. This is not a reconstruction of the original issue's 97-tool setup.
 
-The final successful Pi and Grok mail turns each made two allowed read calls. An
+The final successful Pi and Grok mail turns each made two allowed read calls. Grok
+was rerun after the inherited-profile and Codex gate review fixes; Pi's
+implementation was unchanged from its accepted live run. An
 earlier small-model run exceeded the request budget and failed. The passing
 checks establish tool availability and execution boundaries, not one-call
 planning quality or general model reliability.
@@ -109,9 +111,9 @@ These totals are not a per-request context size or a monetary saving estimate.
 | Pi drafting | 2 | 3374 | 229 |
 | Pi mail | 2 | 1748 | 307 |
 | Pi no tools | 1 | 608 | 123 |
-| Grok drafting | 3 | 9437 | 261 |
-| Grok mail | 5 | 14712 | 523 |
-| Grok no tools | 1 | 1835 | 115 |
+| Grok drafting | 3 | 9444 | 266 |
+| Grok mail | 5 | 14748 | 493 |
+| Grok no tools | 2 | 4240 | 426 |
 
 The largest individual prompt was 1819 tokens for Pi and 3434 for Grok.
 The fixture answered two Pi and three Grok approval requests for its own
@@ -128,10 +130,13 @@ the disposable agent data removed afterward.
 
 Run `pnpm typecheck`, `pnpm lint`, `pnpm test`, `pnpm check:electron` and
 `pnpm i18n:check`. On a Mac with Node installed outside standard locations,
-the installer tests' fake PATH may not find Node. Supply `OMB_EXTRA_PATH`
-pointing to a disposable directory containing **only** a link to Node, so
-the fixture's fake npm remains first. Do not prepend a real npm installation
-or change application code to repair the test machine's PATH.
+the installer tests' fake PATH may not find Node. A temporary link to Node
+in pnpm's existing `node_modules/.bin` can supply it through `OMB_EXTRA_PATH`.
+First verify that directory contains no npm executable, so the fixture's fake
+npm remains selected. Use the same leading directory in the test process's
+inherited PATH; the PATH contract test intentionally checks that order.
+Remove only the link created for this test afterward. Do not prepend a real
+npm installation or change application code to repair the machine's PATH.
 
 The [engine support table](../tool-selection.md#engine-support) distinguishes
 usable native selection from MCP-only support and fail-closed unsupported
