@@ -125,7 +125,13 @@ case "$*" in
   *" start "*) sed 's/"Running":false/"Running":true/' "$FAKE_DOCKER_DIR/container.json.tpl" > "$FAKE_DOCKER_DIR/container.next"; mv "$FAKE_DOCKER_DIR/container.next" "$FAKE_DOCKER_DIR/container.json.tpl" ;;
   *" container ls "*) if [ ! -f "$FAKE_DOCKER_DIR/inventory-empty" ]; then echo "${CONTAINER_ID}"; fi ;;
   *" container inspect "*) name=$(cat "$FAKE_DOCKER_DIR/container.name"); sed "s|__NAME__|$name|g" "$FAKE_DOCKER_DIR/container.json.tpl" ;;
-  *" image inspect "*) cat "$FAKE_DOCKER_DIR/image.json" ;;
+  *" image inspect "*)
+    if [ -f "$FAKE_DOCKER_DIR/fail-inspect-once" ]; then
+      rm "$FAKE_DOCKER_DIR/fail-inspect-once"
+      echo "ssh: connection reset by peer" >&2
+      exit 1
+    fi
+    cat "$FAKE_DOCKER_DIR/image.json" ;;
   *" exec "*"--version"*) echo "cua-driver ${CUA_DRIVER_VERSION}" ;;
   *" exec "*"--screenshot-out-file"*)
     : > "$FAKE_DOCKER_DIR/capture-started"
@@ -250,6 +256,23 @@ createServer(socket => socket.end()).listen(port, '127.0.0.1');
   afterAll(async () => {
     await waitForExit(child, { signal: "SIGTERM" });
     await removeTempDir(home);
+  });
+
+  it("recovers a transient VPS inspection failure through the real status route without provisioning", async () => {
+    expect((await api("PUT", "/api/config", { vps: { sshAlias: "production-vps" } })).status).toBe(200);
+    const bot = (await api("POST", "/api/bots")).body.bot;
+    await api("PATCH", `/api/bots/${bot.id}`, { computer: "cloud", cloudBackend: "vps" });
+    const marker = join(dirname(dockerLog), "fail-inspect-once");
+    const offset = readFileSync(dockerLog, "utf8").length;
+    writeFileSync(marker, "fail once");
+    try {
+      const result = await api("GET", `/api/bots/${bot.id}/computer`);
+      expect(result.status).toBe(200);
+      expect(result.body).toMatchObject({ backend: "vps", ready: true, container: "running" });
+      const calls = readFileSync(dockerLog, "utf8").slice(offset);
+      expect(calls.match(/ image inspect /g)).toHaveLength(2);
+      expect(calls).not.toMatch(/ssh:\/\/production-vps (run|start|stop|rm|pull|build) /);
+    } finally { rmSync(marker, { force: true }); }
   });
 
   it("shares a canceled preview with retries and opens control without racing destructive actions", async () => {
@@ -470,8 +493,8 @@ createServer(socket => socket.end()).listen(port, '127.0.0.1');
       const echo = snapshot.messages.find((m: any) => m.kind === "text" && m.text?.startsWith("echo: ")).text;
       // the VPS clause, including the disposable-filesystem warning
       expect(echo).toContain("self-hosted remote Linux computer");
-      expect(echo).toContain("This is a VPS, not Box");
-      expect(echo).toContain("using it does not require a Box API key");
+      expect(echo).toContain("This is a VPS, not Boat");
+      expect(echo).toContain("using it does not require a Boat API key");
       expect(echo).toContain("wiped whenever its container is recreated");
 
       // the official Cua MCP server was mounted through the VPS bridge
@@ -507,7 +530,7 @@ createServer(socket => socket.end()).listen(port, '127.0.0.1');
       expect(status.body).toMatchObject({ backend: "vps", ready: true, container: "running" });
 
       // Explicit Cloud with the VPS backend is still the selected local ACP
-      // engine with a VPS tool mount, not the unrelated native Box runner.
+      // engine with a VPS tool mount, not the unrelated native Boat runner.
       expect((await api("PATCH", `/api/bots/${bot.id}`, { computer: "cloud" })).status).toBe(200);
       const explicitThread = (await api("POST", `/api/bots/${bot.id}/tasks`, {})).body.task.threadId;
       rmSync(`${acpDump}.mcp.json`, { force: true });
@@ -520,7 +543,7 @@ createServer(socket => socket.end()).listen(port, '127.0.0.1');
       expect(threadPreview.body).toMatchObject({ surface: "cloud", backend: "vps", ready: true });
 
       // Scheduling on the bot's setup must retain its ACP model + VPS tools,
-      // without requiring credentials for the unrelated Box-hosted runner.
+      // without requiring credentials for the unrelated Boat-hosted runner.
       const created = await api("POST", "/api/routines", {
         botId: bot.id, name: "VPS scheduled check", prompt: "Check the existing VPS.", enabled: false,
         schedule: { type: "interval", everyMinutes: 60, anchorAt: Date.now() + 3_600_000 },
@@ -538,7 +561,7 @@ createServer(socket => socket.end()).listen(port, '127.0.0.1');
       const routineTools = JSON.parse(readFileSync(`${acpDump}.mcp.json`, "utf8"));
       expect(routineTools.find((tool: { name: string }) => tool.name === "computer")?.args).toContain("production-vps");
       const routineMessages = (await api("GET", `/api/threads/${completed.threadId}/messages?limit=100`)).body.messages;
-      expect(routineMessages.some((message: any) => message.text?.includes("This is a VPS, not Box"))).toBe(true);
+      expect(routineMessages.some((message: any) => message.text?.includes("This is a VPS, not Boat"))).toBe(true);
 
       // The turn claim is gone, but its durable container remains on the old
       // host. Keep that resource visible until the user removes it.

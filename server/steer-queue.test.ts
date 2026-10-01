@@ -80,6 +80,21 @@ function fakeStore(bots: BotRecord[]): SteerStore & { messages: Message[] } {
 }
 
 describe("steer-queue module", () => {
+  it("keeps readable citation prompts byte-for-byte through queue, hold, and drain", () => {
+    const bot = fakeBot("bot-citation-queue", "thread-citation-queue", true);
+    const store = fakeStore([bot]);
+    const prompt = '<!--omb-citation-v1:fixture-->\n> Quoted message:\n> const café = "🐭";\n\nComment:\nExplain this';
+    const queued = queueSteeredMessage(bot.id, bot.threadId, prompt);
+    const held = holdSteeredQueue(bot.id, bot.threadId, queued.id)!;
+    expect(held.items[0]).toMatchObject({ text: prompt, prompt });
+    restoreHeldSteeredQueue(held);
+    bot.busy = false;
+    const run = vi.fn();
+    drainSteeredMessages(store, run);
+    expect(run.mock.calls[0][2]).toBe(prompt);
+    expect(store.messages[0].text).toBe(prompt);
+  });
+
   it.each([undefined, "capacity", "group-turn"] as const)("detects an exact owner's queued correction with reason %s", (reason) => {
     const botId = `correction-${reason ?? "busy"}`;
     const threadId = `${botId}-thread`;
@@ -140,12 +155,20 @@ describe("steer-queue module", () => {
     queueSteeredMessage(bot.id, bot.threadId, "from the paired person", { sender: { name: "Priya" } });
     bot.busy = false;
     drainSteeredMessages(store, run);
+    // M2: different senders never coalesce — the owner's turn runs first
+    // and Priya's words wait for the next settle.
+    expect(store.messages.map((message) => [message.text, message.sender])).toEqual([
+      ["from the owner", undefined],
+    ]);
+    drainSteeredMessages(store, run);
     expect(store.messages.map((message) => [message.text, message.sender])).toEqual([
       ["from the owner", undefined],
       ["from the paired person", { name: "Priya" }],
     ]);
-    // the line handed to the turn is the stamped one, not a copy without it
-    expect(run.mock.calls[0][3].sender).toEqual({ name: "Priya" });
+    // the line handed to each turn is the stamped one, not a copy without it
+    expect(run).toHaveBeenCalledTimes(2);
+    expect(run.mock.calls[1][3].sender).toEqual({ name: "Priya" });
+    expect(run.mock.calls[0][3].sender).toBeUndefined();
   });
 
   it("still loads and drains a durable row written before senders were kept", () => {

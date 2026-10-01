@@ -1,7 +1,7 @@
 import { t } from "./i18n";
 
 export interface FeatureFlagConfig {
-  features?: { skillAuthoring?: boolean; showToolCalls?: boolean; browser?: boolean; sharedComputers?: boolean; claudeUserMcp?: boolean };
+  features?: { skillAuthoring?: boolean; showToolCalls?: boolean; browser?: boolean; sharedComputers?: boolean; claudeUserMcp?: boolean; routinesInConversation?: boolean; llmThreadTitles?: boolean };
   browserEngine?: { kind: "engine" | "unavailable"; reason?: string; installable?: boolean; installing?: boolean; installError?: string };
 }
 
@@ -38,6 +38,12 @@ export function showToolCallsEnabled(config: FeatureFlagConfig | null | undefine
   return config?.features?.showToolCalls === true;
 }
 
+/** Routine turns are written into the conversation that receives the run card.
+ * Off by default — the run stays in a hidden thread and the chat only gets the card. */
+export function routinesInConversationEnabled(config: FeatureFlagConfig | null | undefined): boolean {
+  return config?.features?.routinesInConversation === true;
+}
+
 /** Opt-in computer sharing — lending this desktop's folders, terminal or
  * computer control to a connected workspace. Off unless this server was
  * explicitly switched on in its config.json; there is no Settings toggle, so
@@ -51,4 +57,11 @@ export function sharedComputersEnabled(config: FeatureFlagConfig | null | undefi
  * tokens on each message — and mirrors the server's claudeUserMcpEnabled. */
 export function claudeUserMcpEnabled(config: FeatureFlagConfig | null | undefined): boolean {
   return config?.features?.claudeUserMcp === true;
+}
+
+/** Generated thread titles, and with them the thread menu's Regenerate
+ * title. Off unless this server was switched on in its config.json; mirrors
+ * the server's llmThreadTitlesEnabled. */
+export function llmThreadTitlesEnabled(config: FeatureFlagConfig | null | undefined): boolean {
+  return config?.features?.llmThreadTitles === true;
 }

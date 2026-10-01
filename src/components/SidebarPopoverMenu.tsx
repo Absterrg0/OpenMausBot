@@ -10,6 +10,7 @@
 // nothing in particular is startling on a row you pass over constantly.
 import { useEffect, useId, useRef, useState } from "react";
 import { cn } from "@/lib/cn";
+import { useMenuMotion } from "./MenuMotion";
 
 export interface SidebarMenuItem {
   key: string;
@@ -74,6 +75,7 @@ export function SidebarPopoverMenu({
   const openTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const closeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const menuId = useId();
+  const motion = useMenuMotion(open);
 
   const clearTimers = () => {
     if (openTimer.current) clearTimeout(openTimer.current);
@@ -154,14 +156,16 @@ export function SidebarPopoverMenu({
         {renderTrigger({ open, attention, attentionTone })}
       </button>
 
-      {open && (
+      {motion.shown && (
         <div
           id={menuId}
           role="menu"
           aria-label={ariaLabel}
+          {...motion.exitProps}
           className={cn(
-            "animate-pop-in absolute z-40 overflow-hidden rounded-xl border border-hairline/50 bg-menu py-1.5 shadow-2xl shadow-black/50",
-            placement === "below" ? "top-full right-0 mt-1 w-72" : "bottom-full left-0 right-0 mb-1",
+            "absolute z-40 overflow-hidden rounded-xl border border-hairline/50 bg-menu py-1.5 shadow-2xl shadow-black/50",
+            placement === "below" ? "top-full right-0 mt-1 w-72 max-w-[calc(100vw-2rem)]" : "bottom-full left-0 right-0 mb-1",
+            motion.className,
           )}
         >
           {items.map((item) => (

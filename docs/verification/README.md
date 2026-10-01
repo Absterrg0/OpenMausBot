@@ -75,6 +75,7 @@ Use only mapped, tested commands:
 - [Shared-workspace governance: bot visibility and admin activity](shared-workspace-governance.md)
 - [Usage ledger](usage-ledger.md)
 - [Bounded built-in tool results](tool-results.md)
+- [Memory: recall, upkeep and the tidy-up](memory-layer.md)
 - [Spend cap and sell prices](spend-cap.md)
 - [Enterprise layer loading and license expiry](enterprise-license.md)
 
@@ -86,6 +87,10 @@ built-in browser panel, and updater UI—is still not proven by the harness. Use
 the relevant Electron/package smoke test and state that limitation. Add a map
 entry only after the shared control surface can really drive it.
 
+The [MCP sign-in fixture](mcp-sign-in.md) checks remote sign-in, callback URL
+paste-back, MCP tools and logout cancellation through the real settings panel
+and a synthetic OAuth provider in a disposable workspace.
+
 The [desktop server connection smoke](desktop-server-connection.md) mounts the
 real Settings connection component in disposable Electron windows.
 
@@ -95,6 +100,9 @@ button, hidden handoff, tray restore, and Quit in a disposable Electron profile.
 The [optional organization connection smoke](organization-settings.md) checks
 the real Settings panel and production desktop client against a synthetic
 Admin server, including cancellation, revocation and unchanged normal startup.
+
+The [personal Cloud account smoke](cloud-account.md) checks optional browser
+sign-in, server-verified Pro status and sign-out in a disposable Electron profile.
 
 The [embedded server recovery smoke](desktop-server-recovery.md) crashes real
 Electron-owned fixture servers, verifies bounded recovery and private access,
@@ -120,6 +128,10 @@ watching, takeover, input, and profile switching.
 The [local computer launch regression](local-computer-launch.md) starts the
 host CUA gate through real Electron in a disposable home, without opening the
 desktop app or controlling the user's computer.
+
+The [remote desktop viewer fixture](desktop-viewer.md) checks the bundled
+noVNC page, authenticated WebSocket proxy, desktop input, reconnect and logout
+against an isolated server, synthetic desktop and VPS SSH forward.
 
 The [bot settings fixture](bot-settings.md) checks profile saves, standing
 instructions, history restore, skill/memory refresh, and stale-response isolation.
@@ -210,6 +222,9 @@ including the surviving conversation and sending again without deleting the bot.
 
 The [Codex account recipe](codex-account.md) checks account switching against an
 offline Codex CLI whose identity is synthetic and whose credential directory is empty.
+
+The [ChatGPT plan recipe](chatgpt-plan.md) checks the separate official OAuth
+flow, credential rotation, account ownership, and native Responses routing.
 
 The [mention fixture](mentions.md) checks candidate selection, composer highlighting,
 sent mentions, multiline scrolling and responsive wrapping in real chat views.
