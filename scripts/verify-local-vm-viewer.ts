@@ -148,12 +148,33 @@ process.stdout.write(typeof result === 'string' ? result : JSON.stringify(result
   await command("click", "#retry");
   await nextConnection;
   await command("wait", "--fn", "document.getElementById('status').textContent === 'Desktop connected'");
+  // Leaving while the credentials request is in flight must abort it. A
+  // persisted-page restore must then establish a fresh connection.
+  await evaluate(`(() => {
+    const fetch = window.fetch;
+    window.fetch = async (input, init) => {
+      if (input !== '/api/local-computer/viewer/shared') return fetch(input, init);
+      window.fetch = fetch;
+      window.viewerSignal = init.signal;
+      const response = await fetch(input, init);
+      await new Promise(resolve => { window.releaseViewerRequest = resolve; });
+      return response;
+    };
+  })()`);
+  await command("click", "#retry");
+  await command("wait", "--fn", "typeof window.releaseViewerRequest === 'function'");
+  assert.equal(await evaluate("(() => { window.dispatchEvent(new PageTransitionEvent('pagehide', {persisted:true})); return window.viewerSignal.aborted; })()"), true);
+  await evaluate("window.releaseViewerRequest()");
+  nextConnection = desktop.nextConnection();
+  await evaluate("window.dispatchEvent(new PageTransitionEvent('pageshow', {persisted:true}))");
+  await nextConnection;
+  await command("wait", "--fn", "document.getElementById('status').textContent === 'Desktop connected'");
   const beforeLogout = desktop.connections();
   assert.equal(await evaluate("fetch('/api/auth/session').then(r=>r.json()).then(s=>s.kind)"), "session");
   assert.equal(await evaluate("fetch('/api/auth/logout',{method:'POST',headers:{'content-type':'application/json'},body:'{}'}).then(r=>r.status)"), 200);
   await command("wait", "--fn", "document.getElementById('status').textContent.includes('disconnected')");
   assert.ok(beforeLogout >= 2);
-  console.log(JSON.stringify({ ok: true, checks: ["built noVNC renders RFB pixels", "paired status uses app URL", "keyboard, Unicode and Ctrl-Alt-Del", "clipboard sync without Send, including clearing", "matching desktop backgrounds in both themes", "automatic 95% fit, fullscreen and animated sidebar", "native tooltips and reduced-motion panels", "phone and landscape viewports", "reconnect", "logout closes socket"], logPath: fixture.info.logPath, screenshots: [desktopScreenshot, phoneScreenshot, lightScreenshot] }));
+  console.log(JSON.stringify({ ok: true, checks: ["built noVNC renders RFB pixels", "paired status uses app URL", "keyboard, Unicode and Ctrl-Alt-Del", "clipboard sync without Send, including clearing", "matching desktop backgrounds in both themes", "automatic 95% fit, fullscreen and animated sidebar", "native tooltips and reduced-motion panels", "phone and landscape viewports", "reconnect", "page exit aborts pending connection and restore reconnects", "logout closes socket"], logPath: fixture.info.logPath, screenshots: [desktopScreenshot, phoneScreenshot, lightScreenshot] }));
 } finally {
   if (browser) await run(browser.binary, ["close"], { env: browser.env, timeout: 10_000 }).catch(() => {});
   await fixture?.close();

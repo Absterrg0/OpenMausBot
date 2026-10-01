@@ -198,12 +198,41 @@ it("expires an open viewer without renewing its session in the background", asyn
 it("rechecks access after asynchronous container inspection", async () => {
   let inspectedDone!: () => void;
   inspection = new Promise(resolve => { inspectedDone = resolve; });
-  const result = open();
+  const result = get(base);
   await expect.poll(() => inspected.length).toBe(1);
   sessions.revoke(admin.session.id);
   inspectedDone();
   expect((await result).status).toBe(401);
   expect(seenPath).toBeUndefined();
+});
+
+it.each(["shutdown", "revocation"])("closes a pending upgrade immediately on %s", async action => {
+  let inspectedDone!: () => void;
+  inspection = new Promise(resolve => { inspectedDone = resolve; });
+  const accepted = once(app, "connection");
+  const completed = new Promise<void>(resolve => { handled = resolve; });
+  const rejected = expect(open()).rejects.toThrow();
+  await expect.poll(() => inspected.length).toBe(1);
+  const [socket] = await accepted;
+  try {
+    if (action === "shutdown") viewer.closeAll();
+    else sessions.revoke(admin.session.id);
+    await expect.poll(() => socket.destroyed, { timeout: 1000 }).toBe(true);
+    await rejected;
+  } finally {
+    inspectedDone();
+  }
+  await completed;
+  expect(seenPath).toBeUndefined();
+  if (action === "shutdown") await expect(open()).rejects.toThrow();
+});
+
+it("closes established viewers during shutdown", async () => {
+  const socket = (await open()).socket!;
+  const closed = once(socket, "close");
+  viewer.closeAll();
+  await closed;
+  await expect(open()).rejects.toThrow();
 });
 
 it("does not connect upstream after the waiting browser disconnects", async () => {

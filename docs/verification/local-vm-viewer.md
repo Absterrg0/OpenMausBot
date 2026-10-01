@@ -30,11 +30,14 @@ status and WebSocket routes as a remote admin, and verifies:
 - The panels fit phone and short landscape viewports; dark and light screenshots
   show the built UI using the app's skin tokens.
 - Reconnect opens a new working desktop connection.
+- Page exit aborts a pending connection request; a persisted-page restore
+  opens a fresh connection.
 - Logout closes the already-open WebSocket.
 
 The focused server tests exercise shared, per-bot and pool target selection,
 HTTP and upgrade authentication, client-scope and foreign-origin refusal,
-session revocation/expiry, disconnect during inspection, target deletion,
+session revocation/expiry, shutdown and revocation during inspection,
+established-connection shutdown, disconnect during inspection, target deletion,
 upstream rejection/timeouts, and stripping workspace credentials from the
 upstream request:
 

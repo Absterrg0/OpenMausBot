@@ -25,8 +25,7 @@ export function localVmViewerStatus<T extends { target_key: string; viewer_url: 
   };
 }
 
-interface Upgrade { socket: Socket; head: Buffer; release: () => void }
-interface Connection { close: () => void; owner?: string }
+interface Upgrade { socket: Socket; head: Buffer; release: () => void; close: () => void; owner?: string }
 
 export function createLocalVmViewer(deps: {
   target: (id: string) => LocalVmTarget | undefined;
@@ -34,14 +33,14 @@ export function createLocalVmViewer(deps: {
   live: (auth: RequestAuth) => boolean;
   touch: (target: LocalVmTarget) => void;
 }) {
-  const upgrades = new WeakMap<IncomingMessage, Upgrade>();
-  const connections = new Set<Connection>();
+  const upgrades = new Map<IncomingMessage, Upgrade>();
+  let stopped = false;
 
   /** Run upgrades through the very same authentication, hosted-workspace and
    * maintenance gates as HTTP. Only this route can detach the response socket. */
   function attach(server: Server, handle: (req: IncomingMessage, res: ServerResponse) => Promise<unknown>): void {
     server.on("upgrade", (req, socket, head) => {
-      if (!(socket instanceof Socket)) { socket.destroy(); return; }
+      if (stopped || !(socket instanceof Socket)) { socket.destroy(); return; }
       const res = new ServerResponse(req);
       res.assignSocket(socket);
       // Rejected upgrades end this socket; do not let HTTP clients pool it.
@@ -54,14 +53,14 @@ export function createLocalVmViewer(deps: {
       if (!ROUTE.exec(path)?.[2]) { res.writeHead(404).end(); return; }
       // Keep reading while auth/inspection awaits, so a closed tab's FIN is
       // observed. Bound and preserve any eagerly sent WebSocket bytes.
-      const upgrade: Upgrade = { socket, head, release: () => socket.off("data", buffer) };
+      const upgrade: Upgrade = { socket, head, release: () => socket.off("data", buffer), close: () => socket.destroy() };
       const buffer = (data: Buffer) => {
         if (upgrade.head.length + data.length > 64 * 1024) socket.destroy();
         else upgrade.head = Buffer.concat([upgrade.head, data]);
       };
       socket.on("data", buffer);
       socket.once("end", () => socket.destroy());
-      socket.once("close", upgrade.release);
+      socket.once("close", () => { upgrade.release(); upgrades.delete(req); });
       upgrades.set(req, upgrade);
       const timeout = setTimeout(() => socket.destroy(), HANDSHAKE_MS);
       timeout.unref();
@@ -83,9 +82,11 @@ export function createLocalVmViewer(deps: {
     if (!auth.scopes.includes("admin") || !isSameOrigin(req)) return json(res, 403, { error: "forbidden" });
     const target = deps.target(match[1]);
     if (!target) return json(res, 404, { error: "Local VM not found" });
+    const upgrade = upgrades.get(req);
+    if (upgrade && auth.kind === "session") upgrade.owner = auth.session.id;
     const status = await deps.status(target);
     // Inspection may outlive a closed tab or the handshake deadline.
-    if (res.destroyed || upgrades.get(req)?.socket.destroyed) return;
+    if (res.destroyed || upgrade?.socket.destroyed) return;
     const live = () => deps.live(auth) && deps.target(match[1])?.key === target.key;
     if (!live()) return json(res, 401, { error: "Viewer access expired" });
     if (!status.managed || !status.imageMatches || status.network !== "loopback" || status.container !== "running"
@@ -96,7 +97,6 @@ export function createLocalVmViewer(deps: {
       const password = new URLSearchParams(new URL(status.viewer_url).hash.slice(1)).get("password");
       return json(res, 200, { password });
     }
-    const upgrade = upgrades.get(req);
     if (!upgrade) return json(res, 426, { error: "WebSocket upgrade required" });
     const key = req.headers["sec-websocket-key"];
     if (req.headers.upgrade?.toLowerCase() !== "websocket" || req.headers["sec-websocket-version"] !== "13"
@@ -115,27 +115,22 @@ export function createLocalVmViewer(deps: {
     let closed = false;
     const timeout = setTimeout(() => fail(), HANDSHAKE_MS);
     timeout.unref();
-    const connection: Connection = {
-      ...(auth.kind === "session" ? { owner: auth.session.id } : {}),
-      close: () => {
-        if (closed) return;
-        closed = true;
-        clearTimeout(timeout);
-        clearInterval(recheck);
-        connections.delete(connection);
-        upstream.destroy();
-        peer?.destroy();
-        socket.destroy();
-      },
+    upgrade.close = () => {
+      if (closed) return;
+      closed = true;
+      clearTimeout(timeout);
+      clearInterval(recheck);
+      upstream.destroy();
+      peer?.destroy();
+      socket.destroy();
     };
     const fail = () => {
       if (closed) return;
-      if (peer || socket.destroyed) { connection.close(); return; }
+      if (peer || socket.destroyed) { upgrade.close(); return; }
       if (!res.headersSent && !socket.destroyed) json(res, 502, { error: "Could not connect to the Local VM viewer" });
       upstream.destroy();
     };
-    connections.add(connection);
-    socket.once("close", connection.close);
+    socket.once("close", upgrade.close);
     upstream.once("error", fail);
     upstream.once("response", (answer) => { answer.resume(); fail(); });
     upstream.once("upgrade", (answer, remote, remoteHead) => {
@@ -146,8 +141,8 @@ export function createLocalVmViewer(deps: {
       }
       clearTimeout(timeout);
       peer = remote;
-      remote.once("error", connection.close);
-      remote.once("close", connection.close);
+      remote.once("error", upgrade.close);
+      remote.once("close", upgrade.close);
       upgrade.release();
       res.detachSocket(socket);
       socket.write(`HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${accept}\r\n\r\n`);
@@ -157,7 +152,7 @@ export function createLocalVmViewer(deps: {
       socket.pipe(remote).pipe(socket);
       deps.touch(target);
       recheck = setInterval(() => {
-        if (!live()) connection.close();
+        if (!live()) upgrade.close();
         else deps.touch(target);
       }, RECHECK_MS);
       recheck.unref();
@@ -167,7 +162,10 @@ export function createLocalVmViewer(deps: {
 
   return {
     route, attach,
-    closeForOwner: (owner: string) => { for (const connection of connections) if (connection.owner === owner) connection.close(); },
-    closeAll: () => { for (const connection of connections) connection.close(); },
+    closeForOwner: (owner: string) => { for (const upgrade of upgrades.values()) if (upgrade.owner === owner) upgrade.close(); },
+    closeAll: () => {
+      stopped = true;
+      for (const upgrade of upgrades.values()) upgrade.close();
+    },
   };
 }

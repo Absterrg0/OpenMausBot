@@ -11,8 +11,9 @@ export function LocalVmViewer() {
   const screen = useRef<HTMLDivElement>(null);
   const rfb = useRef<RFB | null>(null);
   const [attempt, setAttempt] = useState(0);
-  const [connected, setConnected] = useState(false);
-  const [status, setStatus] = useState(t("localVmViewer.connecting"));
+  const [connection, setConnection] = useState<"connecting" | "connected" | "disconnected" | Error>("connecting");
+  const connected = connection === "connected";
+  const status = connection instanceof Error ? connection.message : t(`localVmViewer.${connection}`);
   const [panel, setPanel] = useState<"keyboard" | "clipboard" | null>(null);
   const [expanded, setExpanded] = useState(true);
   const [fullscreen, setFullscreen] = useState(false);
@@ -20,7 +21,7 @@ export function LocalVmViewer() {
   const [clipboard, setClipboard] = useState("");
   const panelMotion = useHeldMenuMotion(panel);
   const handleMotion = useMenuMotion(!expanded);
-  const visiblePanel = panelMotion.value;
+  const keyboardPanel = panelMotion.value === "keyboard";
   const panelRef = useRef(panel);
   panelRef.current = panel;
   const [text, setText] = useState("");
@@ -32,8 +33,7 @@ export function LocalVmViewer() {
     let deadline: ReturnType<typeof setTimeout> | undefined;
     const oldTitle = document.title;
     document.title = t("localVmViewer.title");
-    setConnected(false);
-    setStatus(t("localVmViewer.connecting"));
+    setConnection("connecting");
     const connect = async () => {
       try {
         if (!target || !/^(shared|bot-[a-f0-9]{64}|pool-\d+)$/.test(target)) throw new Error(t("localVmViewer.invalid"));
@@ -57,33 +57,33 @@ export function LocalVmViewer() {
         client.addEventListener("clipboard", event => { if (!controller.signal.aborted) setClipboard(event.detail.text); });
         deadline = setTimeout(() => {
           client?.disconnect();
-          setStatus(t("localVmViewer.disconnected"));
+          setConnection("disconnected");
         }, 15_000);
         client.addEventListener("connect", () => {
           if (controller.signal.aborted) return;
           clearTimeout(deadline);
-          setConnected(true);
-          setStatus(t("localVmViewer.connected"));
+          setConnection("connected");
         });
         client.addEventListener("disconnect", () => {
           if (controller.signal.aborted) return;
           clearTimeout(deadline);
-          setConnected(false);
-          setStatus(t("localVmViewer.disconnected"));
+          setConnection("disconnected");
         });
       } catch (error) {
-        if (!controller.signal.aborted) setStatus(error instanceof Error ? error.message : t("localVmViewer.disconnected"));
+        if (!controller.signal.aborted) setConnection(error instanceof Error ? error : new Error(t("localVmViewer.disconnected")));
       }
     };
     void connect();
-    const disconnect = () => client?.disconnect();
+    const disconnect = () => {
+      controller.abort();
+      clearTimeout(deadline);
+      client?.disconnect();
+    };
     const restore = (event: PageTransitionEvent) => { if (event.persisted) setAttempt(value => value + 1); };
     window.addEventListener("pagehide", disconnect);
     window.addEventListener("pageshow", restore);
     return () => {
-      controller.abort();
-      clearTimeout(deadline);
-      client?.disconnect();
+      disconnect();
       if (rfb.current === client) rfb.current = null;
       window.removeEventListener("pagehide", disconnect);
       window.removeEventListener("pageshow", restore);
@@ -149,16 +149,16 @@ export function LocalVmViewer() {
         {controlError && <p role="alert" className="absolute inset-x-3 bottom-3 rounded-xl border border-hairline bg-panel p-3 text-ink">{controlError}</p>}
       </main>
 
-      {panelMotion.shown && <section {...panelMotion.exitProps} aria-label={t(visiblePanel === "keyboard" ? "localVmViewer.keyboard" : "localVmViewer.clipboard")} onKeyDown={event => {
+      {panelMotion.shown && <section {...panelMotion.exitProps} aria-label={t(keyboardPanel ? "localVmViewer.keyboard" : "localVmViewer.clipboard")} onKeyDown={event => {
         if (event.key === "Escape") { event.stopPropagation(); closePanel(); }
       }} className={cn("absolute left-[72px] top-1/2 z-20 max-h-[calc(100dvh-24px)] w-[min(320px,calc(100%-84px))] -translate-y-1/2 overflow-y-auto rounded-2xl border border-hairline bg-panel p-4 shadow-2xl", panelMotion.className)} style={{ marginLeft: "env(safe-area-inset-left)" }}>
         <div className="mb-3 flex items-center justify-between gap-2">
-          <h1 className="font-medium">{t(visiblePanel === "keyboard" ? "localVmViewer.keyboard" : "localVmViewer.clipboard")}</h1>
+          <h1 className="font-medium">{t(keyboardPanel ? "localVmViewer.keyboard" : "localVmViewer.clipboard")}</h1>
           <ViewerTool label={t("localVmViewer.closePanel")} icon={X} onClick={closePanel} />
         </div>
         <form onSubmit={event => {
           event.preventDefault();
-          if (!rfb.current || !connected || visiblePanel !== "keyboard") return;
+          if (!rfb.current || !connected || !keyboardPanel) return;
           // Explicit text entry works with phone keyboards without reading
           // the device clipboard. Non-Latin text uses Unicode VNC keysyms.
           for (const char of text) {
@@ -167,20 +167,20 @@ export function LocalVmViewer() {
           }
           setText("");
         }}>
-          <label className="mb-2 block text-xs leading-relaxed text-ink-secondary" htmlFor={visiblePanel === "keyboard" ? "text" : "clipboard-text"}>{t(visiblePanel === "keyboard" ? "localVmViewer.text" : "localVmViewer.clipboardHint")}</label>
-          <textarea id={visiblePanel === "keyboard" ? "text" : "clipboard-text"} className="w-full resize-y rounded-xl border border-hairline bg-inset p-3 text-base text-ink outline-none focus:border-focus" rows={4} maxLength={visiblePanel === "keyboard" ? 4096 : 65536} autoComplete="off" autoCapitalize="off" spellCheck={false} value={visiblePanel === "keyboard" ? text : clipboard} disabled={visiblePanel === "clipboard" && !connected} onChange={event => {
+          <label className="mb-2 block text-xs leading-relaxed text-ink-secondary" htmlFor={keyboardPanel ? "text" : "clipboard-text"}>{t(keyboardPanel ? "localVmViewer.text" : "localVmViewer.clipboardHint")}</label>
+          <textarea id={keyboardPanel ? "text" : "clipboard-text"} className="w-full resize-y rounded-xl border border-hairline bg-inset p-3 text-base text-ink outline-none focus:border-focus" rows={4} maxLength={keyboardPanel ? 4096 : 65536} autoComplete="off" autoCapitalize="off" spellCheck={false} value={keyboardPanel ? text : clipboard} disabled={!keyboardPanel && !connected} onChange={event => {
             const value = event.target.value;
-            if (visiblePanel === "keyboard") setText(value);
+            if (keyboardPanel) setText(value);
             else {
               setClipboard(value);
               if (connected) rfb.current?.clipboardPasteFrom(value);
             }
           }} />
-          {visiblePanel === "keyboard" && <button id="send" type="submit" className="mt-3 flex min-h-11 w-full items-center justify-center gap-2 rounded-xl bg-accent px-3 font-medium text-white transition-opacity hover:opacity-90 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus disabled:opacity-40" disabled={!connected || !text}>
+          {keyboardPanel && <button id="send" type="submit" className="mt-3 flex min-h-11 w-full items-center justify-center gap-2 rounded-xl bg-accent px-3 font-medium text-white transition-opacity hover:opacity-90 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus disabled:opacity-40" disabled={!connected || !text}>
             <Send size={16} aria-hidden="true" />{t("localVmViewer.send")}
           </button>}
         </form>
-        {visiblePanel === "keyboard" && <div className="mt-4 grid grid-cols-2 gap-2 border-t border-hairline pt-4">
+        {keyboardPanel && <div className="mt-4 grid grid-cols-2 gap-2 border-t border-hairline pt-4">
           <button className={action} disabled={!connected} onClick={() => rfb.current?.sendKey(0xff09, "Tab")}>Tab</button>
           <button className={action} disabled={!connected} onClick={() => rfb.current?.sendKey(0xff1b, "Escape")}>Esc</button>
           <button id="ctrl-alt-del" className={cn(action, "col-span-2")} disabled={!connected} onClick={() => rfb.current?.sendCtrlAltDel()}>Ctrl–Alt–Del</button>
