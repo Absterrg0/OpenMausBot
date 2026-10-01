@@ -66,7 +66,7 @@ export function DesktopViewer() {
           signal,
           credentials: "same-origin", cache: "no-store",
         });
-        const config = await response.json();
+        const config = await response.json().catch(() => ({}));
         if (controller.signal.aborted) return;
         if (!response.ok) throw new Error(config.error || t("desktopViewer.disconnected"));
         const websocket = new URL(`${path}/websockify`, location.href);
