@@ -332,6 +332,7 @@ import { narrateTool, toUtterances } from "./tts/speech-text.ts";
 import { buildRecoveryText, buildTurnContext, engineIsFresh, NATIVELY_REPLAYING_DRIVER_KINDS, peerMessageText } from "./turn-context.ts";
 import { Handoffs, handedStateUsable, recordHanded, renderUnseen, sessionStart, unseenMessages, withUnseenMessages, type ContextMessage } from "./delta-context.ts";
 import { extractTurnImages } from "./turn-images.ts";
+import { threadTitlePrompt, titleConversationExcerpt, type ThreadTitleSource } from "./thread-title.ts";
 import { TurnWatchdog } from "./turn-watchdog.ts";
 import { TurnResources, workspaceResource, type TurnOwner } from "./turn-resources.ts";
 import { IdleReleasePolicy } from "./claim-idle.ts";
@@ -8598,17 +8599,14 @@ async function finalScreenFrame(_botId: string, threadId: string): Promise<Frame
  * (generateText — Haiku on Claude, the chat completion endpoint's text
  * path on OpenAI-compatible engines). Null whenever that call cannot run,
  * runs long, or answers with something that is not a plain short title;
- * the caller keeps the snippet it already applied. */
+ * the caller keeps the snippet it already applied. "conversation" names an
+ * existing thread from titleConversationExcerpt (Regenerate title). */
 async function generateThreadTitle(
   provider: { generateText?: (prompt: string, options?: { signal?: AbortSignal }) => Promise<string> },
   text: string,
+  source: ThreadTitleSource = "first-message",
 ): Promise<string | null> {
-  const prompt = [
-    "Name the conversation that begins with the message below.",
-    "Reply with only a short title: 3 to 6 words, plain text, no quotes, no trailing period.",
-    "Message:",
-    text.trim().slice(0, 1_500),
-  ].join("\n");
+  const prompt = threadTitlePrompt(text, source);
   const expiry = new AbortController();
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
@@ -8630,6 +8628,9 @@ async function generateThreadTitle(
     clearTimeout(timer);
   }
 }
+
+/** Threads whose Regenerate title one-shot is still running: one at a time. */
+const titleRegenerations = new Set<string>();
 
 // ── turn dispatch (upstream ProviderCommandReactor, miniature) ──────────
 async function startTurn(
@@ -14146,6 +14147,8 @@ function configStatus() {
       // own Claude Code MCP servers
       claudeUserMcp: claudeUserMcpEnabled(cfg),
       autoRecall: autoRecallEnabled(cfg),
+      // hand-edited config.json only; the thread menu offers Regenerate title from it
+      llmThreadTitles: llmThreadTitlesEnabled(cfg),
     },
     // first-run progress — not a secret; the app decides whether to show
     // the welcome tour from this, never from browser storage
@@ -21366,6 +21369,43 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       const fresh = botWithThread(updated);
       broadcast({ kind: "bot", bot: fresh });
       return json(res, 200, { bot: fresh });
+    }
+    // Regenerate title (#1858): name the thread again from its conversation
+    // as it is now. The person asked, so the result replaces any title, but
+    // only the one this started from: a rename that lands while the one-shot
+    // runs wins, and the late result is dropped.
+    m = path.match(/^\/api\/bots\/([\w-]+)\/tasks\/([\w-]+)\/title$/);
+    if (m && method === "POST") {
+      const current = store.projectBotForTask(m[1], m[2]);
+      if (!current) return json(res, 404, { error: "no such task" });
+      const notYours = cloudThreadRefusal(auth, m[2]);
+      if (notYours) return json(res, 403, { error: notYours });
+      if (!llmThreadTitlesEnabled(cfg)) return json(res, 409, { error: "generated thread titles are turned off on this server" });
+      if (hostedModels && !hostedModels.allows(current.modelSelection)) return json(res, 409, { error: hostedModels.error() });
+      const instance = registry.get(current.modelSelection.instanceId);
+      if (!instance?.generateText) return json(res, 409, { error: "this bot's model can't generate a title — rename the thread instead" });
+      // An engine the organisation disallows never receives the text, even for a title.
+      const refusal = policyModelRefusal(instance);
+      if (refusal) return json(res, 409, { error: refusal });
+      if (titleRegenerations.has(m[2])) return json(res, 409, { error: "a new title is already being generated for this thread" });
+      const excerpt = titleConversationExcerpt(store.messagesTail(m[2], 200).messages);
+      if (!excerpt) return json(res, 409, { error: "this thread has no messages to take a title from yet" });
+      try {
+        assertWithinBudget(cfg, DATA_DIR);
+      } catch (error) {
+        return json(res, 409, { error: error instanceof Error ? error.message : String(error) });
+      }
+      const startedFrom = store.taskByThread(m[1], m[2])!.title;
+      titleRegenerations.add(m[2]);
+      try {
+        const title = await generateThreadTitle(instance, excerpt, "conversation");
+        if (!title) return json(res, 502, { error: "couldn't generate a title — try again, or rename the thread" });
+        const task = store.retitleTask(m[1], m[2], startedFrom, title) ?? store.taskByThread(m[1], m[2]);
+        if (!task) return json(res, 404, { error: "no such task" });
+        return json(res, 200, { task: wireTask(task) });
+      } finally {
+        titleRegenerations.delete(m[2]);
+      }
     }
 
     // Named team Boats use real independent ownership, never a hidden bot or
