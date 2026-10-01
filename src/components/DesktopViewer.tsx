@@ -159,6 +159,7 @@ export function DesktopViewer() {
           <div className="my-1 h-px w-7 shrink-0 bg-hairline" />
           <ViewerTool id="retry" label={t("desktopViewer.reconnect")} icon={RefreshCw} onClick={() => { setClipboard(""); setAttempt(value => value + 1); }} />
           <ViewerTool id="hide-controls" label={t("desktopViewer.hideControls")} icon={ChevronLeft} onClick={() => { setExpanded(false); closePanel(); }} />
+          <a id="viewer-notice" href="/novnc-NOTICE.txt" target="_blank" rel="license noopener noreferrer" title={t("desktopViewer.notice")} aria-label={t("desktopViewer.notice")} className="flex min-h-6 w-11 shrink-0 items-center justify-center rounded-lg text-[10px] text-ink-secondary hover:text-ink hover:underline">noVNC</a>
         </div>
       </aside>
       {handleMotion.shown && <div {...handleMotion.exitProps} className={cn("absolute left-0 top-1/2 z-10 -translate-y-1/2 rounded-r-2xl border border-l-0 border-hairline bg-panel p-1 shadow-xl", handleMotion.className)}>

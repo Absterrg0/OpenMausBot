@@ -2992,5 +2992,6 @@
   "desktopViewer.hideControls": "Hide controls",
   "desktopViewer.showControls": "Show controls",
   "desktopViewer.closePanel": "Close panel",
+  "desktopViewer.notice": "noVNC licenses and source",
   "desktopViewer.invalid": "This desktop link is invalid. Open it again from OpenMausBot."
 }
