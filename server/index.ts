@@ -222,7 +222,7 @@ import {
   parseMcpServersImport,
   parseStoredMcpServer,
 } from "./mcp-registry.ts";
-import { McpOAuthError, McpOAuthManager, withMcpSignIn, withoutPendingSignIn } from "./mcp-oauth.ts";
+import { McpOAuthError, McpOAuthManager, mcpOAuthRedirectUri, withMcpSignIn, withoutPendingSignIn } from "./mcp-oauth.ts";
 import { probeMcpServer } from "./mcp-probe.ts";
 import {
   GROUP_GOAL_MAX_TURNS,
@@ -14153,8 +14153,11 @@ function mcpServerResponse() {
   // but never reach bots, and why. Nothing here is written to config.json.
   const policy = managedPolicy.current();
   const servers = listMcpServers(cfg.mcpServers).map((server) => {
-    const auth = "url" in server ? mcpOAuth.authState(server.name, server.url) : "none";
-    return auth === "none" ? server : { ...server, auth };
+    if (!("url" in server)) return server;
+    const auth = mcpOAuth.authState(server.name, server.url);
+    // the redirect URI to register with a pre-registered sign-in app
+    const listed = server.oauth ? { ...server, oauth: { ...server.oauth, redirectUri: mcpOAuthRedirectUri(server.url) } } : server;
+    return auth === "none" ? listed : { ...listed, auth };
   }).map(server =>
     managedPolicy.mcpAllowed(server.name, "url" in server ? server.url : undefined) ? server : { ...server, managedBy: policy!.organizationName });
   return { servers, ...(policy && !policy.mcp.allowCustom ? { managed: { organizationName: policy.organizationName, allowlist: policy.mcp.allowlist } } : {}) };
@@ -14171,7 +14174,7 @@ function mcpServerBody(body: unknown): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   if (!body || typeof body !== "object") return out;
   const record = body as Record<string, unknown>;
-  for (const key of ["command", "args", "env", "type", "url", "headers", "enabled"]) {
+  for (const key of ["command", "args", "env", "type", "url", "headers", "oauth", "enabled"]) {
     if (record[key] !== undefined) out[key] = record[key];
   }
   return out;
@@ -14373,7 +14376,16 @@ let providerConfigBusy = false;
 const providerInstancesChanging = new Set<string>();
 let mcpConfigBusy = false;
 /** OAuth sign-in for URL servers; tokens live in their own owner-only file. */
-const mcpOAuth = new McpOAuthManager({ file: join(DATA_DIR, "mcp-oauth.json") });
+const mcpOAuth = new McpOAuthManager({
+  file: join(DATA_DIR, "mcp-oauth.json"),
+  // the app registered for a server at this address, read from config.json
+  // when a sign-in or refresh needs it; its secret is never copied out
+  clients: (name, url) => {
+    const raw = cfg.mcpServers?.[name];
+    const parsed = raw === undefined ? null : parseStoredMcpServer(name, raw);
+    return parsed?.ok && isRemoteMcpServer(parsed.server) && parsed.server.url === url ? parsed.server.oauth : undefined;
+  },
+});
 const MAX_CONCURRENT_MCP_PROBES = 2;
 let mcpProbesInFlight = 0;
 // One updater per executable: multiple Claude instances can point at the same
@@ -22304,9 +22316,13 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         // a sign-in belongs to one address; a token never follows the entry elsewhere
         const before = isRemoteMcpServer(existing.server) ? existing.server.url : null;
         const after = isRemoteMcpServer(parsed.server) ? parsed.server.url : null;
+        // ...and to one sign-in app with its scopes; a new secret for the same app keeps it
+        const app = (server: typeof existing.server) => isRemoteMcpServer(server) && server.oauth
+          ? JSON.stringify([server.oauth.clientId, server.oauth.scopes ?? []]) : null;
         // Any other edit (a new header, say) drops a sign-in request that has
         // no tokens behind it; the next Test asks again if it still applies.
-        if (before !== after || (after && mcpOAuth.authState(name, after) === "needs-sign-in")) mcpOAuth.forget(name);
+        if (before !== after || app(existing.server) !== app(parsed.server)
+          || (after && mcpOAuth.authState(name, after) === "needs-sign-in")) mcpOAuth.forget(name);
         return json(res, 200, mcpServerResponse());
       } finally {
         mcpConfigBusy = false;

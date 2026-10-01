@@ -1,9 +1,11 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { McpOAuthError, McpOAuthManager, type McpSignInStatus, withMcpSignIn, withoutPendingSignIn } from "./mcp-oauth.ts";
+import { McpOAuthError, McpOAuthManager, mcpOAuthRedirectUri, type McpSignInStatus, withMcpSignIn, withoutPendingSignIn } from "./mcp-oauth.ts";
+import type { McpOAuthClientConfig } from "./mcp-registry.ts";
 import { startFakeHttpMcp, type FakeHttpMcp } from "./testing/fake-http-mcp-server.ts";
 import { startFakeOAuth, type FakeOAuth, type FakeOAuthOptions } from "./testing/fake-oauth-server.ts";
 
@@ -11,11 +13,17 @@ let dir: string;
 let oauth: FakeOAuth;
 let mcp: FakeHttpMcp;
 let manager: McpOAuthManager;
+/** the sign-in app config.json would hold for "docs" */
+let registered: McpOAuthClientConfig | undefined;
 
 async function setup(options: FakeOAuthOptions = {}, lifetimeMs?: number) {
   oauth = await startFakeOAuth(options);
   mcp = await startFakeHttpMcp({ acceptBearer: oauth.isValid, wwwAuthenticate: oauth.challenge });
-  manager = new McpOAuthManager({ file: join(dir, "mcp-oauth.json"), ...(lifetimeMs ? { lifetimeMs } : {}) });
+  manager = new McpOAuthManager({
+    file: join(dir, "mcp-oauth.json"),
+    ...(lifetimeMs ? { lifetimeMs } : {}),
+    clients: (name, url) => (name === "docs" && url === mcp.url ? registered : undefined),
+  });
 }
 
 /** What the person's browser does: open the link, follow the approval
@@ -33,7 +41,10 @@ async function settled(name: string, flowId: string): Promise<McpSignInStatus> {
   throw new Error("sign-in never settled");
 }
 
-beforeEach(() => { dir = mkdtempSync(join(tmpdir(), "mcp-oauth-")); });
+beforeEach(() => {
+  dir = mkdtempSync(join(tmpdir(), "mcp-oauth-"));
+  registered = undefined;
+});
 afterEach(async () => {
   manager?.dispose();
   await mcp?.close();
@@ -259,5 +270,100 @@ describe("review fixes", () => {
   it("refuses metadata that claims another issuer", async () => {
     await setup({ claimIssuer: "https://someone-else.example.com" });
     await expect(manager.start("docs", mcp.url)).rejects.toMatchObject({ code: "not-oauth" });
+  });
+});
+
+describe("a sign-in app registered in advance", () => {
+  async function signIn(): Promise<McpSignInStatus> {
+    const started = await manager.start("docs", mcp.url);
+    await approve(started);
+    return settled("docs", started.flowId);
+  }
+
+  it("signs in as a public app on a server without registration, with its own scopes", async () => {
+    await setup({ noRegistration: true, preRegistered: { "entra-app": null } });
+    registered = { clientId: "entra-app", scopes: ["api://mcp/read", "offline_access"] };
+    const started = await manager.start("docs", mcp.url);
+    const link = new URL(started.authorizationUrl!);
+    expect(link.searchParams.get("client_id")).toBe("entra-app");
+    expect(link.searchParams.get("scope")).toBe("api://mcp/read offline_access");
+    expect(link.searchParams.get("redirect_uri")).toBe(mcpOAuthRedirectUri(mcp.url));
+    await approve(started);
+    expect((await settled("docs", started.flowId)).phase).toBe("succeeded");
+    expect(oauth.counts.register).toBe(0);
+    expect(oauth.clientAuths).toEqual([{ method: "none", clientId: "entra-app" }]);
+    expect(oauth.isValid(`Bearer ${await manager.accessToken("docs", mcp.url)}`)).toBe(true);
+  });
+
+  it("uses the app in place of registration even when the server offers it", async () => {
+    await setup({ preRegistered: { mine: null } });
+    registered = { clientId: "mine" };
+    expect((await signIn()).phase).toBe("succeeded");
+    expect(oauth.counts.register).toBe(0);
+    // no scopes of its own: the server's advertised ones
+    expect(oauth.lastAuthorize?.get("scope")).toBe("mcp");
+  });
+
+  it("proves a secret with HTTP Basic by default, on sign-in, refresh and sign-out, and never stores it", async () => {
+    const secret = "s3cret:with/odd+chars";
+    await setup({ noRegistration: true, expiresIn: 60, preRegistered: { corp: secret } });
+    registered = { clientId: "corp", clientSecret: secret };
+    expect((await signIn()).phase).toBe("succeeded");
+    const token = await manager.accessToken("docs", mcp.url);
+    expect(oauth.counts.refresh).toBe(1);
+    expect(oauth.isValid(`Bearer ${token}`)).toBe(true);
+    await manager.signOut("docs", mcp.url);
+    expect(oauth.counts.revoke).toBe(1);
+    expect(oauth.clientAuths).toEqual([
+      { method: "basic", clientId: "corp" },
+      { method: "basic", clientId: "corp" },
+      { method: "basic", clientId: "corp" },
+    ]);
+    expect(oauth.lastAuthorize?.has("client_secret")).toBe(false);
+  });
+
+  it("sends the secret in the form when the server only takes that", async () => {
+    const secret = "app-secret-never-stored";
+    await setup({ noRegistration: true, preRegistered: { corp: secret }, tokenAuthMethods: ["client_secret_post"] });
+    registered = { clientId: "corp", clientSecret: secret };
+    expect((await signIn()).phase).toBe("succeeded");
+    expect(oauth.clientAuths).toEqual([{ method: "post", clientId: "corp" }]);
+    const stored = readFileSync(join(dir, "mcp-oauth.json"), "utf8");
+    expect(stored).not.toContain(secret);
+    expect(JSON.parse(stored).servers.docs).toMatchObject({ clientId: "corp", tokenAuth: "client_secret_post" });
+  });
+
+  it("reports a refused secret as a failed sign-in", async () => {
+    await setup({ noRegistration: true, preRegistered: { corp: "right" } });
+    registered = { clientId: "corp", clientSecret: "wrong" };
+    const status = await signIn();
+    expect(status.phase).toBe("failed");
+    expect(manager.authState("docs", mcp.url)).toBe("none");
+  });
+
+  it("does not refresh with a secret once the app is no longer configured", async () => {
+    await setup({ noRegistration: true, expiresIn: 60, preRegistered: { corp: "pw" } });
+    registered = { clientId: "corp", clientSecret: "pw" };
+    await signIn();
+    registered = { clientId: "another-app", clientSecret: "pw" };
+    // still valid for a minute: kept, but nothing is sent on another app's behalf
+    expect(oauth.isValid(`Bearer ${await manager.accessToken("docs", mcp.url)}`)).toBe(true);
+    expect(oauth.counts.refresh).toBe(0);
+  });
+
+  it("explains a busy redirect port instead of moving to another one", async () => {
+    await setup({ noRegistration: true, preRegistered: { corp: null } });
+    registered = { clientId: "corp" };
+    const blocker = createServer();
+    const port = Number(new URL(mcpOAuthRedirectUri(mcp.url)).port);
+    await new Promise<void>((resolve) => {
+      blocker.once("error", () => resolve());
+      blocker.listen(port, "127.0.0.1", resolve);
+    });
+    try {
+      await expect(manager.start("docs", mcp.url)).rejects.toMatchObject({ code: "port-busy" });
+    } finally {
+      await new Promise<void>((resolve) => blocker.close(() => resolve()));
+    }
   });
 });

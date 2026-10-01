@@ -1,5 +1,6 @@
 // OAuth sign-in for URL MCP servers, the way MCP clients do it: discover
-// the authorization server from the MCP server's 401, register as a public
+// the authorization server from the MCP server's 401, sign in as the app
+// the person registered for this server or else register as a public
 // client when the server allows it, run PKCE through the person's browser
 // with a loopback callback on this machine, then keep the tokens fresh.
 // Engines never see this: they get an ordinary Authorization header.
@@ -14,6 +15,7 @@ import { createServer, type Server } from "node:http";
 import type { McpServerSpec } from "./contracts.ts";
 import { discoverMcpAuth, type McpAuthMetadata } from "./mcp-oauth-discovery.ts";
 import { McpOAuthStore, type McpOAuthRecord, type McpOAuthTokens } from "./mcp-oauth-store.ts";
+import type { McpOAuthClientConfig } from "./mcp-registry.ts";
 
 export type McpSignInPhase = "waiting" | "succeeded" | "failed" | "cancelled" | "expired";
 
@@ -25,7 +27,7 @@ export interface McpSignInStatus {
   message?: string;
 }
 
-export type McpOAuthFailure = "not-oauth" | "no-registration";
+export type McpOAuthFailure = "not-oauth" | "no-registration" | "port-busy";
 
 export class McpOAuthError extends Error {
   readonly code: McpOAuthFailure;
@@ -54,7 +56,7 @@ interface Flow {
   state: string;
   verifier: string;
   redirectUri: string;
-  clientId: string;
+  client: ClientAuth;
   meta: McpAuthMetadata;
   server: Server;
   consumed: boolean;
@@ -72,6 +74,34 @@ function preferredPort(url: string): number {
   return 20_000 + (hash % 20_000);
 }
 
+/** The redirect URI a sign-in for this server uses, to register with an
+ * app made in advance for it. */
+export function mcpOAuthRedirectUri(url: string): string {
+  return `http://127.0.0.1:${preferredPort(url)}${CALLBACK_PATH}`;
+}
+
+type TokenAuthMethod = "none" | "client_secret_post" | "client_secret_basic";
+
+/** Who is asking at the token endpoint: a public client by its id, or an
+ * app with a secret, sent the way the authorization server accepts it. */
+interface ClientAuth {
+  id: string;
+  secret?: string;
+  method: TokenAuthMethod;
+}
+
+/** RFC 8414 §2: an absent list means client_secret_basic. */
+function tokenAuthMethod(meta: McpAuthMetadata, secret: string | undefined): TokenAuthMethod {
+  if (!secret) return "none";
+  const supported = meta.tokenEndpointAuthMethods;
+  return !supported || supported.includes("client_secret_basic") || !supported.includes("client_secret_post")
+    ? "client_secret_basic"
+    : "client_secret_post";
+}
+
+/** RFC 6749 §2.3.1: Basic credentials are form-encoded first. */
+const formEncoded = (value: string) => new URLSearchParams({ v: value }).toString().slice(2);
+
 function listen(server: Server, port: number): Promise<void> {
   return new Promise((resolve, reject) => {
     server.once("error", reject);
@@ -86,11 +116,23 @@ function sameSecret(actual: string, expected: string): boolean {
   return Buffer.byteLength(actual) === Buffer.byteLength(expected) && timingSafeEqual(Buffer.from(actual), Buffer.from(expected));
 }
 
-async function postForm(url: string, form: Record<string, string>): Promise<{ status: number; body: Record<string, unknown> }> {
+async function postForm(
+  url: string,
+  form: Record<string, string>,
+  client?: ClientAuth,
+): Promise<{ status: number; body: Record<string, unknown> }> {
+  const headers: Record<string, string> = { "content-type": "application/x-www-form-urlencoded", accept: "application/json" };
+  const fields = { ...form };
+  if (client?.method === "client_secret_basic" && client.secret) {
+    headers.authorization = `Basic ${Buffer.from(`${formEncoded(client.id)}:${formEncoded(client.secret)}`).toString("base64")}`;
+  } else if (client) {
+    fields.client_id = client.id;
+    if (client.method === "client_secret_post" && client.secret) fields.client_secret = client.secret;
+  }
   const response = await fetch(url, {
     method: "POST",
-    headers: { "content-type": "application/x-www-form-urlencoded", accept: "application/json" },
-    body: new URLSearchParams(form).toString(),
+    headers,
+    body: new URLSearchParams(fields).toString(),
     redirect: "error",
     signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
   });
@@ -121,10 +163,25 @@ export class McpOAuthManager {
   private readonly flows = new Map<string, Flow>();
   private readonly starting = new Map<string, Promise<McpSignInStatus>>();
   private readonly refreshing = new Map<string, Promise<string | null>>();
+  private readonly clients: (name: string, url: string) => McpOAuthClientConfig | undefined;
 
-  constructor(options: { file: string; lifetimeMs?: number }) {
+  /** `clients` reads the app registered for a server from its config, at
+   * the moment it is needed: its secret is never copied into this store. */
+  constructor(options: { file: string; lifetimeMs?: number; clients?: (name: string, url: string) => McpOAuthClientConfig | undefined }) {
     this.store = new McpOAuthStore(options.file);
     this.lifetimeMs = options.lifetimeMs ?? DEFAULT_LIFETIME_MS;
+    this.clients = options.clients ?? (() => undefined);
+  }
+
+  /** How to authenticate as the client a record was signed in with; null
+   * when its app (or the app's secret) is no longer configured. */
+  private recordClient(name: string, record: McpOAuthRecord): ClientAuth | null {
+    if (!record.clientId) return null;
+    if (!record.tokenAuth) return { id: record.clientId, method: "none" };
+    const configured = this.clients(name, record.url);
+    return configured?.clientId === record.clientId && configured.clientSecret
+      ? { id: record.clientId, secret: configured.clientSecret, method: record.tokenAuth }
+      : null;
   }
 
   authState(name: string, url: string): McpAuthState {
@@ -166,7 +223,7 @@ export class McpOAuthManager {
     const record = this.store.get(name, url);
     const token = record?.tokens?.refresh ?? record?.tokens?.access;
     if (record?.revocationEndpoint && token) {
-      await postForm(record.revocationEndpoint, { token, ...(record.clientId ? { client_id: record.clientId } : {}) }).catch(() => undefined);
+      await postForm(record.revocationEndpoint, { token }, this.recordClient(name, record) ?? undefined).catch(() => undefined);
     }
     this.store.delete(name);
   }
@@ -200,7 +257,8 @@ export class McpOAuthManager {
   private async refresh(name: string, record: McpOAuthRecord): Promise<string | null> {
     const tokens = record.tokens!;
     const stillValid = tokens.expiresAt !== undefined && tokens.expiresAt > Date.now();
-    if (!tokens.refresh || !record.tokenEndpoint || !record.clientId) {
+    const client = this.recordClient(name, record);
+    if (!tokens.refresh || !record.tokenEndpoint || !client) {
       if (stillValid) return tokens.access;
       this.markNeedsSignIn(name, record.url);
       return null;
@@ -210,9 +268,8 @@ export class McpOAuthManager {
       answer = await postForm(record.tokenEndpoint, {
         grant_type: "refresh_token",
         refresh_token: tokens.refresh,
-        client_id: record.clientId,
         resource: record.url,
-      });
+      }, client);
     } catch {
       // offline or the server is down: keep what still works, retry next turn
       return stillValid ? tokens.access : null;
@@ -255,7 +312,7 @@ export class McpOAuthManager {
    * which every sign-in would fail at its authorize page. */
   private async register(meta: McpAuthMetadata, redirectUri: string): Promise<string> {
     if (!meta.registrationEndpoint) {
-      throw new McpOAuthError("no-registration", "This server needs an app registration OpenMausBot doesn't have yet.");
+      throw new McpOAuthError("no-registration", "This server only signs in apps registered with it in advance. Edit the server and add that app's client ID under Sign-in app.");
     }
     const response = await fetch(meta.registrationEndpoint, {
       method: "POST",
@@ -282,29 +339,37 @@ export class McpOAuthManager {
     if (previous) this.finish(previous, "cancelled", "Sign-in cancelled.");
     const meta = await discoverMcpAuth(url, wwwAuthenticate ?? await this.challenge(url));
     if (!meta) throw new McpOAuthError("not-oauth", "This server does not offer an OAuth sign-in. Add its token as a header instead.");
+    const registered = this.clients(name, url);
 
     const server = createServer();
     try {
       await listen(server, preferredPort(url));
     } catch {
+      // An app registered in advance was given this exact redirect URI.
+      if (registered) {
+        throw new McpOAuthError("port-busy", `Port ${preferredPort(url)} on this computer is in use, and sign-ins for this server's app return there. Close what is using it and try again.`);
+      }
       await listen(server, 0);
     }
     try {
       const address = server.address();
       if (!address || typeof address === "string") throw new Error("The sign-in listener could not start.");
       const redirectUri = `http://127.0.0.1:${address.port}${CALLBACK_PATH}`;
-      const clientId = await this.register(meta, redirectUri);
+      const client: ClientAuth = registered
+        ? { id: registered.clientId, ...(registered.clientSecret ? { secret: registered.clientSecret } : {}), method: tokenAuthMethod(meta, registered.clientSecret) }
+        : { id: await this.register(meta, redirectUri), method: "none" };
+      const scopes = registered?.scopes?.length ? registered.scopes : meta.scopes;
       const state = randomBytes(32).toString("base64url");
       const verifier = randomBytes(32).toString("base64url");
       const authorize = new URL(meta.authorizationEndpoint);
       authorize.searchParams.set("response_type", "code");
-      authorize.searchParams.set("client_id", clientId);
+      authorize.searchParams.set("client_id", client.id);
       authorize.searchParams.set("redirect_uri", redirectUri);
       authorize.searchParams.set("state", state);
       authorize.searchParams.set("code_challenge", createHash("sha256").update(verifier).digest("base64url"));
       authorize.searchParams.set("code_challenge_method", "S256");
       authorize.searchParams.set("resource", meta.resource);
-      if (meta.scopes?.length) authorize.searchParams.set("scope", meta.scopes.join(" "));
+      if (scopes?.length) authorize.searchParams.set("scope", scopes.join(" "));
 
       const status: McpSignInStatus = {
         phase: "waiting",
@@ -313,7 +378,7 @@ export class McpOAuthManager {
         expiresAt: new Date(Date.now() + this.lifetimeMs).toISOString(),
       };
       const flow: Flow = {
-        name, url, status, state, verifier, redirectUri, clientId, meta, server, consumed: false,
+        name, url, status, state, verifier, redirectUri, client, meta, server, consumed: false,
         expiry: setTimeout(() => this.finish(flow, "expired", "Sign-in expired. Start again."), this.lifetimeMs),
       };
       flow.expiry.unref();
@@ -377,17 +442,16 @@ export class McpOAuthManager {
         grant_type: "authorization_code",
         code,
         redirect_uri: flow.redirectUri,
-        client_id: flow.clientId,
         code_verifier: flow.verifier,
         resource: flow.meta.resource,
-      });
+      }, flow.client);
       const tokens = answer.status >= 200 && answer.status < 300 ? tokensFrom(answer.body) : null;
       if (!tokens) return "The server did not accept this sign-in. Start again.";
       // Cancelled, signed out or removed while the code was being spent:
       // hand the tokens back rather than resurrect a sign-in.
       if (this.flows.get(flow.name) !== flow || flow.status.phase !== "waiting") {
         if (flow.meta.revocationEndpoint) {
-          void postForm(flow.meta.revocationEndpoint, { token: tokens.refresh ?? tokens.access, client_id: flow.clientId }).catch(() => undefined);
+          void postForm(flow.meta.revocationEndpoint, { token: tokens.refresh ?? tokens.access }, flow.client).catch(() => undefined);
         }
         return DISCARDED;
       }
@@ -395,7 +459,8 @@ export class McpOAuthManager {
         url: flow.url,
         state: "signed-in",
         issuer: flow.meta.issuer,
-        clientId: flow.clientId,
+        clientId: flow.client.id,
+        ...(flow.client.method !== "none" ? { tokenAuth: flow.client.method } : {}),
         redirectUri: flow.redirectUri,
         tokenEndpoint: flow.meta.tokenEndpoint,
         ...(flow.meta.revocationEndpoint ? { revocationEndpoint: flow.meta.revocationEndpoint } : {}),

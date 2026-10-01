@@ -1549,6 +1549,11 @@ describe("customMcpServers", () => {
     expect(customMcpServers(cfg({ api: { url: "https://x/mcp" } }))).toEqual({ api: { type: "http", url: "https://x/mcp", headers: {} } });
   });
 
+  it("never hands a url server's sign-in app or its secret to an engine", () => {
+    expect(customMcpServers(cfg({ api: { url: "https://x/mcp", oauth: { clientId: "app", clientSecret: "shh" } } })))
+      .toEqual({ api: { type: "http", url: "https://x/mcp", headers: {} } });
+  });
+
   it("skips malformed entries without dropping the valid ones", () => {
     const out = customMcpServers(
       cfg({

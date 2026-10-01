@@ -27,13 +27,11 @@ button. Sign in opens the provider's page in your browser, which returns to
 OpenMausBot on `127.0.0.1`. The server then shows **Signed in**, and Test
 lists its tools.
 
-- **Which servers work.** The authorization server must let apps register
-  themselves (dynamic client registration) and support PKCE with S256.
-  OpenMausBot registers a fresh app for each sign-in. A server that only
-  accepts an app registered in advance answers "This server needs an app
-  registration OpenMausBot doesn't have yet"; for now, use a token the server
-  issues in the `Authorization` header instead. A 401 without sign-in details
-  keeps the old message: check the address and headers.
+- **Which servers work.** The authorization server must support PKCE with
+  S256. If it lets apps register themselves (dynamic client registration),
+  OpenMausBot registers a fresh app for each sign-in. If it only accepts an
+  app registered in advance, add that app as described below. A 401 without
+  sign-in details keeps the old message: check the address and headers.
 - **Where you can sign in.** Only on the computer running the workspace,
   because the browser comes back to a listener there. From another device
   the app asks you to sign in from that computer.
@@ -48,6 +46,30 @@ lists its tools.
   the server offers that, then forgets them.
 - **Refresh.** A token is refreshed shortly before it expires. If the server
   refuses the refresh, the server goes back to **Needs sign-in**.
+
+#### Servers that need an app registered in advance
+
+Corporate identity providers (Microsoft Entra ID, for example) and some
+hosted servers do not let apps register themselves. Register an app with the
+provider, then edit the server and fill in **Sign-in app**:
+
+- **Client ID** of that app. With a client ID set, OpenMausBot signs in as
+  that app and never registers one.
+- **Client secret**, only for a confidential app. It is write-only like a
+  header value: kept in `config.json`, never shown again, and sent only to
+  the authorization server's token endpoint (HTTP Basic, or in the form when
+  the server lists only `client_secret_post`). It is never copied into
+  `mcp-oauth.json`. Leave it blank to keep the saved one; **Remove saved
+  secret** drops it.
+- **Scopes**, separated by spaces. They replace the scopes the server
+  advertises; add `offline_access` when your provider needs it to issue a
+  refresh token.
+
+After you save, the editor shows the redirect URI to register with the app:
+`http://127.0.0.1:<port>/mcp-oauth/callback`, where the port is fixed for
+the server's address. Sign-in with a registered app always uses that port; if
+another program holds it, sign-in stops and says so. Changing the client ID
+or the scopes signs the server out; a new secret for the same app does not.
 
 ### Import and choose tools per bot
 
@@ -148,13 +170,19 @@ The same registry lives in `~/.openmausbot/config.json`:
       "type": "http",
       "url": "https://mcp.example.com/mcp",
       "headers": { "Authorization": "Bearer …" }
+    },
+    "corp": {
+      "type": "http",
+      "url": "https://mcp.corp.example/mcp",
+      "oauth": { "clientId": "…", "clientSecret": "…", "scopes": ["api://corp-mcp/read", "offline_access"] }
     }
   },
   "features": { "claudeUserMcp": false }
 }
 ```
 
-`type` is `http` (Streamable HTTP, the default) or `sse`. If you edit the file
+`type` is `http` (Streamable HTTP, the default) or `sse`. `oauth` is the
+optional sign-in app; `clientSecret` and `scopes` may be left out. If you edit the file
 by hand, restart OpenMausBot. Every bot whose engine can mount custom MCP
 servers gets the enabled tools on its next task.
 
