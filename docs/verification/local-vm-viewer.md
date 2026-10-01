@@ -21,7 +21,9 @@ status and WebSocket routes as a remote admin, and verifies:
 - The built noVNC page displays the synthetic desktop's pixels.
 - Paired status returns a viewer link on the app origin, without a password.
 - The Keyboard panel sends text, newline, Unicode keysyms and Ctrl–Alt–Del.
-- Clipboard text travels in both directions through explicit controls.
+- Clipboard text arrives from the desktop; editing or clearing the field syncs
+  automatically without a Send button or device clipboard permissions.
+- The noVNC background matches its parent in dark and light themes.
 - Automatic 95% fit, fullscreen (when supported), native tooltips and the
   animated collapsible sidebar work; closed controls are inert.
 - Panels use the app's shared menu motion, including reduced-motion behavior.

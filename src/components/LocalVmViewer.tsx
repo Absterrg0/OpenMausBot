@@ -52,6 +52,7 @@ export function LocalVmViewer() {
         });
         rfb.current = client;
         client.scaleViewport = true;
+        client.background = "var(--color-inset)";
         client.focusOnClick = panelRef.current === null;
         client.addEventListener("clipboard", event => { if (!controller.signal.aborted) setClipboard(event.detail.text); });
         deadline = setTimeout(() => {
@@ -157,24 +158,27 @@ export function LocalVmViewer() {
         </div>
         <form onSubmit={event => {
           event.preventDefault();
-          if (!rfb.current || !connected) return;
-          if (visiblePanel === "clipboard") {
-            rfb.current.clipboardPasteFrom(clipboard);
-          } else {
-            // Explicit text entry works with phone keyboards without reading
-            // the device clipboard. Non-Latin text uses Unicode VNC keysyms.
-            for (const char of text) {
-              const code = char.codePointAt(0)!;
-              rfb.current.sendKey(code === 10 ? 0xff0d : code === 9 ? 0xff09 : code <= 255 ? code : 0x01000000 | code, null);
-            }
-            setText("");
+          if (!rfb.current || !connected || visiblePanel !== "keyboard") return;
+          // Explicit text entry works with phone keyboards without reading
+          // the device clipboard. Non-Latin text uses Unicode VNC keysyms.
+          for (const char of text) {
+            const code = char.codePointAt(0)!;
+            rfb.current.sendKey(code === 10 ? 0xff0d : code === 9 ? 0xff09 : code <= 255 ? code : 0x01000000 | code, null);
           }
+          setText("");
         }}>
           <label className="mb-2 block text-xs leading-relaxed text-ink-secondary" htmlFor={visiblePanel === "keyboard" ? "text" : "clipboard-text"}>{t(visiblePanel === "keyboard" ? "localVmViewer.text" : "localVmViewer.clipboardHint")}</label>
-          <textarea id={visiblePanel === "keyboard" ? "text" : "clipboard-text"} className="w-full resize-y rounded-xl border border-hairline bg-inset p-3 text-base text-ink outline-none focus:border-focus" rows={4} maxLength={visiblePanel === "keyboard" ? 4096 : 65536} autoComplete="off" autoCapitalize="off" spellCheck={false} value={visiblePanel === "keyboard" ? text : clipboard} onChange={event => visiblePanel === "keyboard" ? setText(event.target.value) : setClipboard(event.target.value)} />
-          <button id="send" type="submit" className="mt-3 flex min-h-11 w-full items-center justify-center gap-2 rounded-xl bg-accent px-3 font-medium text-white transition-opacity hover:opacity-90 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus disabled:opacity-40" disabled={!connected || (visiblePanel === "keyboard" && !text)}>
-            <Send size={16} aria-hidden="true" />{t(visiblePanel === "keyboard" ? "localVmViewer.send" : "localVmViewer.sendClipboard")}
-          </button>
+          <textarea id={visiblePanel === "keyboard" ? "text" : "clipboard-text"} className="w-full resize-y rounded-xl border border-hairline bg-inset p-3 text-base text-ink outline-none focus:border-focus" rows={4} maxLength={visiblePanel === "keyboard" ? 4096 : 65536} autoComplete="off" autoCapitalize="off" spellCheck={false} value={visiblePanel === "keyboard" ? text : clipboard} disabled={visiblePanel === "clipboard" && !connected} onChange={event => {
+            const value = event.target.value;
+            if (visiblePanel === "keyboard") setText(value);
+            else {
+              setClipboard(value);
+              if (connected) rfb.current?.clipboardPasteFrom(value);
+            }
+          }} />
+          {visiblePanel === "keyboard" && <button id="send" type="submit" className="mt-3 flex min-h-11 w-full items-center justify-center gap-2 rounded-xl bg-accent px-3 font-medium text-white transition-opacity hover:opacity-90 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus disabled:opacity-40" disabled={!connected || !text}>
+            <Send size={16} aria-hidden="true" />{t("localVmViewer.send")}
+          </button>}
         </form>
         {visiblePanel === "keyboard" && <div className="mt-4 grid grid-cols-2 gap-2 border-t border-hairline pt-4">
           <button className={action} disabled={!connected} onClick={() => rfb.current?.sendKey(0xff09, "Tab")}>Tab</button>

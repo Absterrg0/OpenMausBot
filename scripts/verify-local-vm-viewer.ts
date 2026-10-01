@@ -78,6 +78,8 @@ process.stdout.write(typeof result === 'string' ? result : JSON.stringify(result
   const status = await evaluate("fetch('/api/local-computer').then(r=>r.json())");
   assert.equal(status.viewer_url, "/local-vm-viewer#target=shared");
   assert.equal(status.viewer_url.includes("password"), false);
+  const matchingBackgrounds = "getComputedStyle(document.querySelector('#screen > div')).backgroundColor === getComputedStyle(document.querySelector('main')).backgroundColor";
+  assert.equal(await evaluate(matchingBackgrounds), true);
   const desktopScreenshot = join(dirname(fixture.info.logPath), `viewer-${process.pid}-desktop.png`);
   await command("wait", "--fn", "document.getAnimations().every(a => a.playState !== 'running')");
   await command("screenshot", desktopScreenshot);
@@ -92,10 +94,15 @@ process.stdout.write(typeof result === 'string' ? result : JSON.stringify(result
   await command("click", "#clipboard");
   desktop.sendClipboard("From the desktop");
   await command("wait", "--fn", "document.getElementById('clipboard-text').value === 'From the desktop'");
+  assert.equal(await evaluate("document.getElementById('send') === null"), true);
+  let nextClipboard = desktop.nextClipboard();
   await command("fill", "#clipboard-text", "To the desktop");
-  await command("click", "#send");
-  assert.ok(desktop.clipboards.includes("To the desktop"));
-  // Clipboard exchange is explicit; device clipboard permissions are never requested.
+  assert.deepEqual(await nextClipboard, ["To the desktop"]);
+  nextClipboard = desktop.nextClipboard();
+  await command("press", "Control+a");
+  await command("press", "Backspace");
+  assert.deepEqual(await nextClipboard, [""]);
+  // Editing this field syncs automatically; device clipboard permissions are never requested.
   await command("click", "#clipboard");
   assert.equal(await evaluate("document.getElementById('fit') === null"), true);
   assert.equal(await evaluate("(() => { const r = document.getElementById('screen').getBoundingClientRect(), m = document.querySelector('main').getBoundingClientRect(); return r.width / m.width > .94 && r.width / m.width < .96 && r.height / m.height > .94 && r.height / m.height < .96; })()"), true);
@@ -123,6 +130,7 @@ process.stdout.write(typeof result === 'string' ? result : JSON.stringify(result
   assert.equal(await evaluate("(() => { const r = document.querySelector('section').getBoundingClientRect(); return r.left >= 0 && r.right <= innerWidth && r.top >= 0 && r.bottom <= innerHeight; })()"), true);
   await evaluate("document.documentElement.dataset.skin = 'daylight'");
   await command("wait", "--fn", "getComputedStyle(document.getElementById('retry')).color === 'rgb(87, 87, 87)'");
+  assert.equal(await evaluate(matchingBackgrounds), true);
   const lightScreenshot = join(dirname(fixture.info.logPath), `viewer-${process.pid}-light.png`);
   await command("screenshot", lightScreenshot);
   // A short landscape viewport must keep both the dock and panel scrollable.
@@ -145,7 +153,7 @@ process.stdout.write(typeof result === 'string' ? result : JSON.stringify(result
   assert.equal(await evaluate("fetch('/api/auth/logout',{method:'POST',headers:{'content-type':'application/json'},body:'{}'}).then(r=>r.status)"), 200);
   await command("wait", "--fn", "document.getElementById('status').textContent.includes('disconnected')");
   assert.ok(beforeLogout >= 2);
-  console.log(JSON.stringify({ ok: true, checks: ["built noVNC renders RFB pixels", "paired status uses app URL", "keyboard, Unicode and Ctrl-Alt-Del", "bidirectional clipboard", "automatic 95% fit, fullscreen and animated sidebar", "native tooltips and reduced-motion panels", "phone and landscape viewports", "reconnect", "logout closes socket"], logPath: fixture.info.logPath, screenshots: [desktopScreenshot, phoneScreenshot, lightScreenshot] }));
+  console.log(JSON.stringify({ ok: true, checks: ["built noVNC renders RFB pixels", "paired status uses app URL", "keyboard, Unicode and Ctrl-Alt-Del", "clipboard sync without Send, including clearing", "matching desktop backgrounds in both themes", "automatic 95% fit, fullscreen and animated sidebar", "native tooltips and reduced-motion panels", "phone and landscape viewports", "reconnect", "logout closes socket"], logPath: fixture.info.logPath, screenshots: [desktopScreenshot, phoneScreenshot, lightScreenshot] }));
 } finally {
   if (browser) await run(browser.binary, ["close"], { env: browser.env, timeout: 10_000 }).catch(() => {});
   await fixture?.close();
