@@ -1,7 +1,8 @@
 // OAuth sign-in for URL MCP servers, the way MCP clients do it: discover
 // the authorization server from the MCP server's 401, register as a public
 // client when the server allows it, run PKCE through the person's browser
-// with a loopback callback on this machine, then keep the tokens fresh.
+// with a loopback callback (or a URL pasted from another computer), then
+// keep the tokens fresh.
 // Engines never see this: they get an ordinary Authorization header.
 //
 // The loopback listener and callback checks follow
@@ -48,6 +49,7 @@ const CALLBACK_PATH = "/mcp-oauth/callback";
 const DISCARDED = "discarded";
 
 interface Flow {
+  owner: string;
   name: string;
   url: string;
   status: McpSignInStatus;
@@ -59,6 +61,22 @@ interface Flow {
   server: Server;
   consumed: boolean;
   expiry: ReturnType<typeof setTimeout>;
+}
+
+interface StartingFlow {
+  owner: string;
+  url: string;
+  cancelled: boolean;
+  promise: Promise<McpSignInStatus>;
+}
+
+export class McpSignInError extends Error {
+  readonly status: 400 | 404 | 409;
+  constructor(message: string, status: 400 | 404 | 409) {
+    super(message);
+    this.status = status;
+    this.name = "McpSignInError";
+  }
 }
 
 /** A port derived from the server URL: the same redirect URI on every
@@ -118,12 +136,14 @@ function tokensFrom(body: Record<string, unknown>, previous?: McpOAuthTokens): M
 export class McpOAuthManager {
   private readonly store: McpOAuthStore;
   private readonly lifetimeMs: number;
+  private readonly isOwnerLive: (owner: string) => boolean;
   private readonly flows = new Map<string, Flow>();
-  private readonly starting = new Map<string, Promise<McpSignInStatus>>();
+  private readonly starting = new Map<string, StartingFlow>();
   private readonly refreshing = new Map<string, Promise<string | null>>();
 
-  constructor(options: { file: string; lifetimeMs?: number }) {
+  constructor(options: { file: string; lifetimeMs?: number; isOwnerLive?: (owner: string) => boolean }) {
     this.store = new McpOAuthStore(options.file);
+    this.isOwnerLive = options.isOwnerLive ?? (() => true);
     this.lifetimeMs = options.lifetimeMs ?? DEFAULT_LIFETIME_MS;
   }
 
@@ -140,24 +160,67 @@ export class McpOAuthManager {
     this.store.put(name, { ...rest, url, state: "needs-sign-in" });
   }
 
-  start(name: string, url: string, wwwAuthenticate?: string | null): Promise<McpSignInStatus> {
+  start(name: string, url: string, wwwAuthenticate?: string | null, owner = "loopback"): Promise<McpSignInStatus> {
     const current = this.flows.get(name);
-    if (current && current.url === url && current.status.phase === "waiting") return Promise.resolve({ ...current.status });
+    if (current?.status.phase === "waiting") {
+      if (current.owner !== owner) return Promise.reject(new McpSignInError("A sign-in is already in progress in another browser.", 409));
+      if (current.url === url) return Promise.resolve({ ...current.status });
+    }
     const pending = this.starting.get(name);
-    if (pending) return pending;
-    const begun = this.begin(name, url, wwwAuthenticate).finally(() => this.starting.delete(name));
-    this.starting.set(name, begun);
-    return begun;
+    if (pending) {
+      if (pending.owner !== owner || pending.url !== url || pending.cancelled) {
+        return Promise.reject(new McpSignInError("A sign-in is still starting. Try again shortly.", 409));
+      }
+      return pending.promise;
+    }
+    const starting: StartingFlow = { owner, url, cancelled: false, promise: undefined! };
+    starting.promise = this.begin(name, url, starting, wwwAuthenticate).finally(() => this.starting.delete(name));
+    this.starting.set(name, starting);
+    return starting.promise;
   }
 
-  status(name: string, flowId: string): McpSignInStatus | undefined {
+  status(name: string, flowId: string, owner = "loopback"): McpSignInStatus | undefined {
     const flow = this.flows.get(name);
-    return flow && flow.status.flowId === flowId ? { ...flow.status } : undefined;
+    return flow && flow.owner === owner && flow.status.flowId === flowId ? { ...flow.status } : undefined;
+  }
+
+  cancelFlow(name: string, owner: string, flowId?: string): void {
+    const flow = this.flows.get(name);
+    if (!flow || flow.owner !== owner || (flowId && flow.status.flowId !== flowId)) {
+      throw new McpSignInError("This sign-in is no longer available in this browser. Start again.", 404);
+    }
+    this.finish(flow, "cancelled", "Sign-in cancelled.");
   }
 
   cancel(name: string): void {
+    const pending = this.starting.get(name);
+    if (pending) pending.cancelled = true;
     const flow = this.flows.get(name);
     if (flow) this.finish(flow, "cancelled", "Sign-in cancelled.");
+  }
+
+  revokeOwner(owner: string): void {
+    for (const pending of this.starting.values()) if (pending.owner === owner) pending.cancelled = true;
+    for (const flow of this.flows.values()) {
+      if (flow.owner === owner) this.finish(flow, "cancelled", "Sign-in cancelled because your session ended.");
+    }
+  }
+
+  /** Parse the pasted URL locally; never request a user-supplied address. */
+  async completeCallback(name: string, flowId: string, callbackUrl: string, owner = "loopback"): Promise<McpSignInStatus> {
+    const flow = this.flows.get(name);
+    if (!flow || flow.owner !== owner || flow.status.flowId !== flowId) {
+      throw new McpSignInError("This sign-in is no longer available in this browser. Start again.", 404);
+    }
+    let callback: URL;
+    try {
+      if (callbackUrl.length > 16_384) throw new Error("length");
+      callback = new URL(callbackUrl);
+    } catch {
+      throw new McpSignInError("Paste the complete redirect URL from your browser's address bar.", 400);
+    }
+    await this.acceptCallback(flow, callback);
+    return { ...flow.status };
   }
 
   /** Revoke with the server when it offers that (best effort), then forget. */
@@ -193,6 +256,7 @@ export class McpOAuthManager {
   }
 
   dispose(): void {
+    for (const pending of this.starting.values()) pending.cancelled = true;
     for (const flow of this.flows.values()) this.finish(flow, "cancelled", "Sign-in cancelled.");
     this.flows.clear();
   }
@@ -277,7 +341,7 @@ export class McpOAuthManager {
     return body.client_id;
   }
 
-  private async begin(name: string, url: string, wwwAuthenticate?: string | null): Promise<McpSignInStatus> {
+  private async begin(name: string, url: string, starting: StartingFlow, wwwAuthenticate?: string | null): Promise<McpSignInStatus> {
     const previous = this.flows.get(name);
     if (previous) this.finish(previous, "cancelled", "Sign-in cancelled.");
     const meta = await discoverMcpAuth(url, wwwAuthenticate ?? await this.challenge(url));
@@ -294,6 +358,7 @@ export class McpOAuthManager {
       if (!address || typeof address === "string") throw new Error("The sign-in listener could not start.");
       const redirectUri = `http://127.0.0.1:${address.port}${CALLBACK_PATH}`;
       const clientId = await this.register(meta, redirectUri);
+      if (starting.cancelled || !this.isOwnerLive(starting.owner)) throw new McpSignInError("Sign-in cancelled because the session or server changed.", 409);
       const state = randomBytes(32).toString("base64url");
       const verifier = randomBytes(32).toString("base64url");
       const authorize = new URL(meta.authorizationEndpoint);
@@ -313,7 +378,7 @@ export class McpOAuthManager {
         expiresAt: new Date(Date.now() + this.lifetimeMs).toISOString(),
       };
       const flow: Flow = {
-        name, url, status, state, verifier, redirectUri, clientId, meta, server, consumed: false,
+        owner: starting.owner, name, url, status, state, verifier, redirectUri, clientId, meta, server, consumed: false,
         expiry: setTimeout(() => this.finish(flow, "expired", "Sign-in expired. Start again."), this.lifetimeMs),
       };
       flow.expiry.unref();
@@ -342,29 +407,45 @@ export class McpOAuthManager {
       response.writeHead(400).end("Invalid sign-in callback. Return to OpenMausBot and try again.");
       return;
     }
+    try {
+      if (request.method !== "GET") throw new McpSignInError("Invalid sign-in callback.", 400);
+      await this.acceptCallback(flow, callback);
+      if (flow.status.phase === "failed") {
+        response.writeHead(400).end(`${flow.status.message} You can close this tab.`);
+      } else {
+        response.end("Signed in. You can close this tab and return to OpenMausBot.");
+      }
+    } catch (error) {
+      response.writeHead(error instanceof McpSignInError ? error.status : 400)
+        .end("Invalid or expired sign-in. Return to OpenMausBot and try again.");
+    }
+  }
+
+  /** Both the listener and authenticated paste-back use the same one-shot checks. */
+  private async acceptCallback(flow: Flow, callback: URL): Promise<void> {
+    if (!this.isOwnerLive(flow.owner)) this.finish(flow, "cancelled", "Your session ended. Start again.");
+    if (flow.status.phase === "waiting" && !flow.consumed && Date.now() >= Date.parse(flow.status.expiresAt)) {
+      this.finish(flow, "expired", "Sign-in expired. Start again.");
+    }
+    if (flow.consumed || flow.status.phase !== "waiting" || this.flows.get(flow.name) !== flow) {
+      throw new McpSignInError("This sign-in has ended or is already being completed. Start again if needed.", 409);
+    }
+    const expected = new URL(flow.redirectUri);
     const params = callback.searchParams;
-    if (request.method !== "GET" || callback.pathname !== CALLBACK_PATH || flow.consumed || flow.status.phase !== "waiting"
-      || this.flows.get(flow.name) !== flow
+    if (callback.origin !== expected.origin || callback.pathname !== expected.pathname
+      || callback.username || callback.password || callback.hash
       || [...params.keys()].some((key) => params.getAll(key).length !== 1)
-      || !sameSecret(params.get("state") ?? "", flow.state)) {
-      response.writeHead(400).end("Invalid or expired sign-in. Return to OpenMausBot and try again.");
-      return;
+      || !sameSecret(params.get("state") ?? "", flow.state)
+      || (params.has("iss") && params.get("iss") !== flow.meta.issuer)
+      || !((params.get("code") && !params.has("error") && params.get("code")!.length <= 4096)
+        || (params.get("error") && !params.has("code")))) {
+      throw new McpSignInError("This redirect URL does not belong to the current sign-in. Copy the complete URL and try again.", 400);
     }
     flow.consumed = true;
-    // the code is being spent: the lifetime no longer applies
     clearTimeout(flow.expiry);
     const failure = await this.complete(flow, params);
-    if (failure === DISCARDED) {
-      response.writeHead(409).end("This sign-in was cancelled in OpenMausBot. You can close this tab.");
-      return;
-    }
-    if (failure) {
-      this.finish(flow, "failed", failure);
-      response.writeHead(400).end(`${failure} You can close this tab.`);
-      return;
-    }
-    this.finish(flow, "succeeded");
-    response.end("Signed in. You can close this tab and return to OpenMausBot.");
+    if (failure === DISCARDED) throw new McpSignInError("This sign-in was cancelled. Start again.", 409);
+    this.finish(flow, failure ? "failed" : "succeeded", failure ?? undefined);
   }
 
   /** Spend the code; the error message on failure, null on success. */
@@ -385,6 +466,7 @@ export class McpOAuthManager {
       if (!tokens) return "The server did not accept this sign-in. Start again.";
       // Cancelled, signed out or removed while the code was being spent:
       // hand the tokens back rather than resurrect a sign-in.
+      if (!this.isOwnerLive(flow.owner)) this.finish(flow, "cancelled", "Your session ended. Start again.");
       if (this.flows.get(flow.name) !== flow || flow.status.phase !== "waiting") {
         if (flow.meta.revocationEndpoint) {
           void postForm(flow.meta.revocationEndpoint, { token: tokens.refresh ?? tokens.access, client_id: flow.clientId }).catch(() => undefined);

@@ -1,6 +1,6 @@
 // Signing in to a URL MCP server from the desktop: the server starts the
 // sign-in and listens for the browser's return on this machine; the app
-// opens the sign-in page and waits for the server to report how it ended.
+// opens the sign-in page, offers paste-back for another computer, and polls.
 
 export type McpSignInPhase = "waiting" | "succeeded" | "failed" | "cancelled" | "expired";
 
@@ -17,6 +17,7 @@ interface Deps {
   open: (url: string) => Promise<void>;
   sleep?: (ms: number) => Promise<void>;
   signal?: AbortSignal;
+  onStarted?: (status: McpSignInStatus) => void;
 }
 
 const POLL_MS = 1_500;
@@ -33,20 +34,28 @@ export function mcpSignInLink(value: string | null | undefined): string | null {
 }
 
 /** Start a sign-in for `name`, open its page, and resolve when it ends.
- * A start the server refuses (a remote workspace, a server without OAuth)
+ * A start the server refuses (a server without OAuth, another owner's flow)
  * rejects with the server's message. */
 export async function runMcpSignIn(name: string, deps: Deps): Promise<McpSignInStatus> {
   const base = `/api/mcp/servers/${encodeURIComponent(name)}/sign-in`;
   const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
-  const cancel = () => deps.api(base, { method: "DELETE" }).catch(() => undefined);
   const started = (await deps.api(base, { method: "POST" })).auth as McpSignInStatus;
   if (started.phase !== "waiting") return started;
+  const cancel = () => started.flowId
+    ? deps.api(`${base}/${started.flowId}`, { method: "DELETE" }).catch(() => undefined)
+    : Promise.resolve();
   const link = mcpSignInLink(started.authorizationUrl);
   if (!link || !started.flowId) {
     await cancel();
     return { ...started, phase: "failed", authorizationUrl: null };
   }
-  await deps.open(link);
+  if (deps.signal?.aborted) {
+    await cancel();
+    return { ...started, phase: "cancelled", authorizationUrl: null };
+  }
+  deps.onStarted?.(started);
+  try { await deps.open(link); }
+  catch { /* The waiting UI also offers an explicit Open sign-in page button. */ }
   let status = started;
   while (status.phase === "waiting") {
     await sleep(POLL_MS);
@@ -61,4 +70,12 @@ export async function runMcpSignIn(name: string, deps: Deps): Promise<McpSignInS
     }
   }
   return status;
+}
+
+/** Send the callback as a JSON body, never as a query parameter or a fetch target. */
+export async function completeMcpSignIn(name: string, flowId: string, callbackUrl: string, api: Deps["api"]): Promise<McpSignInStatus> {
+  const result = await api(`/api/mcp/servers/${encodeURIComponent(name)}/sign-in/${encodeURIComponent(flowId)}`, {
+    method: "POST", body: JSON.stringify({ callbackUrl: callbackUrl.trim() }),
+  });
+  return result.auth as McpSignInStatus;
 }

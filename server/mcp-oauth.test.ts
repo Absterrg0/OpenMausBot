@@ -261,3 +261,143 @@ describe("review fixes", () => {
     await expect(manager.start("docs", mcp.url)).rejects.toMatchObject({ code: "not-oauth" });
   });
 });
+
+
+describe("MCP sign-in from another computer", () => {
+  function deferred() {
+    let resolve!: () => void;
+    const promise = new Promise<void>((done) => { resolve = done; });
+    return { promise, resolve };
+  }
+  async function redirect(status: McpSignInStatus): Promise<string> {
+    const response = await fetch(status.authorizationUrl!, { redirect: "manual" });
+    return response.headers.get("location")!;
+  }
+
+  it("completes a pasted redirect with PKCE, without visiting the loopback listener", async () => {
+    await setup();
+    const started = await manager.start("docs", mcp.url, undefined, "alice");
+    const callback = await redirect(started);
+    const result = await manager.completeCallback("docs", started.flowId, callback, "alice");
+    expect(result).toMatchObject({ phase: "succeeded", authorizationUrl: null });
+    expect(oauth.isValid(`Bearer ${await manager.accessToken("docs", mcp.url)}`)).toBe(true);
+    await expect(manager.completeCallback("docs", started.flowId, callback, "alice")).rejects.toMatchObject({ status: 409 });
+    expect(oauth.counts.token).toBe(1);
+  });
+
+  it("isolates starts, status, cancellation and completion by owner", async () => {
+    await setup();
+    const starting = manager.start("docs", mcp.url, undefined, "alice");
+    await expect(manager.start("docs", mcp.url, undefined, "bob")).rejects.toMatchObject({ status: 409 });
+    const started = await starting;
+    const callback = await redirect(started);
+    await expect(manager.start("docs", mcp.url, undefined, "bob")).rejects.toMatchObject({ status: 409 });
+    expect(manager.status("docs", started.flowId, "bob")).toBeUndefined();
+    expect(() => manager.cancelFlow("docs", "bob", started.flowId)).toThrow();
+    await expect(manager.completeCallback("docs", started.flowId, callback, "bob")).rejects.toMatchObject({ status: 404 });
+    expect(oauth.counts.token).toBe(0);
+    expect((await manager.completeCallback("docs", started.flowId, callback, "alice")).phase).toBe("succeeded");
+  });
+
+  it("rejects malformed callbacks without spending the flow or requesting their addresses", async () => {
+    await setup();
+    const started = await manager.start("docs", mcp.url);
+    const callback = await redirect(started);
+    const variants = [
+      "not a URL", "x".repeat(16_385),
+      callback.replace("127.0.0.1", "attacker.example"),
+      callback.replace("http:", "https:"),
+      callback.replace("127.0.0.1", "user:pass@127.0.0.1"),
+      callback.replace("/mcp-oauth/callback", "/other"),
+      callback + "#fragment", callback + "&code=duplicate", callback + "&error=access_denied",
+      callback + "&iss=https%3A%2F%2Fwrong.example",
+    ];
+    const wrongState = new URL(callback);
+    wrongState.searchParams.set("state", "wrong");
+    variants.push(wrongState.href);
+    const wrongPort = new URL(callback);
+    wrongPort.port = String(Number(wrongPort.port) + 1);
+    variants.push(wrongPort.href);
+    for (const invalid of variants) {
+      await expect(manager.completeCallback("docs", started.flowId, invalid)).rejects.toMatchObject({ status: 400 });
+      expect(manager.status("docs", started.flowId)?.phase).toBe("waiting");
+    }
+    expect(oauth.counts.token).toBe(0);
+    expect((await manager.completeCallback("docs", started.flowId, callback)).phase).toBe("succeeded");
+  });
+
+  it("reports a pasted provider denial without exposing its error description", async () => {
+    await setup({ deny: true });
+    const started = await manager.start("docs", mcp.url);
+    const result = await manager.completeCallback("docs", started.flowId, await redirect(started) + "&error_description=private");
+    expect(result).toMatchObject({ phase: "failed", message: "Sign-in was not approved." });
+    expect(JSON.stringify(result)).not.toContain("private");
+    expect(oauth.counts.token).toBe(0);
+  });
+
+  it.each(["cancel", "revoke", "forget", "expire"])("rejects a pasted callback after %s", async (action) => {
+    await setup({}, action === "expire" ? 100 : undefined);
+    const started = await manager.start("docs", mcp.url);
+    const callback = await redirect(started);
+    if (action === "cancel") manager.cancelFlow("docs", "loopback", started.flowId);
+    if (action === "revoke") manager.revokeOwner("loopback");
+    if (action === "forget") manager.forget("docs");
+    if (action === "expire") await expect.poll(() => manager.status("docs", started.flowId)?.phase).toBe("expired");
+    await expect(manager.completeCallback("docs", started.flowId, callback)).rejects.toThrow();
+    expect(oauth.counts.token).toBe(0);
+    expect(manager.authState("docs", mcp.url)).toBe("none");
+  });
+
+  it("checks session expiry even before its revocation event is delivered", async () => {
+    await setup();
+    manager.dispose();
+    let live = true;
+    manager = new McpOAuthManager({ file: join(dir, "mcp-oauth.json"), isOwnerLive: () => live });
+    const started = await manager.start("docs", mcp.url, undefined, "alice");
+    const callback = await redirect(started);
+    live = false;
+    await expect(manager.completeCallback("docs", started.flowId, callback, "alice")).rejects.toMatchObject({ status: 409 });
+    expect(oauth.counts.token).toBe(0);
+  });
+
+  it("does not let an old cancellation cancel a new attempt", async () => {
+    await setup();
+    const old = await manager.start("docs", mcp.url);
+    manager.cancel("docs");
+    const current = await manager.start("docs", mcp.url);
+    expect(() => manager.cancelFlow("docs", "loopback", old.flowId)).toThrow();
+    expect(manager.status("docs", current.flowId)?.phase).toBe("waiting");
+  });
+
+  it("revokes a start still waiting for registration", async () => {
+    const entered = deferred();
+    const release = deferred();
+    await setup({ beforeRegister: async () => { entered.resolve(); await release.promise; } });
+    const started = manager.start("docs", mcp.url, undefined, "alice");
+    const rejected = expect(started).rejects.toMatchObject({ status: 409 });
+    await entered.promise;
+    manager.revokeOwner("alice");
+    release.resolve();
+    await rejected;
+    expect(manager.authState("docs", mcp.url)).toBe("none");
+  });
+
+  it("spends one code when pasted and listener callbacks race, and discards tokens on logout", async () => {
+    const entered = deferred();
+    const release = deferred();
+    await setup({ beforeToken: async () => { entered.resolve(); await release.promise; } });
+    const started = await manager.start("docs", mcp.url, undefined, "alice");
+    const callback = await redirect(started);
+    const completing = manager.completeCallback("docs", started.flowId, callback, "alice");
+    const rejected = expect(completing).rejects.toMatchObject({ status: 409 });
+    await entered.promise;
+    expect((await fetch(callback)).status).toBe(409);
+    await expect(manager.completeCallback("docs", started.flowId, callback, "alice")).rejects.toMatchObject({ status: 409 });
+    manager.revokeOwner("alice");
+    release.resolve();
+    await rejected;
+    expect(oauth.counts.token).toBe(1);
+    expect(manager.authState("docs", mcp.url)).toBe("none");
+    await expect.poll(() => oauth.counts.revoke).toBe(1);
+  });
+});

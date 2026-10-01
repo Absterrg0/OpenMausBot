@@ -15,10 +15,31 @@ OpenMausBot saves a new server switched off. Use **Test** to start the command
 advertises. Then turn it on. It becomes available to compatible bots on their
 next task; no app restart is needed.
 
-Tokens for URL servers go in headers, never in the address. Remote servers
-that only offer an OAuth sign-in (no token) cannot be signed into from a bot's
-headless run; use a personal access token or API key the server issues and
-put it in the `Authorization` header.
+### Sign in to an OAuth server
+
+If **Test** reports **Needs sign-in**, choose **Sign in**, approve access in
+your browser, then return to OpenMausBot and test the connection again. The
+server must support OAuth discovery, PKCE S256, and dynamic client registration.
+Servers without that registration support still need a separately issued token
+in a header, never in the address.
+
+For a headless or remote workspace (including an SSH tunnel), open **Signing
+in from another computer?** while sign-in is waiting. Finish approval in your
+browser. If it redirects to a localhost page that cannot connect, copy the
+**entire URL from the address bar**, paste it into **Redirect URL**, and choose
+**Complete sign-in**. The connection error is expected: that address refers to
+your computer, while OpenMausBot is on the server. No extra port forwarding or
+public callback address is needed. **Open sign-in page** reopens the approval
+page if your browser blocked the first attempt.
+
+Keep the redirect URL private. Complete the flow in the same OMB browser/session
+that started it, within five minutes. Cancellation or logging out ends the
+pending flow; a URL cannot be reused. Existing same-machine sign-in still
+finishes automatically.
+
+Tokens stay on the workspace server, in its private `mcp-oauth.json` file,
+and are refreshed there. **Sign out** forgets them and attempts provider
+revocation. OAuth tokens are excluded from workspace backups.
 
 ### Import and choose tools per bot
 
