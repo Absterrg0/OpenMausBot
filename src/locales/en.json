@@ -1131,6 +1131,8 @@
   "task.renameAria": "Rename thread",
   "task.renameNamed": "Rename {title}",
   "task.renameTitle": "Rename this thread",
+  "task.regenerateTitle": "Regenerate title",
+  "task.regeneratingTitle": "Regenerating…",
   "task.deleteAria": "Delete thread",
   "task.deleteTitle": "Delete this thread and its conversation",
   "model.setupRequired": "Setup required",

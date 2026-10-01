@@ -2614,7 +2614,8 @@ export class Store {
   /** Swap a machine-made first-message title for a generated one, once.
    * Equality against the snippet is the whole contract: a rename by the
    * person, by pair adoption, or by an earlier generated title each break
-   * it, so this never overwrites a name anyone chose. */
+   * it, so this never overwrites a name anyone chose. Regenerate title passes
+   * the title it started from, so a rename made while it ran stands. */
   retitleTask(botId: string, threadId: string, machineTitle: string, title: string): TaskRecord | null {
     const task = this.taskByThread(botId, threadId);
     if (!task || task.title !== machineTitle) return null;
