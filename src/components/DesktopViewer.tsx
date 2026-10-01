@@ -165,8 +165,8 @@ export function DesktopViewer() {
         <ViewerTool id="show-controls" label={t("desktopViewer.showControls")} icon={ChevronRight} onClick={() => setExpanded(true)} />
       </div>}
 
-      <main className="relative my-2 mr-2 flex min-w-0 flex-1 items-center justify-center overflow-hidden rounded-2xl border border-hairline bg-inset">
-        <div id="screen" ref={screen} aria-label={t("desktopViewer.title")} className="h-[95%] w-[95%] overflow-hidden" />
+      <main className={cn("relative flex min-w-0 flex-1 items-center justify-center overflow-hidden bg-inset", !fullscreen && "my-2 mr-2 rounded-2xl border border-hairline", !fullscreen && !expanded && "ml-2")}>
+        <div id="screen" ref={screen} aria-label={t("desktopViewer.title")} className={cn("overflow-hidden", fullscreen ? "h-full w-full" : "h-[95%] w-[95%]")} />
         <div className={connected ? "sr-only" : "pointer-events-none absolute inset-x-3 top-3 flex justify-center"}>
           <span id="status" role="status" className="max-w-full rounded-full border border-hairline bg-panel/95 px-3 py-1.5 text-center text-xs text-ink-secondary shadow-sm">{status}</span>
         </div>
@@ -178,7 +178,9 @@ export function DesktopViewer() {
       }} className={cn("absolute left-[72px] top-1/2 z-20 max-h-[calc(100dvh-24px)] w-[min(320px,calc(100%-84px))] -translate-y-1/2 overflow-y-auto rounded-2xl border border-hairline bg-panel p-4 shadow-2xl", panelMotion.className)} style={{ marginLeft: "env(safe-area-inset-left)" }}>
         <div className="mb-3 flex items-center justify-between gap-2">
           <h1 className="font-medium">{t(keyboardPanel ? "desktopViewer.keyboard" : "desktopViewer.clipboard")}</h1>
-          <ViewerTool label={t("desktopViewer.closePanel")} icon={X} onClick={closePanel} />
+          <button type="button" title={t("desktopViewer.closePanel")} aria-label={t("desktopViewer.closePanel")} onClick={closePanel} className="ui-icon-button shrink-0 text-ink-secondary hover:bg-raised-hover hover:text-ink">
+            <X size={18} aria-hidden="true" />
+          </button>
         </div>
         <form onSubmit={event => {
           event.preventDefault();

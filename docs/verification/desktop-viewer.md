@@ -33,8 +33,11 @@ status and WebSocket routes as a remote admin, and verifies:
   automatically without a Send button or device clipboard permissions.
 - The noVNC background matches its parent in dark and light themes.
 - The Send button follows Foundry's enabled and disabled text colors.
-- Automatic 95% fit, fullscreen (when supported), native tooltips and the
-  animated collapsible sidebar work; closed controls are inert.
+- Automatic 95% fit and full-height, unframed fullscreen (when supported)
+  work, including restoring the normal fit after leaving fullscreen.
+- The animated sidebar leaves equal margins when collapsed; fullscreen has
+  no margins. Closed controls are inert and tooltips use native titles.
+- The clipboard header keeps its title centered beside a compact close button.
 - Panels use the app's shared menu motion, including reduced-motion behavior.
 - The panels fit phone and short landscape viewports; dark and light screenshots
   show the built UI using the app's skin tokens.
