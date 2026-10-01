@@ -83,6 +83,7 @@ export const CerebrasDriver: ProviderDriver<CerebrasConfig> = {
     return createOpenAIChatRuntime({
       input, driverKind: "cerebras", apiKey, apiUrl: config.url,
       tools: config.tools, models: () => catalog, refreshModels, reasoning: true,
+      reasoningReplayField: "reasoning",
       requestBody: (model, messages, stream) => ({
         model, messages, stream,
         ...(stream ? { stream_options: { include_usage: true } } : {}),

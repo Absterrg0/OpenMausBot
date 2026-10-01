@@ -25,6 +25,7 @@ export interface OpenAIChatMessage {
   tool_calls?: ChatToolCall[];
   tool_call_id?: string;
   reasoning_content?: string;
+  reasoning?: string;
   reasoning_details?: Record<string, unknown>[];
 }
 
@@ -91,6 +92,9 @@ interface RuntimeOptions<Config> {
   refreshModels?: () => Promise<void>;
   generateModel?: () => string;
   reasoning?: boolean;
+  /** Field the provider reads replayed reasoning from; Cerebras rejects
+   * `reasoning_content` and takes `reasoning`. */
+  reasoningReplayField?: "reasoning_content" | "reasoning";
   contentText?: (content: unknown) => string;
   billing?: "metered";
   includeUsageInCompleted?: boolean;
@@ -560,7 +564,7 @@ export function createOpenAIChatRuntime<Config>(options: RuntimeOptions<Config>)
           }
           if (seenCalls.size > MAX_CHAT_TOOL_CALLS) throw new ChatProtocolError("tool-call limit reached");
           messages.push({ role: "assistant", content: completion.text || null, tool_calls: completion.toolCalls,
-            ...(completion.protocolReasoning && !reasoningReplayRejected.has(model) ? { reasoning_content: completion.protocolReasoning } : {}),
+            ...(completion.protocolReasoning && !reasoningReplayRejected.has(model) ? { [options.reasoningReplayField ?? "reasoning_content"]: completion.protocolReasoning } : {}),
             ...(completion.protocolReasoningDetails.length ? { reasoning_details: completion.protocolReasoningDetails } : {}),
           });
           const screenshotParts: ChatContentPart[] = [];

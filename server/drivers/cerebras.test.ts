@@ -67,4 +67,35 @@ describe("Cerebras provider", () => {
       messages: [{ role: "user", content: "hello" }], tools: [ASK_USER_TOOL_DEFINITION] });
     recorder.stop(); await instance.dispose();
   });
+
+  it("replays reasoning after a tool call as `reasoning`, which Cerebras accepts, never `reasoning_content`", async () => {
+    const bodies: Array<{ messages: Array<Record<string, unknown>> }> = [];
+    const question = { questions: [{ question: "Which city?", options: [{ label: "Pune" }, { label: "Mumbai" }] }] };
+    vi.stubGlobal("fetch", vi.fn(async (url, init) => {
+      if (String(url).endsWith("/models")) return Response.json({ data: [] });
+      bodies.push(JSON.parse(String(init?.body)));
+      const chunks = bodies.length === 1 ? [
+        { choices: [{ index: 0, delta: { reasoning: "Need the city first." } }] },
+        { choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id: "ask_city", type: "function",
+          function: { name: "ask_user", arguments: JSON.stringify(question) } }] } }] },
+        { choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" }] },
+      ] : [{ choices: [{ index: 0, delta: { content: "Sunny." }, finish_reason: "stop" }] }];
+      return new Response(chunks.map(chunk => `data: ${JSON.stringify(chunk)}\n\n`).join("") + "data: [DONE]\n\n",
+        { headers: { "content-type": "text/event-stream" } });
+    }));
+    const instance = await create();
+    const recorder = recordEvents(instance.adapter);
+    try {
+      await instance.adapter.sendTurn({ threadId: "replay", text: "Weather?" });
+      const opened = await recorder.until(event => event.type === "request.opened");
+      await instance.adapter.respondToRequest("replay", opened.requestId!, { behavior: "answer", message: "Pune" });
+      expect(await recorder.until(event => event.type === "turn.completed")).toMatchObject({ ok: true });
+      const replayed = bodies[1]!.messages.find(message => message.role === "assistant");
+      expect(replayed).toMatchObject({ reasoning: "Need the city first." });
+      expect(replayed).not.toHaveProperty("reasoning_content");
+    } finally {
+      recorder.stop();
+      await instance.dispose();
+    }
+  });
 });
