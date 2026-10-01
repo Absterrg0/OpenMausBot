@@ -34,6 +34,7 @@ import {
   vpsComputerAction,
   vpsComputerJoin,
   vpsDesktopConnection,
+  closeVpsDesktopTunnel,
   closeAllVpsDesktopTunnels,
   vpsComputerScreenshot,
   vpsComputerStatus,
@@ -1153,6 +1154,19 @@ describe("remote desktop tunnel ownership", () => {
       await vi.advanceTimersByTimeAsync(30_001);
       expect(child.killed).toBe(false);
       closeAllVpsDesktopTunnels();
+      expect(child.kill).toHaveBeenCalledTimes(1);
+    } finally { closeAllVpsDesktopTunnels(); vi.useRealTimers(); }
+  });
+  it("keeps remote tabs connected when the native viewer closes", async () => {
+    const { child, runner } = await openFixture();
+    try {
+      const release = vpsDesktopConnection(BOT_ID)!.retain();
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      await vpsComputerJoin(CONFIG, BOT_ID, runner);
+      expect(closeVpsDesktopTunnel(BOT_ID)).toEqual({ closed: false });
+      expect(child.killed).toBe(false);
+      release();
+      await vi.advanceTimersByTimeAsync(30_001);
       expect(child.kill).toHaveBeenCalledTimes(1);
     } finally { closeAllVpsDesktopTunnels(); vi.useRealTimers(); }
   });

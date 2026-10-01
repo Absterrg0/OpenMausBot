@@ -283,6 +283,14 @@ function stopDesktopTunnel(botId: string): boolean {
 }
 
 export function closeVpsDesktopTunnel(botId: string) {
+  const tunnel = desktopTunnels.get(botId);
+  // Remote tabs still hold the tunnel; drop only the native claim and let
+  // the last tab's release start the grace period.
+  if (tunnel?.viewers) {
+    tunnel.localViewer = false;
+    clearTimeout(tunnel.expiry);
+    return { closed: false };
+  }
   return { closed: stopDesktopTunnel(botId) };
 }
 
