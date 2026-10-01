@@ -150,11 +150,13 @@ process.on('SIGTERM',()=>{fs.appendFileSync(log,'close ');process.exit(0)});
   await command("wait", "--fn", "document.querySelector('aside').getBoundingClientRect().width === 0");
   assert.ok(await evaluate<number>("document.querySelector('main').getBoundingClientRect().width") > dockedWidth);
   assert.equal(await evaluate("document.querySelector('aside').inert"), true);
+  await command("wait", "--fn", "document.activeElement?.id === 'show-controls'");
   assert.equal(await evaluate("(() => { const link = document.getElementById('viewer-notice'), r = link.getBoundingClientRect(); return !link.closest('[inert]') && document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2) === link; })()"), true);
   const balancedMargins = "(() => { const r = document.querySelector('main').getBoundingClientRect(); return r.left > 0 && Math.abs(r.left - (innerWidth - r.right)) < 1; })()";
   assert.equal(await evaluate(balancedMargins), true);
   await command("click", "#show-controls");
   await command("wait", "--fn", "document.querySelector('aside').getBoundingClientRect().width === 72");
+  await command("wait", "--fn", "document.activeElement?.id === 'hide-controls'");
   if (await evaluate("document.fullscreenEnabled")) {
     await command("click", "#fullscreen");
     await command("wait", "--fn", "Boolean(document.fullscreenElement)");
