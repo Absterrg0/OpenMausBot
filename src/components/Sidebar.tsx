@@ -1715,13 +1715,13 @@ export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void 
   // New Room panel can be open on top of it, so the same Escape press closes
   // them together. Fine, since both directions are "get me out of here."
   useEffect(() => {
-    if (!open || confirm) return;
+    if (!open || confirm || deletingRoom) return;
     const closeOnEscape = (event: KeyboardEvent) => {
       if (event.key === "Escape") onClose();
     };
     document.addEventListener("keydown", closeOnEscape);
     return () => document.removeEventListener("keydown", closeOnEscape);
-  }, [open, onClose, confirm]);
+  }, [open, onClose, confirm, deletingRoom]);
 
   useEffect(() => {
     if (!densityOpen) return;
@@ -2546,7 +2546,12 @@ export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void 
             if (!roomMenu) return;
             setRoomSectionPicker({ groupId, x: roomMenu.x, y: roomMenu.y });
           }}
-          onDelete={setDeletingRoomId}
+          onDelete={(groupId) => {
+            // The closing menu remains mounted briefly for its exit animation.
+            // Give the dialog a stable opener instead of that disappearing item.
+            sidebarRef.current?.focus();
+            setDeletingRoomId(groupId);
+          }}
         />
       <ConfirmDialog
         open={deletingRoom !== undefined}
