@@ -2975,7 +2975,7 @@
   "computer.phase.showPendingBoat": "Auto found an existing cloud computer that is not ready. It was not changed.",
   "computer.badge.autoBoat": "cloud boat · Auto · read-only",
   "computer.addBoatKey": "Add a Boat API key to give this bot a cloud computer — it spins up right here.",
-  "desktopViewer.title": "Desktop",
+  "desktopViewer.title": "Desktop viewer",
   "desktopViewer.reconnect": "Reconnect",
   "desktopViewer.keyboard": "Keyboard",
   "desktopViewer.text": "Text to type on the desktop",
