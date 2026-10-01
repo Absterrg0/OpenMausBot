@@ -622,8 +622,13 @@ export class Store {
     this.completeNewBotSelection = completeNewBotSelection;
     mkdirSync(DATA_DIR, { recursive: true });
     for (const file of [BOTS_FILE, GROUPS_FILE]) tightenRegistryFile(file);
+    // Whether the bot list is the real one. Room repair below trusts it to
+    // say which members no longer exist; an unreadable file must never read
+    // as "every member was deleted".
+    let botsLoaded = false;
     try {
       this.bots = JSON.parse(readFileSync(BOTS_FILE, "utf8"));
+      botsLoaded = Array.isArray(this.bots);
     } catch {
       this.bots = [];
     }
@@ -776,9 +781,17 @@ export class Store {
         botsMigrated = true;
       }
     }
+    const botIds = new Set(this.bots.map((b) => b.id));
     for (const g of this.groups) {
       g.busyBotId = null;
       delete g.turnStartedAt;
+      // A deleted bot used to stay a member for good: counted on the room's
+      // Save button and refused by the roster check on every save (MOCA-264).
+      // Bot-to-bot channels keep their pair; they are not edited as rooms.
+      if (botsLoaded && !g.dm && g.memberIds.some((id) => !botIds.has(id))) {
+        g.memberIds = g.memberIds.filter((id) => botIds.has(id));
+        groupsMigrated = true;
+      }
       const normalized = normalizeGroupDefaultResponder(g.defaultResponder, g.memberIds, Boolean(g.dm));
       if (JSON.stringify(normalized) !== JSON.stringify(g.defaultResponder)) groupsMigrated = true;
       g.defaultResponder = normalized;
@@ -1892,6 +1905,15 @@ export class Store {
     this.saveBots(nextBots);
     this.bots = nextBots;
     this.legacyActivities.delete(id);
+    // A deleted bot leaves every room it was in, and a room it led falls back
+    // to its next member. Bot-to-bot channels keep their pair.
+    const rooms = this.groups.filter((g) => !g.dm && g.memberIds.includes(id));
+    for (const g of rooms) {
+      g.memberIds = g.memberIds.filter((member) => member !== id);
+      if (g.busyBotId === id) g.busyBotId = null;
+      g.defaultResponder = normalizeGroupDefaultResponder(g.defaultResponder, g.memberIds, false);
+    }
+    if (rooms.length) this.saveGroups();
     // every task's transcript goes with the bot, not just the open one
     for (const threadId of new Set([bot.threadId, ...(bot.tasks ?? []).map((t) => t.threadId)])) {
       this.deleteThreadRecord(threadId);
@@ -1912,6 +1934,7 @@ export class Store {
     // The bot folder (SOUL.md mirror) is the bot's too.
     removeBotFolder(id);
     this.emit({ type: "bot.deleted", botId: id });
+    for (const g of rooms) this.emit({ type: "group", groupId: g.id });
     return true;
   }
 
