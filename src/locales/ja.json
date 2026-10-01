@@ -1343,7 +1343,6 @@
   "engineSetup.claude.connectedAccount": "このサーバーで Claude に接続済み",
   "engineSetup.claude.invalidChallenge": "Claude Code が有効な Anthropic のサインインリンクを返しませんでした。キャンセルしてやり直してください。",
   "remote.signInAccess.title": "メールでサインインできる人",
-  "remote.signInAccess.subtitle": "このリストの人は、メールに届く使い捨てコードで /pair からサインインします。フルアクセスはオーナーができるすべて、チャットと承認のみはボットと話すだけの人向けです。",
   "remote.signInAccess.link": "このリンクを送ってください:",
   "remote.signInAccess.placeholder": "name@company.com または @company.com",
   "remote.signInAccess.add": "追加",

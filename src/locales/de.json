@@ -1348,7 +1348,6 @@
   "engineSetup.claude.connectedAccount": "Claude auf diesem Server verbunden",
   "engineSetup.claude.invalidChallenge": "Claude Code hat keinen gültigen Anmeldelink von Anthropic zurückgegeben. Abbrechen und erneut versuchen.",
   "remote.signInAccess.title": "Wer sich per E-Mail anmelden darf",
-  "remote.signInAccess.subtitle": "Personen auf dieser Liste melden sich unter /pair mit einem einmaligen Code an, der an ihre E-Mail geht. Vollzugriff ist alles, was der Eigentümer kann; Chat und Freigaben ist für Personen, die nur mit den Bots sprechen.",
   "remote.signInAccess.link": "Schicke ihnen diesen Link:",
   "remote.signInAccess.placeholder": "name@firma.de oder @firma.de",
   "remote.signInAccess.add": "Hinzufügen",

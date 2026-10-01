@@ -1341,7 +1341,6 @@
   "engineSetup.claude.connectedAccount": "此服务器已连接 Claude",
   "engineSetup.claude.invalidChallenge": "Claude Code 没有返回有效的 Anthropic 登录链接。请取消后重试。",
   "remote.signInAccess.title": "谁可以用邮箱登录",
-  "remote.signInAccess.subtitle": "名单上的人在 /pair 用发到邮箱的一次性代码登录。完全访问等于所有者能做的一切；仅聊天和审批适合只和机器人对话的人。",
   "remote.signInAccess.link": "把这个链接发给他们：",
   "remote.signInAccess.placeholder": "name@company.com 或 @company.com",
   "remote.signInAccess.add": "添加",

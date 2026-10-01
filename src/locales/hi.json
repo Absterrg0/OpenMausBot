@@ -1341,7 +1341,6 @@
   "engineSetup.claude.connectedAccount": "इस सर्वर पर Claude जुड़ा है",
   "engineSetup.claude.invalidChallenge": "Claude Code ने Anthropic का मान्य साइन-इन लिंक नहीं दिया। रद्द करके फिर से प्रयास करें।",
   "remote.signInAccess.title": "ईमेल से कौन साइन इन कर सकता है",
-  "remote.signInAccess.subtitle": "इस सूची के लोग /pair पर अपनी ईमेल पर भेजे गए एक बार के कोड से साइन इन करते हैं। पूरी पहुँच = वह सब जो मालिक कर सकता है; केवल चैट और अनुमोदन उन लोगों के लिए है जो सिर्फ़ बॉट से बात करते हैं।",
   "remote.signInAccess.link": "उन्हें यह लिंक भेजें:",
   "remote.signInAccess.placeholder": "naam@company.com या @company.com",
   "remote.signInAccess.add": "जोड़ें",

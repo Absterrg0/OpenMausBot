@@ -1341,7 +1341,6 @@
   "engineSetup.claude.connectedAccount": "Claude conectado en este servidor",
   "engineSetup.claude.invalidChallenge": "Claude Code no devolvió un enlace de inicio de sesión válido de Anthropic. Cancela e inténtalo de nuevo.",
   "remote.signInAccess.title": "Quién puede iniciar sesión con un email",
-  "remote.signInAccess.subtitle": "Las personas de esta lista inician sesión en /pair con un código de un solo uso enviado a su email. Acceso completo es todo lo que puede hacer el propietario; chat y aprobaciones es para quienes solo hablan con los bots.",
   "remote.signInAccess.link": "Envíales este enlace:",
   "remote.signInAccess.placeholder": "nombre@empresa.com o @empresa.com",
   "remote.signInAccess.add": "Añadir",

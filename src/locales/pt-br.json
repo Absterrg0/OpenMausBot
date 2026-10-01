@@ -1354,7 +1354,6 @@
   "engineSetup.claude.connectedAccount": "Claude conectado neste servidor",
   "engineSetup.claude.invalidChallenge": "O Claude Code não retornou um link de login válido da Anthropic. Cancele e tente novamente.",
   "remote.signInAccess.title": "Quem pode entrar com e-mail",
-  "remote.signInAccess.subtitle": "As pessoas desta lista entram em /pair com um código de uso único enviado ao e-mail. Acesso completo é tudo o que o dono pode fazer; chat e aprovações é para quem só conversa com os bots.",
   "remote.signInAccess.link": "Envie este link para elas:",
   "remote.signInAccess.placeholder": "nome@empresa.com ou @empresa.com",
   "remote.signInAccess.add": "Adicionar",
