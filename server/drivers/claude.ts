@@ -2209,6 +2209,10 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
      * servers are mounted in this isolated process. */
     const generateReview = (prompt: string, signal?: AbortSignal, onUsage?: TextGenerationOptions["onUsage"]): Promise<string> =>
       new Promise((resolve, reject) => {
+        if (config.requireApiKey && !input.environment.ANTHROPIC_API_KEY) {
+          reject(new Error(NO_ANTHROPIC_KEY));
+          return;
+        }
         const model = config.managedModels?.[0] ?? "claude-haiku-4-5";
         const child = spawnCli(
           config.cli,

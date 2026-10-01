@@ -1619,7 +1619,8 @@ export function instanceConfigs(cfg: AppConfig): InstanceConfigMap {
     // Main's rule: an instance that brought its own key or host gets no
     // workspace credential. The built-in per-provider instances are the
     // exception: Settings → API keys is where their key comes from.
-    const ownsRouting = !Object.hasOwn(API_KEY_FLEET, id) && instanceOwnsRouting(cfg, entry);
+    const builtIn = API_KEY_FLEET[id];
+    const ownsRouting = builtIn?.driver !== entry.driver && instanceOwnsRouting(cfg, entry);
     if (!ownsRouting) {
       for (const [key, value] of injectedEnvironment(cfg, id, entry.driver)) environment[key] = value;
     }
