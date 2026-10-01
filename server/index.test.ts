@@ -8313,7 +8313,7 @@ describe("harness HTTP API", () => {
     const first = (await api("POST", "/api/bots")).body.bot;
     const second = (await api("POST", "/api/bots")).body.bot;
     const before = await api("GET", "/api/config");
-    expect(before.body.localVm).toEqual({ mode: "shared", maxInstances: 2 });
+    expect(before.body.localVm).toEqual({ mode: "shared", maxInstances: 2, idleTimeoutMinutes: 480 });
 
     const shared = await api("GET", `/api/bots/${first.id}/local-computer`);
     expect(shared.status).toBe(200);
@@ -8323,7 +8323,7 @@ describe("harness HTTP API", () => {
       localVm: { mode: "per-bot", maxInstances: 5 },
     });
     expect(saved.status).toBe(200);
-    expect(saved.body.localVm).toEqual({ mode: "per-bot", maxInstances: 5 });
+    expect(saved.body.localVm).toEqual({ mode: "per-bot", maxInstances: 5, idleTimeoutMinutes: 480 });
 
     const [firstStatus, secondStatus] = await Promise.all([
       api("GET", `/api/bots/${first.id}/local-computer`),
@@ -8365,6 +8365,38 @@ describe("harness HTTP API", () => {
     const disk = JSON.parse(readFileSync(join(home, ".openmausbot", "config.json"), "utf8"));
     expect(disk.localVm).toEqual({ mode: "per-bot", maxInstances: 5 });
     await api("PATCH", "/api/config", { localVm: { mode: "shared", maxInstances: 2 } });
+  });
+
+  it("validates, persists and applies the Local VM idle timeout in shared and per-bot modes", async () => {
+    const bot = (await api("POST", "/api/bots")).body.bot;
+    try {
+      const shared = await api("GET", `/api/bots/${bot.id}/local-computer`);
+      expect(shared.status).toBe(200);
+      expect(shared.body).toMatchObject({ mode: "shared", idle_timeout_ms: 480 * 60_000 });
+
+      for (const idleTimeoutMinutes of [0, 4, 1.5, 1441, "30", null]) {
+        const invalid = await api("PATCH", "/api/config", { localVm: { idleTimeoutMinutes } });
+        expect(invalid.status).toBe(400);
+        expect(invalid.body.error).toContain("localVm.idleTimeoutMinutes");
+      }
+
+      const saved = await api("PATCH", "/api/config", { localVm: { idleTimeoutMinutes: 30 } });
+      expect(saved.status).toBe(200);
+      expect(saved.body.localVm).toEqual({ mode: "shared", maxInstances: 2, idleTimeoutMinutes: 30 });
+      expect((await api("GET", "/api/config")).body.localVm.idleTimeoutMinutes).toBe(30);
+      expect((await api("GET", "/api/local-computer")).body.idle_timeout_ms).toBe(30 * 60_000);
+
+      const disk = JSON.parse(readFileSync(join(home, ".openmausbot", "config.json"), "utf8"));
+      expect(disk.localVm).toMatchObject({ idleTimeoutMinutes: 30 });
+
+      // A mode change keeps the configured window rather than resetting it.
+      expect((await api("PATCH", "/api/config", { localVm: { mode: "per-bot" } })).status).toBe(200);
+      const perBot = await api("GET", `/api/bots/${bot.id}/local-computer`);
+      expect(perBot.body).toMatchObject({ mode: "per-bot", idle_timeout_ms: 30 * 60_000 });
+    } finally {
+      await api("PATCH", "/api/config", { localVm: { mode: "shared", maxInstances: 2, idleTimeoutMinutes: 480 } }).catch(() => undefined);
+      await api("DELETE", `/api/bots/${bot.id}`).catch(() => undefined);
+    }
   });
 
   it("never removes an unmanaged container that squats on a bot's exact Local VM name", async () => {

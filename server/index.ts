@@ -145,6 +145,7 @@ import {
   instanceConfigs,
   loadConfig,
   providerReloadKeys,
+  localVmIdleTimeoutMinutes,
   localVmMaxInstances,
   localVmMode,
   parseConfigPatch,
@@ -6183,7 +6184,9 @@ const computerProviderConfigTransitions = new Set<RemoteComputerProvider>();
 // A restore mutates and cleans a project work tree. Claim the bot across the
 // entire async Git operation so a turn cannot start in that folder midway.
 const checkpointRestoreLeases = new Set<string>();
-const LOCAL_VM_IDLE_MS = 8 * 60 * 60_000;
+/** The effective idle window, read from config so a Settings change applies
+ * to both new and already-armed timers (see the config route). */
+const localVmIdleMs = () => localVmIdleTimeoutMinutes(cfg) * 60_000;
 /** How long a turn waits for Cua Driver after starting the container itself.
  * A cold XFCE desktop needs some seconds; past this the turn reports the
  * status it has rather than hanging on a container that will not come up. */
@@ -6776,7 +6779,7 @@ function localVmIdleFor(target: LocalVmTarget): LocalVmIdleTimer {
   let idle = localVmIdles.get(target.key);
   if (idle) return idle;
   idle = new LocalVmIdleTimer(
-    LOCAL_VM_IDLE_MS,
+    localVmIdleMs(),
     () => localVmImageBusy || localVmLifecycleBusy.has(target.key) || localVmActiveThreads.has(target.key),
     async () => {
       localVmLifecycleBusy.add(target.key);
@@ -13936,7 +13939,7 @@ async function localVmPayload(target: LocalVmTarget) {
   return {
     ...status,
     commands: setupCommands(status.runtime, process.platform, target),
-    idle_timeout_ms: LOCAL_VM_IDLE_MS,
+    idle_timeout_ms: localVmIdleMs(),
     mode: localVmMode(cfg),
     max_instances: localVmMaxInstances(cfg),
   };
@@ -14113,6 +14116,7 @@ function configStatus() {
     localVm: {
       mode: localVmMode(cfg),
       maxInstances: localVmMaxInstances(cfg),
+      idleTimeoutMinutes: localVmIdleTimeoutMinutes(cfg),
     },
     features: {
       skillAuthoring: skillAuthoringEnabled(cfg),
@@ -21558,7 +21562,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         return json(res, 200, {
           ...status,
           commands: setupCommands(status.runtime, process.platform, SHARED_LOCAL_VM_TARGET),
-          idle_timeout_ms: LOCAL_VM_IDLE_MS,
+          idle_timeout_ms: localVmIdleMs(),
           mode: localVmMode(cfg),
           max_instances: localVmMaxInstances(cfg),
         });
@@ -21632,7 +21636,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         return json(res, 200, {
           ...status,
           commands: setupCommands(status.runtime, process.platform, target),
-          idle_timeout_ms: LOCAL_VM_IDLE_MS,
+          idle_timeout_ms: localVmIdleMs(),
           mode: localVmMode(cfg),
           max_instances: localVmMaxInstances(cfg),
         });
@@ -22767,6 +22771,11 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
           for (const request of browserCleanupRequests) browserCleanup.abort(request);
         }
         throw error;
+      }
+      // Desktops already counting down move to the new window at once, in
+      // every isolation mode; busy work still defers its expiry.
+      if (patch.localVm?.idleTimeoutMinutes !== undefined) {
+        for (const idle of localVmIdles.values()) idle.setIdleMs(localVmIdleMs());
       }
       let browserReferenceCleanupError: unknown = null;
       if (patch.signIn !== undefined) {
