@@ -176,7 +176,7 @@ it("returns fresh credentials only to admins and selects shared, per-bot and poo
 
 it.each([
   { managed: false }, { imageMatches: false }, { network: "unsafe" }, { container: "stopped" },
-  { viewer_port: null }, { viewer_port: 0 }, { viewer_port: 65536 },
+  { viewer_port: null }, { viewer_port: null, viewer_url: "" }, { viewer_port: 0 }, { viewer_port: 65536 },
 ])("refuses unavailable or untrusted containers: %j", async override => {
   statusOverrides = override as Partial<ContainerComputerStatus>;
   expect((await open()).status).toBe(409);

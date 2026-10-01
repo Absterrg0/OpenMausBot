@@ -20,7 +20,8 @@ export function localDesktopTarget(target: LocalVmTarget, deps: {
     key: target.key,
     async resolve() {
       const status = await deps.status(target);
-      if (!status.managed || !status.imageMatches || status.network !== "loopback" || status.container !== "running") {
+      if (!status.managed || !status.imageMatches || status.network !== "loopback" || status.container !== "running"
+        || !status.viewer_url) {
         throw Object.assign(new Error("Local VM unavailable"), { status: 409 });
       }
       return {
