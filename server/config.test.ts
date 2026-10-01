@@ -769,6 +769,18 @@ describe("default fleet", () => {
     expect(map.grokOwn.environment).toEqual({ XAI_API_KEY: "xai-own" });
   });
 
+  it.each(["openai", "openrouter", "xaiApi", "claudeApi"])("preserves a custom driver's own routing when its id is %s", (id) => {
+    const map = instanceConfigs({
+      mistral: { key: "mistral-WORKSPACE" },
+      instances: {
+        [id]: { driver: "mistral", config: { url: "https://custom.example.test/v1" }, environment: { MISTRAL_API_KEY: "mistral-own" } },
+      },
+    });
+    expect(map[id].driver).toBe("mistral");
+    expect(map[id].config).toEqual({ url: "https://custom.example.test/v1" });
+    expect(map[id].environment).toEqual({ MISTRAL_API_KEY: "mistral-own" });
+  });
+
   it("preserves a per-instance OpenAI-compatible URL override", () => {
     const map = instanceConfigs({
       openaiCompat: { url: "https://workspace.example.test/v1" },
@@ -974,13 +986,53 @@ describe("credential env narrowing", () => {
 
   it("hands no credential to any default-fleet CLI engine except the Computer", () => {
     // the default `grok` instance is the CLI-login grokAgent, not the
-    // API-key driver, so a configured xai key reaches nobody by default
+    // API-key driver: the xAI key reaches only the `xaiApi` instance
     const cfg: AppConfig = { xai: { key: "SECRET-XAI" }, box: { token: "SECRET-BOAT" } };
     const instances = instanceConfigs(cfg);
     for (const [id, entry] of Object.entries(instances)) {
       if (id === "computer") expect(entry.environment).toEqual({ BOX_TOKEN: "SECRET-BOAT" });
+      else if (id === "xaiApi") expect(entry.environment).toEqual({ XAI_API_KEY: "SECRET-XAI" });
       else expect(entry.environment).toEqual({});
     }
+  });
+
+  it("gives each provider's own instance only its own key", () => {
+    const cfg: AppConfig = {
+      openai: { key: "SECRET-OPENAI" },
+      openrouter: { key: "SECRET-OPENROUTER" },
+      openaiCompat: { key: "SECRET-COMPAT", url: "https://api.groq.com/openai/v1", model: "llama" },
+    };
+    const instances = instanceConfigs(cfg);
+    expect(instances.openai.environment).toEqual({ OMB_OPENAI_API_KEY: "SECRET-OPENAI" });
+    expect(instances.openrouter.environment).toEqual({ OMB_OPENROUTER_API_KEY: "SECRET-OPENROUTER" });
+    expect(instances.openaiCompat.environment).toEqual({ OPENAI_COMPAT_API_KEY: "SECRET-COMPAT", OPENAI_COMPAT_URL: "https://api.groq.com/openai/v1" });
+    // the workspace OpenAI-compatible URL and model never reach them either
+    expect(instances.openai.config).toEqual({ url: "https://api.openai.com/v1", apiKeyEnv: "OMB_OPENAI_API_KEY", catalog: "openai" });
+    expect(instances.openrouter.config).toEqual({ url: "https://openrouter.ai/api/v1", apiKeyEnv: "OMB_OPENROUTER_API_KEY" });
+    expect(instances.openai.access).toBe("api");
+  });
+
+  it("runs only Claude (API key) on a key saved from Settings, and every Claude bot when asked", () => {
+    const own = instanceConfigs({ anthropic: { key: "SECRET-ANT", everyClaudeBot: false } });
+    expect(own.claudeApi.environment).toEqual({ ANTHROPIC_API_KEY: "SECRET-ANT" });
+    expect(own.claude.environment).toEqual({});
+    // An older or fleet-seeded key (no flag) keeps running every Claude bot;
+    // the separate instance then stays unset rather than duplicating it.
+    for (const anthropic of [{ key: "SECRET-ANT" }, { key: "SECRET-ANT", everyClaudeBot: true }]) {
+      const every = instanceConfigs({ anthropic });
+      expect(every.claude.environment).toEqual({ ANTHROPIC_API_KEY: "SECRET-ANT" });
+      expect(every.claudeApi.environment).toEqual({});
+    }
+  });
+
+  it("keeps the built-in routing of a provider instance in a saved fleet", () => {
+    // Any engine edit persists the whole map, without the built-in config.
+    const instances = instanceConfigs({
+      openaiCompat: { key: "SECRET-COMPAT", url: "https://api.groq.com/openai/v1" },
+      instances: { claude: { driver: "claudeAgent" }, openai: { driver: "openai-compat", displayName: "OpenAI" } },
+    });
+    expect(instances.openai.config).toEqual({ url: "https://api.openai.com/v1", apiKeyEnv: "OMB_OPENAI_API_KEY", catalog: "openai" });
+    expect(instances.openai.environment).toEqual({});
   });
 
   it("keeps a per-instance environment while layering the credential on top", () => {

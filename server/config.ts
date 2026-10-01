@@ -355,6 +355,7 @@ const instanceConfigSchema = z.object({
   ]).optional(),
   environment: z.record(z.string(), z.string()).optional(),
   enabled: z.boolean().optional(),
+  access: z.enum(["subscription", "custom", "api"]).optional(),
   config: z.json().optional(),
 });
 const instanceConfigMapSchema = z.record(z.string(), instanceConfigSchema);
@@ -416,7 +417,12 @@ const appConfigSchema = z.object({
   /** Anthropic API key for Claude Code billed per token, handed only to
    * Claude instances; `url` only for a proxy or a test double. Never a
    * personal-login OAuth token. */
-  anthropic: z.object({ key: optionalText, url: optionalText }).optional(),
+  anthropic: z.object({ key: optionalText, url: optionalText, everyClaudeBot: z.boolean().optional() }).optional(),
+  /** OpenAI's own API key, for the `openai` instance only. Codex keeps its
+   * own ChatGPT or API login and never reads this. */
+  openai: z.object({ key: optionalText }).optional(),
+  /** OpenRouter key, for the `openrouter` instance only. */
+  openrouter: z.object({ key: optionalText }).optional(),
   /** Monthly spend limit for the whole workspace, against the cost engines
    * report to the usage ledger. Enforced only with the `budgets` entitlement. */
   budgets: z
@@ -582,7 +588,12 @@ export interface AppConfig {
   language?: string;
   xai?: { key?: string; url?: string };
   mistral?: { key?: string };
-  anthropic?: { key?: string; url?: string };
+  /** `everyClaudeBot`: the key runs every Claude bot instead of its login.
+   * Unset means true, which is how a key behaved before it had its own
+   * `claudeApi` instance; a key first saved from Settings sets false. */
+  anthropic?: { key?: string; url?: string; everyClaudeBot?: boolean };
+  openai?: { key?: string };
+  openrouter?: { key?: string };
   budgets?: { monthlyUsd?: number; warnAtPercent?: number };
   decisions?: { retentionDays?: number };
   billing?: { currency?: string; prices?: Record<string, { inputPerMillion: number; outputPerMillion: number; cachedInputPerMillion?: number }> };
@@ -1029,6 +1040,10 @@ export function loadConfig(): AppConfig {
   cfg.anthropic = { ...cfg.anthropic };
   if (process.env.OMB_ANTHROPIC_API_KEY !== undefined) cfg.anthropic.key = process.env.OMB_ANTHROPIC_API_KEY;
   if (process.env.OMB_ANTHROPIC_API_URL !== undefined) cfg.anthropic.url = process.env.OMB_ANTHROPIC_API_URL;
+  cfg.openai = { ...cfg.openai };
+  if (process.env.OMB_OPENAI_API_KEY !== undefined) cfg.openai.key = process.env.OMB_OPENAI_API_KEY;
+  cfg.openrouter = { ...cfg.openrouter };
+  if (process.env.OMB_OPENROUTER_API_KEY !== undefined) cfg.openrouter.key = process.env.OMB_OPENROUTER_API_KEY;
   cfg.openaiCompat = { ...cfg.openaiCompat };
   if (process.env.OPENAI_COMPAT_API_KEY !== undefined) cfg.openaiCompat.key = process.env.OPENAI_COMPAT_API_KEY;
   if (process.env.OPENAI_COMPAT_URL !== undefined) cfg.openaiCompat.url = process.env.OPENAI_COMPAT_URL;
@@ -1077,6 +1092,8 @@ export function syncCredentialEnv(patch: Partial<Omit<AppConfig, "threads" | "ne
     [patch.mistral?.key, "MISTRAL_API_KEY"],
     [patch.anthropic?.key, "OMB_ANTHROPIC_API_KEY"],
     [patch.openaiCompat?.key, "OPENAI_COMPAT_API_KEY"],
+    [patch.openai?.key, "OMB_OPENAI_API_KEY"],
+    [patch.openrouter?.key, "OMB_OPENROUTER_API_KEY"],
     [patch.composio?.apiKey, "COMPOSIO_API_KEY"],
     [patch.box?.token, "BOX_TOKEN"],
     [patch.opencodeGo?.apiKey, "OPENCODE_API_KEY"],
@@ -1120,6 +1137,8 @@ export const WORKSPACE_CREDENTIAL_ENV = [
   "OMB_HOSTED_MODELS",
   "OPENAI_COMPAT_API_KEY",
   "OPENAI_COMPAT_URL",
+  "OMB_OPENAI_API_KEY",
+  "OMB_OPENROUTER_API_KEY",
   "BOX_TOKEN",
   "OPENCODE_API_KEY",
   "OMB_TTS_KEY",
@@ -1224,7 +1243,7 @@ export function saveConfig(
   // back after we have successfully recognized the legacy list.
   const storedProfiles = storedBrowserProfilesSchema.safeParse(disk.browserProfiles);
   if (storedProfiles.success) disk.browserProfiles = storedProfiles.data;
-  for (const key of ["xai", "anthropic", "mistral", "openaiCompat", "composio", "box", "opencodeGo", "tts", "decider", "imageGen", "profile", "rooms", "threads", "context", "memory", "localVm", "features", "cloudOverflow", "budgets", "billing", "decisions", "onboarding", "browserEngine", "newBots"] as const) {
+  for (const key of ["xai", "anthropic", "mistral", "openai", "openrouter", "openaiCompat", "composio", "box", "opencodeGo", "tts", "decider", "imageGen", "profile", "rooms", "threads", "context", "memory", "localVm", "features", "cloudOverflow", "budgets", "billing", "decisions", "onboarding", "browserEngine", "newBots"] as const) {
     const section = checkedPatch[key];
     if (!section) continue;
     const current = jsonObjectSchema.safeParse(disk[key]);
@@ -1466,19 +1485,34 @@ export function instanceOwnsRouting(cfg: AppConfig, entry: { driver: string; con
  * OpenCode reads OPENCODE_API_KEY. Every other engine brings its own
  * login, so handing it a key it never uses would only put that key in the
  * environment of an unrelated child process. */
-function injectedEnvironment(cfg: AppConfig, driver: string): Map<string, string> {
+function injectedEnvironment(cfg: AppConfig, instanceId: string, driver: string): Map<string, string> {
   const environment = new Map<string, string>();
   if (driver === "mistral" && cfg.mistral?.key) environment.set("MISTRAL_API_KEY", cfg.mistral.key);
   if (driver === "grok" && cfg.xai?.key) environment.set("XAI_API_KEY", cfg.xai.key);
   // The workspace Anthropic key reaches Claude Code as the variable it
   // reads, carried in the instance environment so the driver can tell a
   // deliberate workspace key from one riding along in the parent's env.
-  if (driver === "claudeAgent" && cfg.anthropic?.key) environment.set("ANTHROPIC_API_KEY", cfg.anthropic.key);
-  if (driver === "claudeAgent" && cfg.anthropic?.key && cfg.anthropic.url) environment.set("ANTHROPIC_BASE_URL", cfg.anthropic.url);
-  if (driver === "openai-compat" && cfg.openaiCompat?.key)
-    environment.set("OPENAI_COMPAT_API_KEY", cfg.openaiCompat.key);
-  if (driver === "openai-compat" && cfg.openaiCompat?.url)
-    environment.set("OPENAI_COMPAT_URL", cfg.openaiCompat.url);
+  // By default it runs only the `claudeApi` instance, so signed-in Claude
+  // bots stay on their plan; `everyClaudeBot` (the pre-split behaviour, and
+  // what a hosted workspace seeded with only a key relies on) runs every
+  // other Claude instance on it too.
+  const anthropicHere = driver === "claudeAgent" && Boolean(cfg.anthropic?.key)
+    && (cfg.anthropic?.everyClaudeBot === false ? instanceId === CLAUDE_API_INSTANCE : instanceId !== CLAUDE_API_INSTANCE);
+  if (anthropicHere) environment.set("ANTHROPIC_API_KEY", cfg.anthropic!.key!);
+  if (anthropicHere && cfg.anthropic!.url) environment.set("ANTHROPIC_BASE_URL", cfg.anthropic!.url);
+  // OpenAI and OpenRouter have their own instances and keys; the workspace
+  // OpenAI-compatible key and URL belong to every other openai-compat
+  // instance ("Other" in Settings).
+  if (driver === "openai-compat" && instanceId === OPENAI_API_INSTANCE) {
+    if (cfg.openai?.key) environment.set("OMB_OPENAI_API_KEY", cfg.openai.key);
+  } else if (driver === "openai-compat" && instanceId === OPENROUTER_API_INSTANCE) {
+    if (cfg.openrouter?.key) environment.set("OMB_OPENROUTER_API_KEY", cfg.openrouter.key);
+  } else {
+    if (driver === "openai-compat" && cfg.openaiCompat?.key)
+      environment.set("OPENAI_COMPAT_API_KEY", cfg.openaiCompat.key);
+    if (driver === "openai-compat" && cfg.openaiCompat?.url)
+      environment.set("OPENAI_COMPAT_URL", cfg.openaiCompat.url);
+  }
   // driverKind "boxAgent" and env BOX_TOKEN keep their historical names.
   // Only the person's own token: without one the driver itself falls back
   // to Cloud Pro's included token, which never enters an environment map.
@@ -1486,6 +1520,29 @@ function injectedEnvironment(cfg: AppConfig, driver: string): Map<string, string
   if (driver === "opencodeGo" && cfg.opencodeGo?.apiKey) environment.set("OPENCODE_API_KEY", cfg.opencodeGo.apiKey);
   return environment;
 }
+
+/** One instance per pasted provider key, each running only on its own key.
+ * They sit in the picker's "API keys" group and stay hidden until their key
+ * is saved (unavailable without one). */
+export const OPENAI_API_INSTANCE = "openai";
+export const OPENROUTER_API_INSTANCE = "openrouter";
+export const XAI_API_INSTANCE = "xaiApi";
+export const CLAUDE_API_INSTANCE = "claudeApi";
+const API_KEY_FLEET: InstanceConfigMap = {
+  [OPENAI_API_INSTANCE]: {
+    driver: "openai-compat", displayName: "OpenAI", access: "api", icon: { kind: "preset", preset: "openai" },
+    config: { url: "https://api.openai.com/v1", apiKeyEnv: "OMB_OPENAI_API_KEY", catalog: "openai" },
+  },
+  [CLAUDE_API_INSTANCE]: {
+    driver: "claudeAgent", displayName: "Claude (API key)", access: "api", icon: { kind: "preset", preset: "anthropic" },
+    config: { requireApiKey: true },
+  },
+  [XAI_API_INSTANCE]: { driver: "grok", displayName: "xAI", access: "api", icon: { kind: "preset", preset: "xai" } },
+  [OPENROUTER_API_INSTANCE]: {
+    driver: "openai-compat", displayName: "OpenRouter", access: "api", icon: { kind: "preset", preset: "openrouter" },
+    config: { url: "https://openrouter.ai/api/v1", apiKeyEnv: "OMB_OPENROUTER_API_KEY" },
+  },
+};
 
 // Default fleet: one instance per built-in driver (upstream
 // defaultInstanceIdForDriver — instanceId defaults to the driver kind).
@@ -1520,6 +1577,7 @@ export function instanceConfigs(cfg: AppConfig): InstanceConfigMap {
     computer: { driver: "boxAgent" },
     openaiCompat: { driver: "openai-compat" },
     mistral: { driver: "mistral" },
+    ...API_KEY_FLEET,
     qwen: { driver: "qwenAgent" },
     hermes: { driver: "hermesAgent" },
     pi: { driver: "piAgent" },
@@ -1537,6 +1595,7 @@ export function instanceConfigs(cfg: AppConfig): InstanceConfigMap {
     cursor: { driver: "cursorAgent" },
     openaiCompat: { driver: "openai-compat" },
     mistral: { driver: "mistral" },
+    ...API_KEY_FLEET,
     ...CUSTOM_ONLY,
   } as const;
   const configured = cfg.instances && Object.keys(cfg.instances).length ? cfg.instances : null;
@@ -1551,6 +1610,16 @@ export function instanceConfigs(cfg: AppConfig): InstanceConfigMap {
       if (!Object.hasOwn(map, id)) map[id] = { ...entry };
     }
   }
+  // A saved `instances` map (any engine edit persists the whole fleet) keeps
+  // these entries without their built-in routing. Re-apply it on every load
+  // so the OpenAI and OpenRouter instances can never fall back to the shared
+  // OpenAI-compatible key and URL; saved fields still win.
+  for (const [id, builtIn] of Object.entries(API_KEY_FLEET)) {
+    const saved = map[id];
+    if (!saved || saved.driver !== builtIn.driver) continue;
+    const savedConfig = typeof saved.config === "object" && saved.config !== null && !Array.isArray(saved.config) ? saved.config : {};
+    map[id] = { ...builtIn, ...saved, config: { ...(builtIn.config as object | undefined), ...savedConfig } };
+  }
   if (map.chatgpt?.driver === "codex" && !(map.chatgpt.config as { cli?: unknown } | undefined)?.cli) {
     const cli = (map.codex?.config as { cli?: unknown } | undefined)?.cli;
     if (typeof cli === "string" && cli) map.chatgpt = { ...map.chatgpt, config: { ...map.chatgpt.config as object, cli } };
@@ -1562,16 +1631,20 @@ export function instanceConfigs(cfg: AppConfig): InstanceConfigMap {
     const entry = { ...sourceEntry };
     map[id] = entry;
     const environment = { ...entry.environment };
-    const ownsRouting = instanceOwnsRouting(cfg, entry);
+    // Main's rule: an instance that brought its own key or host gets no
+    // workspace credential. The built-in per-provider instances are the
+    // exception: Settings → API keys is where their key comes from.
+    const builtIn = API_KEY_FLEET[id];
+    const ownsRouting = builtIn?.driver !== entry.driver && instanceOwnsRouting(cfg, entry);
     if (!ownsRouting) {
-      for (const [key, value] of injectedEnvironment(cfg, entry.driver)) environment[key] = value;
+      for (const [key, value] of injectedEnvironment(cfg, id, entry.driver)) environment[key] = value;
     }
     entry.environment = environment;
     // The driver URL is configuration, not a credential. Environment is
     // intentionally not consulted by ProviderRegistry when it decodes a
     // driver's config, so carry the workspace default into the transient
     // instance map while preserving a per-instance override.
-    if (entry.driver === "openai-compat" && cfg.openaiCompat) {
+    if (entry.driver === "openai-compat" && cfg.openaiCompat && id !== OPENAI_API_INSTANCE && id !== OPENROUTER_API_INSTANCE) {
       const defaults: Record<string, string> = {};
       if (cfg.openaiCompat.url) defaults.url = cfg.openaiCompat.url;
       if (cfg.openaiCompat.model) defaults.model = cfg.openaiCompat.model;

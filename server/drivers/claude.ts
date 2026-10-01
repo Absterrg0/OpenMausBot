@@ -200,7 +200,7 @@ function claudeEnvironment(
   // env-injected at boot); none of them are this CLI's to see.
   stripWorkspaceCredentialEnv(env);
   const applied = applyClaudeInject(env, model);
-  // A key set on purpose for this workspace (Settings → Connections, carried
+  // A key set on purpose for this workspace (Settings → API keys, carried
   // in the instance environment) stays. One riding along in the parent's
   // env never does: it would flip a subscription login to pay-as-you-go.
   if (!applied.injected && !instanceEnvironment.ANTHROPIC_API_KEY) delete env.ANTHROPIC_API_KEY;
@@ -409,6 +409,8 @@ export function claudeCliUpdate(version: string | null, cli: string): ProviderSn
 
 const DRIVER_KIND = "claudeAgent";
 
+const NO_ANTHROPIC_KEY = "No Anthropic API key — open Settings → API keys.";
+
 export interface ClaudeConfig {
   cli: string;
   /** Separate CLI-managed login/settings. Empty uses the normal CLI account. */
@@ -422,6 +424,9 @@ export interface ClaudeConfig {
   tools?: string[];
   /** Claude tool patterns to deny after the available set is selected. */
   disallowedTools?: string[];
+  /** Runs only on the workspace Anthropic key (the `claudeApi` instance):
+   * unavailable without one, never on a personal login. */
+  requireApiKey?: boolean;
 }
 
 // model catalog ported from upstream packages/contracts/src/model.ts
@@ -926,6 +931,7 @@ function decodeConfig(raw: unknown): ClaudeConfig {
     permissionMode: (mode as ClaudeConfig["permissionMode"]) ?? "acceptEdits",
     ...(tools !== undefined ? { tools } : {}),
     ...(disallowedTools !== undefined ? { disallowedTools } : {}),
+    ...(o.requireApiKey === true ? { requireApiKey: true } : {}),
   };
 }
 
@@ -1325,6 +1331,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
 
     const sendTurn = async (turn: SendTurnInput, logicalTurnId?: string) => {
       if (config.managedModels && (!turn.model || !config.managedModels.includes(turn.model))) throw new Error("This model is not assigned to this workspace.");
+      if (config.requireApiKey && !input.environment.ANTHROPIC_API_KEY) throw new Error(NO_ANTHROPIC_KEY);
       if (config.managed && (!turn.model || turn.model.includes("::") || !config.configDir ||
           !input.environment.ANTHROPIC_API_KEY || !input.environment.ANTHROPIC_BASE_URL)) {
         throw new Error("Company model access is unavailable. Reconnect your organization; personal billing will not be used.");
@@ -2418,12 +2425,17 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
       if (!version) return { state: "unavailable", reason: `\`${config.cli}\` CLI not found` };
       cliVersion = parseClaudeCliVersion(version);
       cliVersionChecked = true;
+      const update = claudeCliUpdate(version, config.cli);
+      const warning = claudeInheritWarning(env);
+      if (config.requireApiKey) {
+        // Never falls back to a login: without the key it is not set up.
+        if (!input.environment.ANTHROPIC_API_KEY) return { state: "unavailable", version, reason: NO_ANTHROPIC_KEY };
+        return { state: "available", version, authenticated: true, account: { method: "api-key" }, ...(update ? { update } : {}), ...(warning ? { warning } : {}), billing: "metered" };
+      }
       const auth = await claudeAuthStatus(config.cli, env);
       // claudeEnvironment strips ANTHROPIC_API_KEY, so turns run on the
       // CLI's own login (Pro/Max): the cost it reports is what the call
       // WOULD bill, not a charge
-      const update = claudeCliUpdate(version, config.cli);
-      const warning = claudeInheritWarning(env);
       return { state: "available", version, ...auth, ...(update ? { update } : {}), ...(warning ? { warning } : {}), billing: "subscription" };
     };
 
@@ -2433,6 +2445,10 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
      * servers are mounted in this isolated process. */
     const generateReview = (prompt: string, signal?: AbortSignal, onUsage?: TextGenerationOptions["onUsage"]): Promise<string> =>
       new Promise((resolve, reject) => {
+        if (config.requireApiKey && !input.environment.ANTHROPIC_API_KEY) {
+          reject(new Error(NO_ANTHROPIC_KEY));
+          return;
+        }
         const model = config.managedModels?.[0] ?? "claude-haiku-4-5";
         const child = spawnCli(
           config.cli,
