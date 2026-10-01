@@ -7207,6 +7207,57 @@ describe("harness HTTP API", () => {
     }
   });
 
+  it("signs in as a pre-registered app where self-registration is off, keeping its secret write-only", async () => {
+    const secret = "corp-app-secret-that-must-never-render";
+    const oauth = await startFakeOAuth({ noRegistration: true, preRegistered: { "corp-app": secret } });
+    const fake = await startFakeHttpMcp({ acceptBearer: oauth.isValid, wwwAuthenticate: oauth.challenge });
+    const configFile = join(home, ".openmausbot", "config.json");
+    try {
+      const created = await api("POST", "/api/mcp/servers", { name: "corp", url: fake.url, oauth: { clientId: "corp-app", clientSecret: secret, scopes: ["mcp", "offline_access"] } });
+      expect(created.status).toBe(201);
+      expect(created.body.servers).toEqual([{
+        name: "corp", type: "http", url: fake.url, headerKeys: [], enabled: false,
+        oauth: { clientId: "corp-app", scopes: ["mcp", "offline_access"], clientSecretConfigured: true, redirectUri: expect.stringMatching(/^http:\/\/127\.0\.0\.1:\d+\/mcp-oauth\/callback$/) },
+      }]);
+
+      expect((await api("POST", "/api/mcp/servers/corp/test")).body.auth).toBe("required");
+      const started = await api("POST", "/api/mcp/servers/corp/sign-in");
+      expect(started.status).toBe(200);
+      expect(new URL(started.body.auth.authorizationUrl).searchParams.get("redirect_uri")).toBe(created.body.servers[0].oauth.redirectUri);
+      await fetch(started.body.auth.authorizationUrl, { redirect: "follow" });
+      let auth = started.body.auth;
+      for (let i = 0; i < 50 && auth.phase === "waiting"; i++) {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        auth = (await api("GET", `/api/mcp/servers/corp/sign-in/${auth.flowId}`)).body.auth;
+      }
+      expect(auth.phase).toBe("succeeded");
+      expect(oauth.counts.register).toBe(0);
+      const tested = await api("POST", "/api/mcp/servers/corp/test");
+      expect(tested.body.ok).toBe(true);
+
+      // an edit that keeps the app keeps the secret and the sign-in
+      const kept = await api("PUT", "/api/mcp/servers/corp", { type: "http", url: fake.url, headers: {}, oauth: { clientId: "corp-app", clientSecret: true, scopes: ["mcp", "offline_access"] } });
+      expect(kept.status).toBe(200);
+      expect(kept.body.servers[0]).toMatchObject({ auth: "signed-in", oauth: { clientSecretConfigured: true } });
+      expect(JSON.parse(readFileSync(configFile, "utf8")).mcpServers.corp.oauth.clientSecret).toBe(secret);
+
+      for (const response of [created, started, tested, kept]) expect(JSON.stringify(response.body)).not.toContain(secret);
+      expect(readFileSync(join(home, ".openmausbot", "mcp-oauth.json"), "utf8")).not.toContain(secret);
+
+      // another app: the old app's tokens and secret go
+      const other = await api("PUT", "/api/mcp/servers/corp", { type: "http", url: fake.url, headers: {}, oauth: { clientId: "other-app", clientSecret: true } });
+      expect(other.status).toBe(400);
+      const moved = await api("PUT", "/api/mcp/servers/corp", { type: "http", url: fake.url, headers: {}, oauth: { clientId: "other-app" } });
+      expect(moved.body.servers[0].auth).toBeUndefined();
+      expect(moved.body.servers[0].oauth.clientSecretConfigured).toBe(false);
+      expect(readFileSync(configFile, "utf8")).not.toContain(secret);
+    } finally {
+      await api("DELETE", "/api/mcp/servers/corp").catch(() => undefined);
+      await fake.close();
+      await oauth.close();
+    }
+  });
+
   it("round-trips the UI language and clears it back to system", async () => {
     const set = await api("PUT", "/api/config", { language: "de" });
     expect(set.status).toBe(200);

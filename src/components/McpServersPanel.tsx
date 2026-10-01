@@ -43,6 +43,14 @@ interface RemoteMcpListing {
   enabled: boolean;
   /** present when the server uses OAuth sign-in */
   auth?: "signed-in" | "needs-sign-in";
+  /** a sign-in app registered in advance; its secret arrives as a boolean */
+  oauth?: McpOAuthClientListing;
+}
+interface McpOAuthClientListing {
+  clientId: string;
+  scopes: string[];
+  clientSecretConfigured: boolean;
+  redirectUri: string;
 }
 /** managedBy: the enrolled organisation has not approved this server, so it
  * stays configured but never reaches bots. */
@@ -63,6 +71,11 @@ interface McpDraft {
   type: "http" | "sse";
   url: string;
   headers: string;
+  oauthClientId: string;
+  oauthClientSecret: string;
+  oauthScopes: string;
+  /** drop the saved client secret on save */
+  oauthForgetSecret: boolean;
 }
 
 interface ProbeResult {
@@ -78,7 +91,10 @@ interface McpMessage {
   params?: Record<string, string | number>;
 }
 
-const EMPTY_DRAFT: McpDraft = { name: "", transport: "stdio", command: "", args: "", env: "", type: "http", url: "", headers: "" };
+const EMPTY_DRAFT: McpDraft = {
+  name: "", transport: "stdio", command: "", args: "", env: "", type: "http", url: "", headers: "",
+  oauthClientId: "", oauthClientSecret: "", oauthScopes: "", oauthForgetSecret: false,
+};
 const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const HEADER_NAME = /^[!#$%&'*+.^_`|~0-9A-Za-z-]{1,128}$/;
 
@@ -128,6 +144,24 @@ export function parseMcpHeaders(
   return { ok: true, headers };
 }
 
+/** The sign-in app part of a URL server's request, or undefined without a
+ * client ID. A blank secret beside a saved one keeps it (write-only),
+ * unless the person chose to remove it. */
+export function parseMcpOAuthClient(
+  input: { clientId: string; clientSecret: string; scopes: string; forgetSecret: boolean },
+  saved?: { clientSecretConfigured: boolean },
+): { clientId: string; clientSecret?: string | true; scopes?: string[] } | undefined {
+  const clientId = input.clientId.trim();
+  if (!clientId) return undefined;
+  const secret = input.clientSecret.trim();
+  const scopes = input.scopes.split(/[\s,]+/).filter(Boolean);
+  return {
+    clientId,
+    ...(secret ? { clientSecret: secret } : saved?.clientSecretConfigured && !input.forgetSecret ? { clientSecret: true as const } : {}),
+    ...(scopes.length ? { scopes } : {}),
+  };
+}
+
 function probeToolsLabel(tools: ProbeResult["tools"]): string {
   if (!tools?.length) return t("mcp.probe.noTools");
   const names = tools.map((tool) => tool.name).join(", ");
@@ -147,6 +181,8 @@ function draftFor(server: McpServerListing): McpDraft {
       type: server.type,
       url: server.url,
       headers: server.headerKeys.map((key) => `${key}: `).join("\n"),
+      oauthClientId: server.oauth?.clientId ?? "",
+      oauthScopes: server.oauth?.scopes.join(" ") ?? "",
     };
   }
   return {
@@ -242,7 +278,11 @@ export function McpServersPanel() {
       if (!name || !/^https?:\/\//i.test(url)) return { ok: false, error: { key: "mcp.err.nameAndUrl" } };
       const parsed = parseMcpHeaders(draft.headers, existing && isRemoteMcpListing(existing) ? existing.headerKeys : []);
       if (!parsed.ok) return parsed;
-      return { ok: true, body: { type: draft.type, url, headers: parsed.headers } };
+      const oauth = parseMcpOAuthClient(
+        { clientId: draft.oauthClientId, clientSecret: draft.oauthClientSecret, scopes: draft.oauthScopes, forgetSecret: draft.oauthForgetSecret },
+        existing && isRemoteMcpListing(existing) ? existing.oauth : undefined,
+      );
+      return { ok: true, body: { type: draft.type, url, headers: parsed.headers, ...(oauth ? { oauth } : {}) } };
     }
     const command = draft.command.trim();
     if (!name || !command) return { ok: false, error: { key: "mcp.err.nameAndCommand" } };
@@ -395,6 +435,10 @@ export function McpServersPanel() {
       setBusy(null);
     }
   };
+
+  const editingServer = editing && editing !== "new" ? servers?.find((server) => server.name === editing) : undefined;
+  const savedOAuth = editingServer && isRemoteMcpListing(editingServer) ? editingServer.oauth : undefined;
+  const secretKept = Boolean(savedOAuth?.clientSecretConfigured && !draft.oauthForgetSecret);
 
   return (
     <div className="min-h-0 flex-1 overflow-y-auto px-6 pb-7 pt-5 sm:px-8">
@@ -566,6 +610,52 @@ export function McpServersPanel() {
                     />
                     <span className="mt-1.5 block text-[11px] text-ink-secondary">{t("mcp.headersHint")}</span>
                   </label>
+                  <div className="sm:col-span-2">
+                    <div className="text-[12px] font-medium text-ink">{t("mcp.oauth.title")}</div>
+                    <p className="mt-1 text-[11px] leading-relaxed text-ink-secondary">
+                      {savedOAuth ? t("mcp.oauth.hintRedirect", { uri: savedOAuth.redirectUri }) : t("mcp.oauth.hint")}
+                    </p>
+                    <div className="mt-2 grid gap-4 sm:grid-cols-2">
+                      <label className="block">
+                        <span className="text-[12px] font-medium text-ink-secondary">{t("mcp.oauth.clientId")}</span>
+                        <input
+                          value={draft.oauthClientId}
+                          onChange={(event) => setDraft((current) => ({ ...current, oauthClientId: event.target.value }))}
+                          spellCheck={false}
+                          autoComplete="off"
+                          className="mt-1.5 w-full rounded-lg border border-hairline/60 bg-raised px-3 py-2.5 font-mono text-[12px] text-ink outline-none focus:border-accent"
+                        />
+                      </label>
+                      <label className="block">
+                        <span className="flex items-center justify-between gap-2 text-[12px] font-medium text-ink-secondary">
+                          {t("mcp.oauth.clientSecret")}
+                          {secretKept && (
+                            <button type="button" onClick={() => setDraft((current) => ({ ...current, oauthClientSecret: "", oauthForgetSecret: true }))} className="text-[11px] font-normal text-ink-secondary underline-offset-2 hover:text-ink hover:underline">
+                              {t("mcp.oauth.removeSecret")}
+                            </button>
+                          )}
+                        </span>
+                        <input
+                          type="password"
+                          value={draft.oauthClientSecret}
+                          onChange={(event) => setDraft((current) => ({ ...current, oauthClientSecret: event.target.value }))}
+                          placeholder={secretKept ? t("mcp.oauth.secretSaved") : t("mcp.oauth.secretOptional")}
+                          autoComplete="new-password"
+                          className="mt-1.5 w-full rounded-lg border border-hairline/60 bg-raised px-3 py-2.5 font-mono text-[12px] text-ink outline-none focus:border-accent"
+                        />
+                      </label>
+                      <label className="block sm:col-span-2">
+                        <span className="text-[12px] font-medium text-ink-secondary">{t("mcp.oauth.scopes")}</span>
+                        <input
+                          value={draft.oauthScopes}
+                          onChange={(event) => setDraft((current) => ({ ...current, oauthScopes: event.target.value }))}
+                          placeholder="offline_access api://my-app/mcp.read"
+                          spellCheck={false}
+                          className="mt-1.5 w-full rounded-lg border border-hairline/60 bg-raised px-3 py-2.5 font-mono text-[12px] text-ink outline-none focus:border-accent"
+                        />
+                      </label>
+                    </div>
+                  </div>
                 </>
               ) : (
                 <>
@@ -630,7 +720,8 @@ export function McpServersPanel() {
             {servers.map((server) => {
               const result = probe[server.name];
               const auth = isRemoteMcpListing(server) ? server.auth : undefined;
-              const canSignIn = isRemoteMcpListing(server) && (auth === "needs-sign-in" || result?.auth === "required");
+              const canSignIn = isRemoteMcpListing(server)
+                && (auth === "needs-sign-in" || result?.auth === "required" || (Boolean(server.oauth) && auth !== "signed-in"));
               return (
                 <div key={server.name} className="rounded-2xl border border-hairline/50 bg-card px-4 py-4 sm:px-5">
                   <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
@@ -649,6 +740,7 @@ export function McpServersPanel() {
                       {isRemoteMcpListing(server)
                         ? server.headerKeys.length > 0 && <div className="mt-1 truncate text-[11px] text-ink-secondary">{t("mcp.headersSaved", { keys: server.headerKeys.join(", ") })}</div>
                         : server.envKeys.length > 0 && <div className="mt-1 truncate text-[11px] text-ink-secondary">{t("mcp.secretsSaved", { keys: server.envKeys.join(", ") })}</div>}
+                      {isRemoteMcpListing(server) && server.oauth && <div className="mt-1 truncate text-[11px] text-ink-secondary">{t(server.oauth.clientSecretConfigured ? "mcp.oauth.savedWithSecret" : "mcp.oauth.saved", { clientId: server.oauth.clientId })}</div>}
                     </div>
                     <div className="flex shrink-0 items-center gap-1">
                       {signingIn === server.name ? (
