@@ -5276,6 +5276,20 @@ function audienceChanged(): void {
     }
   }
 }
+// Cloud boot can revoke sessions before routes are registered. Create the
+// viewer manager before installing any revocation callbacks.
+const localVmViewer = createLocalVmViewer({
+  target: (id) => {
+    const targets = [SHARED_LOCAL_VM_TARGET, ...store.bots.map(bot => perBotLocalVmTarget(bot.id)),
+      ...Array.from({ length: localVmMaxInstances(cfg) }, (_, seat) => poolLocalVmTarget(seat))];
+    return targets.find(target => viewerTargetId(target) === id);
+  },
+  // A viewer can repair a sick CUA driver; do not wait for driver health or
+  // screenshot probes before connecting to its independently running VNC.
+  status: target => containerComputerStatus(undefined, undefined, target, { probeDesktop: false }),
+  live: auth => auth.kind === "loopback" || sessions.isLive(auth.session.id),
+  touch: target => localVmIdleFor(target).touch(),
+});
 function closeSessionStreams(sessionId: string): void {
   browserLive.closeForOwner(sessionId);
   localVmViewer.closeForOwner(sessionId);
@@ -14525,18 +14539,6 @@ ROUTES.push(createAntigravityLeftoverRoutes({
   remove: () => removeAntigravityLeftovers(),
 }));
 
-const localVmViewer = createLocalVmViewer({
-  target: (id) => {
-    const targets = [SHARED_LOCAL_VM_TARGET, ...store.bots.map(bot => perBotLocalVmTarget(bot.id)),
-      ...Array.from({ length: localVmMaxInstances(cfg) }, (_, seat) => poolLocalVmTarget(seat))];
-    return targets.find(target => viewerTargetId(target) === id);
-  },
-  // A viewer can repair a sick CUA driver; do not wait for driver health or
-  // screenshot probes before connecting to its independently running VNC.
-  status: target => containerComputerStatus(undefined, undefined, target, { probeDesktop: false }),
-  live: auth => auth.kind === "loopback" || sessions.isLive(auth.session.id),
-  touch: target => localVmIdleFor(target).touch(),
-});
 ROUTES.push(localVmViewer.route);
 
 const toolResults = new ToolResults();
