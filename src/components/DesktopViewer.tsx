@@ -178,7 +178,7 @@ export function DesktopViewer() {
       }} className={cn("absolute left-[72px] top-1/2 z-20 max-h-[calc(100dvh-24px)] w-[min(320px,calc(100%-84px))] -translate-y-1/2 overflow-y-auto rounded-2xl border border-hairline bg-panel p-4 shadow-2xl", panelMotion.className)} style={{ marginLeft: "env(safe-area-inset-left)" }}>
         <div className="mb-3 flex items-center justify-between gap-2">
           <h1 className="font-medium">{t(keyboardPanel ? "desktopViewer.keyboard" : "desktopViewer.clipboard")}</h1>
-          <button type="button" title={t("desktopViewer.closePanel")} aria-label={t("desktopViewer.closePanel")} onClick={closePanel} className="ui-icon-button shrink-0 text-ink-secondary hover:bg-raised-hover hover:text-ink">
+          <button type="button" title={t("desktopViewer.closePanel")} aria-label={t("desktopViewer.closePanel")} onClick={closePanel} className="ui-icon-button shrink-0">
             <X size={18} aria-hidden="true" />
           </button>
         </div>

@@ -107,6 +107,8 @@ const PREPARATION_LOCK_TIMEOUT_MS = SCREENSHOT_BUDGET_MS + LOCK_ACQUIRE_TIMEOUT_
 type VpsScreenshot = { png: string; format: "png" | "jpeg" };
 const pendingScreenshots = new Map<string, Promise<VpsScreenshot>>();
 const viewerConnections = new Map<string, { privateIp: string; password: string }>();
+const REMOTE_VIEWER_GRACE_MS = 30_000;
+const NATIVE_VIEWER_LIFETIME_MS = 8 * 60 * 60_000;
 const desktopTunnels = new Map<
   string,
   { child: ReturnType<typeof spawn>; joinUrl: string; expiry: ReturnType<typeof setTimeout>; viewers: number; localViewer: boolean }
@@ -310,7 +312,7 @@ export function vpsDesktopConnection(botId: string) {
           // A short grace period lets a reload/reconnect reuse the tunnel.
           tunnel.expiry = setTimeout(() => {
             if (desktopTunnels.get(botId) === tunnel) stopDesktopTunnel(botId);
-          }, 30_000);
+          }, REMOTE_VIEWER_GRACE_MS);
           tunnel.expiry.unref();
         }
       };
@@ -1268,7 +1270,7 @@ export async function vpsComputerJoin(
     if (!remoteViewer) existing.localViewer = true;
     if (!existing.viewers || existing.localViewer) {
       clearTimeout(existing.expiry);
-      existing.expiry = setTimeout(() => stopDesktopTunnel(botId), existing.localViewer ? 8 * 60 * 60_000 : 30_000);
+      existing.expiry = setTimeout(() => stopDesktopTunnel(botId), existing.localViewer ? NATIVE_VIEWER_LIFETIME_MS : REMOTE_VIEWER_GRACE_MS);
       existing.expiry.unref();
     }
     return { joinUrl: existing.joinUrl, state: "running" };
@@ -1330,7 +1332,7 @@ export async function vpsComputerJoin(
   const joinUrl = `http://127.0.0.1:${localPort}/vnc.html#autoconnect=true&resize=scale&password=${encodeURIComponent(connection.password)}`;
   // Remote tabs retain the tunnel when their WebSocket opens. Reclaim an
   // abandoned join promptly; native windows retain the existing close/ceiling.
-  const expiry = setTimeout(() => stopDesktopTunnel(botId), remoteViewer ? 30_000 : 8 * 60 * 60_000);
+  const expiry = setTimeout(() => stopDesktopTunnel(botId), remoteViewer ? REMOTE_VIEWER_GRACE_MS : NATIVE_VIEWER_LIFETIME_MS);
   expiry.unref?.();
   desktopTunnels.set(botId, { child, joinUrl, expiry, viewers: 0, localViewer: !remoteViewer });
   return { joinUrl, state: "running" };
