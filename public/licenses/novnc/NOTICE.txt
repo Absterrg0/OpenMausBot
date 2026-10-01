@@ -1,0 +1,8 @@
+noVNC 1.7.0
+Copyright the noVNC authors.
+
+The unmodified noVNC library is bundled under MPL-2.0 and the accompanying
+licenses. Its corresponding source is available at:
+https://github.com/novnc/noVNC/tree/v1.7.0
+
+Package: https://www.npmjs.com/package/@novnc/novnc/v/1.7.0

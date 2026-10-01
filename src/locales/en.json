@@ -2974,5 +2974,14 @@
   "computer.phase.showSleepingBoat": "Auto found a sleeping cloud computer. It was not woken or changed.",
   "computer.phase.showPendingBoat": "Auto found an existing cloud computer that is not ready. It was not changed.",
   "computer.badge.autoBoat": "cloud boat · Auto · read-only",
-  "computer.addBoatKey": "Add a Boat API key to give this bot a cloud computer — it spins up right here."
+  "computer.addBoatKey": "Add a Boat API key to give this bot a cloud computer — it spins up right here.",
+  "localVmViewer.title": "Local VM",
+  "localVmViewer.reconnect": "Reconnect",
+  "localVmViewer.keyboard": "Keyboard",
+  "localVmViewer.text": "Text to type on the desktop",
+  "localVmViewer.send": "Send text",
+  "localVmViewer.connecting": "Connecting to the desktop…",
+  "localVmViewer.connected": "Desktop connected",
+  "localVmViewer.disconnected": "Desktop disconnected. Reconnect to try again.",
+  "localVmViewer.invalid": "This desktop link is invalid. Open it again from OpenMausBot."
 }

@@ -717,6 +717,27 @@ links, and `OMB_WEBHOOK_PUBLIC_URL=https://your.domain` so hook URLs, are
 printed with the public address. [`deploy/Caddyfile`](../deploy/Caddyfile)
 is the reference implementation.
 
+## Opening a Local VM from another device
+
+In a paired admin browser, **Open live desktop** and the Local VM viewer link
+use the same address as OpenMausBot. The server forwards the desktop WebSocket
+to the managed container's loopback port. Shared, per-bot and pool desktops
+use the same route; no additional public port or viewer origin setting is
+needed. Keep the container's VNC port bound to loopback.
+
+Your app reverse proxy must support WebSocket upgrades, preserve `Host`, and
+set `X-Forwarded-Proto` to the browser-facing scheme. This also applies when
+using Tailscale Serve. Viewer HTTP requests and WebSocket upgrades require the
+same admin session as Local VM management. Logging out or revoking that session
+closes open viewers; expiry is checked every five seconds. Client-only pairing
+does not grant desktop control.
+
+The viewer is bundled with OpenMausBot. HTML and JavaScript from the VM are
+never served under the app's origin, and workspace cookies and tokens are
+never forwarded into the VM. An open viewer keeps that VM's idle timer active.
+Use **Keyboard** to send text from a phone. Local owner connections, including
+the packaged desktop's isolated viewer windows, keep the direct viewer URL.
+
 ## Using it from your phone
 
 Signed in on a hosted server as an admin (with a pairing code or your
