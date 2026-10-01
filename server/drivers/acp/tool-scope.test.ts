@@ -1,10 +1,11 @@
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, expect, it } from "vitest";
 import { ensureDirs } from "../../config.ts";
 import type { ProviderInstance } from "../../contracts.ts";
+import { removeTempDir } from "../../testing/cleanup.ts";
 import { recordEvents } from "../../testing/events.ts";
 import { GeminiAgentDriver } from "./gemini.ts";
 import { acpNativeIncomingLogMessage } from "./core.ts";
@@ -15,7 +16,7 @@ const directories: string[] = [];
 const instances: ProviderInstance[] = [];
 afterEach(async () => {
   for (const instance of instances.splice(0)) await instance.dispose();
-  for (const directory of directories.splice(0)) rmSync(directory, { recursive: true, force: true });
+  for (const directory of directories.splice(0)) await removeTempDir(directory);
 });
 async function fixture(driver = GrokAgentDriver, environment: Record<string, string> = {}) {
   ensureDirs(); chmodSync(cli, 0o755);

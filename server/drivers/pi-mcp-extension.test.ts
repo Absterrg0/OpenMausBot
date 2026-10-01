@@ -1,8 +1,9 @@
-import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { removeTempDir } from "../testing/cleanup.ts";
 
 import extension, {
   allocateToolName,
@@ -49,10 +50,10 @@ function createClient(source: string, env: Record<string, string> = {}): StdioMc
   return client;
 }
 
-afterEach(() => {
+afterEach(async () => {
   vi.restoreAllMocks();
   for (const client of clients.splice(0)) client.dispose();
-  for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+  for (const dir of tempDirs.splice(0)) await removeTempDir(dir);
   if (originalMcpConfig === undefined) delete process.env.OMB_MCP_CONFIG;
   else process.env.OMB_MCP_CONFIG = originalMcpConfig;
 });
