@@ -1461,20 +1461,26 @@ const sameUrl = (a: string, b: string) => a.trim().replace(/\/+$/u, "") === b.tr
  * to the instance's own host (a third-party router or proxy). The same rule
  * as a Claude router instance, for the API-key engines. An instance on the
  * workspace's own endpoint with nothing of its own still gets the key. */
-export function instanceOwnsRouting(cfg: AppConfig, entry: { driver: string; config?: unknown; environment?: Record<string, string> }): boolean {
+export function instanceOwnsRouting(
+  cfg: AppConfig,
+  entry: { driver: string; config?: unknown; environment?: Record<string, string> },
+  routingDefaults?: { url?: string; apiKeyEnv?: string },
+): boolean {
   const config = typeof entry.config === "object" && entry.config !== null && !Array.isArray(entry.config)
     ? entry.config as Record<string, unknown>
     : {};
   const own = (value: unknown) => typeof value === "string" && value.trim() !== "";
   const ownUrl = (...workspace: Array<string | undefined>) => own(config.url)
     && !workspace.some((url) => url !== undefined && sameUrl(config.url as string, url));
+  const compatKeyEnv = routingDefaults?.apiKeyEnv ?? "OPENAI_COMPAT_API_KEY";
   switch (entry.driver) {
     case "claudeAgent":
       return claudeInstanceOwnsRouting(entry.environment);
     case "openai-compat":
       return own(config.key) || own(entry.environment?.OPENAI_COMPAT_API_KEY)
-        || (own(config.apiKeyEnv) && config.apiKeyEnv !== "OPENAI_COMPAT_API_KEY")
-        || ownUrl(cfg.openaiCompat?.url || process.env.OPENAI_COMPAT_URL || "https://openrouter.ai/api/v1");
+        || own(entry.environment?.[compatKeyEnv])
+        || (own(config.apiKeyEnv) && config.apiKeyEnv !== compatKeyEnv)
+        || ownUrl(routingDefaults?.url || cfg.openaiCompat?.url || process.env.OPENAI_COMPAT_URL || "https://openrouter.ai/api/v1");
     case "mistral":
       return own(entry.environment?.MISTRAL_API_KEY) || ownUrl("https://api.mistral.ai/v1");
     case "grok":
@@ -1638,10 +1644,14 @@ export function instanceConfigs(cfg: AppConfig): InstanceConfigMap {
     map[id] = entry;
     const environment = { ...entry.environment };
     // Main's rule: an instance that brought its own key or host gets no
-    // workspace credential. The built-in per-provider instances are the
-    // exception: Settings → API keys is where their key comes from.
+    // workspace credential. Built-in per-provider routing is a default,
+    // not an override, but saved custom routing on those IDs still owns its
+    // credential rather than receiving the workspace's provider key.
     const builtIn = API_KEY_FLEET[id];
-    const ownsRouting = builtIn?.driver !== entry.driver && instanceOwnsRouting(cfg, entry);
+    const routingDefaults = builtIn?.driver === entry.driver
+      ? builtIn.config as { url?: string; apiKeyEnv?: string } | undefined
+      : undefined;
+    const ownsRouting = instanceOwnsRouting(cfg, entry, routingDefaults);
     if (!ownsRouting) {
       for (const [key, value] of injectedEnvironment(cfg, id, entry.driver)) environment[key] = value;
     }

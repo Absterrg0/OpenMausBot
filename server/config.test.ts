@@ -788,6 +788,48 @@ describe("default fleet", () => {
     expect(map[id].environment).toEqual({ MISTRAL_API_KEY: "mistral-own" });
   });
 
+  it.each([
+    ["openai", "OMB_OPENAI_API_KEY", "https://api.openai.com/v1"],
+    ["openrouter", "OMB_OPENROUTER_API_KEY", "https://openrouter.ai/api/v1"],
+  ])("respects same-driver endpoint and credential overrides for %s", (id, keyEnv, defaultUrl) => {
+    const workspace = { openai: { key: "openai-WORKSPACE" }, openrouter: { key: "openrouter-WORKSPACE" } };
+    for (const config of [
+      { url: "https://third-party.example.test/v1" },
+      { key: "instance-own" },
+      { apiKeyEnv: "INSTANCE_OWN_KEY" },
+    ]) {
+      const map = instanceConfigs({ ...workspace, instances: { [id]: { driver: "openai-compat", config } } });
+      expect(map[id].environment, JSON.stringify(config)).toEqual({});
+    }
+    const keyed = instanceConfigs({
+      ...workspace,
+      instances: { [id]: { driver: "openai-compat", environment: { [keyEnv]: "instance-own" } } },
+    });
+    expect(keyed[id].environment).toEqual({ [keyEnv]: "instance-own" });
+
+    // Saved built-in routing is not itself an override: the provider still
+    // gets its own workspace key, never the shared compatible connection's.
+    const inherited = instanceConfigs({
+      ...workspace,
+      openaiCompat: { key: "compat-WORKSPACE", url: "https://workspace-router.example.test/v1" },
+      instances: { [id]: { driver: "openai-compat", config: { url: `${defaultUrl}/`, apiKeyEnv: keyEnv } } },
+    });
+    expect(inherited[id].environment).toEqual({ [keyEnv]: workspace[id as "openai" | "openrouter"].key });
+  });
+
+  it("respects same-driver routing overrides for the Claude and xAI API instances", () => {
+    const map = instanceConfigs({
+      anthropic: { key: "anthropic-WORKSPACE", everyClaudeBot: false },
+      xai: { key: "xai-WORKSPACE" },
+      instances: {
+        claudeApi: { driver: "claudeAgent", environment: { ANTHROPIC_BASE_URL: "https://claude-router.example.test" } },
+        xaiApi: { driver: "grok", config: { url: "https://xai-router.example.test/v1" } },
+      },
+    });
+    expect(map.claudeApi.environment).toEqual({ ANTHROPIC_BASE_URL: "https://claude-router.example.test" });
+    expect(map.xaiApi.environment).toEqual({});
+  });
+
   it("preserves a per-instance OpenAI-compatible URL override", () => {
     const map = instanceConfigs({
       openaiCompat: { url: "https://workspace.example.test/v1" },
