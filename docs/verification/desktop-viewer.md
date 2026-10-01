@@ -82,6 +82,6 @@ The consolidated `public/novnc-NOTICE.txt` contains the source and MPL-2.0
 links plus the bundled Pako and DES notices. Vite includes this static asset
 in `dist`, which existing web, npm and desktop packaging already ship. The
 fixture checks the served notice against that file and the dependency notices.
-The root `NOTICE` and a small noVNC link in the viewer's lower-left corner
+The root `NOTICE` and a small noVNC link in the viewer's lower-right corner
 point to it. The link stays available with the controls collapsed, opens in a
 new tab and has a native tooltip. No custom build step is needed.
