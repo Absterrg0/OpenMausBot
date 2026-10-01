@@ -365,12 +365,13 @@ export function McpServersPanel() {
       if (signInAbort.current === controller) {
         signInAbort.current = null;
         signInComplete.current = null;
+        setCompletingSignIn(false);
+        setSigningIn(null);
+        setSignInFlow(null);
+        setCallbackUrl("");
+        setCallbackError(null);
+        void load();
       }
-      setSigningIn(null);
-      setSignInFlow(null);
-      setCallbackUrl("");
-      setCallbackError(null);
-      void load();
     }
   };
 
@@ -385,7 +386,7 @@ export function McpServersPanel() {
     } catch (cause) {
       if (signInAbort.current === controller) setCallbackError(cause instanceof Error ? cause.message : String(cause));
     } finally {
-      setCompletingSignIn(false);
+      if (signInAbort.current === controller) setCompletingSignIn(false);
     }
   };
 

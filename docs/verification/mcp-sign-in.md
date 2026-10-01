@@ -31,6 +31,8 @@ The fixture verifies:
 - An invalid URL shows an error without consuming the pending flow.
 - A delayed token exchange keeps the submit button disabled and spinning,
   preserves the pasted URL, and shows the result after the provider responds.
+- Cancelling during that exchange immediately enables a new sign-in, whose
+  paste form stays usable before the cancelled request settles.
 - Pasting the fake provider's redirect completes the real PKCE exchange.
 - The signed-in MCP server returns tools on Test.
 - Logging out cancels the next pending flow and closes its listener.

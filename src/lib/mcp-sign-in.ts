@@ -41,7 +41,8 @@ export async function runMcpSignIn(name: string, deps: Deps): Promise<McpSignInS
   const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
   const started = (await deps.api(base, { method: "POST" })).auth as McpSignInStatus;
   if (started.phase !== "waiting") return started;
-  const cancel = () => started.flowId
+  let cancellation: Promise<unknown> | undefined;
+  const cancel = () => cancellation ??= started.flowId
     ? deps.api(`${base}/${started.flowId}`, { method: "DELETE" }).catch(() => undefined)
     : Promise.resolve();
   const link = mcpSignInLink(started.authorizationUrl);
@@ -57,29 +58,41 @@ export async function runMcpSignIn(name: string, deps: Deps): Promise<McpSignInS
   const completed = new Promise<McpSignInStatus>((resolve) => {
     complete = (result) => { if (result.phase !== "waiting") resolve(result); };
   });
-  deps.onStarted?.(started, complete);
-  try { await deps.open(link); }
-  catch { /* The waiting UI also offers an explicit Open sign-in page button. */ }
-  let status = started;
-  while (status.phase === "waiting") {
-    // A pasted callback already returns the final status. Do not make the
-    // form wait for another poll (or leave it waiting after clearing input).
-    const submitted = await Promise.race([completed, sleep(POLL_MS).then(() => null)]);
-    if (submitted) return submitted;
-    if (deps.signal?.aborted) {
-      await cancel();
-      return { ...status, phase: "cancelled", authorizationUrl: null };
+  const cancelledStatus: McpSignInStatus = { ...started, phase: "cancelled", authorizationUrl: null };
+  let onAbort!: () => void;
+  const cancelled = new Promise<McpSignInStatus>((resolve) => {
+    onAbort = () => { void cancel(); resolve(cancelledStatus); };
+  });
+  deps.signal?.addEventListener("abort", onAbort, { once: true });
+  try {
+    deps.onStarted?.(started, complete);
+    if (deps.signal?.aborted) return cancelledStatus;
+    // Cancellation must not wait for a popup or status request to settle.
+    await Promise.race([Promise.resolve().then(() => deps.open(link)).catch(() => undefined), cancelled]);
+    if (deps.signal?.aborted) return cancelledStatus;
+    let status = started;
+    while (status.phase === "waiting") {
+      // A pasted callback already returns the final status. Do not make the
+      // form wait for another poll (or leave it waiting after clearing input).
+      const submitted = await Promise.race([completed, cancelled, sleep(POLL_MS).then(() => null)]);
+      if (deps.signal?.aborted) return cancelledStatus;
+      if (submitted) return submitted;
+      try {
+        status = await Promise.race([
+          completed,
+          cancelled,
+          deps.api(`${base}/${started.flowId}`).then((response) => response.auth as McpSignInStatus),
+        ]);
+        if (deps.signal?.aborted) return cancelledStatus;
+      } catch {
+        if (deps.signal?.aborted) return cancelledStatus;
+        return { ...status, phase: "expired", authorizationUrl: null };
+      }
     }
-    try {
-      status = await Promise.race([
-        completed,
-        deps.api(`${base}/${started.flowId}`).then((response) => response.auth as McpSignInStatus),
-      ]);
-    } catch {
-      return { ...status, phase: "expired", authorizationUrl: null };
-    }
+    return status;
+  } finally {
+    deps.signal?.removeEventListener("abort", onAbort);
   }
-  return status;
 }
 
 /** Send the callback as a JSON body, never as a query parameter or a fetch target. */

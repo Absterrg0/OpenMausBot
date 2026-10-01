@@ -91,9 +91,19 @@ try {
   assert.equal(await evaluate("document.querySelector('button[aria-busy=true]').disabled"), true);
   assert.equal(await evaluate("document.getElementById('mcp-callback-documents').value"), callbackUrl);
   await command("screenshot", join(evidence, "authenticating.png"), "--full");
+  // Cancel while the completion request is held, then retry before that old
+  // request settles. The new form must not inherit the old busy state.
+  await clickButton("Cancel");
+  await clickButton("Sign in");
+  await command("wait", "--fn", "document.body.textContent.includes('Signing in from another computer?')");
+  await command("click", "summary");
+  const retried = await fetch(authorizationUrl, { redirect: "manual" });
+  await command("fill", "#mcp-callback-documents", retried.headers.get("location")!);
+  await clickButton("Complete sign-in");
+  await command("wait", "--fn", "document.querySelector('button[aria-busy=true] .animate-spin') !== null");
   releaseToken();
   await command("wait", "--fn", "document.body.textContent.includes('Signed in') && !document.getElementById('mcp-callback-documents')");
-  assert.equal(oauth.counts.token, 1);
+  assert.equal(oauth.counts.token, 2);
   await clickButton("Test");
   await command("wait", "--fn", "document.body.textContent.includes('read_notes')");
   await command("screenshot", join(evidence, "signed-in.png"), "--full");
@@ -106,7 +116,7 @@ try {
   const pending = await fetch(authorizationUrl, { redirect: "manual" });
   assert.equal(await evaluate("fetch('/api/auth/logout', {method:'POST',headers:{'content-type':'application/json'}}).then(r=>r.status)"), 200);
   await assert.rejects(fetch(pending.headers.get("location")!));
-  console.log(JSON.stringify({ ok: true, evidence, tested: ["remote admin start", "blocked popup", "invalid URL retry", "pending spinner and preserved input", "paste completion", "MCP tools", "logout cancellation"] }));
+  console.log(JSON.stringify({ ok: true, evidence, tested: ["remote admin start", "blocked popup", "invalid URL retry", "pending spinner and preserved input", "cancel and retry during pending completion", "paste completion", "MCP tools", "logout cancellation"] }));
 } finally {
   releaseToken();
   await closeBrowser?.().catch(() => {});
