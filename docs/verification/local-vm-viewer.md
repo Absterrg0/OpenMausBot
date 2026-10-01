@@ -20,8 +20,11 @@ status and WebSocket routes as a remote admin, and verifies:
 
 - The built noVNC page displays the synthetic desktop's pixels.
 - Paired status returns a viewer link on the app origin, without a password.
-- The Keyboard text field sends ordinary text, newline and Unicode keysyms.
-- The page fits a 390-pixel phone viewport.
+- The Keyboard panel sends text, newline, Unicode keysyms and Ctrl–Alt–Del.
+- Clipboard text travels in both directions through explicit controls.
+- Fit, fullscreen (when supported) and the collapsible sidebar work.
+- The panels fit phone and short landscape viewports; dark and light screenshots
+  show the built UI using the app's skin tokens.
 - Reconnect opens a new working desktop connection.
 - Logout closes the already-open WebSocket.
 

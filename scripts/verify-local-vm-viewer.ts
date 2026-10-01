@@ -86,10 +86,43 @@ process.stdout.write(typeof result === 'string' ? result : JSON.stringify(result
   assert.ok(desktop.keys.includes(72));
   assert.ok(desktop.keys.includes(0xff0d));
   assert.ok(desktop.keys.includes(0x01004e16));
+  await command("click", "#ctrl-alt-del");
+  assert.ok(desktop.keys.includes(0xffff));
+  await command("click", "#clipboard");
+  desktop.sendClipboard("From the desktop");
+  await command("wait", "--fn", "document.getElementById('clipboard-text').value === 'From the desktop'");
+  await command("fill", "#clipboard-text", "To the desktop");
+  await command("click", "#send");
+  assert.ok(desktop.clipboards.includes("To the desktop"));
+  // Clipboard exchange is explicit; device clipboard permissions are never requested.
+  await command("click", "#clipboard");
+  await command("click", "#fit");
+  assert.equal(await evaluate("document.getElementById('fit').getAttribute('aria-pressed')"), "false");
+  await command("click", "#fit");
+  const dockedWidth = await evaluate("document.querySelector('main').getBoundingClientRect().width");
+  await command("click", "#hide-controls");
+  assert.ok(await evaluate("document.querySelector('main').getBoundingClientRect().width") > dockedWidth);
+  await command("click", "#show-controls");
+  if (await evaluate("document.fullscreenEnabled")) {
+    await command("click", "#fullscreen");
+    await command("wait", "--fn", "Boolean(document.fullscreenElement)");
+    await command("click", "#fullscreen");
+    await command("wait", "--fn", "!document.fullscreenElement");
+  }
   await command("set", "viewport", "390", "844");
+  await command("click", "#keyboard");
   assert.equal(await evaluate("document.documentElement.scrollWidth <= innerWidth"), true);
   const phoneScreenshot = join(dirname(fixture.info.logPath), `viewer-${process.pid}-phone.png`);
   await command("screenshot", phoneScreenshot);
+  assert.equal(await evaluate("(() => { const r = document.querySelector('section').getBoundingClientRect(); return r.left >= 0 && r.right <= innerWidth && r.top >= 0 && r.bottom <= innerHeight; })()"), true);
+  await evaluate("document.documentElement.dataset.skin = 'daylight'");
+  await command("wait", "--fn", "getComputedStyle(document.getElementById('retry')).color === 'rgb(87, 87, 87)'");
+  const lightScreenshot = join(dirname(fixture.info.logPath), `viewer-${process.pid}-light.png`);
+  await command("screenshot", lightScreenshot);
+  // A short landscape viewport must keep both the dock and panel scrollable.
+  await command("set", "viewport", "844", "390");
+  assert.equal(await evaluate("document.documentElement.scrollHeight <= innerHeight && document.querySelector('section').getBoundingClientRect().height <= innerHeight"), true);
+  await command("click", "#keyboard");
   nextConnection = desktop.nextConnection();
   await command("click", "#retry");
   await nextConnection;
@@ -99,7 +132,7 @@ process.stdout.write(typeof result === 'string' ? result : JSON.stringify(result
   assert.equal(await evaluate("fetch('/api/auth/logout',{method:'POST',headers:{'content-type':'application/json'},body:'{}'}).then(r=>r.status)"), 200);
   await command("wait", "--fn", "document.getElementById('status').textContent.includes('disconnected')");
   assert.ok(beforeLogout >= 2);
-  console.log(JSON.stringify({ ok: true, checks: ["built noVNC renders RFB pixels", "paired status uses app URL", "keyboard and Unicode", "phone viewport", "reconnect", "logout closes socket"], logPath: fixture.info.logPath, screenshots: [desktopScreenshot, phoneScreenshot] }));
+  console.log(JSON.stringify({ ok: true, checks: ["built noVNC renders RFB pixels", "paired status uses app URL", "keyboard, Unicode and Ctrl-Alt-Del", "bidirectional clipboard", "fit, fullscreen and collapsible sidebar", "phone and landscape viewports", "reconnect", "logout closes socket"], logPath: fixture.info.logPath, screenshots: [desktopScreenshot, phoneScreenshot, lightScreenshot] }));
 } finally {
   if (browser) await run(browser.binary, ["close"], { env: browser.env, timeout: 10_000 }).catch(() => {});
   await fixture?.close();

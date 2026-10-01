@@ -8,6 +8,7 @@ export async function fakeVnc() {
   const server = createServer((_req, res) => res.writeHead(404).end());
   const sockets = new WebSocketServer({ server, path: "/websockify" });
   const keys: number[] = [];
+  const clipboards: string[] = [];
   let connections = 0;
   sockets.on("connection", socket => {
     connections++;
@@ -58,12 +59,21 @@ export async function fakeVnc() {
           socket.send(init);
         } else if (message[0] === 3 && !sentFrame) { sentFrame = true; frame(); }
         else if (message[0] === 4 && message[1] === 1) keys.push(message.readUInt32BE(4));
+        else if (message[0] === 6) clipboards.push(message.subarray(8).toString("latin1"));
       }
     });
   });
   await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
   return {
-    port: (server.address() as { port: number }).port, keys,
+    port: (server.address() as { port: number }).port, keys, clipboards,
+    sendClipboard(text: string) {
+      const bytes = Buffer.from(text, "latin1");
+      const message = Buffer.alloc(8 + bytes.length);
+      message[0] = 3;
+      message.writeUInt32BE(bytes.length, 4);
+      bytes.copy(message, 8);
+      for (const socket of sockets.clients) socket.send(message);
+    },
     connections: () => connections,
     nextConnection: () => once(sockets, "connection"),
     async close() {
