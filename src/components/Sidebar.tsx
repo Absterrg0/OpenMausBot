@@ -319,14 +319,31 @@ export function GroupThreadList({ group, selected, density = "comfortable", quer
   </div>;
 }
 
+/** Copy for the room delete confirmation. Deleting a room drops its messages
+ * and every thread in it and turns off the routines that run there; the bots
+ * in it are untouched. Bot⇄bot rooms are labelled threads in the menu. */
+export function roomDeleteCopy(group: Pick<Group, "name" | "dm">) {
+  const isBotChat = Boolean(group.dm);
+  return {
+    title: t("sidebar.room.deleteConfirmTitle", { name: group.name }),
+    body: isBotChat
+      ? t("sidebar.room.deleteChatBody", { name: group.name })
+      : t("sidebar.room.deleteChannelBody", { name: group.name }),
+    confirmLabel: isBotChat ? t("sidebar.room.deleteChat") : t("sidebar.room.deleteChannel"),
+    tone: "danger" as const,
+  };
+}
+
 function RoomContextMenu({
   menu,
   onClose,
   onMoveToSection,
+  onDelete,
 }: {
   menu: { groupId: string; x: number; y: number } | null;
   onClose: () => void;
   onMoveToSection: (groupId: string) => void;
+  onDelete: (groupId: string) => void;
 }) {
   const motion = useHeldMenuMotion(menu);
   const shown = motion.value;
@@ -449,8 +466,8 @@ function RoomContextMenu({
       </button>
       {!remoteClient && <button
         onClick={() => {
-          dispatch({ type: "deleteGroup", groupId: group.id });
           onClose();
+          onDelete(group.id);
         }}
         className="flex w-full items-center gap-3 px-3.5 py-2 text-left text-[14px] text-danger hover:bg-raised/70"
       >
@@ -1613,6 +1630,8 @@ export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void 
   const [shareTeam, setShareTeam] = useState<string | null>(null);
   const [roomMenu, setRoomMenu] = useState<{ groupId: string; x: number; y: number } | null>(null);
   const [roomSectionPicker, setRoomSectionPicker] = useState<{ groupId: string; x: number; y: number } | null>(null);
+  const [deletingRoomId, setDeletingRoomId] = useState<string | null>(null);
+  const deletingRoom = deletingRoomId ? state.groups.find((g) => g.id === deletingRoomId) : undefined;
   const [plusOpen, setPlusOpen] = useState(false);
   const plusMotion = useMenuMotion(plusOpen);
   const [attentionOpen, setAttentionOpen] = useState(false);
@@ -2527,7 +2546,22 @@ export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void 
             if (!roomMenu) return;
             setRoomSectionPicker({ groupId, x: roomMenu.x, y: roomMenu.y });
           }}
+          onDelete={setDeletingRoomId}
         />
+      <ConfirmDialog
+        open={deletingRoom !== undefined}
+        {...roomDeleteCopy(deletingRoom ?? { name: "" })}
+        icon={<Trash2 size={18} />}
+        returnFocusRef={sidebarRef}
+        onCancel={() => setDeletingRoomId(null)}
+        onConfirm={() => {
+          // Read the room from live state: it may have been removed elsewhere
+          // while the dialog was open.
+          const groupId = deletingRoom?.id;
+          setDeletingRoomId(null);
+          if (groupId) dispatch({ type: "deleteGroup", groupId });
+        }}
+      />
       <SectionPicker
           current={roomSectionPicker ? state.groups.find((g) => g.id === roomSectionPicker.groupId)?.section : undefined}
           anchor={roomSectionPicker}
