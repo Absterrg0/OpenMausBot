@@ -1132,6 +1132,24 @@ function openerFrom(fromThreadId: string): string | undefined {
   return person && !cloudOwnerPerson(person) ? person : CLOUD_NOBODY_KEY;
 }
 
+/** The model a thread a bot opens from one of its own threads starts on:
+ * that thread's, not the bot default the person may have moved away from
+ * (#1950). Only the bot's own thread counts — a room or a teammate's thread
+ * is not one of its tasks, and another bot's model belongs to another engine.
+ * Approval stays the bot's, except that a level the inherited engine would
+ * have to confirm on a model switch starts the new thread in Ask. */
+function parentThreadModel(botId: string, parentThreadId: string): { modelSelection?: ModelSelection; approvalMode?: "ask" } {
+  // The stored profile, never a per-thread projection: the comparison is
+  // against the defaults the new thread would otherwise get.
+  const bot = store.bot(botId);
+  const modelSelection = bot && store.taskByThread(bot.id, parentThreadId)?.modelSelection;
+  if (!bot || !modelSelection) return {};
+  const needsAsk = modelSwitchNeedsAsk(approvalModeFor(bot),
+    registry.cliTarget(bot.modelSelection.instanceId)?.driverKind,
+    registry.cliTarget(modelSelection.instanceId)?.driverKind);
+  return { modelSelection, ...(needsAsk ? { approvalMode: "ask" as const } : {}) };
+}
+
 /** On a Cloud home: the conversation that work a guest-driven turn hands a
  * teammate (delegate_bot, ask_bot) runs in. It is a fresh one of the guest's
  * own on the teammate, never the owner's conversation with it, so the work,
@@ -16793,7 +16811,9 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         }
         const sourceTitle = owner.group ? owner.group.name : (store.taskByThread(from.id, fromThreadId)?.title ?? "");
         if (target.id === from.id) {
-          const task = store.createTask(from.id, title, false, projectId, { botId: from.id, name: from.name, at: Date.now() });
+          const inherited = parentThreadModel(from.id, fromThreadId);
+          const task = store.createTask(from.id, title, false, projectId, { botId: from.id, name: from.name, at: Date.now() },
+            inherited.approvalMode, inherited.modelSelection);
           if (!task) return json(res, 500, { error: "couldn't create that thread" });
           threadStarters.set(task.threadId, openerFrom(fromThreadId));
           internalCapability.openedThreads += 1;
