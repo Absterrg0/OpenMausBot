@@ -36,7 +36,8 @@ status and WebSocket routes as a remote admin, and verifies:
 - Automatic 95% fit and full-height, unframed fullscreen (when supported)
   work, including restoring the normal fit after leaving fullscreen.
 - The animated sidebar leaves equal margins when collapsed; fullscreen has
-  no margins. Closed controls are inert and tooltips use native titles.
+  no margins. Closed controls are inert and tooltips use native titles;
+  hiding or showing them moves focus to the opposite toggle.
 - The clipboard header keeps its title centered beside a compact close button.
 - Panels use the app's shared menu motion, including reduced-motion behavior.
 - The panels fit phone and short landscape viewports; dark and light screenshots
@@ -45,7 +46,8 @@ status and WebSocket routes as a remote admin, and verifies:
 - Page exit aborts a pending connection request; a persisted-page restore
   opens a fresh connection.
 - The same built viewer opens a VPS through the real join route and a synthetic
-  loopback SSH forward; reconnect reuses the tunnel without a public viewer port.
+  loopback SSH forward; two simultaneous joins share one tunnel, and reconnect
+  reuses it without a public viewer port.
 - Changing the link target disconnects the previous desktop and clears its
   keyboard/clipboard drafts.
 - Logout closes the already-open WebSocket.
