@@ -630,6 +630,8 @@ export interface ConfigStatus {
     provider?: "elevenlabs" | "fish" | "system" | "chatterbox" | "xai";
     baseUrl?: string;
     model?: string;
+    /** Fish Audio speech model; present only while Fish is the provider. */
+    fishModel?: "s2.1-pro" | "s2.1-pro-free";
     /** ElevenLabs voice comes with Cloud Pro; no key is saved. */
     included?: boolean;
   };

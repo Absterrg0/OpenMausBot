@@ -23,6 +23,11 @@ const SSH_ALIAS = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/;
 const LEGACY_BROWSER_PROFILE_ID = /^[A-Za-z0-9_-]{1,40}$/;
 const BROWSER_PROFILE_ID = /^[a-z0-9_-]{1,40}$/;
 
+/** Fish Audio speech models (`tts.fishModel`). `s2.1-pro-free` is Fish's
+ * free developer tier; an unset model means `s2.1-pro`. */
+export const FISH_TTS_MODELS = ["s2.1-pro", "s2.1-pro-free"] as const;
+export type FishTtsModel = (typeof FISH_TTS_MODELS)[number];
+
 export const DEFAULT_ROOM_TURN_TIMEOUT_MINUTES = 5;
 export const MIN_ROOM_TURN_TIMEOUT_MINUTES = 1;
 export const MAX_ROOM_TURN_TIMEOUT_MINUTES = 1_440;
@@ -447,8 +452,8 @@ const appConfigSchema = z.object({
   opencodeGo: z.object({ apiKey: optionalText }).optional(),
   /** Voice settings and the selected voice id. `provider` picks the
    * engine: "elevenlabs" (default; needs `key`), "fish" (needs its own
-   * `fishKey`), "system" (the Mac's built-in voices, no key), or
-   * "xai" (Grok TTS, reusing `xai.key`), or
+   * `fishKey`; `fishModel` picks its speech model), "system" (the Mac's
+   * built-in voices, no key), "xai" (Grok TTS, reusing `xai.key`), or
    * "chatterbox" (a local OpenAI-compatible Chatterbox server; `baseUrl`
    * and `model` are settings, not secrets). Cloud keys stay separate so
    * switching providers never overwrites or misuses the other key. */
@@ -464,6 +469,7 @@ const appConfigSchema = z.object({
       .refine((value) => !value || /^https?:\/\//i.test(value), "the Chatterbox server address must start with http:// or https://")
       .optional(),
     model: optionalText,
+    fishModel: z.enum(FISH_TTS_MODELS).optional(),
   }).optional(),
   /** The decision model (server/decider): a fast classifier that picks
    * things for bots, starting with who answers a room message. `key` is
@@ -582,7 +588,7 @@ export interface AppConfig {
   /** A named host from the user's SSH config. Authentication stays with SSH. */
   vps?: { sshAlias?: string };
   opencodeGo?: { apiKey?: string };
-  tts?: { key?: string; fishKey?: string; voice?: string; provider?: "elevenlabs" | "fish" | "system" | "chatterbox" | "xai"; baseUrl?: string; model?: string };
+  tts?: { key?: string; fishKey?: string; voice?: string; provider?: "elevenlabs" | "fish" | "system" | "chatterbox" | "xai"; baseUrl?: string; model?: string; fishModel?: FishTtsModel };
   /** The decision model; see the schema above and server/decider. */
   decider?: { enabled?: boolean; provider?: "jev" | "off"; key?: string; baseUrl?: string; jobs?: { roomRouting?: boolean } };
   imageGen?: ImageGenerationConfig;
