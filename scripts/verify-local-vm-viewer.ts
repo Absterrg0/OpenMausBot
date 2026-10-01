@@ -2,18 +2,16 @@
 // Build first, then run with explicit OMB_AGENT_BROWSER_PATH and
 // AGENT_BROWSER_EXECUTABLE_PATH if reusing installed browser binaries.
 import assert from "node:assert/strict";
-import { execFile } from "node:child_process";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
-import { promisify } from "node:util";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { launchVerificationServer, type VerificationServer } from "./control-omb.ts";
-import { ensureUiBrowser, sessionEnv } from "./testing/control-omb-ui.ts";
+import { agentBrowser, ensureUiBrowser, sessionEnv } from "./testing/control-omb-ui.ts";
+import { fixtureApi } from "./testing/preview-fixture.ts";
 import { fakeVnc } from "./testing/fake-vnc.ts";
 import { BASE_IMAGE_DIGEST, CUA_DRIVER_VERSION, IMAGE, IMAGE_LAYER_VERSION } from "../server/container-computer.ts";
 
-const run = promisify(execFile);
 const root = fileURLToPath(new URL("..", import.meta.url));
 const scratch = mkdtempSync(join(tmpdir(), "omb-viewer-fixture-"));
 const bin = join(scratch, "bin");
@@ -45,25 +43,13 @@ process.stdout.write(typeof result === 'string' ? result : JSON.stringify(result
     binDir: bin, host: "ssh://127.0.0.1:1", sshKey: join(scratch, "unused-key"), staticDir: join(root, "dist"),
   });
   console.log(JSON.stringify(fixture.info));
-  const api = async (path: string, body?: unknown) => {
-    const response = await fetch(`${fixture!.info.url}${path}`, {
-      method: body === undefined ? "GET" : "POST", headers: { "content-type": "application/json" },
-      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-    });
-    assert.equal(response.ok, true, `${path}: ${response.status}`);
-    return response.json();
-  };
-  const pairing = await api("/api/auth/pairing", { scopes: ["admin", "client"] });
+  const api = fixtureApi(fixture.info.url);
+  const pairing = await api("POST", "/api/auth/pairing", { scopes: ["admin", "client"] });
   const { binary, chrome } = await ensureUiBrowser(process.env);
   const env = sessionEnv({ home: scratch, session: `viewer-${process.pid}`, chrome });
   browser = { binary, env };
-  const command = async (...args: string[]) => {
-    const { stdout } = await run(binary, ["--json", ...args], { env, timeout: 30_000, maxBuffer: 1024 * 1024 });
-    const result = JSON.parse(stdout);
-    assert.equal(result.success, true, stdout);
-    return result.data;
-  };
-  const evaluate = async (js: string) => (await command("eval", js)).result;
+  const command = (...args: string[]) => agentBrowser(binary, env, args);
+  const evaluate = async <T = unknown>(js: string) => (await command("eval", js)).result as T;
   await command("open", `${fixture.info.url}/local-vm-viewer#target=shared`);
   // Pair through the actual HTTP endpoint in this disposable browser. The
   // resulting cookie forces both status and upgrades through session auth.
@@ -75,21 +61,25 @@ process.stdout.write(typeof result === 'string' ? result : JSON.stringify(result
   assert.equal(await evaluate("document.querySelector('canvas').width"), 16);
   await command("wait", "--fn", "document.querySelector('canvas').getContext('2d').getImageData(0,0,1,1).data[0] === 255");
   assert.equal(await evaluate("document.querySelector('canvas').getContext('2d').getImageData(0,0,1,1).data[0]"), 255);
-  const status = await evaluate("fetch('/api/local-computer').then(r=>r.json())");
+  const status = await evaluate<{ viewer_url: string }>("fetch('/api/local-computer').then(r=>r.json())");
   assert.equal(status.viewer_url, "/local-vm-viewer#target=shared");
   assert.equal(status.viewer_url.includes("password"), false);
   const matchingBackgrounds = "getComputedStyle(document.querySelector('#screen > div')).backgroundColor === getComputedStyle(document.querySelector('main')).backgroundColor";
   assert.equal(await evaluate(matchingBackgrounds), true);
-  const desktopScreenshot = join(dirname(fixture.info.logPath), `viewer-${process.pid}-desktop.png`);
+  const evidenceDir = process.env.OMB_UI_EVIDENCE_DIR ? resolve(root, process.env.OMB_UI_EVIDENCE_DIR) : dirname(fixture.info.logPath);
+  mkdirSync(evidenceDir, { recursive: true });
+  const desktopScreenshot = join(evidenceDir, `viewer-${process.pid}-desktop.png`);
   await command("wait", "--fn", "document.getAnimations().every(a => a.playState !== 'running')");
   await command("screenshot", desktopScreenshot);
   await command("click", "#keyboard");
   await command("fill", "#text", "Hello\n世界");
   await command("click", "#send");
+  await desktop.untilKey(0x0100754c);
   assert.ok(desktop.keys.includes(72));
   assert.ok(desktop.keys.includes(0xff0d));
   assert.ok(desktop.keys.includes(0x01004e16));
   await command("click", "#ctrl-alt-del");
+  await desktop.untilKey(0xffff);
   assert.ok(desktop.keys.includes(0xffff));
   await command("click", "#clipboard");
   desktop.sendClipboard("From the desktop");
@@ -108,10 +98,10 @@ process.stdout.write(typeof result === 'string' ? result : JSON.stringify(result
   assert.equal(await evaluate("(() => { const r = document.getElementById('screen').getBoundingClientRect(), m = document.querySelector('main').getBoundingClientRect(); return r.width / m.width > .94 && r.width / m.width < .96 && r.height / m.height > .94 && r.height / m.height < .96; })()"), true);
   assert.equal(await evaluate("document.getElementById('keyboard').title"), "Keyboard");
   assert.equal(await evaluate("document.querySelector('link[rel=license]').getAttribute('href')"), "/licenses/novnc/NOTICE.txt");
-  const dockedWidth = await evaluate("document.querySelector('main').getBoundingClientRect().width");
+  const dockedWidth = await evaluate<number>("document.querySelector('main').getBoundingClientRect().width");
   await command("click", "#hide-controls");
   await command("wait", "--fn", "document.querySelector('aside').getBoundingClientRect().width === 0");
-  assert.ok(await evaluate("document.querySelector('main').getBoundingClientRect().width") > dockedWidth);
+  assert.ok(await evaluate<number>("document.querySelector('main').getBoundingClientRect().width") > dockedWidth);
   assert.equal(await evaluate("document.querySelector('aside').inert"), true);
   await command("click", "#show-controls");
   await command("wait", "--fn", "document.querySelector('aside').getBoundingClientRect().width === 72");
@@ -124,15 +114,22 @@ process.stdout.write(typeof result === 'string' ? result : JSON.stringify(result
   await command("set", "viewport", "390", "844");
   await command("click", "#keyboard");
   assert.equal(await evaluate("document.documentElement.scrollWidth <= innerWidth"), true);
-  const phoneScreenshot = join(dirname(fixture.info.logPath), `viewer-${process.pid}-phone.png`);
+  const phoneScreenshot = join(evidenceDir, `viewer-${process.pid}-phone.png`);
   await command("wait", "--fn", "document.getAnimations().every(a => a.playState !== 'running')");
   await command("screenshot", phoneScreenshot);
   assert.equal(await evaluate("(() => { const r = document.querySelector('section').getBoundingClientRect(); return r.left >= 0 && r.right <= innerWidth && r.top >= 0 && r.bottom <= innerHeight; })()"), true);
   await evaluate("document.documentElement.dataset.skin = 'daylight'");
   await command("wait", "--fn", "getComputedStyle(document.getElementById('retry')).color === 'rgb(87, 87, 87)'");
   assert.equal(await evaluate(matchingBackgrounds), true);
-  const lightScreenshot = join(dirname(fixture.info.logPath), `viewer-${process.pid}-light.png`);
+  const lightScreenshot = join(evidenceDir, `viewer-${process.pid}-light.png`);
   await command("screenshot", lightScreenshot);
+  // Match the shared skin rules for both enabled and disabled accent buttons.
+  await evaluate("document.documentElement.dataset.skin = 'foundry'");
+  await command("wait", "--fn", "getComputedStyle(document.getElementById('send')).color === 'rgb(176, 166, 150)'");
+  await command("fill", "#text", "Foundry preview");
+  await command("wait", "--fn", "getComputedStyle(document.getElementById('send')).color === 'rgb(28, 21, 12)'");
+  const foundryScreenshot = join(evidenceDir, `viewer-${process.pid}-foundry.png`);
+  await command("screenshot", foundryScreenshot);
   // A short landscape viewport must keep both the dock and panel scrollable.
   await command("set", "viewport", "844", "390");
   assert.equal(await evaluate("document.documentElement.scrollHeight <= innerHeight && document.querySelector('section').getBoundingClientRect().height <= innerHeight"), true);
@@ -174,9 +171,9 @@ process.stdout.write(typeof result === 'string' ? result : JSON.stringify(result
   assert.equal(await evaluate("fetch('/api/auth/logout',{method:'POST',headers:{'content-type':'application/json'},body:'{}'}).then(r=>r.status)"), 200);
   await command("wait", "--fn", "document.getElementById('status').textContent.includes('disconnected')");
   assert.ok(beforeLogout >= 2);
-  console.log(JSON.stringify({ ok: true, checks: ["built noVNC renders RFB pixels", "paired status uses app URL", "keyboard, Unicode and Ctrl-Alt-Del", "clipboard sync without Send, including clearing", "matching desktop backgrounds in both themes", "automatic 95% fit, fullscreen and animated sidebar", "native tooltips and reduced-motion panels", "phone and landscape viewports", "reconnect", "page exit aborts pending connection and restore reconnects", "logout closes socket"], logPath: fixture.info.logPath, screenshots: [desktopScreenshot, phoneScreenshot, lightScreenshot] }));
+  console.log(JSON.stringify({ ok: true, checks: ["built noVNC renders RFB pixels", "paired status uses app URL", "keyboard, Unicode and Ctrl-Alt-Del", "clipboard sync without Send, including clearing", "matching desktop backgrounds in both themes", "Foundry accent text", "automatic 95% fit, fullscreen and animated sidebar", "native tooltips and reduced-motion panels", "phone and landscape viewports", "reconnect", "page exit aborts pending connection and restore reconnects", "logout closes socket"], logPath: fixture.info.logPath, screenshots: [desktopScreenshot, phoneScreenshot, lightScreenshot, foundryScreenshot] }));
 } finally {
-  if (browser) await run(browser.binary, ["close"], { env: browser.env, timeout: 10_000 }).catch(() => {});
+  if (browser) await agentBrowser(browser.binary, browser.env, ["close"], 10_000).catch(() => {});
   await fixture?.close();
   await desktop.close();
   rmSync(scratch, { recursive: true, force: true });

@@ -729,18 +729,17 @@ Your app reverse proxy must support WebSocket upgrades, preserve `Host`, and
 set `X-Forwarded-Proto` to the browser-facing scheme. This also applies when
 using Tailscale Serve. Viewer HTTP requests and WebSocket upgrades require the
 same admin session as Local VM management. Logging out or revoking that session
-closes open viewers; expiry is checked every five seconds. Client-only pairing
+closes open viewers. Client-only pairing
 does not grant desktop control.
 
-The viewer is bundled with OpenMausBot. HTML and JavaScript from the VM are
-never served under the app's origin, and workspace cookies and tokens are
-never forwarded into the VM. An open viewer keeps that VM's idle timer active.
-The collapsible sidebar follows the app's theme and provides keyboard input,
-clipboard exchange and fullscreen (when the browser supports it). The desktop
-always fits within 95% of the available space. Controls use the app's menu motion
-and native tooltips.
-Use **Keyboard** to send text from a phone. Local owner connections, including
+An open viewer keeps that VM's idle timer active. Use **Keyboard** to send text
+from a phone and **Clipboard** to exchange text with the desktop; clipboard
+edits sync automatically. The desktop fits the window, with fullscreen available
+when the browser supports it. Local owner connections, including
 the packaged desktop's isolated viewer windows, keep the direct viewer URL.
+
+For the proxy boundary and offline regression checks, see the
+[viewer verification recipe](verification/local-vm-viewer.md).
 
 ## Using it from your phone
 

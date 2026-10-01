@@ -58,7 +58,11 @@ export async function fakeVnc() {
           init.writeUInt32BE(name.length, 20); name.copy(init, 24);
           socket.send(init);
         } else if (message[0] === 3 && !sentFrame) { sentFrame = true; frame(); }
-        else if (message[0] === 4 && message[1] === 1) keys.push(message.readUInt32BE(4));
+        else if (message[0] === 4 && message[1] === 1) {
+          const key = message.readUInt32BE(4);
+          keys.push(key);
+          events.emit("key", key);
+        }
         else if (message[0] === 6) {
           const text = message.subarray(8).toString("latin1");
           events.emit("clipboard", text);
@@ -70,6 +74,10 @@ export async function fakeVnc() {
   return {
     port: (server.address() as { port: number }).port, keys,
     nextClipboard: () => once(events, "clipboard", { signal: AbortSignal.timeout(10_000) }),
+    async untilKey(key: number) {
+      const signal = AbortSignal.timeout(10_000);
+      while (!keys.includes(key)) await once(events, "key", { signal });
+    },
     sendClipboard(text: string) {
       const bytes = Buffer.from(text, "latin1");
       const message = Buffer.alloc(8 + bytes.length);
@@ -79,7 +87,7 @@ export async function fakeVnc() {
       for (const socket of sockets.clients) socket.send(message);
     },
     connections: () => connections,
-    nextConnection: () => once(sockets, "connection"),
+    nextConnection: () => once(sockets, "connection", { signal: AbortSignal.timeout(10_000) }),
     async close() {
       for (const socket of sockets.clients) socket.terminate();
       await new Promise<void>(resolve => sockets.close(() => resolve()));
