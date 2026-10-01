@@ -360,6 +360,20 @@ describe("MCP sign-in from another computer", () => {
     expect(oauth.counts.token).toBe(0);
   });
 
+  it("releases a dead owner's waiting flow before accepting another admin's start", async () => {
+    await setup();
+    manager.dispose();
+    let aliceLive = true;
+    manager = new McpOAuthManager({ file: join(dir, "mcp-oauth.json"), isOwnerLive: (owner) => owner !== "alice" || aliceLive });
+    const old = await manager.start("docs", mcp.url, undefined, "alice");
+    aliceLive = false;
+    const current = await manager.start("docs", mcp.url, undefined, "bob");
+    expect(current.phase).toBe("waiting");
+    expect(current.flowId).not.toBe(old.flowId);
+    expect(manager.status("docs", current.flowId, "bob")?.phase).toBe("waiting");
+    expect(manager.status("docs", old.flowId, "alice")).toBeUndefined();
+  });
+
   it("does not let an old cancellation cancel a new attempt", async () => {
     await setup();
     const old = await manager.start("docs", mcp.url);

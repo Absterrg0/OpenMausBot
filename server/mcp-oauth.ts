@@ -162,6 +162,9 @@ export class McpOAuthManager {
 
   start(name: string, url: string, wwwAuthenticate?: string | null, owner = "loopback"): Promise<McpSignInStatus> {
     const current = this.flows.get(name);
+    if (current?.status.phase === "waiting" && !this.isOwnerLive(current.owner)) {
+      this.finish(current, "cancelled", "Your session ended. Start again.");
+    }
     if (current?.status.phase === "waiting") {
       if (current.owner !== owner) return Promise.reject(new McpSignInError("A sign-in is already in progress in another browser.", 409));
       if (current.url === url) return Promise.resolve({ ...current.status });

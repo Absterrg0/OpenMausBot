@@ -11,11 +11,13 @@ import { startFakeOAuth } from "../server/testing/fake-oauth-server.ts";
 import { startFakeHttpMcp } from "../server/testing/fake-http-mcp-server.ts";
 
 const fixture = await launchVerificationServer();
-const oauth = await startFakeOAuth();
-const mcp = await startFakeHttpMcp({ acceptBearer: oauth.isValid, wwwAuthenticate: oauth.challenge });
+let oauth: Awaited<ReturnType<typeof startFakeOAuth>> | undefined;
+let mcp: Awaited<ReturnType<typeof startFakeHttpMcp>> | undefined;
 let ui: MountedPreview | undefined;
 let closeBrowser: (() => Promise<unknown>) | undefined;
 try {
+  oauth = await startFakeOAuth();
+  mcp = await startFakeHttpMcp({ acceptBearer: oauth.isValid, wwwAuthenticate: oauth.challenge });
   const api = fixtureApi(fixture.info.url);
   await runControlOmb(["doctor", "--url", fixture.info.url]);
   await api("POST", "/api/mcp/servers", { name: "documents", url: mcp.url });
@@ -102,6 +104,6 @@ try {
   await closeBrowser?.().catch(() => {});
   await ui?.close();
   await fixture.close();
-  await mcp.close();
-  await oauth.close();
+  await mcp?.close();
+  await oauth?.close();
 }
