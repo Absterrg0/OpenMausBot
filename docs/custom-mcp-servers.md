@@ -15,10 +15,39 @@ OpenMausBot saves a new server switched off. Use **Test** to start the command
 advertises. Then turn it on. It becomes available to compatible bots on their
 next task; no app restart is needed.
 
-Tokens for URL servers go in headers, never in the address. Remote servers
-that only offer an OAuth sign-in (no token) cannot be signed into from a bot's
-headless run; use a personal access token or API key the server issues and
-put it in the `Authorization` header.
+Tokens for URL servers go in headers, never in the address.
+
+### Servers that ask you to sign in
+
+Some URL servers take no token; they want you to sign in with your browser
+(OAuth). When **Test** gets an HTTP 401 that points to the server's sign-in
+details (RFC 9728 protected-resource metadata, then the authorization
+server's own metadata), the server shows **Needs sign-in** and a **Sign in**
+button. Sign in opens the provider's page in your browser, which returns to
+OpenMausBot on `127.0.0.1`. The server then shows **Signed in**, and Test
+lists its tools.
+
+- **Which servers work.** The authorization server must let apps register
+  themselves (dynamic client registration) and support PKCE with S256.
+  OpenMausBot registers a fresh app for each sign-in. A server that only
+  accepts an app registered in advance answers "This server needs an app
+  registration OpenMausBot doesn't have yet"; for now, use a token the server
+  issues in the `Authorization` header instead. A 401 without sign-in details
+  keeps the old message: check the address and headers.
+- **Where you can sign in.** Only on the computer running the workspace,
+  because the browser comes back to a listener there. From another device
+  the app asks you to sign in from that computer.
+- **Bots never sign in.** A server that needs sign-in is left out of every
+  turn until someone signs in from this page. A signed-in server gets
+  `Authorization: Bearer …` in place of any `Authorization` header you set,
+  so every engine that reaches URL servers can use it.
+- **Tokens are kept apart.** They live in `~/.openmausbot/mcp-oauth.json`
+  (owner-only), never in `config.json` or an API response, and are left out of
+  workspace backups. They belong to the server's address: changing the
+  address or removing the server drops them. **Sign out** revokes them when
+  the server offers that, then forgets them.
+- **Refresh.** A token is refreshed shortly before it expires. If the server
+  refuses the refresh, the server goes back to **Needs sign-in**.
 
 ### Import and choose tools per bot
 
