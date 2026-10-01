@@ -33,7 +33,7 @@ jobs:
       - run: pnpm install --frozen-lockfile
         env:
           ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
-      - run: pnpm build:server && pnpm build:ui && node scripts/build-npm-package.mjs
+      - run: pnpm build:server && pnpm exec vite build && node scripts/build-npm-package.mjs
       - name: Prove the packed tarball runs with no node_modules at all
         run: |
           set -euo pipefail

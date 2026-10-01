@@ -68,7 +68,7 @@ jobs:
       - run: pnpm lint
       - run: pnpm check:electron
       - name: production UI build
-        run: pnpm build:ui
+        run: pnpm exec vite build
 
   vitest:
     # Admit the expensive runner fan-out only after the quick checks pass.

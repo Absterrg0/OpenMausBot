@@ -2,7 +2,7 @@
 // the built UI, the bundled skills and the CLI, with a package.json of its
 // own. `npx openmausbot serve` then needs Node 24+ and nothing else.
 //
-//   pnpm build:server && pnpm build:ui && node scripts/build-npm-package.mjs
+//   pnpm build:server && pnpm exec vite build && node scripts/build-npm-package.mjs
 //   cd release/npm && npm pack        # or npm publish --access public
 import { copyFileSync, cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -14,7 +14,7 @@ const app = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
 
 for (const required of ["dist-server/index.js", "dist-server/openmausbot.js", "dist/index.html"]) {
   if (!existsSync(join(root, required))) {
-    console.error(`missing ${required}: run \`pnpm build:server && pnpm build:ui\` first`);
+    console.error(`missing ${required}: run \`pnpm build:server && pnpm exec vite build\` first`);
     process.exit(1);
   }
 }
@@ -36,8 +36,6 @@ if (existsSync(enterpriseBundle)) {
   }
 }
 cpSync(join(root, "LICENSE"), join(out, "LICENSE"));
-cpSync(join(root, "NOTICE"), join(out, "NOTICE"));
-cpSync(join(root, "third_party", "novnc"), join(out, "third_party", "novnc"), { recursive: true });
 
 // The bin lives next to the bundle so serverEntry() finds index.js by path.
 writeFileSync(join(out, "cli.js"), `#!/usr/bin/env node\nimport "./dist-server/openmausbot.js";\n`);
@@ -52,7 +50,7 @@ writeFileSync(
       license: "Apache-2.0",
       type: "module",
       bin: { openmausbot: "cli.js" },
-      files: ["cli.js", "dist-server", "dist", "skills", "enterprise", "LICENSE", "NOTICE", "third_party/novnc", "README.md"],
+      files: ["cli.js", "dist-server", "dist", "skills", "enterprise", "LICENSE", "README.md"],
       engines: { node: ">=24" },
       repository: { type: "git", url: "https://github.com/milind-soni/OpenMausBot.git" },
       homepage: "https://github.com/milind-soni/OpenMausBot#readme",

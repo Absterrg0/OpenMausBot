@@ -60,7 +60,7 @@ upstream request:
 
 ```sh
 pnpm exec vitest run server/routes/desktop-viewer.test.ts server/container-computer.test.ts server/request-auth.test.ts server/vps-computer.test.ts
-pnpm exec vitest run scripts/testing/verification-docs.test.ts scripts/ui-licenses.test.mjs
+pnpm exec vitest run scripts/testing/verification-docs.test.ts
 ```
 
 The page is built with the app; VM-controlled HTML and JavaScript never run
@@ -78,7 +78,8 @@ viewer ownership and reclaim remote-only tunnels after the 30-second reconnect
 grace period. Provider-hosted Cloud URLs are outside this proxy; they can also
 use WebRTC.
 
-License provenance lives in `third_party/novnc/` and the root `NOTICE`.
-`pnpm build:ui` copies the notices into `dist/licenses/novnc/`; npm and desktop
-packaging also include the source notices. No license link is added to the
-app's `index.html`.
+The consolidated `public/novnc-NOTICE.txt` contains the source and MPL-2.0
+links plus the bundled Pako and DES notices. Vite includes this static asset
+in `dist`, which existing web, npm and desktop packaging already ship. The
+fixture checks the served notice against that file and the dependency notices.
+The root `NOTICE` points to it; no custom build step or UI notice is needed.

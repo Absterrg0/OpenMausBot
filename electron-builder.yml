@@ -71,8 +71,6 @@ extraResources:
     to: licenses/models-dev-LICENSE.txt
   - from: third_party/opencode/LICENSE
     to: licenses/opencode-LICENSE.txt
-  - from: third_party/novnc
-    to: licenses/novnc
   - from: dist
     to: ui
   - from: dist-server
