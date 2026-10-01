@@ -84,6 +84,7 @@ process.on('SIGTERM',()=>{fs.appendFileSync(log,'close ');process.exit(0)});
   // Pair through the actual HTTP endpoint in this disposable browser. The
   // resulting cookie forces both status and upgrades through session auth.
   assert.equal(await evaluate(`(async () => (await fetch('/api/auth/pair', {method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({code:${JSON.stringify(pairing.code)},cookie:true,label:'Viewer fixture'})})).status)()`), 200);
+  await command("wait", "--fn", "document.getElementById('retry') !== null");
   let nextConnection = desktop.nextConnection();
   await command("click", "#retry");
   await nextConnection;
@@ -123,7 +124,7 @@ process.on('SIGTERM',()=>{fs.appendFileSync(log,'close ');process.exit(0)});
   await command("fill", "#clipboard-text", "To the desktop");
   assert.deepEqual(await nextClipboard, ["To the desktop"]);
   nextClipboard = desktop.nextClipboard();
-  await command("press", "Control+a");
+  await evaluate("document.getElementById('clipboard-text').select()");
   await command("press", "Backspace");
   assert.deepEqual(await nextClipboard, [""]);
   // Editing this field syncs automatically; device clipboard permissions are never requested.
