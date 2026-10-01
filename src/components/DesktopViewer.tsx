@@ -159,7 +159,6 @@ export function DesktopViewer() {
           <div className="my-1 h-px w-7 shrink-0 bg-hairline" />
           <ViewerTool id="retry" label={t("desktopViewer.reconnect")} icon={RefreshCw} onClick={() => { setClipboard(""); setAttempt(value => value + 1); }} />
           <ViewerTool id="hide-controls" label={t("desktopViewer.hideControls")} icon={ChevronLeft} onClick={() => { setExpanded(false); closePanel(); }} />
-          <a id="viewer-notice" href="/novnc-NOTICE.txt" target="_blank" rel="license noopener noreferrer" title={t("desktopViewer.notice")} aria-label={t("desktopViewer.notice")} className="flex min-h-6 w-11 shrink-0 items-center justify-center rounded-lg text-[10px] text-ink-secondary hover:text-ink hover:underline">noVNC</a>
         </div>
       </aside>
       {handleMotion.shown && <div {...handleMotion.exitProps} className={cn("absolute left-0 top-1/2 z-10 -translate-y-1/2 rounded-r-2xl border border-l-0 border-hairline bg-panel p-1 shadow-xl", handleMotion.className)}>
@@ -173,6 +172,8 @@ export function DesktopViewer() {
         </div>
         {controlError && <p role="alert" className="absolute inset-x-3 bottom-3 rounded-xl border border-hairline bg-panel p-3 text-ink">{controlError}</p>}
       </main>
+
+      <a id="viewer-notice" href="/novnc-NOTICE.txt" target="_blank" rel="license noopener noreferrer" title={t("desktopViewer.notice")} aria-label={t("desktopViewer.notice")} className="absolute bottom-2 left-2 z-10 flex min-h-6 w-11 items-center justify-center rounded-lg bg-app/80 text-[10px] text-ink-secondary hover:text-ink hover:underline" style={{ marginLeft: "env(safe-area-inset-left)", marginBottom: "env(safe-area-inset-bottom)" }}>noVNC</a>
 
       {panelMotion.shown && <section {...panelMotion.exitProps} aria-label={t(keyboardPanel ? "desktopViewer.keyboard" : "desktopViewer.clipboard")} onKeyDown={event => {
         if (event.key === "Escape") { event.stopPropagation(); closePanel(); }
