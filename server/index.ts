@@ -20087,6 +20087,13 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         sectionKey(existingBot?.section) !== sectionKey(section);
       let bot: BotRecord | null;
       const freshBrowserBot = store.bot(m[1]);
+      // Connector validation and runtime revocation can yield after the first
+      // memory check. Keep the same idle-only transition at the final commit.
+      if (freshBrowserBot && body.memoryEnabled !== undefined &&
+          body.memoryEnabled !== (freshBrowserBot.memoryEnabled !== false) &&
+          (freshBrowserBot.busy || activeGroupTurnForBot(freshBrowserBot.id))) {
+        return json(res, 409, { error: "stop this bot's turn before changing its memory setting" });
+      }
       // Custom servers are process configuration: a running turn cannot
       // unmount them. Recheck after any awaited runtime revocation above.
       if (body.mcpServers !== undefined) {

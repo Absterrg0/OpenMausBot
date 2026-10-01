@@ -158,6 +158,7 @@ let fakeVpsFixture: string;
 let fakeDockerLog: string;
 let stderr = "";
 let connectorAccounts: Array<{ id: string; alias?: string; status: string; toolkit: { slug: string } }> = [];
+let connectorAccountsGate: DeferredGate | null = null;
 // What the stubbed marketplace catalog serves for project keys; empty means
 // the walk found nothing and composio falls back to its curated list.
 let connectorCatalogToolkits: Array<{ slug: string; name: string }> = [];
@@ -756,6 +757,12 @@ beforeAll(async () => {
       return res.end(JSON.stringify(operation === "register" ? { ok: true, expiresAt: body.expiresAt } : { ok: true }));
     }
     if (req.url?.startsWith("/api/v3.1/connected_accounts") || req.url?.startsWith("/api/v3/toolkits")) {
+      if (req.url.startsWith("/api/v3.1/connected_accounts") && connectorAccountsGate) {
+        const gate = connectorAccountsGate;
+        connectorAccountsGate = null;
+        gate.enter();
+        await gate.wait;
+      }
       res.writeHead(200, { "content-type": "application/json" });
       return res.end(JSON.stringify({
         items: req.url.startsWith("/api/v3.1/connected_accounts") ? connectorAccounts : connectorCatalogToolkits,
@@ -10357,6 +10364,62 @@ describe("harness HTTP API", () => {
       connectorCatalogToolkits = [];
       await api("PUT", "/api/config", { composio: { apiKey: "" } });
       await api("DELETE", "/api/bots/" + bot.id);
+    }
+  });
+
+  it.each([
+    ["direct", false], ["room", false], ["direct", true], ["room", true],
+  ] as const)("rechecks memory policy after connector validation when a %s turn starts (enabled=%s)", async (kind, enabled) => {
+    const gate = deferredGate();
+    let botId = "";
+    let roomId = "";
+    let pending: ReturnType<typeof api> | undefined;
+    try {
+      expect((await api("PUT", "/api/config", { composio: { apiKey: "ak_good" } })).status).toBe(200);
+      const created = await api("POST", "/api/bots", { name: "Memory policy race", modelSelection: { instanceId: "claude", model: "claude-sonnet-5" } });
+      expect(created.status).toBe(201);
+      botId = created.body.bot.id;
+      expect((await api("PATCH", `/api/bots/${botId}`, { computer: "off", composio: false, memoryEnabled: !enabled })).status).toBe(200);
+      if (kind === "room") {
+        const room = await api("POST", "/api/groups", { name: "Memory policy race", memberIds: [botId] });
+        expect(room.status).toBe(201);
+        roomId = room.body.group.id;
+        expect((await api("PATCH", `/api/groups/${roomId}/setup`, { action: "skip" })).status).toBe(200);
+      }
+      connectorAccountsGate = gate;
+      pending = api("PATCH", `/api/bots/${botId}`, { memoryEnabled: enabled, connectorTools: { gmail: { tools: "*" } } });
+      await Promise.race([
+        gate.entered,
+        pending.then(({ status }) => { throw new Error(`memory patch returned ${status} before connector validation was held`); }),
+      ]);
+      rmSync(fakeClaudeDump, { force: true });
+      const route = kind === "room" ? `/api/groups/${roomId}/messages` : `/api/bots/${botId}/messages`;
+      expect((await api("POST", route, { text: "hold the memory policy turn" })).status).toBe(202);
+      await readJsonFileWhenReady(fakeClaudeDump);
+      gate.release();
+      const blocked = await pending;
+      pending = undefined;
+      expect(blocked.status).toBe(409);
+      expect(blocked.body.error).toMatch(/stop this bot's turn before changing its memory setting/);
+      const current = (await api("GET", "/api/bots?messages=0")).body.bots.find((bot: { id: string }) => bot.id === botId);
+      expect(current.memoryEnabled).toBe(!enabled);
+      expect(current.connectorTools).toBeUndefined();
+      // Re-saving the effective policy while busy is still allowed.
+      expect((await api("PATCH", `/api/bots/${botId}`, { memoryEnabled: !enabled })).status).toBe(200);
+    } finally {
+      gate.release();
+      connectorAccountsGate = null;
+      await pending?.catch(() => undefined);
+      if (roomId) await api("POST", `/api/groups/${roomId}/interrupt`, {}).catch(() => undefined);
+      if (botId) {
+        await api("POST", `/api/bots/${botId}/interrupt`, {}).catch(() => undefined);
+        await expect.poll(async () => (await api("GET", "/api/bots?messages=0")).body.bots.find((bot: { id: string }) => bot.id === botId)?.busy,
+          { timeout: 5_000 }).toBe(false).catch(() => undefined);
+      }
+      if (roomId) await api("DELETE", `/api/groups/${roomId}`).catch(() => undefined);
+      if (botId) await api("DELETE", `/api/bots/${botId}`).catch(() => undefined);
+      await api("PUT", "/api/config", { composio: { apiKey: "" } });
+      rmSync(fakeClaudeDump, { force: true });
     }
   });
 
