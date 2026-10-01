@@ -88,6 +88,7 @@ export const CerebrasDriver: ProviderDriver<CerebrasConfig> = {
       tools: config.tools, models: () => catalog, refreshModels, reasoning: true,
       reasoningReplayField: "reasoning",
       computerUse: true, imageInput: (model) => !TEXT_ONLY_MODELS.test(model),
+      nudgeAnnouncedAction: true,
       requestBody: (model, messages, stream) => ({
         model, messages, stream,
         ...(stream ? { stream_options: { include_usage: true } } : {}),

@@ -68,6 +68,30 @@ describe("Cerebras provider", () => {
     recorder.stop(); await instance.dispose();
   });
 
+  it.each([
+    ["Checking the live HN front page in the browser first — the top story can rotate between requests.", 2],
+    ["Opening the page now:", 2],
+    ["The top story is about Gemini 4. Want a longer summary?", 1],
+    ["Here is the summary: it covers Google's new model and its benchmarks.", 1],
+  ] as const)("nudges an announced-but-skipped action once: %s", async (first, requests) => {
+    const bodies: Array<{ messages: Array<{ role: string; content: string }> }> = [];
+    vi.stubGlobal("fetch", vi.fn(async (url, init) => {
+      if (String(url).endsWith("/models")) return Response.json({ data: [] });
+      bodies.push(JSON.parse(String(init?.body)));
+      // A model that keeps announcing is nudged once, never looped.
+      const text = bodies.length === 1 || requests === 2 ? first : "unreachable";
+      return new Response(`data: ${JSON.stringify({ choices: [{ index: 0, delta: { content: text }, finish_reason: "stop" }] })}\n\ndata: [DONE]\n\n`,
+        { headers: { "content-type": "text/event-stream" } });
+    }));
+    const instance = await create();
+    const recorder = recordEvents(instance.adapter);
+    await instance.adapter.sendTurn({ threadId: "nudge", text: "open the top story on HN" });
+    expect(await recorder.until(event => event.type === "turn.completed")).toMatchObject({ ok: true });
+    expect(bodies).toHaveLength(requests);
+    if (requests === 2) expect(bodies[1]!.messages.at(-1)).toMatchObject({ role: "user", content: expect.stringContaining("called no tool") });
+    recorder.stop(); await instance.dispose();
+  });
+
   it("replays reasoning after a tool call as `reasoning`, which Cerebras accepts, never `reasoning_content`", async () => {
     const bodies: Array<{ messages: Array<Record<string, unknown>> }> = [];
     const question = { questions: [{ question: "Which city?", options: [{ label: "Pune" }, { label: "Mumbai" }] }] };

@@ -108,6 +108,10 @@ interface RuntimeOptions<Config> {
    * text-only model keeps the computer and browser tools, whose snapshots
    * and page reads are text, but never receives a screenshot or attachment. */
   imageInput?: (model: string) => boolean;
+  /** Smaller models sometimes announce a step ("Checking the page first —")
+   * and end the turn without calling a tool. When set, such a reply gets one
+   * nudge per turn to act; a question, or anything longer, ends the turn. */
+  nudgeAnnouncedAction?: boolean;
 }
 
 const usageFrom = (usage: CompletionJson["usage"]): Usage | null =>
@@ -119,6 +123,16 @@ const asError = (value: unknown): Error =>
   value instanceof Error ? value : new Error(String(value));
 
 class UnsupportedChatToolsError extends Error {}
+
+const NUDGE_ANNOUNCED_ACTION = "You said what you would do next but called no tool. Do it now with your tools, or reply with your final answer if nothing is left to do.";
+
+/** A short reply that only announces a next step, with nothing to answer. */
+export function announcesAction(text: string): boolean {
+  const reply = text.trim();
+  if (!reply || reply.length > 400 || reply.includes("?")) return false;
+  return /(?:[:\u2014\u2013]|\.\.\.|\u2026)$/.test(reply) ||
+    /^(?:checking|let me|i'll|i will|i'm going to|i am going to|opening|pulling|looking|searching|navigating|reading|fetching|loading|now (?:i'll|let me|opening|checking|pulling|reading))\b/i.test(reply);
+}
 
 const TEXT_ONLY_ATTACHMENT_NOTE = "[The person attached image(s), but this model cannot see images. Say so if the request depends on them.]";
 const TEXT_ONLY_SCREENSHOT_NOTE = "[Screenshot not shown: this model cannot see images. Read the page with a snapshot or a text tool instead.]";
@@ -464,6 +478,7 @@ export function createOpenAIChatRuntime<Config>(options: RuntimeOptions<Config>)
       let toolFailed = false;
       const denials: string[] = [];
       const seenCalls = new Set<string>();
+      let nudged = false;
       try {
         tools = await mountChatTools(options.tools === false ? undefined : turn.integrations, abort.signal, options.computerUse);
         let optionalQuestionOnly = options.tools !== false && tools.definitions.length === 0;
@@ -559,6 +574,11 @@ export function createOpenAIChatRuntime<Config>(options: RuntimeOptions<Config>)
             if (!reply.trim()) throw new ChatProtocolError("provider returned an empty response");
             if (completion.finishReason && completion.finishReason !== "stop") {
               throw new ChatProtocolError(`provider did not finish the response (${completion.finishReason})`);
+            }
+            if (options.nudgeAnnouncedAction && !nudged && tools.definitions.length && announcesAction(completion.text)) {
+              nudged = true;
+              messages.push({ role: "assistant", content: completion.text }, { role: "user", content: NUDGE_ANNOUNCED_ACTION });
+              continue;
             }
             if (toolFailed) {
               stopReason = "tool_error";
