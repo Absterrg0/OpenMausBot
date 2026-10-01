@@ -138,6 +138,40 @@ inherited PATH; the PATH contract test intentionally checks that order.
 Remove only the link created for this test afterward. Do not prepend a real
 npm installation or change application code to repair the machine's PATH.
 
+### Completed contribution checks
+
+`pnpm typecheck`, `pnpm lint`, `pnpm check:electron` (145 modules), and
+`pnpm i18n:check` (10 languages) passed. One final review found two material
+issues; failing regressions reproduced them before the fixes. The final affected
+checks passed 349 tests. A later test-only Windows teardown correction passed
+another 35 tests in the ACP selection and Pi extension suites.
+
+The complete local `pnpm test` chain passed on composed verification commit
+`4f66f395ef27da4dd93c2828dc17db9220bf62ef`: Vitest 10578 passed, 70 skipped and
+1 todo (801 files passed, 25 skipped); broker 10 passed; Electron 513 passed,
+3 existing skips; all five source-free packaged-server checks passed, including
+all 13 spawned proxy paths. Optional browser fixtures absent from the managed
+checkout are not counted as tested. The actual tool-selection renderer workflow
+and the screenshots above were verified separately in the primary checkout.
+
+[Final composed fork CI](https://github.com/BitL8-ByteShort/OpenMausBot/actions/runs/36804814592)
+on `738c5a8a586b6922b28a32947a06c05ba12abe62` passed all 26 selected checks,
+including all 12 Vitest shards across macOS, Ubuntu and Windows, builds,
+renderer, Electron and source-free packaging checks. Deployment was deliberately
+skipped. Its tree differs from feature commit
+`299dc1994fc6f0fc073d7a6f826d4e180b7738be` only in two CI prerequisite test
+files. The new ACP selection, Pi extension and capacity cleanup suites passed
+on Windows without a cleanup warning. The existing ACP suite's temporary-home
+cleanup warning also occurs in the unchanged-production baseline.
+
+[Feature draft #2101](https://github.com/milind-soni/OpenMausBot/pull/2101)
+keeps those prerequisites out of its diff. Maintainer preflight repair #2088 and
+[Windows cleanup draft #2100](https://github.com/milind-soni/OpenMausBot/pull/2100)
+must land before the clean feature branch can have green upstream CI. The
+cleanup candidate's exact-head full fork CI also passed all 26 checks; its one
+unchanged network-fixture failure and focused rerun are disclosed in that PR.
+The composed green result is not a claim of green CI on the clean feature head.
+
 The [engine support table](../tool-selection.md#engine-support) distinguishes
 usable native selection from MCP-only support and fail-closed unsupported
 restrictions. Other native CLI contracts, a full Electron package smoke,

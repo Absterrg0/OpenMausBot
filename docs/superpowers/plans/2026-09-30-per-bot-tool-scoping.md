@@ -154,8 +154,19 @@
 
 - [x] Run actual Pi and Grok turns against a real installed local model in disposable homes with a bounded context. Prove native drafting and selected custom MCP execution, plus a blocked tool attempt. Record runtime/model versions, exact catalog counts/bytes, provider token usage where supplied, results and measured memory pressure.
 - [x] Leave other projects and their test devices running. Use sequential local-model turns and bounded resources; report any concrete remaining live-test blocker.
-- [ ] Run `corepack pnpm typecheck`, `corepack pnpm lint`, `corepack pnpm test`, `corepack pnpm check:electron`, locale checks and relevant packaged-helper tests. Resolve failures within scope or reproduce unchanged-main failures and state them exactly.
-- [ ] Review the entire final diff for scope, generated files, secrets, machine paths, dependency and release changes. Request one final fresh review only when the branch is complete; fix material findings with failing regression tests.
-- [ ] Push the authorized fork branch with normal hooks and run fork CI on that exact commit. Wait for authoritative results.
-- [ ] Recheck issue and overlapping PRs, then open the authorized draft PR with screenshots, exact checks and live-device/model evidence. Resolve any maintainer approach requirement before presenting the contribution as complete.
-- [ ] Attach every created PR to this Codex task; report its URL, validation and remaining limitations. Never merge.
+- [x] Run `corepack pnpm typecheck`, `corepack pnpm lint`, `corepack pnpm test`, `corepack pnpm check:electron`, locale checks and relevant packaged-helper tests. Resolve failures within scope or reproduce unchanged-main failures and state them exactly.
+- [x] Review the entire final diff for scope, generated files, secrets, machine paths, dependency and release changes. Request one final fresh review only when the branch is complete; fix material findings with failing regression tests.
+- [x] Push the authorized fork branch with normal hooks and record exact tested CI commits, including separately tracked prerequisite fixes. Wait for authoritative results.
+- [x] Recheck issue and overlapping PRs, then open the authorized draft PR with screenshots, exact checks and live-device/model evidence.
+- [x] Attach every created PR to this Codex task; report its URL, validation and remaining limitations. Never merge.
+
+Submitted drafts: [tool selection #2101](https://github.com/milind-soni/OpenMausBot/pull/2101)
+and [Windows fixture cleanup #2100](https://github.com/milind-soni/OpenMausBot/pull/2100).
+The feature diff excludes its CI prerequisites, maintainer PR #2088 and the
+separate cleanup PR. The full composed fork run passed all 26 selected checks;
+the [verification record](../../verification/tool-selection.md#completed-contribution-checks)
+identifies the tested commits and the local suite's limits.
+
+Maintainer agreement on the approach and engine support boundary, prerequisite
+merges, and green upstream CI on the clean feature branch remain required before
+presenting the draft as merge ready. No whole-issue closure or merge is claimed.
