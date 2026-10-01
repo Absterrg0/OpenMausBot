@@ -84,6 +84,14 @@ try {
   writeFileSync(profile, '---\nname: reader\ndescription: Existing restriction\ninjectDefaultTools: false\ntools: [read_file]\ndisallowedTools: [write]\n---\nKeep this profile restricted.\n');
   writeFileSync(configPath, `${config}\n[agent]\ndefinition=${JSON.stringify(profile)}\n`);
   assert.deepEqual((await turn("inherited", { allow: ["native:read_file", "native:write"] })).names, ["read_file"]);
+  writeFileSync(configPath, `${config}\n[agent] # owner restriction\ndefinition=${JSON.stringify(profile)} # explicit profile\n`);
+  assert.deepEqual((await turn("inherited-comment", { allow: ["native:read_file", "native:write"] })).names, ["read_file"]);
+  for (const agentConfig of [`["agent"]\ndefinition=${JSON.stringify(profile)}`, `agent.definition=${JSON.stringify(profile)}`]) {
+    writeFileSync(configPath, `${agentConfig}\n${config}`);
+    const before = payloads.length;
+    await assert.rejects(turn("unsupported-profile-syntax", { allow: ["native:read_file", "native:write"] }), /cannot be safely intersected/);
+    assert.equal(payloads.length, before, "Unsupported inherited config syntax must prevent prompting");
+  }
   writeFileSync(configPath, config);
   const selected = await turn("mail", { allow: ["native:search_tool", "native:use_tool", "mcp:mail:read_notes"] });
   assert.deepEqual([...selected.names].sort(), ["search_tool", "use_tool"]);

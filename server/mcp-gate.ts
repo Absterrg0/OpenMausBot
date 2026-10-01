@@ -27,9 +27,28 @@ import { killCliTree } from "./procs.ts";
 
 type Json = Record<string, unknown>;
 
-const NAME = process.env.OMB_GATE_NAME || "mcp";
-const SPILL_DIR = process.env.OMB_GATE_SPILL_DIR || "";
-const rawBudget = Number(process.env.OMB_GATE_BUDGET);
+/** Codex imports env variables from one shared app-server environment. Each
+ * mount names its own private record; only the variable name reaches argv. */
+function gateEnvironment(): NodeJS.ProcessEnv {
+  if (process.argv.length === 2) return process.env;
+  try {
+    const key = process.argv[3];
+    if (process.argv.length !== 4 || process.argv[2] !== "--config-env" || !key || !/^OMB_GATE_CONFIG_[a-f0-9]{64}$/.test(key)) throw new Error();
+    const value = JSON.parse(process.env[key] ?? "");
+    if (!value || typeof value !== "object" || Array.isArray(value)
+      || !["OMB_GATE_NAME", "OMB_GATE_UPSTREAM", "OMB_GATE_TOOL_SCOPE"].every(name => typeof value[name] === "string")
+      || !Object.entries(value).every(([name, setting]) => GATE_ENV_KEYS.includes(name) && typeof setting === "string")) throw new Error();
+    return value;
+  } catch {
+    process.stderr.write("mcp-gate: invalid private configuration\n"); process.exit(1);
+  }
+}
+/** The gate's own settings never reach the upstream server's environment. */
+const GATE_ENV_KEYS = ["OMB_GATE_NAME", "OMB_GATE_SPILL_DIR", "OMB_GATE_BUDGET", "OMB_GATE_UPSTREAM", "OMB_GATE_SPILL_HINT", "OMB_GATE_TOOL_SCOPE"];
+const gateEnv = gateEnvironment();
+const NAME = gateEnv.OMB_GATE_NAME || "mcp";
+const SPILL_DIR = gateEnv.OMB_GATE_SPILL_DIR || "";
+const rawBudget = Number(gateEnv.OMB_GATE_BUDGET);
 const BUDGET = Number.isFinite(rawBudget) && rawBudget >= 0 ? rawBudget : DEFAULT_RESULT_BUDGET;
 /** Spilled results older than this are swept at startup: they exist for the
  * turn that produced them, not forever. */
@@ -37,10 +56,7 @@ const SPILL_MAX_AGE_MS = 24 * 60 * 60_000;
 /** Whether the model is told where the untrimmed result was saved. Off by
  * default: offering the path measured WORSE than no trimming, because the
  * model reads the file back in. See TrimInput.spillHint. */
-const SPILL_HINT = process.env.OMB_GATE_SPILL_HINT === "1";
-
-/** The gate's own settings never reach the upstream server's environment. */
-const GATE_ENV_KEYS = ["OMB_GATE_NAME", "OMB_GATE_SPILL_DIR", "OMB_GATE_BUDGET", "OMB_GATE_UPSTREAM", "OMB_GATE_SPILL_HINT", "OMB_GATE_TOOL_SCOPE"];
+const SPILL_HINT = gateEnv.OMB_GATE_SPILL_HINT === "1";
 
 function fail(message: string): never {
   process.stderr.write(`mcp-gate(${NAME}): ${message}\n`);
@@ -48,7 +64,7 @@ function fail(message: string): never {
 }
 
 function toolScope(): ToolScope | undefined {
-  const raw = process.env.OMB_GATE_TOOL_SCOPE;
+  const raw = gateEnv.OMB_GATE_TOOL_SCOPE;
   if (raw === undefined) return;
   let value: unknown;
   try { value = JSON.parse(raw); } catch { fail("invalid tool selection JSON"); }
@@ -80,7 +96,7 @@ interface Upstream {
 function upstreamSpec(): Upstream {
   let parsed: unknown;
   try {
-    parsed = JSON.parse(process.env.OMB_GATE_UPSTREAM ?? "");
+    parsed = JSON.parse(gateEnv.OMB_GATE_UPSTREAM ?? "");
   } catch {
     fail("OMB_GATE_UPSTREAM is not valid JSON");
   }
@@ -174,7 +190,7 @@ const spec = upstreamSpec();
 if (SPILL_DIR) sweepSpill(SPILL_DIR);
 
 const childEnv: NodeJS.ProcessEnv = { ...process.env, ...spec.env };
-for (const key of GATE_ENV_KEYS) delete childEnv[key];
+for (const key of Object.keys(childEnv)) if (key.startsWith("OMB_GATE_")) delete childEnv[key];
 
 // The CLI used to spawn this server itself, on every platform, so the gate
 // has to spawn it exactly as well. On Windows CreateProcess cannot exec an

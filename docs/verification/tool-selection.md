@@ -52,7 +52,11 @@ Grok's restricted profile is established on the requested model, with the
 default harness pinned before spawn. The session must acknowledge the selected
 model before prompting; a redundant model switch must not restore tools or
 reject an otherwise valid resumed profile. Unknown inherited harnesses and unverified native-selection
-runtime versions refuse the turn.
+runtime versions refuse the turn. The official CLI probe also checks commented
+agent headings and refusal of quoted/dotted syntax. Unit checks cover inline
+tables, CLI overrides and ambiguous profiles. Codex's real gate subprocess
+regression exercises two servers on new/resumed threads, raw discovery and
+calls, blocked calls, independent custom approvals, and private env stripping.
 
 ## Real local-model check
 

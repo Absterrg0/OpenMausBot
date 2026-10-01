@@ -219,8 +219,15 @@ const GROK_NATIVE_TOOLS = [
 export function grokInheritedProfile(cli: string, env: Record<string, string | undefined>, cwd: string): GrokScopeProfile | undefined {
   const unsupported = () => { throw new Error("Grok's existing agent profile cannot be safely intersected with tool selection. Use a profile file with explicit tools or a separate default Grok account."); };
   if ((env.GROK_AGENT && env.GROK_AGENT !== "grok-build") || env.GROK_CONFIG || env.GROK_CONFIG_PATH) return unsupported();
-  const args = splitCliString(cli); const flag = args.findIndex((arg) => arg === "--agent-profile" || arg.startsWith("--agent-profile="));
-  let path = flag >= 0 ? (args[flag]!.split("=").slice(1).join("=") || args[flag + 1]) : undefined;
+  const args = splitCliString(cli);
+  // Operator filters are applied after ACP's profile by the CLI. Refuse
+  // unverified overrides rather than replacing an inherited restriction.
+  if (args.some(arg => /^(--tools|--disallowed-tools|--disallowedTools|--agent)(=|$)/.test(arg))) return unsupported();
+  const flags = args.flatMap((arg, index) => arg === "--agent-profile" || arg.startsWith("--agent-profile=") ? [index] : []);
+  if (flags.length > 1) return unsupported();
+  const flag = flags[0] ?? -1;
+  let path = flag >= 0 ? (args[flag]!.includes("=") ? args[flag]!.slice(args[flag]!.indexOf("=") + 1) : args[flag + 1]) : undefined;
+  if (flag >= 0 && (!path || path.startsWith("-"))) return unsupported();
   const files = [join(env.GROK_HOME || harnessHome("grok", env), "config.toml")];
   for (let directory = resolve(cwd);;) {
     const file = join(directory, ".grok", "config.toml"); if (!files.includes(file)) files.push(file);
@@ -229,14 +236,30 @@ export function grokInheritedProfile(cli: string, env: Record<string, string | u
   for (const file of files) {
     if (!existsSync(file)) continue;
     const text = readFileSync(file, "utf8"); if (text.length > 262_144) return unsupported();
-    const section = /^\s*\[agent\]\s*\n([\s\S]*?)(?=^\s*\[|(?![\s\S]))/m.exec(text)?.[1];
-    if (!section) continue;
-    for (const line of section.split(/\r?\n/).map((line) => line.trim()).filter((line) => line && !line.startsWith("#"))) {
-      const match = /^(name|definition)\s*=\s*("(?:[^"\\]|\\.)*"|'[^']*')\s*$/.exec(line);
+    // Support a deliberately small, unambiguous TOML subset. Scan the whole
+    // file: quoted/dotted keys, inline agent tables and multiline constructs
+    // must never be silently missed by a section regex. Unsupported syntax
+    // refuses this scoped turn; ordinary unrestricted turns are unaffected.
+    let section = "";
+    for (const line of text.split(/\r?\n/).map(line => line.trim()).filter(line => line && !line.startsWith("#"))) {
+      const header = /^\[([A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*)\]\s*(?:#.*)?$/.exec(line);
+      if (header) { section = header[1]!; if (section.startsWith("agent.")) return unsupported(); continue; }
+      const assignment = /^([A-Za-z0-9_-]+)\s*=\s*(.+)$/.exec(line);
+      if (!assignment || /'''|"""/.test(assignment[2]!) || (!section && assignment[1] === "agent")) return unsupported();
+      if (section !== "agent") continue;
+      const match = /^(name|definition)\s*=\s*("(?:[^"\\]|\\.)*"|'[^']*')\s*(?:#.*)?$/.exec(line);
       if (!match) return unsupported();
-      const value = match[2]!.startsWith('"') ? JSON.parse(match[2]!) as string : match[2]!.slice(1, -1);
+      let value: string;
+      try { value = match[2]!.startsWith('"') ? JSON.parse(match[2]!) as string : match[2]!.slice(1, -1); }
+      catch { return unsupported(); }
+      // Grok expands environment variables in paths. Do not resolve a
+      // different literal file or fall back when that contract is unknown.
+      if (value.includes("$") || !value) return unsupported();
       if (match[1] === "name" && value !== "grok-build") return unsupported();
-      if (match[1] === "definition" && flag < 0) path = value;
+      if (match[1] === "definition" && flag < 0) {
+        if (path !== undefined && path !== value) return unsupported();
+        path = value;
+      }
     }
   }
   if (!path) return;
@@ -343,6 +366,7 @@ const support: AcpSupport = {
     if (turn.model) profile.model = ensureGrokInjectSlug(turn.model, env);
     return { _meta: { agentProfile: profile } };
   },
+  toolScopeCacheKey: ({ config, env, cwd }) => JSON.stringify(grokInheritedProfile(config.cli, env, cwd) ?? null),
 
   // -m on argv is necessary but not sufficient: session/new still starts on
   // [models].default. Pin the slug over the wire, same as Hermes/Droid.

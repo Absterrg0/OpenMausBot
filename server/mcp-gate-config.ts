@@ -67,6 +67,8 @@ export function gateServer(input: {
   /** node flags the harness spawns its own helpers with */
   nodeEnv?: Record<string, string>;
   execPath?: string;
+  /** Private per-mount configuration for engines that share one child env. */
+  configEnvName?: string;
 }): { command: string; args: string[]; env: Record<string, string> } | null {
   const { name, server, budget } = input;
   const parsed = parseToolScope(input.toolScope);
@@ -79,16 +81,22 @@ export function gateServer(input: {
     if (scoped) throw new Error("Tool selection requires a supported MCP server.");
     return null;
   }
+  const env = {
+    OMB_GATE_NAME: name,
+    OMB_GATE_UPSTREAM: JSON.stringify({ command: spec.command, args: spec.args ?? [], env: spec.env ?? {} }),
+    OMB_GATE_SPILL_DIR: spillDir(input.threadId),
+    OMB_GATE_BUDGET: String(budget),
+    ...(scoped ? { OMB_GATE_TOOL_SCOPE: JSON.stringify(parsed.scope) } : {}),
+  };
+  if (input.configEnvName && (!scoped || !/^OMB_GATE_CONFIG_[a-f0-9]{64}$/.test(input.configEnvName))) {
+    throw new Error("Invalid private MCP gate configuration.");
+  }
   return {
     command: input.execPath ?? process.execPath,
-    args: [SPAWNED_PROXIES.mcpGate],
+    args: [SPAWNED_PROXIES.mcpGate, ...(input.configEnvName ? ["--config-env", input.configEnvName] : [])],
     env: {
       ...input.nodeEnv,
-      OMB_GATE_NAME: name,
-      OMB_GATE_UPSTREAM: JSON.stringify({ command: spec.command, args: spec.args ?? [], env: spec.env ?? {} }),
-      OMB_GATE_SPILL_DIR: spillDir(input.threadId),
-      OMB_GATE_BUDGET: String(budget),
-      ...(scoped ? { OMB_GATE_TOOL_SCOPE: JSON.stringify(parsed.scope) } : {}),
+      ...(input.configEnvName ? { [input.configEnvName]: JSON.stringify(env) } : env),
     },
   };
 }

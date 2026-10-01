@@ -66,12 +66,12 @@ describe("mcp-gate", () => {
   let lines: string[];
   let waiting: Array<(line: string) => void>;
 
-  const start = (reply: unknown, env: Record<string, string> = {}, source = UPSTREAM) => {
+  const start = (reply: unknown, env: Record<string, string> = {}, source = UPSTREAM, args: string[] = []) => {
     const script = join(scratch, "reply.json");
     writeFileSync(script, JSON.stringify(reply));
     const upstreamJs = join(scratch, "upstream.cjs");
     writeFileSync(upstreamJs, source);
-    gate = spawn(process.execPath, ["--experimental-strip-types", "--no-warnings", GATE], {
+    gate = spawn(process.execPath, ["--experimental-strip-types", "--no-warnings", GATE, ...args], {
       stdio: ["pipe", "pipe", "pipe"],
       env: {
         ...process.env,
@@ -136,6 +136,15 @@ describe("mcp-gate", () => {
     start({ content: [{ type: "text", text: "ok" }] });
     send({ jsonrpc: "2.0", id: 7, method: "tools/list" });
     expect(JSON.parse(await nextLine())).toEqual({ jsonrpc: "2.0", id: 7, result: { echoed: "tools/list", params: null } });
+  });
+
+  it.each([undefined, "not-json", "{}", '{"OMB_GATE_NAME":"notes","OMB_GATE_TOOL_SCOPE":"{}"}'])("refuses missing or corrupt private gate settings before spawning upstream: %s", value => {
+    const key = `OMB_GATE_CONFIG_${"a".repeat(64)}`;
+    start({}, value === undefined ? {} : { [key]: value }, SCOPED_UPSTREAM, ["--config-env", key]);
+    return once(gate!, "close").then(([code]) => {
+      expect(code).toBe(1);
+      expect(existsSync(join(scratch, "reply.json.started"))).toBe(false);
+    });
   });
 
   it("leaves a small tool result exactly as the server sent it", async () => {

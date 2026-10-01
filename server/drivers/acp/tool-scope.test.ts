@@ -76,6 +76,29 @@ it("requires explicit Grok MCP helper permissions for a selected remote tool", (
   expect(profile.toolConfig.tools.map((tool) => tool.name_override)).toEqual(["search_tool", "use_tool"]);
 });
 
+it.each([
+  '[agent] # owner restriction\nname="grok-build"\ndefinition=PROFILE # profile path',
+  '["agent"]\nname="grok-build"\ndefinition=PROFILE',
+  'agent.definition = PROFILE',
+  'agent = { definition = PROFILE }',
+  '[agent]\n"definition" = PROFILE',
+])("preserves or refuses inherited restrictions in alternate TOML syntax: %s", text => {
+  const home = mkdtempSync(join(tmpdir(), "omb-grok-syntax-")); directories.push(home); mkdirSync(join(home, ".grok"));
+  const path = join(home, "reader.md");
+  writeFileSync(path, '---\nname: reader\ndescription: Existing restriction\ntools: [read_file]\ndisallowedTools: [write]\n---\n');
+  writeFileSync(join(home, ".grok/config.toml"), text.replace("PROFILE", JSON.stringify(path)) + "\n");
+  let inherited: ReturnType<typeof grokInheritedProfile>;
+  try { inherited = grokInheritedProfile("grok", { HOME: home }, home); }
+  catch (error) { expect(String(error)).toMatch(/cannot be safely intersected/); return; }
+  const selected = grokToolScopeProfile({ allow: ["native:read_file", "native:write"] }, init, inherited);
+  expect(selected.toolConfig.tools.map(tool => tool.name_override)).toEqual(["read_file"]);
+});
+
+it.each(["--tools=write", "--disallowed-tools read_file", "--agent-profile", "--agent-profile=reader.md --agent-profile=other.md"])("refuses ambiguous Grok CLI restrictions before overriding a profile: %s", flags => {
+  const home = mkdtempSync(join(tmpdir(), "omb-grok-cli-")); directories.push(home);
+  expect(() => grokInheritedProfile(`grok ${flags}`, { HOME: home }, home)).toThrow(/cannot be safely intersected/);
+});
+
 it("establishes the restricted Grok profile on the selected model without inheriting its default harness", async () => {
   const rpc = join(mkdtempSync(join(tmpdir(), "omb-grok-rpc-")), "requests.json"); directories.push(dirname(rpc));
   const f = await fixture(GrokAgentDriver, { FAKE_ACP_GROK_VERSION: "1.0.41", FAKE_ACP_SESSION_MODELS: "fake-acp-model", FAKE_ACP_RPC_DUMP: rpc });
@@ -95,6 +118,20 @@ it("refuses a restricted Grok prompt when its selected model cannot be confirmed
   await f.instance.adapter.sendTurn({ threadId: "missing-model", text: "Must not run", model: "fake-acp-model", toolScope: { allow: [] } });
   await f.recorder.until(event => event.type === "turn.completed");
   expect(f.recorder.events.some(event => event.type === "runtime.error" && /confirm.*selected model/.test(event.message))).toBe(true);
+});
+
+it("refreshes a pooled Grok session when its inherited profile narrows without a bot selection change", async () => {
+  const f = await fixture(GrokAgentDriver, { FAKE_ACP_GROK_VERSION: "1.0.41" });
+  const home = dirname(f.dump), path = join(home, "profile.md");
+  writeFileSync(join(home, ".grok/config.toml"), `[agent]\ndefinition=${JSON.stringify(path)}\n`);
+  const profile = (tools: string) => `---\nname: reader\ndescription: Inherited restriction\ntools: [${tools}]\n---\n`;
+  writeFileSync(path, profile("read_file, write"));
+  const turn = { threadId: "pooled-profile", cwd: home, text: "Fixture", toolScope: { allow: ["native:read_file", "native:write"] } };
+  await f.instance.adapter.sendTurn(turn); await f.recorder.until(event => event.type === "turn.completed");
+  expect(JSON.parse(readFileSync(`${f.dump}.session.json`, "utf8"))._meta.agentProfile.toolConfig.tools.map((tool: { name_override: string }) => tool.name_override)).toContain("write");
+  f.recorder.events.length = 0; writeFileSync(path, profile("read_file"));
+  await f.instance.adapter.sendTurn(turn); await f.recorder.until(event => event.type === "turn.completed");
+  expect(JSON.parse(readFileSync(`${f.dump}.session.json`, "utf8"))._meta.agentProfile.toolConfig.tools.map((tool: { name_override: string }) => tool.name_override)).toEqual(["read_file"]);
 });
 
 it("refuses an unsupported inherited Grok harness before spawning instead of overwriting it", async () => {

@@ -764,16 +764,18 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
           ...(turn.guestConfined ? GUEST_CONFINED_CODEX_ARGS : [])];
         const selectedMcp = new Map<string, McpServerSpec>();
         const selectedApprovals = new Map<string, boolean>();
-        const scopedServer = (name: string, server: McpServerSpec) => {
+        const scopedServer = (name: string, mountName: string, server: McpServerSpec) => {
           if (!canUseMcpServer(turn.toolScope, name)) return null;
-          return turn.toolScope === undefined ? server : gateServer({ name, server, threadId, budget: 0, toolScope: turn.toolScope, nodeEnv: { ELECTRON_RUN_AS_NODE: "1" } });
+          return turn.toolScope === undefined ? server : gateServer({ name, server, threadId, budget: 0, toolScope: turn.toolScope, nodeEnv: { ELECTRON_RUN_AS_NODE: "1" },
+            configEnvName: `OMB_GATE_CONFIG_${createHash("sha256").update(mountName).digest("hex")}` });
         };
         const mountSelected = (name: string, mountName: string, server: McpServerSpec, preApproved = true) => {
-          const selected = scopedServer(name, server);
+          const selected = scopedServer(name, mountName, server);
           if (selected) {
             selectedMcp.set(mountName, selected);
             selectedApprovals.set(mountName, preApproved);
             mountMcpServer(appServerArgs, env, mountName, selected, preApproved);
+            if (turn.toolScope !== undefined && !preApproved) appServerArgs.push("-c", `mcp_servers.${mountName}.default_tools_approval_mode="prompt"`);
           }
         };
         if (turn.integrations?.composio) {
@@ -828,7 +830,7 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
 
         const selectionConfig = turn.toolScope === undefined ? {} : { config: { mcp_servers: Object.fromEntries(
           [...selectedMcp].map(([name, server]) => [name, "command" in server ? {
-            command: server.command, args: server.args, env_vars: Object.keys(server.env), default_tools_approval_mode: selectedApprovals.get(name) ? "auto" : "prompt",
+            command: server.command, args: server.args, env_vars: Object.keys(server.env), env: {}, default_tools_approval_mode: selectedApprovals.get(name) ? "auto" : "prompt",
           } : {}]),
         ) } };
 
@@ -1578,9 +1580,13 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
           for (const [name, entry] of Object.entries(catalog)) {
             if (entry && typeof entry === "object" && (entry as { enabled?: unknown }).enabled === false) continue;
             const expected = selectedMcp.get(name);
-            const actual = entry as { command?: unknown; args?: unknown } | null;
+            const actual = entry as { command?: unknown; args?: unknown; env_vars?: unknown; env?: unknown; default_tools_approval_mode?: unknown; tools?: unknown } | null;
             if (!expected || !("command" in expected) || actual?.command !== expected.command
-              || JSON.stringify(actual?.args ?? []) !== JSON.stringify(expected.args ?? [])) {
+              || JSON.stringify(actual?.args ?? []) !== JSON.stringify(expected.args ?? [])
+              || !Array.isArray(actual?.env_vars) || JSON.stringify([...actual.env_vars].sort()) !== JSON.stringify(Object.keys(expected.env).sort())
+              || actual.default_tools_approval_mode !== (selectedApprovals.get(name) ? "auto" : "prompt")
+              || (actual.env != null && (typeof actual.env !== "object" || Array.isArray(actual.env) || Object.keys(actual.env).length > 0))
+              || (actual.tools != null && (typeof actual.tools !== "object" || Array.isArray(actual.tools) || Object.keys(actual.tools).length > 0))) {
               throw new Error("Codex has an MCP server outside the selected configuration. Disable native MCP entries for this account before using tool selection. No prompt was sent.");
             }
           }

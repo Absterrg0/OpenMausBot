@@ -7,6 +7,8 @@
 // hits on Windows. resolveCliSpawn covers both, so these run everywhere.
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { once } from "node:events";
+import { spawn } from "node:child_process";
+import { createInterface } from "node:readline";
 import { tmpdir } from "node:os";
 import { dirname, join, sep } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -137,12 +139,12 @@ describe("CodexDriver turns (fake app-server)", () => {
   it("gates raw custom identities before mount renaming and disables ambient MCP servers", async () => {
     const dump = join(scratch, "scope-mcp.json"); process.env.FAKE_CODEX_DUMP = dump;
     mkdirSync(join(scratch, ".codex")); writeFileSync(join(scratch, ".codex/config.toml"), '[mcp_servers.notes]\nurl="https://example.test/ambient"\n');
-    await create({ environment: { HOME: scratch, CODEX_HOME: join(scratch, ".codex"), FAKE_CODEX_MCP_CONFIG: JSON.stringify({ notes: { enabled: false }, notes_openmausbot: { command: process.execPath, args: [join(dirname(fileURLToPath(import.meta.url)), "../mcp-gate.ts")] } }) } });
+    await create({ environment: { HOME: scratch, CODEX_HOME: join(scratch, ".codex"), FAKE_CODEX_MCP_OVERRIDES: "1" } });
     await instance.adapter.sendTurn({ threadId: "scope-mcp", text: "Fixture", toolScope: { allow: ["native:*", "mcp:notes:read"] }, integrations: { custom: { notes: { type: "sse", url: "https://example.test/notes", headers: {} } } } });
     await recorder.until((event) => event.type === "turn.completed");
     const seen = JSON.parse(readFileSync(dump, "utf8"));
     expect(seen.argv).toContain("mcp_servers.notes.enabled=false");
-    expect(JSON.stringify(seen.argv)).toContain("OMB_GATE_TOOL_SCOPE");
+    expect(JSON.stringify(seen.argv)).toContain("OMB_GATE_CONFIG_");
     expect(JSON.stringify(seen.argv)).not.toContain("https://example.test/notes");
     const before = seen.calls.filter((call: { method: string }) => call.method === "turn/start").length;
     expect(before).toBe(1);
@@ -164,6 +166,52 @@ describe("CodexDriver turns (fake app-server)", () => {
     const seen = existsSync(dump) ? JSON.parse(readFileSync(dump, "utf8")) : { calls: [] };
     expect(seen.calls.some((call: { method: string }) => call.method === "turn/start")).toBe(false);
     expect(recorder.events.some((event) => event.type === "runtime.error" && /outside the selected configuration/.test(event.message))).toBe(true);
+  });
+
+  it("keeps multiple scoped Codex servers independent on new and resumed threads, including custom approvals", async () => {
+    const dump = join(scratch, "multi-scope.json"); process.env.FAKE_CODEX_DUMP = dump;
+    const upstream = join(scratch, "upstream.cjs"), receipt = join(scratch, "receipt.txt");
+    writeFileSync(upstream, `const {createInterface}=require('node:readline');const {appendFileSync}=require('node:fs');
+createInterface({input:process.stdin}).on('line',line=>{const m=JSON.parse(line);if(m.id===undefined)return;let result={};
+if(m.method==='initialize')result={protocolVersion:m.params.protocolVersion,capabilities:{tools:{}},serverInfo:{name:process.env.IDENTITY,version:'1'}};
+if(m.method==='tools/list')result={tools:[process.env.TOOL,'forbidden'].map(name=>({name,inputSchema:{type:'object'}}))};
+if(m.method==='tools/call'){appendFileSync(process.env.RECEIPT,process.env.IDENTITY+':'+m.params.name+'\\n');result={content:[{type:'text',text:Object.keys(process.env).some(key=>key.startsWith('OMB_GATE_'))?'private-config-leak':process.env.IDENTITY}]};}
+process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:m.id,result})+'\\n');});`);
+    await create({ mode: "resume", environment: { HOME: scratch, CODEX_HOME: join(scratch, ".codex"), FAKE_CODEX_MCP_OVERRIDES: "1" } });
+    const turn = { threadId: "multi-scope", text: "Fixture", toolScope: { allow: ["native:*", "mcp:agents:list_bots", "mcp:notes:read_notes"] }, integrations: {
+      agents: { command: process.execPath, args: [upstream], env: { IDENTITY: "agents", TOOL: "list_bots", RECEIPT: receipt } },
+      custom: { notes: { command: process.execPath, args: [upstream], env: { IDENTITY: "notes", TOOL: "read_notes", RECEIPT: receipt } } },
+    } };
+    for (const resumeCursor of [undefined, "old-session"]) {
+      recorder.events.length = 0;
+      await instance.adapter.sendTurn({ ...turn, resumeCursor });
+      await recorder.until(event => event.type === "turn.completed");
+      expect(recorder.events.filter(event => event.type === "runtime.error")).toEqual([]);
+      const seen = JSON.parse(readFileSync(dump, "utf8"));
+      const config = seen.calls.find((call: { method: string }) => call.method === (resumeCursor ? "thread/resume" : "thread/start")).params.config.mcp_servers;
+      expect(config.agents.default_tools_approval_mode).toBe("auto");
+      expect(config.notes.default_tools_approval_mode).toBe("prompt");
+      for (const [name, tool] of [["agents", "list_bots"], ["notes", "read_notes"]]) {
+        const spec = config[name!];
+        const gate = spawn(spec.command, spec.args, { env: { ...seen.env, ...spec.env, ...Object.fromEntries(spec.env_vars.map((key: string) => [key, seen.env[key]])) }, stdio: ["pipe", "pipe", "pipe"] });
+        let nextId = 1;
+        const pending = new Map<number, (message: any) => void>();
+        const lines = createInterface({ input: gate.stdout });
+        lines.on("line", line => { const message = JSON.parse(line); pending.get(message.id)?.(message); pending.delete(message.id); });
+        const request = (method: string, params: unknown = {}) => new Promise<any>((resolve, reject) => {
+          const id = nextId++, timer = setTimeout(() => reject(new Error("Gate did not reply")), 10_000);
+          pending.set(id, message => { clearTimeout(timer); resolve(message); });
+          gate.stdin.write(JSON.stringify({ jsonrpc: "2.0", id, method, params }) + "\n");
+        });
+        try {
+          await request("initialize", { protocolVersion: "2025-03-26", capabilities: {}, clientInfo: { name: "fixture", version: "1" } });
+          expect((await request("tools/list")).result.tools.map((entry: { name: string }) => entry.name)).toEqual([tool]);
+          expect((await request("tools/call", { name: tool, arguments: {} })).result.content[0].text).toBe(name);
+          expect((await request("tools/call", { name: "forbidden", arguments: {} })).error).toBeDefined();
+        } finally { lines.close(); const closed = once(gate, "close"); gate.kill(); await closed; }
+      }
+    }
+    expect(readFileSync(receipt, "utf8")).toBe("agents:list_bots\nnotes:read_notes\nagents:list_bots\nnotes:read_notes\n");
   });
 
   afterEach(async () => {

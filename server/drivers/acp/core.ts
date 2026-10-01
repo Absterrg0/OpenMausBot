@@ -239,6 +239,8 @@ export interface AcpSupport {
   /** Verified native catalog parameters, applied before both new and restored sessions. */
   toolScopeSessionParams?(turn: SendTurnInput, initializeResult: unknown, hasMcp: boolean,
     context: { config: AcpConfig; env: Record<string, string | undefined>; cwd: string }): Record<string, unknown>;
+  /** Existing native restrictions also participate in scoped session reuse. */
+  toolScopeCacheKey?(context: { config: AcpConfig; env: Record<string, string | undefined>; cwd: string }): string;
   driverKind: string;
   displayName: string;
   /** Omit for subscription CLIs (the default). Custom-only CLIs sit below
@@ -1577,6 +1579,8 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
         // riding a child spawned under the old env. Hash it so secrets
         // never sit in the key itself.
         const envFingerprint = createHash("sha256").update(JSON.stringify(spawnEnv)).digest("hex").slice(0, 16);
+        const inheritedScopeFingerprint = narrowsNativeTools(turn.toolScope) && support.toolScopeCacheKey
+          ? createHash("sha256").update(support.toolScopeCacheKey({ config: turnConfig, env, cwd })).digest("hex") : null;
         // A support that applies the approval mode to the session on every
         // turn gets the same process whatever the mode: an approval change
         // is one RPC, not a cold start.
@@ -1585,6 +1589,7 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
           support.sessionScopedApproval ? null : turnConfig.fullAuto === true, envFingerprint,
           support.spawnFingerprint?.(spawnEnv) ?? null,
           turn.toolScope ?? null,
+          inheritedScopeFingerprint,
         ]);
         // The new-session default model rides the spawn env but stays out of
         // the fingerprint above: only session/new reads it, and a pooled
@@ -1603,7 +1608,7 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
           launchedThisTurn = true;
           return opened;
         };
-        const sessionKey = JSON.stringify([mcpServers, turn.toolScope ?? null]);
+        const sessionKey = JSON.stringify([mcpServers, turn.toolScope ?? null, inheritedScopeFingerprint]);
 
         if (turn.sessionReset) {
           closeSession(threadId, "reset");

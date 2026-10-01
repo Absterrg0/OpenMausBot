@@ -78,11 +78,16 @@ Pi sends the selected MCP schemas directly to the model.
 
 Grok CLI's native contract is verified on version **1.0.41**. Other versions
 refuse native restrictions until their contract is verified. Inherited Grok
-profile restrictions still apply. Scoped Grok disables its managed MCP gateway;
+profile restrictions still apply. Grok accepts simple `[agent]` name/definition
+entries, including trailing comments, and an explicit `--agent-profile` file.
+Quoted or dotted keys, inline agent tables, multiline TOML, conflicting
+profile sources and CLI tool overrides refuse scoped turns when their existing
+restrictions cannot be safely resolved. Scoped Grok disables its managed MCP gateway;
 unexpected native MCP servers prevent the prompt from starting. Scoped Claude
 requires a modern CLI with strict MCP isolation and cannot inherit its native
 MCP configuration. Scoped Codex checks its effective MCP configuration before
-starting the prompt.
+starting the prompt. Each Codex MCP mount keeps independent private gate
+settings on new and resumed threads; custom servers retain approval prompts.
 
 Unsupported restrictions and malformed saved selections stop the turn with a
 setup error. The settings warning is deliberate: it does not claim an engine
