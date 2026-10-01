@@ -17,9 +17,9 @@ export function DesktopViewer() {
   const screen = useRef<HTMLDivElement>(null);
   const rfb = useRef<RFB | null>(null);
   const [attempt, setAttempt] = useState(0);
-  const [connection, setConnection] = useState<"connecting" | "connected" | "disconnected" | Error>("connecting");
+  const [connection, setConnection] = useState<"connecting" | "connected" | "disconnected" | "invalid">("connecting");
   const connected = connection === "connected";
-  const status = connection instanceof Error ? connection.message : t(`desktopViewer.${connection}`);
+  const status = t(`desktopViewer.${connection}`);
   const [panel, setPanel] = useState<"keyboard" | "clipboard" | null>(null);
   const [expanded, setExpanded] = useState(true);
   const [fullscreen, setFullscreen] = useState(false);
@@ -51,14 +51,14 @@ export function DesktopViewer() {
     setConnection("connecting");
     const connect = async () => {
       try {
-        if (!target || !/^(local\/(shared|bot-[a-f0-9]{64}|pool-\d+)|vps\/[\w-]+)$/.test(target)) throw new Error(t("desktopViewer.invalid"));
+        if (!target || !/^(local\/(shared|bot-[a-f0-9]{64}|pool-\d+)|vps\/[\w-]+)$/.test(target)) return setConnection("invalid");
         const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(30_000)]);
         if (target.startsWith("vps/")) {
           const query = threadId ? `?${new URLSearchParams({ threadId })}` : "";
           const joined = await fetch(`/api/bots/${target.slice(4)}/computer/join${query}`, {
             method: "POST", headers: { "content-type": "application/json" }, body: "{}", signal,
           });
-          if (!joined.ok) throw new Error(t("desktopViewer.disconnected"));
+          if (!joined.ok) throw new Error("join failed");
           if (controller.signal.aborted) return;
         }
         const path = `/api/desktop-viewer/${target}`;
@@ -66,9 +66,9 @@ export function DesktopViewer() {
           signal,
           credentials: "same-origin", cache: "no-store",
         });
+        if (!response.ok) throw new Error("viewer unavailable");
         const config = await response.json().catch(() => ({}));
         if (controller.signal.aborted) return;
-        if (!response.ok) throw new Error(config.error || t("desktopViewer.disconnected"));
         const websocket = new URL(`${path}/websockify`, location.href);
         websocket.protocol = location.protocol === "https:" ? "wss:" : "ws:";
         client = new RFB(screen.current!, websocket.href, {
@@ -93,8 +93,8 @@ export function DesktopViewer() {
           clearTimeout(deadline);
           setConnection("disconnected");
         });
-      } catch (error) {
-        if (!controller.signal.aborted) setConnection(error instanceof Error ? error : new Error(t("desktopViewer.disconnected")));
+      } catch {
+        if (!controller.signal.aborted) setConnection("disconnected");
       }
     };
     void connect();
@@ -140,6 +140,8 @@ export function DesktopViewer() {
     setPanel(null);
     if (panel) document.getElementById(panel)?.focus();
   };
+  // After the commit that clears `inert`, so focus is not dropped to <body>.
+  const focusSoon = (id: string) => requestAnimationFrame(() => document.getElementById(id)?.focus());
   const togglePanel = (next: "keyboard" | "clipboard") => setPanel(value => value === next ? null : next);
   const slide = "transition-[width,translate,opacity] duration-[240ms] ease-[cubic-bezier(0.22,1,0.36,1)] motion-reduce:transition-none";
   const action = "ui-button min-h-11 rounded-xl focus-visible:outline-2 focus-visible:outline-focus";
@@ -158,15 +160,15 @@ export function DesktopViewer() {
           {document.fullscreenEnabled && <ViewerTool id="fullscreen" label={t(fullscreen ? "desktopViewer.exitFullscreen" : "desktopViewer.fullscreen")} icon={fullscreen ? Minimize : Maximize} onClick={() => { void toggleFullscreen(); }} />}
           <div className="my-1 h-px w-7 shrink-0 bg-hairline" />
           <ViewerTool id="retry" label={t("desktopViewer.reconnect")} icon={RefreshCw} onClick={() => { setClipboard(""); setAttempt(value => value + 1); }} />
-          <ViewerTool id="hide-controls" label={t("desktopViewer.hideControls")} icon={ChevronLeft} onClick={() => { setExpanded(false); closePanel(); }} />
+          <ViewerTool id="hide-controls" label={t("desktopViewer.hideControls")} icon={ChevronLeft} onClick={() => { setExpanded(false); setPanel(null); focusSoon("show-controls"); }} />
         </div>
       </aside>
       {handleMotion.shown && <div {...handleMotion.exitProps} className={cn("absolute left-0 top-1/2 z-10 -translate-y-1/2 rounded-r-2xl border border-l-0 border-hairline bg-panel p-1 shadow-xl", handleMotion.className)}>
-        <ViewerTool id="show-controls" label={t("desktopViewer.showControls")} icon={ChevronRight} onClick={() => setExpanded(true)} />
+        <ViewerTool id="show-controls" label={t("desktopViewer.showControls")} icon={ChevronRight} onClick={() => { setExpanded(true); focusSoon("hide-controls"); }} />
       </div>}
 
       <main className={cn("relative flex min-w-0 flex-1 items-center justify-center overflow-hidden bg-inset", !fullscreen && "my-2 mr-2 rounded-2xl border border-hairline", !fullscreen && !expanded && "ml-2")}>
-        <div id="screen" ref={screen} aria-label={t("desktopViewer.title")} className={cn("overflow-hidden", fullscreen ? "h-full w-full" : "h-[95%] w-[95%]")} />
+        <div id="screen" ref={screen} role="application" aria-label={t("desktopViewer.title")} className={cn("overflow-hidden", fullscreen ? "h-full w-full" : "h-[95%] w-[95%]")} />
         <div className={connected ? "sr-only" : "pointer-events-none absolute inset-x-3 top-3 flex justify-center"}>
           <span id="status" role="status" className="max-w-full rounded-full border border-hairline bg-panel/95 px-3 py-1.5 text-center text-xs text-ink-secondary shadow-sm">{status}</span>
         </div>
@@ -209,9 +211,9 @@ export function DesktopViewer() {
           </button>}
         </form>
         {keyboardPanel && <div className="mt-4 grid grid-cols-2 gap-2 border-t border-hairline pt-4">
-          <button className={action} disabled={!connected} onClick={() => rfb.current?.sendKey(0xff09, "Tab")}>Tab</button>
-          <button className={action} disabled={!connected} onClick={() => rfb.current?.sendKey(0xff1b, "Escape")}>Esc</button>
-          <button id="ctrl-alt-del" className={cn(action, "col-span-2")} disabled={!connected} onClick={() => rfb.current?.sendCtrlAltDel()}>Ctrl–Alt–Del</button>
+          <button className={action} disabled={!connected} onClick={() => rfb.current?.sendKey(0xff09, "Tab")}>{t("desktopViewer.keyTab")}</button>
+          <button className={action} disabled={!connected} onClick={() => rfb.current?.sendKey(0xff1b, "Escape")}>{t("desktopViewer.keyEscape")}</button>
+          <button id="ctrl-alt-del" className={cn(action, "col-span-2")} disabled={!connected} onClick={() => rfb.current?.sendCtrlAltDel()}>{t("desktopViewer.keyCtrlAltDel")}</button>
         </div>}
       </section>}
     </div>
