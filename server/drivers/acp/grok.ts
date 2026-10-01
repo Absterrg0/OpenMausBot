@@ -335,12 +335,18 @@ const support: AcpSupport = {
     "stdio",
   ],
 
-  toolScopeSessionParams: (turn, init, hasMcp, { config, env, cwd }) => narrowsNativeTools(turn.toolScope)
-    ? { _meta: { agentProfile: grokToolScopeProfile(turn.toolScope, init, grokInheritedProfile(config.cli, env, cwd), hasMcp) } } : {},
+  toolScopeSessionParams: (turn, init, hasMcp, { config, env, cwd }) => {
+    if (!narrowsNativeTools(turn.toolScope)) return {};
+    const profile = grokToolScopeProfile(turn.toolScope, init, grokInheritedProfile(config.cli, env, cwd), hasMcp);
+    // Establish on the selected model. Changing harnesses after session/new
+    // can discard an ACP profile and restore the model's default tools.
+    if (turn.model) profile.model = ensureGrokInjectSlug(turn.model, env);
+    return { _meta: { agentProfile: profile } };
+  },
 
   // -m on argv is necessary but not sufficient: session/new still starts on
   // [models].default. Pin the slug over the wire, same as Hermes/Droid.
-  async configureSession({ request, sessionId, turn }) {
+  async configureSession({ request, sessionId, turn, currentModelId }) {
     if (turn.toolScope !== undefined) {
       const available = new Set([
         ...(turn.integrations?.agents ? ["agents"] : []), ...(turn.integrations?.composio ? ["composio"] : []),
@@ -370,6 +376,14 @@ const support: AcpSupport = {
       }
     }
     if (!turn.model) return;
+    if (narrowsNativeTools(turn.toolScope)) {
+      if (currentModelId !== turn.model) {
+        throw new Error("Grok could not confirm the selected model without replacing its tool profile. Start a new conversation or choose a model with a supported Grok profile. No prompt was sent.");
+      }
+      // The inline profile already pins this model. Repeating set_model can
+      // rebuild the harness, or reject an otherwise valid resumed profile.
+      return;
+    }
     try {
       await request("session/set_model", { sessionId, modelId: turn.model });
     } catch (e) {
@@ -391,6 +405,14 @@ const support: AcpSupport = {
       // account defaults, preventing an unfiltered managed gateway fallback.
       env.GROK_MANAGED_MCPS_ENABLED = "false";
       env.GROK_MANAGED_MCP_GATEWAY_TOOLS_ENABLED = "false";
+      if (narrowsNativeTools(toolScope)) {
+        if (env.GROK_AGENT && env.GROK_AGENT !== "grok-build") {
+          throw new Error("Grok's existing agent profile cannot be safely intersected with tool selection. Use a separate default Grok account.");
+        }
+        // A model's agent_type otherwise takes priority over ACP profiles.
+        // Preserve profile-file restrictions when intersecting them below.
+        env.GROK_AGENT = "grok-build";
+      }
     }
   },
 

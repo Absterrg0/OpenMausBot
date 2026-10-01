@@ -396,6 +396,8 @@ export interface AcpSupport {
      * driver that only knows the argv slug cannot form a valid set_model
      * without this. Empty when the agent advertised none. */
     sessionModels: Array<{ modelId?: string; name?: string }>;
+    /** Last model acknowledged by session/new/load, preserved for pooled turns. */
+    currentModelId?: string;
   }): Promise<void>;
 }
 
@@ -1973,6 +1975,7 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
                   sessionModels: Array.isArray(sessionResult?.models?.availableModels)
                     ? sessionResult.models.availableModels
                     : [],
+                  currentModelId: session.sessionConfigResult?.models?.currentModelId,
                 });
                 approvalUnconfirmed = false;
                 // initialize's currentModelId is the CLI default,

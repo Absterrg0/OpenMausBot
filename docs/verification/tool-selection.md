@@ -1,0 +1,137 @@
+# Per-bot tool selection
+
+All checks below use disposable homes, workspaces and MCP servers. They do
+not read the user's OpenMausBot data or connect a real mail account.
+
+## Repeatable automated checks
+
+```sh
+pnpm exec vitest run shared/tool-scope.test.ts server/mcp-gate.test.ts server/mcp-gate-config.test.ts server/mcp-remote-proxy.test.ts
+pnpm exec vitest run server/tool-scope.e2e.test.ts server/drivers/tool-scope-coverage.test.ts server/drivers/acp/tool-scope.test.ts
+pnpm exec vitest run server/drivers/pi.test.ts server/drivers/pi-mcp-extension.test.ts server/drivers/chat-mcp-tools.test.ts server/drivers/openai-chat.test.ts server/openai-tools.e2e.test.ts
+pnpm exec vitest run src/components/bot-settings/AccessSection.test.ts src/state/store.test.ts src/lib/create-configured-bot.test.ts src/lib/bot-creation-draft.test.ts
+OMB_UI_E2E=1 pnpm exec vitest run scripts/testing/tool-selection-ui.e2e.test.ts
+```
+
+The UI check opens the actual bot settings and saves, clears, rejects invalid
+input, retries a failed save, switches bots during a pending save, checks busy
+state, and duplicates a restricted bot atomically. It uses the shared
+verification launcher and the real renderer. These are workflow checks with
+a fake engine, not live-model planning checks.
+
+![Before: Access settings](tool-selection-before.jpg)
+![After: saved tool selection](tool-selection-after.jpg)
+
+The gate checks cover stdio, HTTP and SSE discovery and execution, pagination,
+original names, malformed settings/protocol input, credential-safe errors,
+zero result budgets and source-free packaged helpers. Adapter checks cover
+fresh and resumed policy, approval modes, instance restrictions, unsupported
+engines and refusal before prompting. An excluded tool must be absent from
+the provider's definitions **and** absent from the fixture's execution log.
+
+## Official CLI contract checks
+
+Install the official Pi CLI into a disposable prefix, then supply its absolute
+path. The scripts configure their own loopback synthetic provider:
+
+```sh
+node --experimental-strip-types scripts/verify-pi-tool-scope.ts /absolute/path/to/pi
+node --experimental-strip-types scripts/verify-tool-scope.ts /absolute/path/to/grok
+pnpm build:server
+node --experimental-strip-types scripts/verify-pi-tool-scope.ts /absolute/path/to/pi dist-server/drivers/pi-mcp-extension.ts
+```
+
+Verified contracts: **Pi 0.99.1**, **Grok 1.0.41**. Pi checks late package tool
+activation as well as native/custom tools. Grok checks inherited profiles,
+model-specific harness changes, resumed selections, explicit MCP helpers,
+managed gateway suppression and refusal of unexpected native MCP servers.
+These scripts intentionally request withheld tools through the synthetic
+provider and check that they never execute. They do not benchmark a model.
+
+Grok's restricted profile is established on the requested model, with the
+default harness pinned before spawn. The session must acknowledge the selected
+model before prompting; a redundant model switch must not restore tools or
+reject an otherwise valid resumed profile. Unknown inherited harnesses and unverified native-selection
+runtime versions refuse the turn.
+
+## Real local-model check
+
+Load a tool-capable local model separately with an **8192-token context**, one
+parallel request, and an explicit temporary identifier. Confirm those values
+with the runtime's loaded-model report, then run Pi and Grok sequentially:
+
+```sh
+node --experimental-strip-types scripts/verify-local-tool-selection.ts pi /absolute/path/to/pi http://127.0.0.1:1234/v1 MODEL_ID
+node --experimental-strip-types scripts/verify-local-tool-selection.ts grok /absolute/path/to/grok http://127.0.0.1:1234/v1 MODEL_ID
+```
+
+The proxy forwards actual model responses and unmodified tool schemas. It
+caps generation at 768 tokens and each turn at 12 requests. It captures schema
+names/bytes and provider-reported usage, waits for response evidence, and
+checks the file and MCP execution receipts. Unload only the test model when
+finished; leave other projects and the local-model service running.
+
+### Physical Mac evidence, 2026-09-30
+
+Executed on arm64 macOS **26.6.2 (25G83)**, **24 GiB RAM**. Runtime: LM Studio
+CLI commit `1017bcb`, llama.cpp Metal backend **2.48.0**. Model:
+`lmstudio-community/Qwen3.5-2B-GGUF`, **Q4_K_M**, repository revision
+`bb84e11355a036e28f080c7793fa6d22b7c4e344`. File SHA-256:
+`0bfe35afc9f05b7fac3fa04925e051ac7939a42a8a17ea11afc99701bea826cc`.
+The loaded-model report confirmed 8192 context and one parallel request.
+
+| Real turn | Pi schemas / JSON bytes | Grok schemas / JSON bytes | Execution evidence |
+| --- | --- | --- | --- |
+| Drafting | 3 / 2297 | 3 / 3516 | Actual model wrote the requested disposable file |
+| Selected mail read | 1 / 182 | 2 native helpers / 2840 | Only `read_notes` appears in the MCP receipt |
+| Explicit no tools | 0 / 2 | 0 / 2 | No terminal marker and no additional MCP call |
+
+Grok separately sends a session-title request (one schema, 388 bytes), which
+is excluded from main-turn counts. Its synthetic default-catalog comparison
+was 25 schemas / 44415 bytes; the live drafting turn's reduced catalog was
+3 / 3516. This is not a reconstruction of the original issue's 97-tool setup.
+
+The final successful Pi and Grok mail turns each made two allowed read calls. An
+earlier small-model run exceeded the request budget and failed. The passing
+checks establish tool availability and execution boundaries, not one-call
+planning quality or general model reliability.
+
+Provider-reported usage is summed across each turn's main requests, including
+reasoning in completion tokens. Grok's auxiliary title usage was not supplied.
+These totals are not a per-request context size or a monetary saving estimate.
+
+| Engine / turn | Main requests | Prompt tokens, summed | Completion tokens, summed |
+| --- | --- | --- | --- |
+| Pi drafting | 2 | 3374 | 229 |
+| Pi mail | 2 | 1748 | 307 |
+| Pi no tools | 1 | 608 | 123 |
+| Grok drafting | 3 | 9437 | 261 |
+| Grok mail | 5 | 14712 | 523 |
+| Grok no tools | 1 | 1835 | 115 |
+
+The largest individual prompt was 1819 tokens for Pi and 3434 for Grok.
+The fixture answered two Pi and three Grok approval requests for its own
+disposable operations. No real account, desktop or other project was involved.
+
+Whole-machine snapshots during these checks reported 24%, 22% and 31% free
+memory, and respectively 47716.50, 47760.12 and 46146.38 MiB of swap in use.
+The loaded model worker's sampled RSS was 1242208 KiB. Other applications and
+test devices remained running. These are point samples, not isolated peak
+memory or a causal performance comparison. The test model was unloaded and
+the disposable agent data removed afterward.
+
+## Required repository checks and limits
+
+Run `pnpm typecheck`, `pnpm lint`, `pnpm test`, `pnpm check:electron` and
+`pnpm i18n:check`. On a Mac with Node installed outside standard locations,
+the installer tests' fake PATH may not find Node. Supply `OMB_EXTRA_PATH`
+pointing to a disposable directory containing **only** a link to Node, so
+the fixture's fake npm remains first. Do not prepend a real npm installation
+or change application code to repair the test machine's PATH.
+
+The [engine support table](../tool-selection.md#engine-support) distinguishes
+usable native selection from MCP-only support and fail-closed unsupported
+restrictions. Other native CLI contracts, a full Electron package smoke,
+real connected accounts, other local models and other macOS versions are
+not established by this verification. The full repository suite and CI
+results belong in the pull request's validation record.

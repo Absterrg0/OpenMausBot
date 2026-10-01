@@ -253,6 +253,7 @@ const dumpEnv = Object.fromEntries(
     "OPENROUTER_API_KEY",
     "ANTHROPIC_API_KEY",
     "XAI_API_KEY",
+    "GROK_AGENT",
     "BOX_TOKEN",
     "OMB_TTS_KEY",
     "OMB_FISH_AUDIO_API_KEY",
@@ -598,6 +599,9 @@ function handle(msg: any) {
     case "authenticate":
       result(msg.id, {});
       break;
+    case "_x.ai/mcp/list":
+      result(msg.id, { result: { servers: [], sessionMcpResolved: true } });
+      break;
     case "session/new": {
       if (failRpc(msg)) break;
       if (mode === "auth-required") {
@@ -610,6 +614,7 @@ function handle(msg: any) {
       }
       const servers: McpEntry[] = Array.isArray(msg.params?.mcpServers) ? msg.params.mcpServers : [];
       if (process.env.FAKE_ACP_DUMP) {
+        writeFileSync(`${process.env.FAKE_ACP_DUMP}.session.json`, JSON.stringify(msg.params));
         dumpState.mcpServers = servers;
         writeFileSync(process.env.FAKE_ACP_DUMP, JSON.stringify(dumpState, null, 2));
       }

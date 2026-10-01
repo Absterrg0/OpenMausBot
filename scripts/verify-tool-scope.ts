@@ -90,6 +90,14 @@ try {
   assert.equal(readFileSync(receipt, "utf8"), "read_notes\n");
   const emptyMail = await turn("empty", { allow: [] }, selected.cursor);
   assert(emptyMail.requests.every((payload) => (payload.tools ?? []).length === 0));
+  // A model's strict harness may otherwise replace the inline ACP profile.
+  const strictConfig = config.replace(/(\[model\.omlx-fixture\][^[]*)/, '$1agent_type="codex"\n');
+  assert.notEqual(strictConfig, config, "Fixture model configuration must be found");
+  writeFileSync(configPath, `${strictConfig}\n[models]\ndefault="omlx-fixture"\n`);
+  const strict = await turn("strict-model", { allow: [] });
+  assert(strict.requests.every((payload) => (payload.tools ?? []).length === 0), "A model switch must not replace the owner selection with its strict harness");
+  const strictDraft = await turn("strict-drafting", { allow: ["native:read_file", "native:search_replace", "native:write"] }, strict.cursor);
+  assert(strictDraft.requests.every((payload) => JSON.stringify(payload.tools?.map(tool => tool.function.name).sort()) === JSON.stringify(["read_file", "search_replace", "write"])), "A resumed strict-model session must retain only its selected drafting tools");
   writeFileSync(configPath, `${config}\n[mcp_servers.ambient]\ncommand=${JSON.stringify(process.execPath)}\nargs=${JSON.stringify([mail])}\n`);
   const before = payloads.length, eventStart = events.length;
   await instance.adapter.sendTurn({ threadId: "ambient-refusal", cwd: home, text: "Must not run.", model: "omlx::fixture", toolScope: { allow: ["native:read_file"] } });

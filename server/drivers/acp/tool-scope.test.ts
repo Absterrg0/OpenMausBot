@@ -17,12 +17,12 @@ afterEach(async () => {
   for (const instance of instances.splice(0)) await instance.dispose();
   for (const directory of directories.splice(0)) rmSync(directory, { recursive: true, force: true });
 });
-async function fixture(driver = GrokAgentDriver) {
+async function fixture(driver = GrokAgentDriver, environment: Record<string, string> = {}) {
   ensureDirs(); chmodSync(cli, 0o755);
   const home = mkdtempSync(join(tmpdir(), "omb-acp-selection-")); directories.push(home);
   mkdirSync(join(home, ".grok")); writeFileSync(join(home, ".grok/auth.json"), "{}");
   const dump = join(home, "dump.json"); const launches = join(home, "launches.txt");
-  const instance = await driver.create({ instanceId: "selection", displayName: "Scope fixture", enabled: true, config: { cli, fullAuto: true }, environment: { HOME: home, USERPROFILE: home, FAKE_ACP_DUMP: dump, FAKE_ACP_LAUNCH_COUNT_FILE: launches } });
+  const instance = await driver.create({ instanceId: "selection", displayName: "Scope fixture", enabled: true, config: { cli, fullAuto: true }, environment: { HOME: home, USERPROFILE: home, FAKE_ACP_DUMP: dump, FAKE_ACP_LAUNCH_COUNT_FILE: launches, ...environment } });
   instances.push(instance);
   return { instance, recorder: recordEvents(instance.adapter), dump, launches };
 }
@@ -74,6 +74,33 @@ it("requires explicit Grok MCP helper permissions for a selected remote tool", (
   expect(() => grokToolScopeProfile({ allow: ["mcp:mail:read_notes"] }, init, undefined, true)).toThrow(/native:search_tool.*native:use_tool/);
   const profile = grokToolScopeProfile({ allow: ["native:search_tool", "native:use_tool", "mcp:mail:read_notes"] }, init, undefined, true);
   expect(profile.toolConfig.tools.map((tool) => tool.name_override)).toEqual(["search_tool", "use_tool"]);
+});
+
+it("establishes the restricted Grok profile on the selected model without inheriting its default harness", async () => {
+  const rpc = join(mkdtempSync(join(tmpdir(), "omb-grok-rpc-")), "requests.json"); directories.push(dirname(rpc));
+  const f = await fixture(GrokAgentDriver, { FAKE_ACP_GROK_VERSION: "1.0.41", FAKE_ACP_SESSION_MODELS: "fake-acp-model", FAKE_ACP_RPC_DUMP: rpc });
+  await f.instance.adapter.sendTurn({ threadId: "pinned", text: "Must stay restricted", model: "fake-acp-model", toolScope: { allow: [] } });
+  await f.recorder.until(event => event.type === "turn.completed");
+  const launch = JSON.parse(readFileSync(f.dump, "utf8"));
+  expect(launch.env.GROK_AGENT).toBe("grok-build");
+  const profile = JSON.parse(readFileSync(`${f.dump}.session.json`, "utf8"))._meta.agentProfile;
+  expect(profile.model).toBe("fake-acp-model");
+  expect(profile.disallowedTools).toContain("read_file");
+  expect(f.recorder.events.filter(event => event.type === "runtime.error")).toEqual([]);
+  expect(JSON.parse(readFileSync(rpc, "utf8"))).not.toContain("session/set_model");
+});
+
+it("refuses a restricted Grok prompt when its selected model cannot be confirmed", async () => {
+  const f = await fixture(GrokAgentDriver, { FAKE_ACP_GROK_VERSION: "1.0.41" });
+  await f.instance.adapter.sendTurn({ threadId: "missing-model", text: "Must not run", model: "fake-acp-model", toolScope: { allow: [] } });
+  await f.recorder.until(event => event.type === "turn.completed");
+  expect(f.recorder.events.some(event => event.type === "runtime.error" && /confirm.*selected model/.test(event.message))).toBe(true);
+});
+
+it("refuses an unsupported inherited Grok harness before spawning instead of overwriting it", async () => {
+  const f = await fixture(GrokAgentDriver, { GROK_AGENT: "unverified" });
+  await expect(f.instance.adapter.sendTurn({ threadId: "unverified", text: "Must not run", toolScope: { allow: [] } })).rejects.toThrow(/existing agent profile/);
+  expect(existsSync(f.dump)).toBe(false);
 });
 
 it("gates eligible ACP servers and retires a pooled process when selection changes", async () => {
