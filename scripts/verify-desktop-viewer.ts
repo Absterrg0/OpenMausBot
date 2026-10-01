@@ -239,7 +239,8 @@ process.on('SIGTERM',()=>{fs.appendFileSync(log,'close ');process.exit(0)});
   const vpsBot = bots.find((bot: { name: string }) => bot.name === "VPS fixture");
   await api("PATCH", "/api/config", { vps: { sshAlias: "viewer-fixture" } });
   await api("PATCH", `/api/bots/${vpsBot.id}`, { computer: "cloud", cloudBackend: "vps" });
-  const joined = await evaluate<{joinUrl:string}>(`fetch('/api/bots/${vpsBot.id}/computer/join',{method:'POST',headers:{'content-type':'application/json'},body:'{}'}).then(async r=>{if(!r.ok)throw new Error(await r.text());return r.json()})`);
+  // Two tabs opening at once share one join instead of the second being refused.
+  const [joined] = await evaluate<{joinUrl:string}[]>(`Promise.all([0, 1].map(() => fetch('/api/bots/${vpsBot.id}/computer/join',{method:'POST',headers:{'content-type':'application/json'},body:'{}'}).then(async r=>{if(!r.ok)throw new Error(await r.text());return r.json()})))`);
   const viewer = new URL(joined.joinUrl, fixture.info.url);
   assert.equal(viewer.pathname, "/desktop-viewer");
   const target = new URLSearchParams(viewer.hash.slice(1));

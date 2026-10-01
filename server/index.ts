@@ -6186,6 +6186,9 @@ const boatLifecycleBusyBots = new Set<string>();
 // A refresh is a reader, not a lifecycle change. Keep its reservation until
 // the provider settles even if the HTTP client leaves, and share it on retry.
 const vpsPreviewRequests = new Map<string, ReturnType<typeof vps.vpsComputerScreenshot>>();
+// Joins in flight per bot. A second tab or a quick reconnect waits for the
+// pending join, then reuses its tunnel, instead of being refused by its lane.
+const vpsJoinRequests = new Map<string, Promise<void>>();
 const orphanBoatLifecycleBusyIds = new Set<string>();
 const boatInventoryRequestsBusyIds = new Set<string>();
 type RemoteComputerProvider = "box" | "vps";
@@ -23213,6 +23216,9 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       if (!String(req.headers["content-type"] ?? "").toLowerCase().startsWith("application/json")) {
         return json(res, 415, { error: "content-type must be application/json" });
       }
+      if (m[2] === "join" && bot.cloudBackend === "vps") {
+        for (let pending; (pending = vpsJoinRequests.get(botId));) await pending;
+      }
       const remoteProvider: RemoteComputerProvider = bot.cloudBackend === "vps" ? "vps" : "box";
       if (computerProviderConfigTransitions.has(remoteProvider)) {
         return json(res, 409, { error: providerTransitionMessage(remoteProvider) });
@@ -23252,6 +23258,9 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         // Opening the existing SSH viewer can coexist with a capture. Start,
         // stop, remove and Settings deletion still exclude pending previews.
         const releaseComputerLifecycle = claimBotComputerLifecycle(botId, m[2] === "join");
+        // Settles only after the lane is released, so a waiter can claim it.
+        let joinSettled: (() => void) | undefined;
+        if (m[2] === "join") vpsJoinRequests.set(botId, new Promise(resolve => { joinSettled = resolve; }));
         try {
           if (m[2] === "exec") {
             return json(res, 409, { error: "the VPS console is available to the bot through its scoped computer tools" });
@@ -23272,6 +23281,10 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
           return json(res, 200, await vps.vpsComputerAction(action, cfg, botId));
         } finally {
           releaseComputerLifecycle();
+          if (joinSettled) {
+            vpsJoinRequests.delete(botId);
+            joinSettled();
+          }
         }
       }
       const activeBoatTurn = botHasActiveTurn(botId);
