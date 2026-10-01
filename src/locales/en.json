@@ -437,6 +437,7 @@
   "settings.font.inter": "Inter",
   "settings.font.poppins": "Poppins",
   "settings.font.serif": "Serif",
+  "settings.sidebarDensity.subtitle": "How much room each bot and thread takes in the sidebar, on this device only. Avatars only is the same as collapsing the sidebar from its header.",
   "settings.threadDisplay.title": "Threads",
   "settings.threadDisplay.subtitle": "Show thread lists and controls on this device only. Hiding them keeps all conversation history and running work; channels are unchanged. Turn this back on to access your threads again.",
   "settings.threadDisplay.show": "Show threads",
