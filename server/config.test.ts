@@ -92,6 +92,13 @@ describe("configuration boundaries", () => {
     expect(() => parseConfigPatch({ tts: { provider: "unknown" } })).toThrow("provider");
   });
 
+  it("accepts only known Fish Audio speech models", () => {
+    for (const fishModel of ["s2.1-pro", "s2.1-pro-free"]) {
+      expect(parseConfigPatch({ tts: { fishModel } }).tts).toEqual({ fishModel });
+    }
+    expect(() => parseConfigPatch({ tts: { fishModel: "s1" } })).toThrow("fishModel");
+  });
+
   it("defaults to three parallel threads and validates a configurable maximum of ten", () => {
     expect(maxConcurrentBotThreads({})).toBe(3);
     expect(parseStoredConfig({ threads: { maxConcurrentPerBot: 10 } })).toEqual({ threads: { maxConcurrentPerBot: 10 } });
