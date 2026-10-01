@@ -52,6 +52,21 @@ const bot: Bot = {
 };
 
 describe("thread control placement", () => {
+  it("keeps the full thread picker accessible without the sidebar", () => {
+    const markup = renderToStaticMarkup(createElement(ChatView, { bot }));
+    expect(markup).toContain('aria-label="All threads"');
+    expect(markup).toContain('data-testid="chat-more"');
+  });
+
+  it("gives the editor its own row in a narrow chat", () => {
+    const markup = renderToStaticMarkup(createElement(ChatView, { bot }));
+    expect(markup).toContain("@container/composer");
+    const row = /data-composer-row="[^"]*" class="([^"]*)"/.exec(markup)!;
+    expect(row[1]).toContain("@max-[30rem]/composer:flex-wrap");
+    const editor = /class="mention-editor ([^"]*)"/.exec(markup)!;
+    expect(editor[1].split(" ")).toEqual(expect.arrayContaining(["min-w-0", "flex-1", "@max-[30rem]/composer:order-first", "@max-[30rem]/composer:basis-full"]));
+  });
+
   it("keeps the composer inert until the deleted thread's replacement transcript arrives", () => {
     const markup = renderToStaticMarkup(createElement(ChatView, { bot: { ...bot, awaitingThreadSnapshot: true } }));
     expect(markup).toMatch(/<textarea[^>]*disabled=""[^>]*aria-busy="true"/);

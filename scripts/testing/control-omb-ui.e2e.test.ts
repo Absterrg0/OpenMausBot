@@ -367,6 +367,7 @@ describe("control-omb ui drives the real renderer", () => {
     expect(collapsed.snapshot).toContain("Expand the run");
     expect(collapsed.snapshot).not.toContain('list "Run steps"');
 
+    await ui("click", info.ui, "--name", "More");
     await ui("click", info.ui, "--name", "Inspector");
     const inspected = await ui("snapshot", info.ui);
     const runLog = (inspected.snapshot as string).slice((inspected.snapshot as string).indexOf('complementary "Inspector"'));

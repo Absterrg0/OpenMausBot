@@ -8,8 +8,11 @@ import {
   Bug,
   Copy,
   Crown,
+  Download,
+  Gauge,
   MessageSquareReply,
   Monitor,
+  MoreHorizontal,
   Pencil,
   Pin,
   PinOff,
@@ -36,6 +39,7 @@ import {
   type Bot,
   type InstanceInfo,
   type Message,
+  type AppState,
 } from "@/state/store";
 import { EngineSetup } from "./EngineSetup";
 import { CHATGPT_USAGE_URL } from "./ChatGptPlanStatus";
@@ -73,9 +77,16 @@ import { AttachmentGallery, collectMessageFiles, splitMessageAttachments } from 
 import { ScreenFrame } from "./ScreenFrame";
 import { CompactionChip, DigestChip } from "./DigestChip";
 import { RenameTitle } from "./RenameTitle";
-import { BotActivityPicker, TaskPicker } from "./TaskPicker";
+import { TaskPicker, BotActivityPicker } from "./TaskPicker";
 import { ModelPicker } from "./ModelPicker";
-import { ExportTranscriptMenu } from "./ExportTranscriptMenu";
+import { SidebarPopoverMenu, type SidebarMenuItem } from "./SidebarPopoverMenu";
+import { ShortcutHint } from "./ShortcutHint";
+import {
+  copyTranscriptToClipboard,
+  downloadMarkdownTranscript,
+  formatTranscriptMarkdown,
+  slugifyTranscriptFilename,
+} from "@/lib/export-transcript";
 import { CitationSelectionToolbar, SentCitations } from "./CitationUI";
 
 import { SpeakButton } from "./SpeakButton";
@@ -1326,23 +1337,6 @@ export function ChatView({ bot: profile }: { bot: Bot }) {
           // buttons clear the 26px overlay while the rest of the layout stays.
           style={controlsShiftStyle}
         >
-          <button
-            onClick={() => setFindOpen((open) => !open)}
-            aria-label={t("chat.find")}
-            aria-pressed={findOpen}
-            className={cn(
-              "rounded-md p-1.5 hover:bg-raised",
-              findOpen ? "text-accent" : "text-ink-secondary hover:text-ink",
-            )}
-            title={t("chat.findShortcut")}
-          >
-            <Search size={18} />
-          </button>
-          <ExportTranscriptMenu
-            title={bot.name}
-            messages={messages}
-            botName={bot.name}
-          />
           {(bot.busy || bot.waitingForTeammates) && (
             <button
               onClick={() => dispatch({ type: "interrupt", botId: bot.id, threadId: bot.threadId })}
@@ -1357,7 +1351,6 @@ export function ChatView({ bot: profile }: { bot: Bot }) {
             </button>
           )}
           <TaskPicker bot={bot} />
-          <UsageChip bot={bot} />
           {!remoteClient && <ModelPicker key={bot.threadId} bot={bot} threadId={bot.threadId} />}
           <CallButton bot={bot} />
           <button
@@ -1371,18 +1364,9 @@ export function ChatView({ bot: profile }: { bot: Bot }) {
           >
             <Monitor size={18} />
           </button>
-          {!remoteClient && <button
-            onClick={() => dispatch({ type: "toggleInspector" })}
-            aria-label={t("chat.inspector")}
-            aria-pressed={state.inspectorOpen}
-            className={cn(
-              "rounded-md p-1.5 hover:bg-raised",
-              state.inspectorOpen ? "text-accent" : "text-ink-secondary hover:text-ink",
-            )}
-            title={t("chat.inspectorHint")}
-          >
-            <Bug size={18} />
-          </button>}
+          {/* Keep threads reachable even when the sidebar is collapsed.
+              Less frequent actions share one menu. */}
+          <ChatHeaderMenu key={`menu:${bot.threadId}`} bot={bot} messages={messages} findOpen={findOpen} onFind={() => setFindOpen((open) => !open)} />
         </div>
         </div>
       </div>
@@ -1630,14 +1614,13 @@ export function NewConversationInstead({ onNew }: { onNew: () => void }) {
   );
 }
 
-/** What the open task has spent — quiet until the first turn settles.
- * Click opens the bot's settings, where the Usage card has the breakdown. */
-function UsageChip({ bot }: { bot: Bot }) {
-  const { state, dispatch } = useStore();
+/** The thread's usage, folded to one figure for the header menu — cost when
+ * the engine reports one, else new tokens — with the full breakdown as the
+ * tooltip. Null while the thread has no usage yet. */
+function usageSummary(bot: Bot, instances: AppState["instances"]): { short: string; detail: string; tone?: "danger" | "warning" } | null {
   const usage = bot.tasks?.find((t) => t.threadId === bot.threadId)?.usage;
-  const text = usage ? usageChip(usage) : "";
-  if (!usage || !text) return null;
-  const billing = state.instances.find((i) => i.instanceId === bot.modelSelection.instanceId)?.snapshot.billing;
+  if (!usage || !usageChip(usage)) return null;
+  const billing = instances.find((i) => i.instanceId === bot.modelSelection.instanceId)?.snapshot.billing;
   const share = contextShare(usage);
   const detail = [
     usage.turns === 1 ? t("chat.usage.turnsOne") : t("chat.usage.turnsMany", { count: usage.turns }),
@@ -1653,18 +1636,87 @@ function UsageChip({ bot }: { bot: Bot }) {
     .filter(Boolean)
     .join("\n");
   // Keep the unit visible in the compact header too.
-  const short = text;
+  const short = usageChip(usage);
   const ctx = contextChip(usage);
+  return { short: ctx ? `${short} · ${ctx}` : short, detail, tone: share?.tone === "danger" ? "danger" : share?.tone === "warning" ? "warning" : undefined };
+}
+
+/** The header's "more" menu: find, export, usage and the inspector, behind
+ * one button that opens on hover. */
+function ChatHeaderMenu({ bot, messages, findOpen, onFind }: {
+  bot: Bot;
+  messages: readonly Message[];
+  findOpen: boolean;
+  onFind: () => void;
+}) {
+  const { state, dispatch } = useStore();
+  const remoteClient = window.ogb?.remoteClient?.active === true;
+  const usage = usageSummary(bot, state.instances);
+  const [copyStatus, setCopyStatus] = useState<"copied" | "failed" | null>(null);
+  const hasMessages = messages.length > 0;
+  const transcript = () => formatTranscriptMarkdown({ title: bot.name, messages, botName: bot.name, isGroup: false });
+  const items: SidebarMenuItem[] = [
+    {
+      key: "find",
+      label: t("chat.find"),
+      icon: <Search size={16} />,
+      active: findOpen,
+      trailing: <ShortcutHint id="find-conversation" />,
+      onSelect: onFind,
+    },
+    {
+      key: "copy",
+      heading: t("chat.export.heading"),
+      separatorBefore: true,
+      label: t("chat.export.copy"),
+      icon: <Copy size={16} />,
+      disabled: !hasMessages,
+      keepOpen: true,
+      trailing: copyStatus && <span role="status" className="text-[11px] text-ink-secondary">{t(copyStatus === "copied" ? "chat.export.copied" : "chat.export.copyFailed")}</span>,
+      onSelect: () => { void copyTranscriptToClipboard(transcript()).then((ok) => setCopyStatus(ok ? "copied" : "failed")); },
+    },
+    {
+      key: "download",
+      label: t("chat.export.download"),
+      icon: <Download size={16} />,
+      disabled: !hasMessages,
+      onSelect: () => downloadMarkdownTranscript(slugifyTranscriptFilename(bot.name), transcript()),
+    },
+    ...(usage ? [{
+      key: "usage",
+      label: t("chat.usage.menu"),
+      icon: <Gauge size={16} />,
+      separatorBefore: true,
+      trailing: <span title={usage.detail} data-testid="usage-chip" className={cn("tabular-nums text-[12px]", usage.tone === "danger" ? "text-danger" : usage.tone === "warning" ? "text-warning" : "text-ink-secondary")}>{usage.short}</span>,
+      onSelect: () => dispatch({ type: "toggleSettings", open: true, section: "usage" }),
+    } satisfies SidebarMenuItem] : []),
+    ...(remoteClient ? [] : [{
+      key: "inspector",
+      label: t("chat.inspector"),
+      icon: <Bug size={16} />,
+      active: state.inspectorOpen,
+      separatorBefore: !usage,
+      onSelect: () => dispatch({ type: "toggleInspector" }),
+    } satisfies SidebarMenuItem]),
+  ];
   return (
-    <button
-      onClick={() => dispatch({ type: "toggleSettings", open: true, section: "usage" })}
-      className="whitespace-nowrap rounded-full border border-hairline/40 bg-raised/60 px-2.5 py-1 text-[12px] tabular-nums text-ink-secondary hover:bg-raised hover:text-ink @max-4xl/chathead:px-2"
-      title={detail}
-      data-testid="usage-chip"
-    >
-      <span className="@max-4xl/chathead:hidden">{text}</span>
-      <span className="hidden @max-4xl/chathead:inline">{short}</span>
-      {ctx && <span className={cn("ml-1.5 @max-4xl/chathead:hidden", share?.tone === "danger" ? "text-danger" : share?.tone === "warning" ? "text-warning" : "")} data-testid="usage-context">{ctx}</span>}
-    </button>
+    <SidebarPopoverMenu
+      items={items}
+      ariaLabel={t("chat.more")}
+      openOnHover
+      placement="below"
+      renderTrigger={({ open }) => (
+        <span
+          data-testid="chat-more"
+          className={cn(
+            "flex rounded-md p-1.5 hover:bg-raised",
+            open || findOpen || state.inspectorOpen ? "text-accent" : "text-ink-secondary hover:text-ink",
+          )}
+          title={t("chat.more")}
+        >
+          <MoreHorizontal size={18} />
+        </span>
+      )}
+    />
   );
 }

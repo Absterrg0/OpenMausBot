@@ -1597,7 +1597,15 @@ export function TeamMenuItems({ onAddBots, onRename, onShare, onDelete }: {
   );
 }
 
-export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void }) {
+export function Sidebar({ open, onClose, collapseToIcons = false }: {
+  open: boolean;
+  onClose: () => void;
+  /** Show the avatar rail regardless of the saved density: a side panel is
+   * open and the window cannot seat the full sidebar, the chat and the
+   * panel (App decides). The saved choice is untouched and returns when the
+   * panel closes or the window grows. */
+  collapseToIcons?: boolean;
+}) {
   const { state, dispatch } = useStore();
   const cloudOwner = useCloudOwner(state.config?.cloudHome === true);
   const showThreads = useShowThreads();
@@ -1659,7 +1667,8 @@ export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void 
   const [query, setQuery] = useState("");
   // Chosen in Settings → Appearance; the header's collapse button only flips
   // between the avatar rail and the last expanded density.
-  const density = useSidebarDensity();
+  const storedDensity = useSidebarDensity();
+  const density = collapseToIcons ? "icons" : storedDensity;
   const defaultWidth = density === "compact" ? 272 : 320;
   const sidePanelOpen = state.computerOpen || state.inspectorOpen;
   const maxSidebarWidth = sidePanelOpen ? defaultWidth : Math.min(480, window.innerWidth - 320);
@@ -1969,7 +1978,7 @@ export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void 
           className={cn("relative flex items-center", density === "icons" ? "flex-col gap-1" : "gap-1")}
           style={windowNoDragStyle}
         >
-          <button
+          {!collapseToIcons && <button
             type="button"
             onClick={toggleCollapsed}
             aria-label={density === "icons" ? t("sidebar.density.expand") : t("sidebar.density.collapseAria")}
@@ -1977,7 +1986,7 @@ export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void 
             title={density === "icons" ? t("sidebar.density.expand") : t("sidebar.density.collapse")}
           >
             {density === "icons" ? <PanelLeftOpen size={20} /> : <PanelLeftClose size={20} />}
-          </button>
+          </button>}
           <div className={density === "icons" ? "relative" : "contents"}>
             <button
               type="button"
