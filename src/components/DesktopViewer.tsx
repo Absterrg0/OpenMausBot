@@ -1,19 +1,25 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { ChevronLeft, ChevronRight, Clipboard, Keyboard, Maximize, Minimize, Monitor, RefreshCw, Send, X, type LucideIcon } from "lucide-react";
 import { cn } from "@/lib/cn";
 import RFB from "@novnc/novnc";
 import { t } from "@/lib/i18n";
 import { useHeldMenuMotion, useMenuMotion } from "./MenuMotion";
 
+function subscribeLocation(listener: () => void) {
+  window.addEventListener("hashchange", listener);
+  return () => window.removeEventListener("hashchange", listener);
+}
+const locationHash = () => location.hash;
+
 /** Served through the app's normal route/build. Only desktop pixels and
  * input cross the VM boundary; the VM never supplies this page's code. */
-export function LocalVmViewer() {
+export function DesktopViewer() {
   const screen = useRef<HTMLDivElement>(null);
   const rfb = useRef<RFB | null>(null);
   const [attempt, setAttempt] = useState(0);
   const [connection, setConnection] = useState<"connecting" | "connected" | "disconnected" | Error>("connecting");
   const connected = connection === "connected";
-  const status = connection instanceof Error ? connection.message : t(`localVmViewer.${connection}`);
+  const status = connection instanceof Error ? connection.message : t(`desktopViewer.${connection}`);
   const [panel, setPanel] = useState<"keyboard" | "clipboard" | null>(null);
   const [expanded, setExpanded] = useState(true);
   const [fullscreen, setFullscreen] = useState(false);
@@ -25,26 +31,44 @@ export function LocalVmViewer() {
   const panelRef = useRef(panel);
   panelRef.current = panel;
   const [text, setText] = useState("");
-  const target = new URLSearchParams(location.hash.slice(1)).get("target");
+  const hash = useSyncExternalStore(subscribeLocation, locationHash);
+  const params = new URLSearchParams(hash.slice(1));
+  const target = params.get("target");
+  const threadId = params.get("threadId");
+
+  useEffect(() => {
+    setClipboard("");
+    setText("");
+    setPanel(null);
+  }, [target, threadId]);
 
   useEffect(() => {
     const controller = new AbortController();
     let client: RFB | undefined;
     let deadline: ReturnType<typeof setTimeout> | undefined;
     const oldTitle = document.title;
-    document.title = t("localVmViewer.title");
+    document.title = t("desktopViewer.title");
     setConnection("connecting");
     const connect = async () => {
       try {
-        if (!target || !/^(shared|bot-[a-f0-9]{64}|pool-\d+)$/.test(target)) throw new Error(t("localVmViewer.invalid"));
-        const path = `/api/local-computer/viewer/${target}`;
+        if (!target || !/^(local\/(shared|bot-[a-f0-9]{64}|pool-\d+)|vps\/[\w-]+)$/.test(target)) throw new Error(t("desktopViewer.invalid"));
+        const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(30_000)]);
+        if (target.startsWith("vps/")) {
+          const query = threadId ? `?${new URLSearchParams({ threadId })}` : "";
+          const joined = await fetch(`/api/bots/${target.slice(4)}/computer/join${query}`, {
+            method: "POST", headers: { "content-type": "application/json" }, body: "{}", signal,
+          });
+          if (!joined.ok) throw new Error(t("desktopViewer.disconnected"));
+          if (controller.signal.aborted) return;
+        }
+        const path = `/api/desktop-viewer/${target}`;
         const response = await fetch(path, {
-          signal: AbortSignal.any([controller.signal, AbortSignal.timeout(15_000)]),
+          signal,
           credentials: "same-origin", cache: "no-store",
         });
         const config = await response.json();
         if (controller.signal.aborted) return;
-        if (!response.ok) throw new Error(config.error || t("localVmViewer.disconnected"));
+        if (!response.ok) throw new Error(config.error || t("desktopViewer.disconnected"));
         const websocket = new URL(`${path}/websockify`, location.href);
         websocket.protocol = location.protocol === "https:" ? "wss:" : "ws:";
         client = new RFB(screen.current!, websocket.href, {
@@ -70,7 +94,7 @@ export function LocalVmViewer() {
           setConnection("disconnected");
         });
       } catch (error) {
-        if (!controller.signal.aborted) setConnection(error instanceof Error ? error : new Error(t("localVmViewer.disconnected")));
+        if (!controller.signal.aborted) setConnection(error instanceof Error ? error : new Error(t("desktopViewer.disconnected")));
       }
     };
     void connect();
@@ -89,7 +113,7 @@ export function LocalVmViewer() {
       window.removeEventListener("pageshow", restore);
       document.title = oldTitle;
     };
-  }, [target, attempt]);
+  }, [target, threadId, attempt]);
 
   useEffect(() => {
     if (rfb.current) {
@@ -109,7 +133,7 @@ export function LocalVmViewer() {
       if (document.fullscreenElement) await document.exitFullscreen();
       else await document.documentElement.requestFullscreen();
     } catch {
-      setControlError(t("localVmViewer.fullscreenFailed"));
+      setControlError(t("desktopViewer.fullscreenFailed"));
     }
   };
   const closePanel = () => {
@@ -122,39 +146,39 @@ export function LocalVmViewer() {
 
   return (
     <div className="relative flex h-dvh overflow-hidden bg-app text-sm text-ink" style={{ paddingLeft: "env(safe-area-inset-left)", paddingRight: "env(safe-area-inset-right)" }}>
-      <aside aria-label={t("localVmViewer.controls")} aria-hidden={!expanded} inert={!expanded} className={cn("z-10 flex shrink-0 items-center justify-center py-3", slide, expanded ? "w-[72px]" : "w-0")}>
+      <aside aria-label={t("desktopViewer.controls")} aria-hidden={!expanded} inert={!expanded} className={cn("z-10 flex shrink-0 items-center justify-center py-3", slide, expanded ? "w-[72px]" : "w-0")}>
         <div className={cn("flex max-h-full w-14 shrink-0 flex-col items-center gap-1 overflow-y-auto rounded-2xl border border-hairline bg-panel p-1 shadow-xl", slide, expanded ? "translate-x-0 opacity-100" : "-translate-x-12 opacity-0")}>
           <div className="relative flex h-11 w-11 shrink-0 items-center justify-center text-ink-secondary" title={status}>
             <Monitor size={20} aria-hidden="true" />
             <span className={cn("absolute right-2 bottom-2 size-2 rounded-full ring-2 ring-panel", connected ? "bg-success" : "bg-warning")} />
           </div>
           <div className="my-1 h-px w-7 shrink-0 bg-hairline" />
-          <ViewerTool id="keyboard" label={t("localVmViewer.keyboard")} icon={Keyboard} disabled={!connected} active={panel === "keyboard"} expanded={panel === "keyboard"} onClick={() => togglePanel("keyboard")} />
-          <ViewerTool id="clipboard" label={t("localVmViewer.clipboard")} icon={Clipboard} disabled={!connected} active={panel === "clipboard"} expanded={panel === "clipboard"} onClick={() => togglePanel("clipboard")} />
-          {document.fullscreenEnabled && <ViewerTool id="fullscreen" label={t(fullscreen ? "localVmViewer.exitFullscreen" : "localVmViewer.fullscreen")} icon={fullscreen ? Minimize : Maximize} onClick={() => { void toggleFullscreen(); }} />}
+          <ViewerTool id="keyboard" label={t("desktopViewer.keyboard")} icon={Keyboard} disabled={!connected} active={panel === "keyboard"} expanded={panel === "keyboard"} onClick={() => togglePanel("keyboard")} />
+          <ViewerTool id="clipboard" label={t("desktopViewer.clipboard")} icon={Clipboard} disabled={!connected} active={panel === "clipboard"} expanded={panel === "clipboard"} onClick={() => togglePanel("clipboard")} />
+          {document.fullscreenEnabled && <ViewerTool id="fullscreen" label={t(fullscreen ? "desktopViewer.exitFullscreen" : "desktopViewer.fullscreen")} icon={fullscreen ? Minimize : Maximize} onClick={() => { void toggleFullscreen(); }} />}
           <div className="my-1 h-px w-7 shrink-0 bg-hairline" />
-          <ViewerTool id="retry" label={t("localVmViewer.reconnect")} icon={RefreshCw} onClick={() => { setClipboard(""); setAttempt(value => value + 1); }} />
-          <ViewerTool id="hide-controls" label={t("localVmViewer.hideControls")} icon={ChevronLeft} onClick={() => { setExpanded(false); closePanel(); }} />
+          <ViewerTool id="retry" label={t("desktopViewer.reconnect")} icon={RefreshCw} onClick={() => { setClipboard(""); setAttempt(value => value + 1); }} />
+          <ViewerTool id="hide-controls" label={t("desktopViewer.hideControls")} icon={ChevronLeft} onClick={() => { setExpanded(false); closePanel(); }} />
         </div>
       </aside>
       {handleMotion.shown && <div {...handleMotion.exitProps} className={cn("absolute left-0 top-1/2 z-10 -translate-y-1/2 rounded-r-2xl border border-l-0 border-hairline bg-panel p-1 shadow-xl", handleMotion.className)}>
-        <ViewerTool id="show-controls" label={t("localVmViewer.showControls")} icon={ChevronRight} onClick={() => setExpanded(true)} />
+        <ViewerTool id="show-controls" label={t("desktopViewer.showControls")} icon={ChevronRight} onClick={() => setExpanded(true)} />
       </div>}
 
       <main className="relative my-2 mr-2 flex min-w-0 flex-1 items-center justify-center overflow-hidden rounded-2xl border border-hairline bg-inset">
-        <div id="screen" ref={screen} aria-label={t("localVmViewer.title")} className="h-[95%] w-[95%] overflow-hidden" />
+        <div id="screen" ref={screen} aria-label={t("desktopViewer.title")} className="h-[95%] w-[95%] overflow-hidden" />
         <div className={connected ? "sr-only" : "pointer-events-none absolute inset-x-3 top-3 flex justify-center"}>
           <span id="status" role="status" className="max-w-full rounded-full border border-hairline bg-panel/95 px-3 py-1.5 text-center text-xs text-ink-secondary shadow-sm">{status}</span>
         </div>
         {controlError && <p role="alert" className="absolute inset-x-3 bottom-3 rounded-xl border border-hairline bg-panel p-3 text-ink">{controlError}</p>}
       </main>
 
-      {panelMotion.shown && <section {...panelMotion.exitProps} aria-label={t(keyboardPanel ? "localVmViewer.keyboard" : "localVmViewer.clipboard")} onKeyDown={event => {
+      {panelMotion.shown && <section {...panelMotion.exitProps} aria-label={t(keyboardPanel ? "desktopViewer.keyboard" : "desktopViewer.clipboard")} onKeyDown={event => {
         if (event.key === "Escape") { event.stopPropagation(); closePanel(); }
       }} className={cn("absolute left-[72px] top-1/2 z-20 max-h-[calc(100dvh-24px)] w-[min(320px,calc(100%-84px))] -translate-y-1/2 overflow-y-auto rounded-2xl border border-hairline bg-panel p-4 shadow-2xl", panelMotion.className)} style={{ marginLeft: "env(safe-area-inset-left)" }}>
         <div className="mb-3 flex items-center justify-between gap-2">
-          <h1 className="font-medium">{t(keyboardPanel ? "localVmViewer.keyboard" : "localVmViewer.clipboard")}</h1>
-          <ViewerTool label={t("localVmViewer.closePanel")} icon={X} onClick={closePanel} />
+          <h1 className="font-medium">{t(keyboardPanel ? "desktopViewer.keyboard" : "desktopViewer.clipboard")}</h1>
+          <ViewerTool label={t("desktopViewer.closePanel")} icon={X} onClick={closePanel} />
         </div>
         <form onSubmit={event => {
           event.preventDefault();
@@ -167,7 +191,7 @@ export function LocalVmViewer() {
           }
           setText("");
         }}>
-          <label className="mb-2 block text-xs leading-relaxed text-ink-secondary" htmlFor={keyboardPanel ? "text" : "clipboard-text"}>{t(keyboardPanel ? "localVmViewer.text" : "localVmViewer.clipboardHint")}</label>
+          <label className="mb-2 block text-xs leading-relaxed text-ink-secondary" htmlFor={keyboardPanel ? "text" : "clipboard-text"}>{t(keyboardPanel ? "desktopViewer.text" : "desktopViewer.clipboardHint")}</label>
           <textarea id={keyboardPanel ? "text" : "clipboard-text"} className="w-full resize-y rounded-xl border border-hairline bg-inset p-3 text-base text-ink outline-none focus:border-focus" rows={4} maxLength={keyboardPanel ? 4096 : 65536} autoComplete="off" autoCapitalize="off" spellCheck={false} value={keyboardPanel ? text : clipboard} disabled={!keyboardPanel && !connected} onChange={event => {
             const value = event.target.value;
             if (keyboardPanel) setText(value);
@@ -177,7 +201,7 @@ export function LocalVmViewer() {
             }
           }} />
           {keyboardPanel && <button id="send" type="submit" className="mt-3 flex min-h-11 w-full items-center justify-center gap-2 rounded-xl bg-accent px-3 font-medium text-accent-ink transition-opacity hover:opacity-90 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus disabled:opacity-40" disabled={!connected || !text}>
-            <Send size={16} aria-hidden="true" />{t("localVmViewer.send")}
+            <Send size={16} aria-hidden="true" />{t("desktopViewer.send")}
           </button>}
         </form>
         {keyboardPanel && <div className="mt-4 grid grid-cols-2 gap-2 border-t border-hairline pt-4">

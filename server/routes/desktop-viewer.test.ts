@@ -10,17 +10,19 @@ import { SessionRegistry } from "../sessions.ts";
 import { resolveRequestAuth, type RequestAuth } from "../request-auth.ts";
 import { json, readBody } from "../harness/http.ts";
 import { SHARED_LOCAL_VM_TARGET, perBotLocalVmTarget, poolLocalVmTarget, type ContainerComputerStatus } from "../container-computer.ts";
-import { createLocalVmViewer, localVmViewerStatus, viewerTargetId } from "./local-vm-viewer.ts";
+import { createDesktopViewer, desktopViewerUrl, type DesktopTarget } from "./desktop-viewer.ts";
+import { localDesktopTarget, localVmViewerStatus, viewerTargetId } from "../desktop-viewer-targets.ts";
 
 let dir: string;
 let sessions: SessionRegistry;
-let viewer: ReturnType<typeof createLocalVmViewer>;
+let viewer: ReturnType<typeof createDesktopViewer>;
 let app: Server;
 let desktop: Server;
 let appPort: number;
 let desktopPort: number;
 let admin: ReturnType<SessionRegistry["issue"]>;
 let member: ReturnType<SessionRegistry["issue"]>;
+let vpsTarget: DesktopTarget | undefined;
 let inspected: string[];
 let seenHeaders: IncomingHttpHeaders;
 let seenPath: string | undefined;
@@ -32,7 +34,7 @@ let targetLookups: number;
 let handled: () => void;
 let targets = [SHARED_LOCAL_VM_TARGET, perBotLocalVmTarget("test-bot"), poolLocalVmTarget(1)];
 const peers = new Set<Duplex>();
-const base = "/api/local-computer/viewer/shared";
+const base = "/api/desktop-viewer/local/shared";
 const remoteHeaders = { host: "workspace.example", origin: "https://workspace.example", "x-forwarded-proto": "https" };
 
 async function listen(server: Server): Promise<number> {
@@ -77,6 +79,7 @@ beforeEach(async () => {
   admin = sessions.issue({ label: "Mac", scopes: ["admin", "client"] });
   member = sessions.issue({ label: "Member", scopes: ["client"] });
   inspected = []; touched = []; statusOverrides = {}; inspection = undefined; seenPath = undefined;
+  vpsTarget = undefined;
   targetLookups = 0; handled = () => {};
   targets = [SHARED_LOCAL_VM_TARGET, perBotLocalVmTarget("test-bot"), poolLocalVmTarget(1)];
   desktop = createServer((_req, res) => res.writeHead(404).end());
@@ -90,18 +93,24 @@ beforeEach(async () => {
     socket.on("error", () => {});
   });
   desktopPort = await listen(desktop);
-  viewer = createLocalVmViewer({
-    target: id => { targetLookups++; return targets.find(target => viewerTargetId(target) === id); },
-    status: async target => {
-      inspected.push(target.key);
-      await inspection;
-      return {
-        managed: true, imageMatches: true, network: "loopback", container: "running", viewer_port: desktopPort,
-        viewer_url: `http://127.0.0.1:${desktopPort}/vnc.html#password=fixture-secret`, ...statusOverrides,
-      } as ContainerComputerStatus;
+  viewer = createDesktopViewer({
+    target: id => {
+      targetLookups++;
+      if (id === "vps/test-bot") return vpsTarget;
+      const target = targets.find(target => viewerTargetId(target) === id);
+      return target && localDesktopTarget(target, {
+        status: async target => {
+          inspected.push(target.key);
+          await inspection;
+          return {
+            managed: true, imageMatches: true, network: "loopback", container: "running", viewer_port: desktopPort,
+            viewer_url: `http://127.0.0.1:${desktopPort}/vnc.html#password=fixture-secret`, ...statusOverrides,
+          } as ContainerComputerStatus;
+        },
+        touch: target => touched.push(target.key),
+      });
     },
     live: auth => auth.kind === "loopback" || sessions.isLive(auth.session.id),
-    touch: target => touched.push(target.key),
   });
   sessions.onSessionRevoked(id => viewer.closeForOwner(id));
   const handle = async (req: Parameters<typeof resolveRequestAuth>[0], res: Parameters<typeof json>[0]) => {
@@ -153,7 +162,7 @@ it("protects HTTP and upgrade requests with the existing session and scope check
 
 it("returns fresh credentials only to admins and selects shared, per-bot and pool targets", async () => {
   for (const target of targets) {
-    const path = `/api/local-computer/viewer/${viewerTargetId(target)}`;
+    const path = `/api/desktop-viewer/${viewerTargetId(target)}`;
     const response = await get(path);
     expect(response.headers["cache-control"]).toContain("no-store");
     expect(response.body).toEqual({ password: "fixture-secret" });
@@ -161,8 +170,8 @@ it("returns fresh credentials only to admins and selects shared, per-bot and poo
   }
   expect(inspected).toContain(targets[1].key);
   expect(inspected).toContain("pool:1");
-  expect((await open("/api/local-computer/viewer/pool-999/websockify")).status).toBe(404);
-  expect((await open("/api/local-computer/viewer/127.0.0.1:22/websockify")).status).toBe(404);
+  expect((await open("/api/desktop-viewer/local/pool-999/websockify")).status).toBe(404);
+  expect((await open("/api/desktop-viewer/local/127.0.0.1:22/websockify")).status).toBe(404);
 });
 
 it.each([
@@ -290,5 +299,26 @@ it("preserves local desktop URLs and removes passwords from paired viewer links"
   const local: RequestAuth = { kind: "loopback", scopes: ["admin", "client"] };
   expect(localVmViewerStatus(original, local)).toBe(original);
   const remote: RequestAuth = { kind: "session", session: sessions.authenticate(admin.token)!, via: "cookie", scopes: admin.session.scopes };
-  expect(localVmViewerStatus(original, remote).viewer_url).toBe(`/local-vm-viewer#target=${viewerTargetId(targets[1])}`);
+  expect(localVmViewerStatus(original, remote).viewer_url).toBe(desktopViewerUrl(viewerTargetId(targets[1])));
+});
+
+it("uses the same authenticated proxy for VPS and releases only its own connection", async () => {
+  let holds = 0;
+  vpsTarget = { key: "vps/test-bot", resolve: async () => ({
+    port: desktopPort, password: "fixture-secret",
+    retain: () => { holds++; return () => { holds--; }; },
+  }) };
+  const path = "/api/desktop-viewer/vps/test-bot";
+  expect((await get(path)).body).toEqual({ password: "fixture-secret" });
+  expect(holds).toBe(0);
+  const first = (await open(`${path}/websockify`)).socket!;
+  const second = (await open(`${path}/websockify`)).socket!;
+  expect(holds).toBe(2);
+  first.destroy();
+  await expect.poll(() => holds).toBe(1);
+  expect(second.destroyed).toBe(false);
+  const closed = once(second, "close");
+  sessions.revoke(admin.session.id);
+  await closed;
+  expect(holds).toBe(0);
 });

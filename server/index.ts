@@ -576,7 +576,8 @@ import { createHostedSlackRoutes } from "./routes/hosted-slack.ts";
 import { createBotPresetRoutes } from "./routes/bot-presets.ts";
 import { createBotMemoryRoutes } from "./routes/bot-memory.ts";
 import { createDeciderRoutes } from "./routes/decider.ts";
-import { createLocalVmViewer, localVmViewerStatus, viewerTargetId } from "./routes/local-vm-viewer.ts";
+import { createDesktopViewer, desktopViewerUrl } from "./routes/desktop-viewer.ts";
+import { localDesktopTarget, localVmViewerStatus, viewerTargetId } from "./desktop-viewer-targets.ts";
 import { createAntigravityLeftoverRoutes } from "./routes/antigravity-leftovers.ts";
 import { findAntigravityLeftovers, removeAntigravityLeftovers } from "./drivers/antigravity-temp.ts";
 
@@ -5278,21 +5279,31 @@ function audienceChanged(): void {
 }
 // Cloud boot can revoke sessions before routes are registered. Create the
 // viewer manager before installing any revocation callbacks.
-const localVmViewer = createLocalVmViewer({
+const desktopViewer = createDesktopViewer({
   target: (id) => {
+    if (id.startsWith("vps/")) {
+      const botId = id.slice(4);
+      if (store.bot(botId)?.cloudBackend !== "vps") return;
+      return { key: id, resolve: async () => {
+        const connection = vps.vpsDesktopConnection(botId);
+        if (!connection) throw Object.assign(new Error("VPS viewer is not open"), { status: 409 });
+        return connection;
+      } };
+    }
     const targets = [SHARED_LOCAL_VM_TARGET, ...store.bots.map(bot => perBotLocalVmTarget(bot.id)),
       ...Array.from({ length: localVmMaxInstances(cfg) }, (_, seat) => poolLocalVmTarget(seat))];
-    return targets.find(target => viewerTargetId(target) === id);
+    const target = targets.find(target => viewerTargetId(target) === id);
+    return target && localDesktopTarget(target, {
+      // A viewer can repair a sick CUA driver; skip desktop health probes.
+      status: target => containerComputerStatus(undefined, undefined, target, { probeDesktop: false }),
+      touch: target => localVmIdleFor(target).touch(),
+    });
   },
-  // A viewer can repair a sick CUA driver; do not wait for driver health or
-  // screenshot probes before connecting to its independently running VNC.
-  status: target => containerComputerStatus(undefined, undefined, target, { probeDesktop: false }),
   live: auth => auth.kind === "loopback" || sessions.isLive(auth.session.id),
-  touch: target => localVmIdleFor(target).touch(),
 });
 function closeSessionStreams(sessionId: string): void {
   browserLive.closeForOwner(sessionId);
-  localVmViewer.closeForOwner(sessionId);
+  desktopViewer.closeForOwner(sessionId);
   for (const client of sseClients) {
     if (client.sessionId !== sessionId) continue;
     sseClients.delete(client);
@@ -14539,7 +14550,7 @@ ROUTES.push(createAntigravityLeftoverRoutes({
   remove: () => removeAntigravityLeftovers(),
 }));
 
-ROUTES.push(localVmViewer.route);
+ROUTES.push(desktopViewer.route);
 
 const toolResults = new ToolResults();
 const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
@@ -23251,7 +23262,10 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
             return json(res, 409, { error: "the VPS computer is being used by this bot — interrupt the turn first" });
           }
           if (m[2] === "join") {
-            return json(res, 200, await vps.vpsComputerJoin(cfg, botId));
+            const remote = auth.kind !== "loopback";
+            const result = await vps.vpsComputerJoin(cfg, botId, undefined, remote);
+            return json(res, 200, { ...result, joinUrl: remote
+              ? desktopViewerUrl(`vps/${botId}`, bot.threadId) : result.joinUrl });
           }
           const action = m[2] === "provision" ? "provision" : m[2] === "remove" ? "remove" : "stop";
           return json(res, 200, await vps.vpsComputerAction(action, cfg, botId));
@@ -23320,7 +23334,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
 };
 
 const server = createServer(handleRequest);
-localVmViewer.attach(server, handleRequest);
+desktopViewer.attach(server, handleRequest);
 
 calendarCalls.start();
 
@@ -23493,7 +23507,7 @@ let tunnelListener: ReturnType<typeof createServer> | null = null;
 if (TUNNEL_SOCKET) {
   if (process.platform !== "win32") rmSync(TUNNEL_SOCKET, { force: true });
   tunnelListener = createServer(handleRequest);
-  localVmViewer.attach(tunnelListener, handleRequest);
+  desktopViewer.attach(tunnelListener, handleRequest);
   tunnelListener.listen(TUNNEL_SOCKET, () => {
     console.log(`openmausbot tunnel listener on ${TUNNEL_SOCKET}`);
   });
@@ -23512,7 +23526,7 @@ const gracefulShutdown = createGracefulShutdown({
       sharedComputers.close();
       sharedComputerControl.close();
       browserLive.closeAll();
-      localVmViewer.closeAll();
+      desktopViewer.closeAll();
       for (const idle of localVmIdles.values()) idle.cancel();
       vps.closeAllVpsDesktopTunnels();
       watchdog.stop();

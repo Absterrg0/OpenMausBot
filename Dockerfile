@@ -29,7 +29,7 @@ COPY cloudflare/control-plane/package.json ./cloudflare/control-plane/package.js
 COPY scripts/install-git-hooks.mjs ./scripts/install-git-hooks.mjs
 RUN pnpm install --frozen-lockfile
 COPY . .
-RUN pnpm build:server && pnpm exec vite build
+RUN pnpm build:server && pnpm build:ui
 
 FROM node:24-bookworm-slim
 # Install Chrome's Bookworm libraries directly: agent-browser --with-deps

@@ -2,11 +2,11 @@
 // Build first, then run with explicit OMB_AGENT_BROWSER_PATH and
 // AGENT_BROWSER_EXECUTABLE_PATH if reusing installed browser binaries.
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { launchVerificationServer, type VerificationServer } from "./control-omb.ts";
+import { launchVerificationServer, runControlOmb, type VerificationServer } from "./control-omb.ts";
 import { agentBrowser, ensureUiBrowser, sessionEnv } from "./testing/control-omb-ui.ts";
 import { fixtureApi } from "./testing/preview-fixture.ts";
 import { fakeVnc } from "./testing/fake-vnc.ts";
@@ -24,20 +24,50 @@ try {
   // This executable answers only read-only inspection. No command can reach
   // the machine's real Docker installation, even during fixture startup.
   writeFileSync(join(bin, "docker"), `#!${process.execPath}
-const args = process.argv.slice(2);
+let args = process.argv.slice(2);
+if (args[0] === "-H") args = args.slice(2);
 const labels = ${JSON.stringify({ "com.openmausbot.local-vm": "1", "com.openmausbot.cua-driver": CUA_DRIVER_VERSION, "com.openmausbot.cua-base": BASE_IMAGE_DIGEST, "com.openmausbot.image-layer": IMAGE_LAYER_VERSION, "com.openmausbot.workspace": "1" })};
 let result;
-if (args[0] === 'info') result = 'fixture';
-else if (args[0] === 'image' && args[1] === 'inspect') result = [{Id:'sha256:fixture',Config:{Labels:labels}}];
+const imageId = 'sha256:' + 'a'.repeat(64);
+if (args[0] === 'inspect' && /^openmausbot-vps-/.test(args[1])) result = [{
+  Id:'b'.repeat(64), Image:imageId, State:{Running:true}, Mounts:[],
+  Config:{Image:${JSON.stringify(IMAGE)}, Env:['VNC_PW=fixture-password'], Labels:{...labels,
+    'com.openmausbot.vps':'1', 'com.openmausbot.container':args[1], 'com.openmausbot.vps-viewer':'1'}},
+  HostConfig:{Privileged:false,NetworkMode:'bridge',PortBindings:{},Memory:4294967296,MemorySwap:4294967296,NanoCpus:2000000000,
+    PidsLimit:512,CapDrop:['ALL'],CapAdd:['CAP_SETUID','CAP_SETGID'],IpcMode:'private',ShmSize:536870912,
+    CgroupnsMode:'private',SecurityOpt:[],RestartPolicy:{Name:'unless-stopped',MaximumRetryCount:0}},
+  NetworkSettings:{Networks:{bridge:{IPAddress:'172.17.0.5'}}}
+}];
+else if (args[0] === 'exec') result = args.includes('--version') ? 'cua-driver ${CUA_DRIVER_VERSION}'
+  : args.includes('health_report') ? {schema_version:'1',overall:'ok',checks:[]} : {};
+else if (args[0] === 'info') result = 'fixture';
+else if (args[0] === 'image' && args[1] === 'inspect') result = [{Id:imageId,Config:{Labels:labels}}];
 else if (args[0] === 'inspect' && args[1] === 'openmausbot-computer') result = [{
   Config:{Image:${JSON.stringify(IMAGE)},Labels:labels,Env:['VNC_PW=fixture-password']},
-  State:{Running:true},Image:'sha256:fixture',
+  State:{Running:true},Image:imageId,
   HostConfig:{PortBindings:{'6901/tcp':[{HostIp:'127.0.0.1',HostPort:'${desktop.port}'}]}},
   NetworkSettings:{Ports:{'6901/tcp':[{HostIp:'127.0.0.1',HostPort:'${desktop.port}'}]}}
 }];
 else if (args[0] === 'ps') result = '';
 else process.exit(1);
 process.stdout.write(typeof result === 'string' ? result : JSON.stringify(result));
+`, { mode: 0o700 });
+  // Stand in for SSH with an owned loopback TCP forward. It cannot dial a VPS.
+  writeFileSync(join(bin, "ssh"), `#!${process.execPath}
+const net = require('node:net');
+const fs = require('node:fs');
+const args = process.argv.slice(2);
+const forward = args[args.indexOf('-L') + 1];
+if (!args.includes('-N') || !/^127\\.0\\.0\\.1:[0-9]+:172\\.17\\.0\\.5:6901$/.test(forward)) process.exit(1);
+const log = ${JSON.stringify(join(scratch, "tunnels.log"))};
+const server = net.createServer(socket => {
+  const peer = net.connect(${desktop.port}, '127.0.0.1');
+  socket.on('error',()=>peer.destroy()); peer.on('error',()=>socket.destroy());
+  socket.on('close',()=>peer.destroy()); peer.on('close',()=>socket.destroy());
+  socket.pipe(peer).pipe(socket);
+});
+server.listen(Number(forward.split(':')[1]),'127.0.0.1',()=>fs.appendFileSync(log,'open '));
+process.on('SIGTERM',()=>{fs.appendFileSync(log,'close ');process.exit(0)});
 `, { mode: 0o700 });
   fixture = await launchVerificationServer(process.env, undefined, {
     binDir: bin, host: "ssh://127.0.0.1:1", sshKey: join(scratch, "unused-key"), staticDir: join(root, "dist"),
@@ -50,7 +80,7 @@ process.stdout.write(typeof result === 'string' ? result : JSON.stringify(result
   browser = { binary, env };
   const command = (...args: string[]) => agentBrowser(binary, env, args);
   const evaluate = async <T = unknown>(js: string) => (await command("eval", js)).result as T;
-  await command("open", `${fixture.info.url}/local-vm-viewer#target=shared`);
+  await command("open", `${fixture.info.url}/desktop-viewer#target=local%2Fshared`);
   // Pair through the actual HTTP endpoint in this disposable browser. The
   // resulting cookie forces both status and upgrades through session auth.
   assert.equal(await evaluate(`(async () => (await fetch('/api/auth/pair', {method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({code:${JSON.stringify(pairing.code)},cookie:true,label:'Viewer fixture'})})).status)()`), 200);
@@ -62,7 +92,7 @@ process.stdout.write(typeof result === 'string' ? result : JSON.stringify(result
   await command("wait", "--fn", "document.querySelector('canvas').getContext('2d').getImageData(0,0,1,1).data[0] === 255");
   assert.equal(await evaluate("document.querySelector('canvas').getContext('2d').getImageData(0,0,1,1).data[0]"), 255);
   const status = await evaluate<{ viewer_url: string }>("fetch('/api/local-computer').then(r=>r.json())");
-  assert.equal(status.viewer_url, "/local-vm-viewer#target=shared");
+  assert.equal(status.viewer_url, "/desktop-viewer#target=local%2Fshared");
   assert.equal(status.viewer_url.includes("password"), false);
   const matchingBackgrounds = "getComputedStyle(document.querySelector('#screen > div')).backgroundColor === getComputedStyle(document.querySelector('main')).backgroundColor";
   assert.equal(await evaluate(matchingBackgrounds), true);
@@ -97,7 +127,11 @@ process.stdout.write(typeof result === 'string' ? result : JSON.stringify(result
   assert.equal(await evaluate("document.getElementById('fit') === null"), true);
   assert.equal(await evaluate("(() => { const r = document.getElementById('screen').getBoundingClientRect(), m = document.querySelector('main').getBoundingClientRect(); return r.width / m.width > .94 && r.width / m.width < .96 && r.height / m.height > .94 && r.height / m.height < .96; })()"), true);
   assert.equal(await evaluate("document.getElementById('keyboard').title"), "Keyboard");
-  assert.equal(await evaluate("document.querySelector('link[rel=license]').getAttribute('href')"), "/licenses/novnc/NOTICE.txt");
+  assert.equal(await evaluate("document.querySelector('link[rel=license]') === null"), true);
+  assert.ok((await api("GET", "/api/local-computer")).viewer_url);
+  const notice = await fetch(`${fixture.info.url}/licenses/novnc/NOTICE.txt`);
+  assert.equal(notice.status, 200);
+  assert.ok((await notice.text()).includes("https://github.com/novnc/noVNC/tree/v1.7.0"));
   const dockedWidth = await evaluate<number>("document.querySelector('main').getBoundingClientRect().width");
   await command("click", "#hide-controls");
   await command("wait", "--fn", "document.querySelector('aside').getBoundingClientRect().width === 0");
@@ -150,7 +184,7 @@ process.stdout.write(typeof result === 'string' ? result : JSON.stringify(result
   await evaluate(`(() => {
     const fetch = window.fetch;
     window.fetch = async (input, init) => {
-      if (input !== '/api/local-computer/viewer/shared') return fetch(input, init);
+      if (input !== '/api/desktop-viewer/local/shared') return fetch(input, init);
       window.fetch = fetch;
       window.viewerSignal = init.signal;
       const response = await fetch(input, init);
@@ -166,12 +200,45 @@ process.stdout.write(typeof result === 'string' ? result : JSON.stringify(result
   await evaluate("window.dispatchEvent(new PageTransitionEvent('pageshow', {persisted:true}))");
   await nextConnection;
   await command("wait", "--fn", "document.getElementById('status').textContent === 'Desktop connected'");
+  // Exercise the real VPS join route, SSH process lifecycle and the same UI.
+  await runControlOmb(["new-bot", "--name", "VPS fixture", "--url", fixture.info.url]);
+  const { bots } = await api("GET", "/api/bots?messages=0");
+  const vpsBot = bots.find((bot: { name: string }) => bot.name === "VPS fixture");
+  await api("PATCH", "/api/config", { vps: { sshAlias: "viewer-fixture" } });
+  await api("PATCH", `/api/bots/${vpsBot.id}`, { computer: "cloud", cloudBackend: "vps" });
+  const joined = await evaluate<{joinUrl:string}>(`fetch('/api/bots/${vpsBot.id}/computer/join',{method:'POST',headers:{'content-type':'application/json'},body:'{}'}).then(async r=>{if(!r.ok)throw new Error(await r.text());return r.json()})`);
+  const viewer = new URL(joined.joinUrl, fixture.info.url);
+  assert.equal(viewer.pathname, "/desktop-viewer");
+  const target = new URLSearchParams(viewer.hash.slice(1));
+  assert.equal(target.get("target"), `vps/${vpsBot.id}`);
+  assert.ok(target.get("threadId"));
+  assert.equal(target.has("password"), false);
+  await command("click", "#clipboard");
+  desktop.sendClipboard("Only on the previous desktop");
+  await command("wait", "--fn", "document.getElementById('clipboard-text').value === 'Only on the previous desktop'");
+  nextConnection = desktop.nextConnection();
+  await Promise.all([nextConnection, command("open", `${fixture.info.url}${joined.joinUrl}`)]);
+  await command("wait", "--fn", "document.getElementById('status').textContent === 'Desktop connected'");
+  assert.equal(await evaluate("document.querySelector('section') === null || document.querySelector('section').inert"), true);
+  await command("click", "#clipboard");
+  assert.equal(await evaluate("document.getElementById('clipboard-text').value"), "");
+  await command("click", "#clipboard");
+  await command("wait", "--fn", "document.getElementById('status').textContent === 'Desktop connected'");
+  await command("wait", "--fn", "document.querySelector('canvas').getContext('2d').getImageData(0,0,1,1).data[0] === 255");
+  nextConnection = desktop.nextConnection();
+  await command("click", "#retry");
+  await nextConnection;
+  await command("wait", "--fn", "document.getElementById('status').textContent === 'Desktop connected'");
+  assert.equal(readFileSync(join(scratch, "tunnels.log"), "utf8").split("open").length - 1, 1);
   const beforeLogout = desktop.connections();
   assert.equal(await evaluate("fetch('/api/auth/session').then(r=>r.json()).then(s=>s.kind)"), "session");
   assert.equal(await evaluate("fetch('/api/auth/logout',{method:'POST',headers:{'content-type':'application/json'},body:'{}'}).then(r=>r.status)"), 200);
   await command("wait", "--fn", "document.getElementById('status').textContent.includes('disconnected')");
   assert.ok(beforeLogout >= 2);
-  console.log(JSON.stringify({ ok: true, checks: ["built noVNC renders RFB pixels", "paired status uses app URL", "keyboard, Unicode and Ctrl-Alt-Del", "clipboard sync without Send, including clearing", "matching desktop backgrounds in both themes", "Foundry accent text", "automatic 95% fit, fullscreen and animated sidebar", "native tooltips and reduced-motion panels", "phone and landscape viewports", "reconnect", "page exit aborts pending connection and restore reconnects", "logout closes socket"], logPath: fixture.info.logPath, screenshots: [desktopScreenshot, phoneScreenshot, lightScreenshot, foundryScreenshot] }));
+  console.log(JSON.stringify({ ok: true, checks: ["built noVNC renders RFB pixels", "paired status uses app URL", "keyboard, Unicode and Ctrl-Alt-Del", "clipboard sync without Send, including clearing", "matching desktop backgrounds in both themes", "Foundry accent text", "automatic 95% fit, fullscreen and animated sidebar", "native tooltips and reduced-motion panels", "phone and landscape viewports", "reconnect", "page exit aborts pending connection and restore reconnects", "VPS join, synthetic SSH forward and reconnect", "logout closes socket"], logPath: fixture.info.logPath, screenshots: [desktopScreenshot, phoneScreenshot, lightScreenshot, foundryScreenshot] }));
+} catch (error) {
+  if (browser) console.error(await agentBrowser(browser.binary, browser.env, ["eval", "document.body.innerText"]).catch(() => "Browser unavailable"));
+  throw error;
 } finally {
   if (browser) await agentBrowser(browser.binary, browser.env, ["close"], 10_000).catch(() => {});
   await fixture?.close();

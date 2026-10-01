@@ -5,33 +5,38 @@ import { createHash } from "node:crypto";
 import { request, ServerResponse, type IncomingMessage, type Server } from "node:http";
 import { Socket } from "node:net";
 import type { Duplex } from "node:stream";
-import type { ContainerComputerStatus, LocalVmTarget } from "../container-computer.ts";
 import { isSameOrigin, type RequestAuth } from "../request-auth.ts";
 import { PASS, type RouteHandler } from "./table.ts";
 
-const ROUTE = /^\/api\/local-computer\/viewer\/(shared|bot-[a-f0-9]{64}|pool-\d+)(\/websockify)?$/;
+const ROUTE = /^\/api\/desktop-viewer\/(local\/(?:shared|bot-[a-f0-9]{64}|pool-\d+)|vps\/[\w-]+)(\/websockify)?$/;
 const HANDSHAKE_MS = 10_000;
 const RECHECK_MS = 5_000;
 const WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 
-export const viewerTargetId = (target: { key: string }) => target.key.replace(":", "-");
+/** Providers resolve a managed loopback endpoint, never a browser-supplied URL. */
+export interface DesktopConnection {
+  port: number;
+  password: string | null;
+  live?: () => boolean;
+  touch?: () => void;
+  /** Acquired only by WebSockets; release must not close other viewers. */
+  retain?: () => () => void;
+}
+export interface DesktopTarget {
+  key: string;
+  resolve: () => Promise<DesktopConnection>;
+}
 
-/** Local desktop windows keep their direct connection and isolated cookie
- * partition. Paired browsers use the app origin, with no password in the URL. */
-export function localVmViewerStatus<T extends { target_key: string; viewer_url: string }>(status: T, auth: RequestAuth): T {
-  return auth.kind === "loopback" ? status : {
-    ...status,
-    viewer_url: status.viewer_url ? `/local-vm-viewer#target=${viewerTargetId({ key: status.target_key })}` : "",
-  };
+export function desktopViewerUrl(target: string, threadId?: string): string {
+  const params = new URLSearchParams({ target, ...(threadId ? { threadId } : {}) });
+  return `/desktop-viewer#${params}`;
 }
 
 interface Upgrade { socket: Socket; head: Buffer; release: () => void; close: () => void; owner?: string }
 
-export function createLocalVmViewer(deps: {
-  target: (id: string) => LocalVmTarget | undefined;
-  status: (target: LocalVmTarget) => Promise<ContainerComputerStatus>;
+export function createDesktopViewer(deps: {
+  target: (id: string) => DesktopTarget | undefined;
   live: (auth: RequestAuth) => boolean;
-  touch: (target: LocalVmTarget) => void;
 }) {
   const upgrades = new Map<IncomingMessage, Upgrade>();
   let stopped = false;
@@ -81,22 +86,24 @@ export function createLocalVmViewer(deps: {
     // to admin, like the existing Local VM status and control endpoints.
     if (!auth.scopes.includes("admin") || !isSameOrigin(req)) return json(res, 403, { error: "forbidden" });
     const target = deps.target(match[1]);
-    if (!target) return json(res, 404, { error: "Local VM not found" });
+    if (!target) return json(res, 404, { error: "Desktop not found" });
     const upgrade = upgrades.get(req);
     if (upgrade && auth.kind === "session") upgrade.owner = auth.session.id;
-    const status = await deps.status(target);
+    let connection: DesktopConnection;
+    try { connection = await target.resolve(); }
+    catch (error) {
+      const status = error && typeof error === "object" && "status" in error ? error.status : 502;
+      return json(res, typeof status === "number" && status >= 400 && status < 600 ? status : 502,
+        { error: "The desktop is not available. Open it again from OpenMausBot." });
+    }
     // Inspection may outlive a closed tab or the handshake deadline.
     if (res.destroyed || upgrade?.socket.destroyed) return;
-    const live = () => deps.live(auth) && deps.target(match[1])?.key === target.key;
+    const live = () => deps.live(auth) && deps.target(match[1])?.key === target.key && (connection.live?.() ?? true);
     if (!live()) return json(res, 401, { error: "Viewer access expired" });
-    if (!status.managed || !status.imageMatches || status.network !== "loopback" || status.container !== "running"
-      || !Number.isInteger(status.viewer_port) || status.viewer_port! < 1 || status.viewer_port! > 65535) {
-      return json(res, 409, { error: "The Local VM viewer is not available. Check the VM in Settings." });
+    if (!Number.isInteger(connection.port) || connection.port < 1 || connection.port > 65535) {
+      return json(res, 409, { error: "The desktop viewer is not available." });
     }
-    if (!match[2]) {
-      const password = new URLSearchParams(new URL(status.viewer_url).hash.slice(1)).get("password");
-      return json(res, 200, { password });
-    }
+    if (!match[2]) return json(res, 200, { password: connection.password });
     if (!upgrade) return json(res, 426, { error: "WebSocket upgrade required" });
     const key = req.headers["sec-websocket-key"];
     if (req.headers.upgrade?.toLowerCase() !== "websocket" || req.headers["sec-websocket-version"] !== "13"
@@ -106,18 +113,20 @@ export function createLocalVmViewer(deps: {
     // Fixed host and path, port from an inspected managed container. Never
     // forward cookies, bearer tokens, query parameters or forwarded headers.
     const upstream = request({
-      hostname: "127.0.0.1", port: status.viewer_port!, path: "/websockify",
+      hostname: "127.0.0.1", port: connection.port, path: "/websockify",
       headers: { Upgrade: "websocket", Connection: "Upgrade", "Sec-WebSocket-Key": key, "Sec-WebSocket-Version": "13" },
     });
     const { socket } = upgrade;
     let peer: Duplex | undefined;
     let recheck: ReturnType<typeof setInterval> | undefined;
+    const release = connection.retain?.();
     let closed = false;
     const timeout = setTimeout(() => fail(), HANDSHAKE_MS);
     timeout.unref();
     upgrade.close = () => {
       if (closed) return;
       closed = true;
+      release?.();
       clearTimeout(timeout);
       clearInterval(recheck);
       upstream.destroy();
@@ -127,7 +136,7 @@ export function createLocalVmViewer(deps: {
     const fail = () => {
       if (closed) return;
       if (peer || socket.destroyed) { upgrade.close(); return; }
-      if (!res.headersSent && !socket.destroyed) json(res, 502, { error: "Could not connect to the Local VM viewer" });
+      if (!res.headersSent && !socket.destroyed) json(res, 502, { error: "Could not connect to the desktop viewer" });
       upstream.destroy();
     };
     socket.once("close", upgrade.close);
@@ -150,10 +159,10 @@ export function createLocalVmViewer(deps: {
       if (upgrade.head.length) remote.write(upgrade.head);
       upgrade.head = Buffer.alloc(0);
       socket.pipe(remote).pipe(socket);
-      deps.touch(target);
+      connection.touch?.();
       recheck = setInterval(() => {
         if (!live()) upgrade.close();
-        else deps.touch(target);
+        else connection.touch?.();
       }, RECHECK_MS);
       recheck.unref();
     });

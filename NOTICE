@@ -22,3 +22,7 @@ under the MIT License. Its cache and refresh logic is adapted from OpenCode,
 https://github.com/anomalyco/opencode, Copyright (c) 2025 opencode, used under
 the MIT License. The full license texts are in third_party/models-dev/LICENSE
 and third_party/opencode/LICENSE.
+
+The browser desktop viewer bundles the unmodified noVNC 1.7.0 library,
+Copyright the noVNC authors, under MPL-2.0 and its accompanying licenses.
+License texts and the corresponding source location are in third_party/novnc/.
