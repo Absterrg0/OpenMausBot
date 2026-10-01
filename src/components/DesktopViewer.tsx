@@ -55,9 +55,16 @@ export function DesktopViewer() {
         const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(30_000)]);
         if (target.startsWith("vps/")) {
           const query = threadId ? `?${new URLSearchParams({ threadId })}` : "";
-          const joined = await fetch(`/api/bots/${target.slice(4)}/computer/join${query}`, {
+          const join = () => fetch(`/api/bots/${target.slice(4)}/computer/join${query}`, {
             method: "POST", headers: { "content-type": "application/json" }, body: "{}", signal,
           });
+          let joined = await join();
+          // 409 while another join (a quick reconnect, a second tab) still
+          // holds the lifecycle lane; joining an open tunnel is idempotent.
+          while (joined.status === 409) {
+            await new Promise(resolve => setTimeout(resolve, 1_000));
+            joined = await join();
+          }
           if (!joined.ok) throw new Error("join failed");
           if (controller.signal.aborted) return;
         }
