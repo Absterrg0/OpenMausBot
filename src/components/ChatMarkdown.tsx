@@ -732,9 +732,51 @@ function protectFencedCode(text: string, protect: (value: string) => string): st
   return tokenized + text.slice(cursor);
 }
 
+// A currency sign glued to its code and followed by an amount ("R$ 120",
+// "US$5") is money, never a math delimiter.
+const CURRENCY_DOLLAR = /(?<![\p{L}\p{N}])(?:R|US|AU|A|CA|C|NZ|HK|SG|S|MX|NT|BZ|Z)\$(?=[ \t\u00a0]?\d)/gu;
+
+/** Escape every single `$` that cannot delimit inline math, so prices such as
+ * "$5 and $10" or "R$ 120 ... R$ 120" stay prose instead of turning the text
+ * between them into a formula. Follows Pandoc's rule: an opening `$` is
+ * followed by non-space, a closing `$` is preceded by non-space and not
+ * followed by a digit, and the pair stays inside one paragraph. A `$` that
+ * fails as a closer abandons the open span rather than skipping past it. */
+function escapeLiteralDollars(text: string): string {
+  const display: string[] = [];
+  const hidden = text
+    .replace(/\$\$[\s\S]*?\$\$/g, (math) => `\u0000OMB_MATH_${display.push(math) - 1}\u0000`)
+    .replace(CURRENCY_DOLLAR, (sign) => `${sign.slice(0, -1)}\\$`);
+  const literal = new Set<number>();
+  const singles: number[] = [];
+  for (let i = 0; i < hidden.length; i++) {
+    if (hidden[i] === "\\") i++;
+    else if (hidden[i] === "$") singles.push(i);
+  }
+  let open: number | null = null;
+  for (const at of singles) {
+    if (open !== null) {
+      const closes = !/\s/.test(hidden[at - 1]) && !/\d/.test(hidden[at + 1] ?? "")
+        && !/\n[ \t]*\n/.test(hidden.slice(open, at));
+      if (closes) { open = null; continue; }
+      literal.add(open);
+    }
+    open = /\S/.test(hidden[at + 1] ?? "") ? at : null;
+    if (open === null) literal.add(at);
+  }
+  if (open !== null) literal.add(open);
+  let escaped = "";
+  for (let i = 0; i < hidden.length; i++) escaped += literal.has(i) ? "\\$" : hidden[i];
+  display.forEach((math, index) => {
+    escaped = escaped.split(`\u0000OMB_MATH_${index}\u0000`).join(math);
+  });
+  return escaped;
+}
+
 /** Convert the TeX delimiters models commonly emit into remark-math syntax.
  * Fenced and inline code are protected so examples such as `\\(x\\)` remain
- * literal. Unmatched delimiters are left untouched while a response streams. */
+ * literal. Unmatched delimiters are left untouched while a response streams,
+ * and dollar signs that read as money are escaped. */
 export function normalizeMathDelimiters(text: string): string {
   const protectedCode: string[] = [];
   const protect = (value: string): string => {
@@ -746,10 +788,11 @@ export function normalizeMathDelimiters(text: string): string {
     .replace(/(`+)[\s\S]*?\1/g, protect);
   let normalized = tokenized
     .replace(/\\\[([\s\S]*?)\\\]/g, (_match, math: string) => `$$\n${math}\n$$`)
-    .replace(/\\\(([\s\S]*?)\\\)/g, (_match, math: string) => `$${math}$`)
+    .replace(/\\\(([\s\S]*?)\\\)/g, (_match, math: string) => `$${math.trim()}$`)
     // remark-math treats flow math as a block only when the fences occupy
     // their own lines; accept the compact form models commonly produce.
     .replace(/\$\$[ \t]*([^\n][\s\S]*?)[ \t]*\$\$/g, (_match, math: string) => `$$\n${math}\n$$`);
+  normalized = escapeLiteralDollars(normalized);
   protectedCode.forEach((value, index) => {
     normalized = normalized.split(`\u0000OMB_CODE_${index}\u0000`).join(value);
   });

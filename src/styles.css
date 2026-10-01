@@ -575,6 +575,18 @@
   color-scheme: var(--code-color-scheme);
 }
 
+/* KaTeX lays a formula out as one unbreakable line. Long display math scrolls
+   inside the bubble, and long inline math wraps, instead of running past it. */
+.chat-md .katex-display {
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+
+.chat-md .katex {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
 /* Plain-text message bodies (user turns, webhook tasks, error fallbacks) are
    written in whatever language the person used, which is independent of the
    UI language. `plaintext` resolves direction per line from its own first

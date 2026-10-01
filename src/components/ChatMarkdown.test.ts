@@ -114,6 +114,38 @@ describe("math rendering", () => {
     );
   });
 
+  it("keeps prices literal instead of rendering the text between them as math", () => {
+    for (const text of [
+      "**1. R$ 120:** o plano custa R$ 120 por mês.",
+      "**2. Os R$1.500,00: à vista ou parcelado?** O total fica em R$ 1.500,00.",
+      "It costs $5 and the upgrade costs $10.",
+      "Plans: US$5, $20 per month, or $x$ per seat.",
+    ]) {
+      const html = renderToStaticMarkup(createElement(ChatMarkdown, { text }));
+      expect(html.match(/class="katex"/g)?.length ?? 0).toBeLessThanOrEqual(1);
+      expect(html).toContain("$");
+    }
+    const prose = renderToStaticMarkup(createElement(ChatMarkdown, {
+      text: "**1. R$ 120:** o plano custa R$ 120 por mês.",
+    }));
+    expect(prose).not.toContain('class="katex"');
+    expect(prose).toContain("<strong>1. R$ 120:</strong>");
+    expect(prose).toContain("custa R$ 120 por");
+  });
+
+  it("still renders inline dollar math next to prices", () => {
+    const html = renderToStaticMarkup(createElement(ChatMarkdown, {
+      text: "Pay $5 now; the rate is $r = 0.1$ and \\( x^2 \\) grows.",
+    }));
+    expect(html.match(/class="katex"/g)).toHaveLength(2);
+    expect(html).toContain("Pay $5 now");
+  });
+
+  it("does not pair dollars across paragraphs", () => {
+    const html = renderToStaticMarkup(createElement(ChatMarkdown, { text: "Costs $5.\n\nThen pay later$" }));
+    expect(html).not.toContain('class="katex"');
+  });
+
   it("normalizes math in messages that also contain an image", () => {
     const html = renderToStaticMarkup(createElement(ChatMarkdown, {
       text: "![diagram](https://example.test/diagram.png)\n\n\\(x^2\\)",
