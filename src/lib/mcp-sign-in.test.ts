@@ -80,7 +80,7 @@ it("exposes the pending flow for paste-back even if opening the browser fails", 
   const { api } = stubApi([{ ...waiting, phase: "succeeded" }]);
   const onStarted = vi.fn();
   const result = await runMcpSignIn("hf", { api, onStarted, open: async () => { throw new Error("blocked"); }, sleep: async () => {} });
-  expect(onStarted).toHaveBeenCalledWith(waiting);
+  expect(onStarted).toHaveBeenCalledWith(waiting, expect.any(Function));
   expect(result.phase).toBe("succeeded");
 });
 
@@ -100,4 +100,14 @@ it("submits a pasted URL only in the completion body for the selected flow", asy
   const api = vi.fn(async () => ({ auth: { ...waiting, phase: "succeeded", authorizationUrl: null } }));
   expect((await completeMcpSignIn("hf", waiting.flowId, ` ${callback} `, api)).phase).toBe("succeeded");
   expect(api).toHaveBeenCalledWith(`/api/mcp/servers/hf/sign-in/${waiting.flowId}`, { method: "POST", body: JSON.stringify({ callbackUrl: callback }) });
+});
+
+it.each(["succeeded", "failed"] as const)("shows a pasted %s result without waiting for a status poll", async (phase) => {
+  const { api, calls } = stubApi([]);
+  const result = await runMcpSignIn("hf", {
+    api, open: async () => {}, sleep: () => new Promise<void>(() => {}),
+    onStarted: (_status, complete) => complete({ ...waiting, phase, authorizationUrl: null, message: "Provider result" }),
+  });
+  expect(result).toMatchObject({ phase, message: "Provider result" });
+  expect(calls).toEqual([["POST", "/api/mcp/servers/hf/sign-in"]]);
 });

@@ -29,6 +29,8 @@ The fixture verifies:
 - A proxied admin session can start a flow.
 - A blocked popup still leaves the reopen button and paste-back instructions.
 - An invalid URL shows an error without consuming the pending flow.
+- A delayed token exchange keeps the submit button disabled and spinning,
+  preserves the pasted URL, and shows the result after the provider responds.
 - Pasting the fake provider's redirect completes the real PKCE exchange.
 - The signed-in MCP server returns tools on Test.
 - Logging out cancels the next pending flow and closes its listener.

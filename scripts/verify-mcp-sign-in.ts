@@ -15,8 +15,10 @@ let oauth: Awaited<ReturnType<typeof startFakeOAuth>> | undefined;
 let mcp: Awaited<ReturnType<typeof startFakeHttpMcp>> | undefined;
 let ui: MountedPreview | undefined;
 let closeBrowser: (() => Promise<unknown>) | undefined;
+let releaseToken!: () => void;
+const tokenPending = new Promise<void>((resolve) => { releaseToken = resolve; });
 try {
-  oauth = await startFakeOAuth();
+  oauth = await startFakeOAuth({ beforeToken: () => tokenPending });
   mcp = await startFakeHttpMcp({ acceptBearer: oauth.isValid, wwwAuthenticate: oauth.challenge });
   const api = fixtureApi(fixture.info.url);
   await runControlOmb(["doctor", "--url", fixture.info.url]);
@@ -85,6 +87,11 @@ try {
   const callbackUrl = approved.headers.get("location")!;
   await command("fill", "#mcp-callback-documents", callbackUrl);
   await clickButton("Complete sign-in");
+  await command("wait", "--fn", "document.querySelector('button[aria-busy=true] .animate-spin') !== null");
+  assert.equal(await evaluate("document.querySelector('button[aria-busy=true]').disabled"), true);
+  assert.equal(await evaluate("document.getElementById('mcp-callback-documents').value"), callbackUrl);
+  await command("screenshot", join(evidence, "authenticating.png"), "--full");
+  releaseToken();
   await command("wait", "--fn", "document.body.textContent.includes('Signed in') && !document.getElementById('mcp-callback-documents')");
   assert.equal(oauth.counts.token, 1);
   await clickButton("Test");
@@ -99,8 +106,9 @@ try {
   const pending = await fetch(authorizationUrl, { redirect: "manual" });
   assert.equal(await evaluate("fetch('/api/auth/logout', {method:'POST',headers:{'content-type':'application/json'}}).then(r=>r.status)"), 200);
   await assert.rejects(fetch(pending.headers.get("location")!));
-  console.log(JSON.stringify({ ok: true, evidence, tested: ["remote admin start", "blocked popup", "invalid URL retry", "paste completion", "MCP tools", "logout cancellation"] }));
+  console.log(JSON.stringify({ ok: true, evidence, tested: ["remote admin start", "blocked popup", "invalid URL retry", "pending spinner and preserved input", "paste completion", "MCP tools", "logout cancellation"] }));
 } finally {
+  releaseToken();
   await closeBrowser?.().catch(() => {});
   await ui?.close();
   await fixture.close();
