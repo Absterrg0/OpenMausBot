@@ -579,6 +579,8 @@ import { createHostedSlackRoutes } from "./routes/hosted-slack.ts";
 import { createBotPresetRoutes } from "./routes/bot-presets.ts";
 import { createBotMemoryRoutes } from "./routes/bot-memory.ts";
 import { createDeciderRoutes } from "./routes/decider.ts";
+import { createDesktopViewer, desktopViewerUrl } from "./routes/desktop-viewer.ts";
+import { localDesktopTarget, localVmViewerStatus, viewerTargetId } from "./desktop-viewer-targets.ts";
 import { createAntigravityLeftoverRoutes } from "./routes/antigravity-leftovers.ts";
 import { findAntigravityLeftovers, removeAntigravityLeftovers } from "./drivers/antigravity-temp.ts";
 
@@ -591,6 +593,7 @@ const MIME: Record<string, string> = {
   ".html": "text/html",
   ".js": "text/javascript",
   ".css": "text/css",
+  ".txt": "text/plain; charset=utf-8",
   ".svg": "image/svg+xml",
   ".png": "image/png",
   ".ico": "image/x-icon",
@@ -5319,8 +5322,33 @@ function audienceChanged(): void {
     }
   }
 }
+// Cloud boot can revoke sessions before routes are registered. Create the
+// viewer manager before installing any revocation callbacks.
+const desktopViewer = createDesktopViewer({
+  target: (id) => {
+    if (id.startsWith("vps/")) {
+      const botId = id.slice(4);
+      if (store.bot(botId)?.cloudBackend !== "vps") return;
+      return { key: id, resolve: async () => {
+        const connection = vps.vpsDesktopConnection(botId);
+        if (!connection) throw Object.assign(new Error("VPS viewer is not open"), { status: 409 });
+        return connection;
+      } };
+    }
+    const targets = [SHARED_LOCAL_VM_TARGET, ...store.bots.map(bot => perBotLocalVmTarget(bot.id)),
+      ...Array.from({ length: localVmMaxInstances(cfg) }, (_, seat) => poolLocalVmTarget(seat))];
+    const target = targets.find(target => viewerTargetId(target) === id);
+    return target && localDesktopTarget(target, {
+      // A viewer can repair a sick CUA driver; skip desktop health probes.
+      status: target => containerComputerStatus(undefined, undefined, target, { probeDesktop: false }),
+      touch: target => localVmIdleFor(target).touch(),
+    });
+  },
+  live: auth => auth.kind === "loopback" || sessions.isLive(auth.session.id),
+});
 function closeSessionStreams(sessionId: string): void {
   browserLive.closeForOwner(sessionId);
+  desktopViewer.closeForOwner(sessionId);
   for (const client of sseClients) {
     if (client.sessionId !== sessionId) continue;
     sseClients.delete(client);
@@ -6203,6 +6231,9 @@ const boatLifecycleBusyBots = new Set<string>();
 // A refresh is a reader, not a lifecycle change. Keep its reservation until
 // the provider settles even if the HTTP client leaves, and share it on retry.
 const vpsPreviewRequests = new Map<string, ReturnType<typeof vps.vpsComputerScreenshot>>();
+// Joins in flight per bot. A second tab or a quick reconnect waits for the
+// pending join, then reuses its tunnel, instead of being refused by its lane.
+const vpsJoinRequests = new Map<string, Promise<void>>();
 const orphanBoatLifecycleBusyIds = new Set<string>();
 const boatInventoryRequestsBusyIds = new Set<string>();
 type RemoteComputerProvider = "box" | "vps";
@@ -13960,10 +13991,10 @@ function stderrOf(err: unknown): string {
   return typeof s === "string" ? s : Buffer.isBuffer(s) ? s.toString("utf8") : "";
 }
 
-async function localVmPayload(target: LocalVmTarget) {
+async function localVmPayload(target: LocalVmTarget, auth: RequestAuth) {
   const status = await containerComputerStatus(undefined, undefined, target);
   return {
-    ...status,
+    ...localVmViewerStatus(status, auth),
     commands: setupCommands(status.runtime, process.platform, target),
     idle_timeout_ms: localVmIdleMs(),
     mode: localVmMode(cfg),
@@ -14583,6 +14614,8 @@ ROUTES.push(createAntigravityLeftoverRoutes({
   find: () => findAntigravityLeftovers(),
   remove: () => removeAntigravityLeftovers(),
 }));
+
+ROUTES.push(desktopViewer.route);
 
 const toolResults = new ToolResults();
 const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
@@ -21605,7 +21638,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
     // what the user's machine can host: which runtime is installed, whether
     // its daemon is up, and whether the desktop image and container exist
     if (method === "GET" && path === "/api/local-computer") {
-      return json(res, 200, await localVmPayload(SHARED_LOCAL_VM_TARGET));
+      return json(res, 200, await localVmPayload(SHARED_LOCAL_VM_TARGET, auth));
     }
     if (method === "GET" && path === "/api/local-computer/instances") {
       res.setHeader("cache-control", "private, no-store");
@@ -21647,7 +21680,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         if (action === "run" || action === "start") localVmIdleFor(SHARED_LOCAL_VM_TARGET).touch();
         if (action === "stop" || action === "remove") localVmIdleFor(SHARED_LOCAL_VM_TARGET).cancel();
         return json(res, 200, {
-          ...status,
+          ...localVmViewerStatus(status, auth),
           commands: setupCommands(status.runtime, process.platform, SHARED_LOCAL_VM_TARGET),
           idle_timeout_ms: localVmIdleMs(),
           mode: localVmMode(cfg),
@@ -21670,7 +21703,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
     if (m && method === "GET") {
       const bot = computerPreviewBot(m[1], url);
       if (!bot) return json(res, 404, { error: "no such bot" });
-      return json(res, 200, await localVmPayload(localVmTargetForStatus(bot.id, bot.threadId)));
+      return json(res, 200, await localVmPayload(localVmTargetForStatus(bot.id, bot.threadId), auth));
     }
     m = path.match(/^\/api\/bots\/([\w-]+)\/local-computer\/(run|stop|remove)$/);
     if (m && method === "POST") {
@@ -21721,7 +21754,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         if (action === "run") localVmIdleFor(target).touch();
         if (action === "stop" || action === "remove") localVmIdleFor(target).cancel();
         return json(res, 200, {
-          ...status,
+          ...localVmViewerStatus(status, auth),
           commands: setupCommands(status.runtime, process.platform, target),
           idle_timeout_ms: localVmIdleMs(),
           mode: localVmMode(cfg),
@@ -23316,6 +23349,9 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       if (!String(req.headers["content-type"] ?? "").toLowerCase().startsWith("application/json")) {
         return json(res, 415, { error: "content-type must be application/json" });
       }
+      if (m[2] === "join" && bot.cloudBackend === "vps") {
+        for (let pending; (pending = vpsJoinRequests.get(botId));) await pending;
+      }
       const remoteProvider: RemoteComputerProvider = bot.cloudBackend === "vps" ? "vps" : "box";
       if (computerProviderConfigTransitions.has(remoteProvider)) {
         return json(res, 409, { error: providerTransitionMessage(remoteProvider) });
@@ -23355,6 +23391,9 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         // Opening the existing SSH viewer can coexist with a capture. Start,
         // stop, remove and Settings deletion still exclude pending previews.
         const releaseComputerLifecycle = claimBotComputerLifecycle(botId, m[2] === "join");
+        // Settles only after the lane is released, so a waiter can claim it.
+        let joinSettled: (() => void) | undefined;
+        if (m[2] === "join") vpsJoinRequests.set(botId, new Promise(resolve => { joinSettled = resolve; }));
         try {
           if (m[2] === "exec") {
             return json(res, 409, { error: "the VPS console is available to the bot through its scoped computer tools" });
@@ -23366,12 +23405,19 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
             return json(res, 409, { error: "the VPS computer is being used by this bot — interrupt the turn first" });
           }
           if (m[2] === "join") {
-            return json(res, 200, await vps.vpsComputerJoin(cfg, botId));
+            const remote = auth.kind !== "loopback";
+            const result = await vps.vpsComputerJoin(cfg, botId, undefined, remote);
+            return json(res, 200, { ...result, joinUrl: remote
+              ? desktopViewerUrl(`vps/${botId}`, bot.threadId) : result.joinUrl });
           }
           const action = m[2] === "provision" ? "provision" : m[2] === "remove" ? "remove" : "stop";
           return json(res, 200, await vps.vpsComputerAction(action, cfg, botId));
         } finally {
           releaseComputerLifecycle();
+          if (joinSettled) {
+            vpsJoinRequests.delete(botId);
+            joinSettled();
+          }
         }
       }
       const activeBoatTurn = botHasActiveTurn(botId);
@@ -23435,6 +23481,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
 };
 
 const server = createServer(handleRequest);
+desktopViewer.attach(server, handleRequest);
 
 calendarCalls.start();
 
@@ -23607,6 +23654,7 @@ let tunnelListener: ReturnType<typeof createServer> | null = null;
 if (TUNNEL_SOCKET) {
   if (process.platform !== "win32") rmSync(TUNNEL_SOCKET, { force: true });
   tunnelListener = createServer(handleRequest);
+  desktopViewer.attach(tunnelListener, handleRequest);
   tunnelListener.listen(TUNNEL_SOCKET, () => {
     console.log(`openmausbot tunnel listener on ${TUNNEL_SOCKET}`);
   });
@@ -23625,6 +23673,7 @@ const gracefulShutdown = createGracefulShutdown({
       sharedComputers.close();
       sharedComputerControl.close();
       browserLive.closeAll();
+      desktopViewer.closeAll();
       for (const idle of localVmIdles.values()) idle.cancel();
       vps.closeAllVpsDesktopTunnels();
       watchdog.stop();

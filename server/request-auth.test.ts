@@ -281,6 +281,11 @@ describe("resolveRequestAuth", () => {
     );
     expect(connectorRefresh.auth).toBeNull();
     expect(connectorRefresh.status).toBe(403);
+    // The remote viewer route hands out a desktop password and its RFB
+    // socket; native owners use the direct viewer instead.
+    for (const path of ["/api/desktop-viewer/vps/bot-1", "/api/desktop-viewer/local/shared/websockify"]) {
+      expect(resolveRequestAuth(request({ host: "127.0.0.1:8799" }, "GET"), options(path)).status).toBe(403);
+    }
     expect(resolveRequestAuth(
       request({ host: "127.0.0.1:8799" }, "POST"),
       options("/api/internal/ask-bot"),

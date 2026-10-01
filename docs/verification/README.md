@@ -129,6 +129,10 @@ The [local computer launch regression](local-computer-launch.md) starts the
 host CUA gate through real Electron in a disposable home, without opening the
 desktop app or controlling the user's computer.
 
+The [remote desktop viewer fixture](desktop-viewer.md) checks the bundled
+noVNC page, authenticated WebSocket proxy, desktop input, reconnect and logout
+against an isolated server, synthetic desktop and VPS SSH forward.
+
 The [bot settings fixture](bot-settings.md) checks profile saves, standing
 instructions, history restore, skill/memory refresh, and stale-response isolation.
 
