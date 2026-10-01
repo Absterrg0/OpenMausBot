@@ -79,6 +79,7 @@ process.stdout.write(typeof result === 'string' ? result : JSON.stringify(result
   assert.equal(status.viewer_url, "/local-vm-viewer#target=shared");
   assert.equal(status.viewer_url.includes("password"), false);
   const desktopScreenshot = join(dirname(fixture.info.logPath), `viewer-${process.pid}-desktop.png`);
+  await command("wait", "--fn", "document.getAnimations().every(a => a.playState !== 'running')");
   await command("screenshot", desktopScreenshot);
   await command("click", "#keyboard");
   await command("fill", "#text", "Hello\n世界");
@@ -96,13 +97,17 @@ process.stdout.write(typeof result === 'string' ? result : JSON.stringify(result
   assert.ok(desktop.clipboards.includes("To the desktop"));
   // Clipboard exchange is explicit; device clipboard permissions are never requested.
   await command("click", "#clipboard");
-  await command("click", "#fit");
-  assert.equal(await evaluate("document.getElementById('fit').getAttribute('aria-pressed')"), "false");
-  await command("click", "#fit");
+  assert.equal(await evaluate("document.getElementById('fit') === null"), true);
+  assert.equal(await evaluate("(() => { const r = document.getElementById('screen').getBoundingClientRect(), m = document.querySelector('main').getBoundingClientRect(); return r.width / m.width > .94 && r.width / m.width < .96 && r.height / m.height > .94 && r.height / m.height < .96; })()"), true);
+  assert.equal(await evaluate("document.getElementById('keyboard').title"), "Keyboard");
+  assert.equal(await evaluate("document.querySelector('link[rel=license]').getAttribute('href')"), "/licenses/novnc/NOTICE.txt");
   const dockedWidth = await evaluate("document.querySelector('main').getBoundingClientRect().width");
   await command("click", "#hide-controls");
+  await command("wait", "--fn", "document.querySelector('aside').getBoundingClientRect().width === 0");
   assert.ok(await evaluate("document.querySelector('main').getBoundingClientRect().width") > dockedWidth);
+  assert.equal(await evaluate("document.querySelector('aside').inert"), true);
   await command("click", "#show-controls");
+  await command("wait", "--fn", "document.querySelector('aside').getBoundingClientRect().width === 72");
   if (await evaluate("document.fullscreenEnabled")) {
     await command("click", "#fullscreen");
     await command("wait", "--fn", "Boolean(document.fullscreenElement)");
@@ -113,6 +118,7 @@ process.stdout.write(typeof result === 'string' ? result : JSON.stringify(result
   await command("click", "#keyboard");
   assert.equal(await evaluate("document.documentElement.scrollWidth <= innerWidth"), true);
   const phoneScreenshot = join(dirname(fixture.info.logPath), `viewer-${process.pid}-phone.png`);
+  await command("wait", "--fn", "document.getAnimations().every(a => a.playState !== 'running')");
   await command("screenshot", phoneScreenshot);
   assert.equal(await evaluate("(() => { const r = document.querySelector('section').getBoundingClientRect(); return r.left >= 0 && r.right <= innerWidth && r.top >= 0 && r.bottom <= innerHeight; })()"), true);
   await evaluate("document.documentElement.dataset.skin = 'daylight'");
@@ -122,7 +128,14 @@ process.stdout.write(typeof result === 'string' ? result : JSON.stringify(result
   // A short landscape viewport must keep both the dock and panel scrollable.
   await command("set", "viewport", "844", "390");
   assert.equal(await evaluate("document.documentElement.scrollHeight <= innerHeight && document.querySelector('section').getBoundingClientRect().height <= innerHeight"), true);
+  assert.equal(await evaluate("(async () => { document.getElementById('keyboard').click(); await new Promise(requestAnimationFrame); const p = document.querySelector('section'); return !p || p.inert; })()"), true);
+  await command("wait", "--fn", "!document.querySelector('section')");
+  // Reuse the app's reduced-motion path and verify that a closed panel leaves
+  // no focusable controls behind, including during its normal animated exit.
+  await evaluate("document.documentElement.dataset.reducedMotion = 'true'");
   await command("click", "#keyboard");
+  await command("click", "#keyboard");
+  await command("wait", "--fn", "!document.querySelector('section')");
   nextConnection = desktop.nextConnection();
   await command("click", "#retry");
   await nextConnection;
@@ -132,7 +145,7 @@ process.stdout.write(typeof result === 'string' ? result : JSON.stringify(result
   assert.equal(await evaluate("fetch('/api/auth/logout',{method:'POST',headers:{'content-type':'application/json'},body:'{}'}).then(r=>r.status)"), 200);
   await command("wait", "--fn", "document.getElementById('status').textContent.includes('disconnected')");
   assert.ok(beforeLogout >= 2);
-  console.log(JSON.stringify({ ok: true, checks: ["built noVNC renders RFB pixels", "paired status uses app URL", "keyboard, Unicode and Ctrl-Alt-Del", "bidirectional clipboard", "fit, fullscreen and collapsible sidebar", "phone and landscape viewports", "reconnect", "logout closes socket"], logPath: fixture.info.logPath, screenshots: [desktopScreenshot, phoneScreenshot, lightScreenshot] }));
+  console.log(JSON.stringify({ ok: true, checks: ["built noVNC renders RFB pixels", "paired status uses app URL", "keyboard, Unicode and Ctrl-Alt-Del", "bidirectional clipboard", "automatic 95% fit, fullscreen and animated sidebar", "native tooltips and reduced-motion panels", "phone and landscape viewports", "reconnect", "logout closes socket"], logPath: fixture.info.logPath, screenshots: [desktopScreenshot, phoneScreenshot, lightScreenshot] }));
 } finally {
   if (browser) await run(browser.binary, ["close"], { env: browser.env, timeout: 10_000 }).catch(() => {});
   await fixture?.close();

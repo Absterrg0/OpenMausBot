@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from "react";
-import { ChevronLeft, ChevronRight, Clipboard, Keyboard, Maximize, Minimize, Monitor, RefreshCw, Scan, Send, X, type LucideIcon } from "lucide-react";
+import { ChevronLeft, ChevronRight, Clipboard, Keyboard, Maximize, Minimize, Monitor, RefreshCw, Send, X, type LucideIcon } from "lucide-react";
 import { cn } from "@/lib/cn";
 import RFB from "@novnc/novnc";
 import { t } from "@/lib/i18n";
+import { useHeldMenuMotion, useMenuMotion } from "./MenuMotion";
 
 /** Served through the app's normal route/build. Only desktop pixels and
  * input cross the VM boundary; the VM never supplies this page's code. */
@@ -14,12 +15,14 @@ export function LocalVmViewer() {
   const [status, setStatus] = useState(t("localVmViewer.connecting"));
   const [panel, setPanel] = useState<"keyboard" | "clipboard" | null>(null);
   const [expanded, setExpanded] = useState(true);
-  const [fit, setFit] = useState(true);
   const [fullscreen, setFullscreen] = useState(false);
   const [controlError, setControlError] = useState("");
   const [clipboard, setClipboard] = useState("");
-  const display = useRef({ fit, panel });
-  display.current = { fit, panel };
+  const panelMotion = useHeldMenuMotion(panel);
+  const handleMotion = useMenuMotion(!expanded);
+  const visiblePanel = panelMotion.value;
+  const panelRef = useRef(panel);
+  panelRef.current = panel;
   const [text, setText] = useState("");
   const target = new URLSearchParams(location.hash.slice(1)).get("target");
 
@@ -48,8 +51,8 @@ export function LocalVmViewer() {
           credentials: { password: config.password ?? "", username: "", target: "" },
         });
         rfb.current = client;
-        client.scaleViewport = display.current.fit;
-        client.focusOnClick = display.current.panel === null;
+        client.scaleViewport = true;
+        client.focusOnClick = panelRef.current === null;
         client.addEventListener("clipboard", event => { if (!controller.signal.aborted) setClipboard(event.detail.text); });
         deadline = setTimeout(() => {
           client?.disconnect();
@@ -89,10 +92,9 @@ export function LocalVmViewer() {
 
   useEffect(() => {
     if (rfb.current) {
-      rfb.current.scaleViewport = fit;
       rfb.current.focusOnClick = panel === null;
     }
-  }, [fit, panel]);
+  }, [panel]);
 
   useEffect(() => {
     const update = () => setFullscreen(Boolean(document.fullscreenElement));
@@ -109,14 +111,18 @@ export function LocalVmViewer() {
       setControlError(t("localVmViewer.fullscreenFailed"));
     }
   };
-  const closePanel = () => setPanel(null);
+  const closePanel = () => {
+    setPanel(null);
+    if (panel) document.getElementById(panel)?.focus();
+  };
   const togglePanel = (next: "keyboard" | "clipboard") => setPanel(value => value === next ? null : next);
+  const slide = "transition-[width,translate,opacity] duration-[240ms] ease-[cubic-bezier(0.22,1,0.36,1)] motion-reduce:transition-none";
   const action = "ui-button min-h-11 rounded-xl focus-visible:outline-2 focus-visible:outline-focus";
 
   return (
     <div className="relative flex h-dvh overflow-hidden bg-app text-sm text-ink" style={{ paddingLeft: "env(safe-area-inset-left)", paddingRight: "env(safe-area-inset-right)" }}>
-      {expanded ? <aside aria-label={t("localVmViewer.controls")} className="z-10 flex w-[72px] shrink-0 items-center justify-center py-3">
-        <div className="flex max-h-full flex-col items-center gap-1 overflow-y-auto rounded-2xl border border-hairline bg-panel p-1 shadow-xl">
+      <aside aria-label={t("localVmViewer.controls")} aria-hidden={!expanded} inert={!expanded} className={cn("z-10 flex shrink-0 items-center justify-center py-3", slide, expanded ? "w-[72px]" : "w-0")}>
+        <div className={cn("flex max-h-full w-14 shrink-0 flex-col items-center gap-1 overflow-y-auto rounded-2xl border border-hairline bg-panel p-1 shadow-xl", slide, expanded ? "translate-x-0 opacity-100" : "-translate-x-12 opacity-0")}>
           <div className="relative flex h-11 w-11 shrink-0 items-center justify-center text-ink-secondary" title={status}>
             <Monitor size={20} aria-hidden="true" />
             <span className={cn("absolute right-2 bottom-2 size-2 rounded-full ring-2 ring-panel", connected ? "bg-success" : "bg-warning")} />
@@ -124,35 +130,35 @@ export function LocalVmViewer() {
           <div className="my-1 h-px w-7 shrink-0 bg-hairline" />
           <ViewerTool id="keyboard" label={t("localVmViewer.keyboard")} icon={Keyboard} disabled={!connected} active={panel === "keyboard"} expanded={panel === "keyboard"} onClick={() => togglePanel("keyboard")} />
           <ViewerTool id="clipboard" label={t("localVmViewer.clipboard")} icon={Clipboard} disabled={!connected} active={panel === "clipboard"} expanded={panel === "clipboard"} onClick={() => togglePanel("clipboard")} />
-          <ViewerTool id="fit" label={t("localVmViewer.fit")} icon={Scan} active={fit} onClick={() => setFit(value => !value)} />
           {document.fullscreenEnabled && <ViewerTool id="fullscreen" label={t(fullscreen ? "localVmViewer.exitFullscreen" : "localVmViewer.fullscreen")} icon={fullscreen ? Minimize : Maximize} onClick={() => { void toggleFullscreen(); }} />}
           <div className="my-1 h-px w-7 shrink-0 bg-hairline" />
           <ViewerTool id="retry" label={t("localVmViewer.reconnect")} icon={RefreshCw} onClick={() => { setClipboard(""); setAttempt(value => value + 1); }} />
           <ViewerTool id="hide-controls" label={t("localVmViewer.hideControls")} icon={ChevronLeft} onClick={() => { setExpanded(false); closePanel(); }} />
         </div>
-      </aside> : <div className="absolute left-0 top-1/2 z-10 -translate-y-1/2 rounded-r-2xl border border-l-0 border-hairline bg-panel p-1 shadow-xl">
+      </aside>
+      {handleMotion.shown && <div {...handleMotion.exitProps} className={cn("absolute left-0 top-1/2 z-10 -translate-y-1/2 rounded-r-2xl border border-l-0 border-hairline bg-panel p-1 shadow-xl", handleMotion.className)}>
         <ViewerTool id="show-controls" label={t("localVmViewer.showControls")} icon={ChevronRight} onClick={() => setExpanded(true)} />
       </div>}
 
-      <main className="relative my-2 mr-2 min-w-0 flex-1 overflow-hidden rounded-2xl border border-hairline bg-inset">
-        <div id="screen" ref={screen} aria-label={t("localVmViewer.title")} className="h-full w-full overflow-auto" />
+      <main className="relative my-2 mr-2 flex min-w-0 flex-1 items-center justify-center overflow-hidden rounded-2xl border border-hairline bg-inset">
+        <div id="screen" ref={screen} aria-label={t("localVmViewer.title")} className="h-[95%] w-[95%] overflow-hidden" />
         <div className={connected ? "sr-only" : "pointer-events-none absolute inset-x-3 top-3 flex justify-center"}>
           <span id="status" role="status" className="max-w-full rounded-full border border-hairline bg-panel/95 px-3 py-1.5 text-center text-xs text-ink-secondary shadow-sm">{status}</span>
         </div>
         {controlError && <p role="alert" className="absolute inset-x-3 bottom-3 rounded-xl border border-hairline bg-panel p-3 text-ink">{controlError}</p>}
       </main>
 
-      {expanded && panel && <section aria-label={t(panel === "keyboard" ? "localVmViewer.keyboard" : "localVmViewer.clipboard")} onKeyDown={event => {
-        if (event.key === "Escape") { event.stopPropagation(); closePanel(); document.getElementById(panel)?.focus(); }
-      }} className="absolute left-[72px] top-1/2 z-20 max-h-[calc(100dvh-24px)] w-[min(320px,calc(100%-84px))] -translate-y-1/2 overflow-y-auto rounded-2xl border border-hairline bg-panel p-4 shadow-2xl" style={{ marginLeft: "env(safe-area-inset-left)" }}>
+      {panelMotion.shown && <section {...panelMotion.exitProps} aria-label={t(visiblePanel === "keyboard" ? "localVmViewer.keyboard" : "localVmViewer.clipboard")} onKeyDown={event => {
+        if (event.key === "Escape") { event.stopPropagation(); closePanel(); }
+      }} className={cn("absolute left-[72px] top-1/2 z-20 max-h-[calc(100dvh-24px)] w-[min(320px,calc(100%-84px))] -translate-y-1/2 overflow-y-auto rounded-2xl border border-hairline bg-panel p-4 shadow-2xl", panelMotion.className)} style={{ marginLeft: "env(safe-area-inset-left)" }}>
         <div className="mb-3 flex items-center justify-between gap-2">
-          <h1 className="font-medium">{t(panel === "keyboard" ? "localVmViewer.keyboard" : "localVmViewer.clipboard")}</h1>
+          <h1 className="font-medium">{t(visiblePanel === "keyboard" ? "localVmViewer.keyboard" : "localVmViewer.clipboard")}</h1>
           <ViewerTool label={t("localVmViewer.closePanel")} icon={X} onClick={closePanel} />
         </div>
         <form onSubmit={event => {
           event.preventDefault();
           if (!rfb.current || !connected) return;
-          if (panel === "clipboard") {
+          if (visiblePanel === "clipboard") {
             rfb.current.clipboardPasteFrom(clipboard);
           } else {
             // Explicit text entry works with phone keyboards without reading
@@ -164,18 +170,17 @@ export function LocalVmViewer() {
             setText("");
           }
         }}>
-          <label className="mb-2 block text-xs leading-relaxed text-ink-secondary" htmlFor={panel === "keyboard" ? "text" : "clipboard-text"}>{t(panel === "keyboard" ? "localVmViewer.text" : "localVmViewer.clipboardHint")}</label>
-          <textarea id={panel === "keyboard" ? "text" : "clipboard-text"} className="w-full resize-y rounded-xl border border-hairline bg-inset p-3 text-base text-ink outline-none focus:border-focus" rows={4} maxLength={panel === "keyboard" ? 4096 : 65536} autoComplete="off" autoCapitalize="off" spellCheck={false} value={panel === "keyboard" ? text : clipboard} onChange={event => panel === "keyboard" ? setText(event.target.value) : setClipboard(event.target.value)} />
-          <button id="send" type="submit" className="mt-3 flex min-h-11 w-full items-center justify-center gap-2 rounded-xl bg-accent px-3 font-medium text-white transition-opacity hover:opacity-90 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus disabled:opacity-40" disabled={!connected || (panel === "keyboard" && !text)}>
-            <Send size={16} aria-hidden="true" />{t(panel === "keyboard" ? "localVmViewer.send" : "localVmViewer.sendClipboard")}
+          <label className="mb-2 block text-xs leading-relaxed text-ink-secondary" htmlFor={visiblePanel === "keyboard" ? "text" : "clipboard-text"}>{t(visiblePanel === "keyboard" ? "localVmViewer.text" : "localVmViewer.clipboardHint")}</label>
+          <textarea id={visiblePanel === "keyboard" ? "text" : "clipboard-text"} className="w-full resize-y rounded-xl border border-hairline bg-inset p-3 text-base text-ink outline-none focus:border-focus" rows={4} maxLength={visiblePanel === "keyboard" ? 4096 : 65536} autoComplete="off" autoCapitalize="off" spellCheck={false} value={visiblePanel === "keyboard" ? text : clipboard} onChange={event => visiblePanel === "keyboard" ? setText(event.target.value) : setClipboard(event.target.value)} />
+          <button id="send" type="submit" className="mt-3 flex min-h-11 w-full items-center justify-center gap-2 rounded-xl bg-accent px-3 font-medium text-white transition-opacity hover:opacity-90 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus disabled:opacity-40" disabled={!connected || (visiblePanel === "keyboard" && !text)}>
+            <Send size={16} aria-hidden="true" />{t(visiblePanel === "keyboard" ? "localVmViewer.send" : "localVmViewer.sendClipboard")}
           </button>
         </form>
-        {panel === "keyboard" && <div className="mt-4 grid grid-cols-2 gap-2 border-t border-hairline pt-4">
+        {visiblePanel === "keyboard" && <div className="mt-4 grid grid-cols-2 gap-2 border-t border-hairline pt-4">
           <button className={action} disabled={!connected} onClick={() => rfb.current?.sendKey(0xff09, "Tab")}>Tab</button>
           <button className={action} disabled={!connected} onClick={() => rfb.current?.sendKey(0xff1b, "Escape")}>Esc</button>
           <button id="ctrl-alt-del" className={cn(action, "col-span-2")} disabled={!connected} onClick={() => rfb.current?.sendCtrlAltDel()}>Ctrl–Alt–Del</button>
         </div>}
-        <a className="mt-4 block text-center text-xs text-ink-tertiary underline underline-offset-2" href="/licenses/novnc/NOTICE.txt" target="_blank" rel="noreferrer">noVNC</a>
       </section>}
     </div>
   );

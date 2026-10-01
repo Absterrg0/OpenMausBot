@@ -2987,7 +2987,6 @@
   "localVmViewer.clipboard": "Clipboard",
   "localVmViewer.clipboardHint": "Copy text from the desktop here, or send text to its clipboard and paste it inside the desktop.",
   "localVmViewer.sendClipboard": "Send to desktop clipboard",
-  "localVmViewer.fit": "Fit desktop to window",
   "localVmViewer.fullscreen": "Enter fullscreen",
   "localVmViewer.exitFullscreen": "Exit fullscreen",
   "localVmViewer.fullscreenFailed": "Fullscreen is unavailable in this browser.",

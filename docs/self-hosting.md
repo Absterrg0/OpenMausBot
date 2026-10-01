@@ -736,7 +736,9 @@ The viewer is bundled with OpenMausBot. HTML and JavaScript from the VM are
 never served under the app's origin, and workspace cookies and tokens are
 never forwarded into the VM. An open viewer keeps that VM's idle timer active.
 The collapsible sidebar follows the app's theme and provides keyboard input,
-clipboard exchange, fit-to-window and fullscreen (when the browser supports it).
+clipboard exchange and fullscreen (when the browser supports it). The desktop
+always fits within 95% of the available space. Controls use the app's menu motion
+and native tooltips.
 Use **Keyboard** to send text from a phone. Local owner connections, including
 the packaged desktop's isolated viewer windows, keep the direct viewer URL.
 

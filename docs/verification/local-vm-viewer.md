@@ -22,7 +22,9 @@ status and WebSocket routes as a remote admin, and verifies:
 - Paired status returns a viewer link on the app origin, without a password.
 - The Keyboard panel sends text, newline, Unicode keysyms and Ctrl–Alt–Del.
 - Clipboard text travels in both directions through explicit controls.
-- Fit, fullscreen (when supported) and the collapsible sidebar work.
+- Automatic 95% fit, fullscreen (when supported), native tooltips and the
+  animated collapsible sidebar work; closed controls are inert.
+- Panels use the app's shared menu motion, including reduced-motion behavior.
 - The panels fit phone and short landscape viewports; dark and light screenshots
   show the built UI using the app's skin tokens.
 - Reconnect opens a new working desktop connection.
