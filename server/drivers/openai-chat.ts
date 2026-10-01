@@ -104,6 +104,10 @@ interface RuntimeOptions<Config> {
   tools?: boolean;
   /** Opt-in structured images and harness-authorized computer/browser MCP. */
   computerUse?: boolean;
+  /** Whether a model accepts image parts (default: every model does). A
+   * text-only model keeps the computer and browser tools, whose snapshots
+   * and page reads are text, but never receives a screenshot or attachment. */
+  imageInput?: (model: string) => boolean;
 }
 
 const usageFrom = (usage: CompletionJson["usage"]): Usage | null =>
@@ -115,6 +119,9 @@ const asError = (value: unknown): Error =>
   value instanceof Error ? value : new Error(String(value));
 
 class UnsupportedChatToolsError extends Error {}
+
+const TEXT_ONLY_ATTACHMENT_NOTE = "[The person attached image(s), but this model cannot see images. Say so if the request depends on them.]";
+const TEXT_ONLY_SCREENSHOT_NOTE = "[Screenshot not shown: this model cannot see images. Read the page with a snapshot or a text tool instead.]";
 
 function rejectsToolsParameter(status: number, body: string): boolean {
   if (status !== 400 && status !== 422) return false;
@@ -357,6 +364,8 @@ export function createOpenAIChatRuntime<Config>(options: RuntimeOptions<Config>)
     }
   };
 
+  const seesImages = (turn: SendTurnInput) =>
+    options.imageInput?.(turn.model || options.models().default) ?? true;
   const messagesFor = (turn: SendTurnInput): OpenAIChatMessage[] => {
     // The system message is the head of the resent prefix, so only the
     // stable half belongs there: a volatile edit must not re-price the
@@ -377,7 +386,9 @@ export function createOpenAIChatRuntime<Config>(options: RuntimeOptions<Config>)
         role: message.role,
         content: message.text,
       })),
-      { role: "user", content: options.computerUse ? chatUserContent(userTurn) : userTurn.text },
+      { role: "user", content: !options.computerUse ? userTurn.text
+        : seesImages(turn) ? chatUserContent(userTurn)
+        : userTurn.images?.length ? `${userTurn.text}\n\n${TEXT_ONLY_ATTACHMENT_NOTE}` : userTurn.text },
     ];
   };
 
@@ -621,6 +632,10 @@ export function createOpenAIChatRuntime<Config>(options: RuntimeOptions<Config>)
                 started = true;
                 if (allowed) {
                   result = await tools.execute(call.function.name, args as Record<string, unknown>, abort.signal);
+                  if (result.images?.length && !seesImages(turn)) {
+                    const { images: _dropped, ...rest } = result;
+                    result = { ...rest, text: `${rest.text}\n${TEXT_ONLY_SCREENSHOT_NOTE}` };
+                  }
                   if (result.images?.length) {
                     try {
                       assertImageTransport(options.apiUrl);

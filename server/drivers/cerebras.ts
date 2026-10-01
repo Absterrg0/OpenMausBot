@@ -32,6 +32,9 @@ function decodeConfig(raw: unknown): CerebrasConfig {
 
 const modelCard = z.object({ id: z.string().min(1) });
 
+/** Cerebras answers "Only 'text' content type can be used" for these. */
+const TEXT_ONLY_MODELS = /^(?:gpt-oss|llama3\.1-8b|llama-3\.3-70b)/i;
+
 export const CerebrasDriver: ProviderDriver<CerebrasConfig> = {
   driverKind: "cerebras",
   metadata: { displayName: "Cerebras (API)", supportsMultipleInstances: true, access: "api" },
@@ -84,6 +87,7 @@ export const CerebrasDriver: ProviderDriver<CerebrasConfig> = {
       input, driverKind: "cerebras", apiKey, apiUrl: config.url,
       tools: config.tools, models: () => catalog, refreshModels, reasoning: true,
       reasoningReplayField: "reasoning",
+      computerUse: true, imageInput: (model) => !TEXT_ONLY_MODELS.test(model),
       requestBody: (model, messages, stream) => ({
         model, messages, stream,
         ...(stream ? { stream_options: { include_usage: true } } : {}),
