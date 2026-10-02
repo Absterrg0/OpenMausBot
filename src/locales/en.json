@@ -1207,6 +1207,8 @@
   "task.closed": "Closed",
   "task.archive": "Archive",
   "task.copyLink": "Copy link",
+  "task.refreshPermissions": "Refresh permissions",
+  "task.refreshPermissionsHint": "Apply this bot's current approval level and saved approvals to this thread. Other threads stay as they are.",
   "task.unarchive": "Unarchive",
   "task.archived": "Archived",
   "task.snooze": "Snooze",
