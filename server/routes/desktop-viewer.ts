@@ -209,7 +209,7 @@ export function createDesktopViewer(deps: {
     closeForOwner: (owner: string, botId?: string) => {
       let closed = 0;
       for (const upgrade of upgrades.values()) {
-        if (upgrade.owner !== owner || (botId !== undefined && upgrade.botId !== botId)) continue;
+        if (upgrade.socket.destroyed || upgrade.owner !== owner || (botId !== undefined && upgrade.botId !== botId)) continue;
         upgrade.close();
         closed++;
       }
