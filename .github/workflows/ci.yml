@@ -17,12 +17,14 @@ permissions:
   contents: read
 
 concurrency:
-  # A new PR push supersedes that PR's older checks. Every main commit gets
-  # its own group and finishes: when main pushes cancelled each other, no
-  # main run completed for a day and a release shipped with no verdict
-  # (release.yml now waits for this workflow's `CI` check on its commit).
-  # Merge-queue runs stay protected on their own refs.
-  group: ci-${{ github.event_name == 'merge_group' && github.event.merge_group.head_ref || github.event_name == 'push' && github.sha || github.ref }}
+  # A new PR push supersedes that PR's older checks. Main keeps one run going
+  # and one waiting: each merge replaces the waiting run, so a burst of
+  # merges costs two full runs, not one per merge (fifteen queued behind each
+  # other in October 2026). The running one always finishes. A release runs
+  # CI on its own commit in a release-ci/v<version> lane when main's run for
+  # it was replaced (scripts/release-ci.mjs). Merge-queue runs stay on their
+  # own refs.
+  group: ci-${{ github.event_name == 'merge_group' && github.event.merge_group.head_ref || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
