@@ -105,7 +105,11 @@ public final class RFBClient {
     /// Larger than any desktop a Local VM runs, and small enough that a
     /// misbehaving server cannot make the phone allocate gigabytes.
     static let maxDimension = 8192
-    /// One largest supported framebuffer plus protocol headers/clipboard.
+    /// Fixed budget: one maximum supported framebuffer plus 1 MiB overhead,
+    /// not the current frame size. Ordinary multi-rectangle updates fit.
+    /// ponytail: whole updates are buffered; even valid extreme overlapping
+    /// updates above this budget are refused. Consume rectangles incrementally
+    /// if those updates need support.
     static let maxPendingBytes = maxDimension * maxDimension * 4 + (1 << 20)
 
     private let password: String?
