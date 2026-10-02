@@ -8,13 +8,14 @@ import { PinnedThreadRows, type AttentionThread } from "./SidebarBotActivity";
  * search and the bots list — pinned bots already get this top-level view
  * (the built-in Pinned section); pinned threads did not. Renders nothing
  * when there is no pin, so it never costs space it isn't using. */
-export function SidebarPinnedThreadsPanel({ entries, density, now, onJump, collapsed, onToggle }: {
+export function SidebarPinnedThreadsPanel({ entries, density, now, onJump, onUnpin, collapsed, onToggle }: {
   entries: AttentionThread[];
   density: SidebarDensity;
   now: number;
   onJump: (entry: AttentionThread) => void;
+  onUnpin: (entry: AttentionThread) => void;
   collapsed: boolean;
-  onToggle: () => void;
+  onToggle?: () => void;
 }) {
   if (entries.length === 0) return null;
   const compact = density === "compact";
@@ -29,6 +30,7 @@ export function SidebarPinnedThreadsPanel({ entries, density, now, onJump, colla
         <button
           type="button"
           onClick={onToggle}
+          disabled={!onToggle}
           aria-expanded={!collapsed}
           aria-label={t(collapsed ? "sidebar.section.expand" : "sidebar.section.collapse", { name: t("sidebar.pinnedThreads.title") })}
           className="flex size-5 shrink-0 items-center justify-center rounded text-ink-secondary hover:bg-raised hover:text-ink"
@@ -41,7 +43,7 @@ export function SidebarPinnedThreadsPanel({ entries, density, now, onJump, colla
       </div>
       {!collapsed && (
         <div className="max-h-56 overflow-y-auto">
-          <PinnedThreadRows entries={entries} now={now} onJump={onJump} />
+          <PinnedThreadRows entries={entries} now={now} onJump={onJump} onUnpin={onUnpin} />
         </div>
       )}
     </section>

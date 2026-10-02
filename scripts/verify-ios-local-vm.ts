@@ -20,7 +20,7 @@ import { fixtureApi } from "./testing/preview-fixture.ts";
 import { fakeVncDesktop } from "./testing/fake-vnc-desktop.ts";
 import { decodePng } from "./testing/png.ts";
 import { createServer as createHttpServer } from "node:http";
-import { BASE_IMAGE_DIGEST, CUA_DRIVER_VERSION, IMAGE, IMAGE_LAYER_VERSION } from "../server/container-computer.ts";
+import { BASE_IMAGE_DIGEST, CUA_DRIVER_VERSION, IMAGE, IMAGE_LAYER_VERSION, TARGET_LABEL, perBotLocalVmTarget } from "../server/container-computer.ts";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 
@@ -109,6 +109,7 @@ async function waitFor(url: string, child: ChildProcess): Promise<void> {
 const scratch = mkdtempSync(join(tmpdir(), "omb-ios-local-vm-"));
 const bin = join(scratch, "bin");
 const frames = join(scratch, "frames");
+const fixtureTarget = join(scratch, "target.json");
 mkdirSync(bin);
 mkdirSync(frames);
 for (let frame = 0; frame < 4; frame++) {
@@ -144,6 +145,7 @@ if (args[0] === '-H') args = args.slice(2);
 const labels = ${JSON.stringify({ "com.openmausbot.local-vm": "1", "com.openmausbot.cua-driver": CUA_DRIVER_VERSION, "com.openmausbot.cua-base": BASE_IMAGE_DIGEST, "com.openmausbot.image-layer": IMAGE_LAYER_VERSION, "com.openmausbot.workspace": "1" })};
 const imageId = 'sha256:' + 'a'.repeat(64);
 const counter = ${JSON.stringify(join(scratch, "captures"))};
+const target = fs.existsSync(${JSON.stringify(fixtureTarget)}) ? JSON.parse(fs.readFileSync(${JSON.stringify(fixtureTarget)}, 'utf8')) : null;
 let result;
 if (args[0] === 'exec' && args.includes('base64')) {
   const n = fs.existsSync(counter) ? Number(fs.readFileSync(counter, 'utf8')) : 0;
@@ -154,10 +156,12 @@ else if (args[0] === 'exec') result = args.includes('--version') ? 'cua-driver $
   : args.includes('health_report') ? {schema_version:'1',overall:'ok',checks:[]} : {};
 else if (args[0] === 'info') result = 'fixture';
 else if (args[0] === 'image' && args[1] === 'inspect') result = [{Id:imageId,Config:{Labels:labels}}];
-else if (args[0] === 'inspect' && args[1] === 'openmausbot-computer') result = [{
-  Config:{Image:${JSON.stringify(IMAGE)},Labels:labels,Env:['VNC_PW=fixture-password']},
+else if (args[0] === 'inspect' && (args[1] === 'openmausbot-computer' || args[1] === target?.containerName)) result = [{
+  Config:{Image:${JSON.stringify(IMAGE)},Labels:args[1] === target?.containerName ? {...labels,${JSON.stringify(TARGET_LABEL)}:target.label} : labels,Env:['VNC_PW=fixture-password']},
   State:{Running:true},Image:imageId,
-  Mounts:[{Type:'bind',Source:require('node:path').join(process.env.OMB_DATA_DIR,'vm-home'),Destination:'/home/cua/workspace',RW:true}],
+  Mounts:[{Type:'bind',Source:args[1] === target?.containerName
+    ? require('node:path').join(process.env.OMB_DATA_DIR,'vm-homes',target.label.slice(0,16))
+    : require('node:path').join(process.env.OMB_DATA_DIR,'vm-home'),Destination:'/home/cua/workspace',RW:true}],
   HostConfig:{PortBindings:{'6901/tcp':[{HostIp:'127.0.0.1',HostPort:'${desktop.port}'}]},
     Privileged:false,Memory:4294967296,MemorySwap:4294967296,NanoCpus:2000000000,PidsLimit:512,
     CapDrop:['ALL'],CapAdd:['CAP_SETUID','CAP_SETGID'],IpcMode:'private',ShmSize:536870912,
@@ -177,6 +181,9 @@ process.stdout.write(typeof result === 'string' ? result : JSON.stringify(result
   const { bot } = await api("POST", "/api/bots", {
     name: "Vee", description: "Works on the Local VM.", modelSelection: { instanceId: "claude", model: "claude-sonnet-4-5" },
   });
+  const target = perBotLocalVmTarget(bot.id);
+  writeFileSync(fixtureTarget, JSON.stringify({ containerName: target.containerName, label: target.label }));
+  await api("PATCH", "/api/config", { localVm: { mode: "per-bot" } });
   await api("PATCH", `/api/bots/${bot.id}`, { computer: "vm" });
   const still = await api("POST", `/api/bots/${bot.id}/local-computer/screenshot?threadId=${bot.threadId}`);
   if (!String(still.image).startsWith("data:image/png;base64,")) throw new Error("fixture screenshot route did not return a PNG");

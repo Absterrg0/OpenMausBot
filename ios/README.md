@@ -209,10 +209,11 @@ every 3 while the bot works and its streamed frames have gone quiet. It is a
 picture only.
 
 With the same switch on, **Take control** under that picture drives the VM from
-the phone. The phone takes the bot's computer under its own control lease — the
-harness then refuses that bot's computer actions, as when someone takes control
-on the Mac (in the default shared Local VM mode, other bots on the same VM are
-not paused, on the phone or on the Mac) — and asks for the VM's live desktop.
+the phone in per-bot Local VM mode. Shared and pool modes show an instruction
+to select per-bot mode in Settings → Computers; a bot's lease cannot pause other
+bots sharing its desktop. Stills remain available in every mode. The phone takes
+the bot's computer under its own control lease — the harness then refuses that
+bot's computer actions — and asks for the VM's live desktop.
 The harness hands that out only to a loopback caller and only to the lease
 holding the computer; the sidecar relays it to this one device the way it
 already relays a VPS viewer, so the VM's noVNC port never leaves the Mac, and it

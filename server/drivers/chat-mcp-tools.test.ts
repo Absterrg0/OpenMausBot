@@ -131,6 +131,21 @@ describe("Chat MCP session", () => {
     await expect(session.execute("audit_write", { value: "again" }, f.controller.signal)).rejects.toThrow("closed");
   });
 
+  it.each([
+    ["browser", true],
+    ["custom", false],
+  ] as const)("drops a blank url for agent_browser_read only on the built-in browser (%s)", async (mountAs, dropped) => {
+    const readSchema = { type: "object", properties: { url: { type: "string" } }, additionalProperties: false };
+    const f = fixture(`if (message.method === "tools/list") { reply(message, {tools:[{name:"agent_browser_read",description:"Omit url to read the active tab.",inputSchema:schema}]}); continue; }`, readSchema);
+    const session = await mountChatTools(mountAs === "browser" ? { browser: f.server } : { custom: { browser: f.server } }, f.controller.signal, true);
+    sessions.push(session);
+    const name = session.definitions[0]!.function.name;
+    await session.execute(name, { url: " " }, f.controller.signal);
+    await session.execute(name, { url: "https://example.com" }, f.controller.signal);
+    const calls = f.read().calls.filter((call) => call.method === "tools/call").map((call) => call.params?.arguments);
+    expect(calls).toEqual([dropped ? {} : { url: " " }, { url: "https://example.com" }]);
+  });
+
   it("starts servers with the widened PATH rather than the bare one the desktop shell inherits", async () => {
     // Launched from Finder, the harness sees only the system directories;
     // the widened PATH is what the Claude and Codex drivers already hand out.

@@ -324,6 +324,8 @@ describe("additive portable team backups", () => {
     const dm = store.createGroup("Old direct message", [chief.id, scout.id], true);
     store.appendMessage(dm.threadId, { role: "bot", kind: "text", text: "Keep this old reply", from: { botId: chief.id, name: chief.name, color: chief.color } });
     store.deleteBot(chief.id);
+    // Recreate the pre-repair records this legacy-export regression covers.
+    Object.assign(group, { memberIds: [chief.id, scout.id], defaultResponder: { kind: "member", botId: chief.id } });
     const backup = createTeamBackup(store, routines.listRoutines(), "My team");
     expect(backup.warnings).toHaveLength(4);
     expect(backup.routines).toEqual([]);

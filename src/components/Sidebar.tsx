@@ -81,6 +81,7 @@ import {
   type SidebarDensity,
 } from "@/lib/sidebar-preferences";
 import {
+  ATTENTION_SECTION_ID,
   BOT_CHATS_SECTION_ID,
   BOTS_SECTION_ID,
   CHANNELS_SECTION_ID,
@@ -111,7 +112,7 @@ import { profileInitials, SidebarProfileMenu } from "./SidebarProfileMenu";
 import { SidebarSectionHeader } from "./SidebarSectionHeader";
 import { useShowThreads } from "@/lib/thread-preferences";
 import { botShowsUnread } from "@/lib/bot-unread";
-import { attentionJumpAction, AttentionThreadRows, crossBotAttentionThreads, crossBotPinnedThreads, SidebarBotActivity, sidebarBotActivityTasks } from "./SidebarBotActivity";
+import { attentionJumpAction, attentionUnpinAction, AttentionThreadRows, crossBotAttentionThreads, crossBotPinnedThreads, SidebarBotActivity, sidebarBotActivityTasks } from "./SidebarBotActivity";
 import { SidebarAttentionPanel } from "./SidebarAttentionPanel";
 import { SidebarPinnedThreadsPanel } from "./SidebarPinnedThreadsPanel";
 import { ShortcutHint } from "./ShortcutHint";
@@ -2353,6 +2354,8 @@ export function Sidebar({ open, onClose, collapseToIcons = false }: {
           density={density}
           onUnpin={() => setAttentionPinned(false)}
           onJump={(entry) => dispatch(attentionJumpAction(entry))}
+          collapsed={sectionCollapsed(ATTENTION_SECTION_ID)}
+          onToggle={layoutInteractive ? () => toggleSection(ATTENTION_SECTION_ID) : undefined}
         />
       )}
 
@@ -2362,8 +2365,9 @@ export function Sidebar({ open, onClose, collapseToIcons = false }: {
           density={density}
           now={now}
           onJump={(entry) => dispatch(attentionJumpAction(entry))}
+          onUnpin={(entry) => dispatch(attentionUnpinAction(entry))}
           collapsed={sectionCollapsed(PINNED_THREADS_SECTION_ID)}
-          onToggle={() => toggleSection(PINNED_THREADS_SECTION_ID)}
+          onToggle={layoutInteractive ? () => toggleSection(PINNED_THREADS_SECTION_ID) : undefined}
         />
       )}
 
