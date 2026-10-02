@@ -1,11 +1,11 @@
 ---
 title: Other model providers
-description: Use OpenRouter, Fireworks AI, DeepSeek, Cline, or your own OpenAI- or Anthropic-compatible service today, and what's coming.
+description: Use OpenRouter, Fireworks AI, DeepSeek, Cline, or your own OpenAI- or Anthropic-compatible service.
 icon: Route
 ---
 
-This page covers what works today in each engine, what's coming, and known
-problems with OpenCode 2.x.
+This page covers what works today in each engine and version-specific
+differences with OpenCode 2.x.
 
 ## What works today
 
@@ -39,8 +39,8 @@ just needs your key.
    paste your key.
 3. In OpenMausBot, open a bot's model picker, choose OpenCode and press the
    refresh button (**Refresh models**). The provider's models appear in the
-   list. On OpenCode 2.x they don't appear yet; see
-   [OpenCode 2.x](#opencode-2x).
+   list. OpenMausBot reads the model list from an ACP session on both
+   OpenCode 1.x and 2.x.
 
 OpenMausBot uses your normal OpenCode sign-ins and settings, so there is
 nothing to set up inside the app. Sign in with the same OpenCode version that
@@ -140,40 +140,11 @@ and your Claude bots follow it:
 
 Not yet. Codex bots use your ChatGPT sign-in, or your organisation's models.
 
-## What's coming
+## Current limits
 
-We're building a list of model providers in **Settings → Connections → Model
-providers**. The plan:
-
-- Pick a provider (OpenRouter, Fireworks AI, DeepSeek, Cline, Groq, Together,
-  Mistral, xAI, Moonshot (Kimi), Z.ai, MiniMax, Cerebras and many more), or
-  paste any OpenAI- or Anthropic-compatible address.
-- Paste the key. OpenMausBot will check it, list the models and pick a few
-  good ones to start with. You choose which ones to show.
-- Add as many providers as you like. Their models will show up in every
-  engine that can use them:
-
-  | Provider | OpenCode | Chat engine | Claude Code | Codex |
-  |---|---|---|---|---|
-  | OpenRouter | Yes | Yes | Yes | Yes |
-  | Fireworks AI | Yes | Yes | Yes | Yes, except MiniMax models and Fire Pass keys |
-  | DeepSeek | Yes | Yes | Yes | No |
-  | Cline | Yes | Yes | No | No |
-  | Your own OpenAI-compatible address | Yes | Yes | No | Optional, experimental |
-  | Your own Anthropic-compatible address | If it passes our check | No | If it passes our check | No |
-
-- On the desktop, keys will be kept in your system's secure storage. On a
-  server, they'll be kept in a file that only the server's user can read.
-  Keys will stay out of config files, backups and logs.
-- OpenMausBot will only send a key to the address it was checked against.
-  If you change the address, you'll be asked for the key again.
-- As with any key an engine uses, a bot that can run commands could read it.
-  A later update will keep keys inside OpenMausBot so engines never hold them.
-- Engines with their own sign-in (Antigravity, Cursor, Gemini and others)
-  won't be included at first. The list will be hidden in hosted team
-  workspaces and where an organisation allows only its own models.
-
-Plans can change. This page will be updated as each part ships.
+There is no shared provider list that configures every engine. Use each
+engine's setup above, and do not assume a key saved for one engine changes
+another engine's sign-in or model list.
 
 ## OpenCode 2.x
 
@@ -184,19 +155,11 @@ command called `opencode`.
 - If you installed OpenCode from OpenMausBot's Settings, bots use that copy.
   Otherwise they use the first `opencode` on your PATH, which is 2.x if you
   installed `@opencode/cli`. **Settings → Engines** shows the version in use.
-- 2.x works on a best-effort basis. Known problems:
-  - Until the next update, OpenMausBot can't read 2.x's model list, so the
-    picker shows only OpenCode's free models. To use OpenRouter, Fireworks,
-    DeepSeek or Cline now, install OpenCode from **Settings → Engines**,
-    which installs 1.x and takes priority. Then sign in with that copy:
-    `~/.openmausbot/tools/npm/bin/opencode auth login`
-    (`%USERPROFILE%\.openmausbot\tools\npm\opencode auth login` on
-    Windows).
-  - Providers set up in OpenCode's config file sometimes don't show up in a
-    new chat. This is an OpenCode bug
-    ([#50236](https://github.com/anomalyco/opencode/issues/50236)); its fix
-    ([#50619](https://github.com/anomalyco/opencode/pull/50619)) isn't merged
-    yet.
+- 2.x works on a best-effort basis. Version-specific differences:
+  - Some 2.x releases have reported missing configured providers in new
+    ACP sessions ([upstream report #50236](https://github.com/anomalyco/opencode/issues/50236)).
+    If a provider is missing, check the installed version and upstream
+    updates before changing your credentials.
   - When a provider key is set in the environment (for example
     `OPENROUTER_API_KEY` on a server), 2.x hides OpenCode's free models and
     makes a paid model the default.

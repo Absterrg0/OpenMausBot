@@ -3,7 +3,7 @@
 // Each workaround it gives depends on a detail of today's code, so each one
 // is pinned here to that code. When one of these fails, the behaviour moved:
 // update apps/docs/content/docs/providers/model-providers.mdx with it.
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -120,43 +120,19 @@ describe("Claude Code section", () => {
 });
 
 describe("OpenCode 2.x section", () => {
-  it("says the picker shows only the free models, because today's discovery cannot read 2.x", async () => {
-    // Behaves like @opencode/cli 2.0.20: `models --verbose` is an unknown
-    // flag, while plain `models` would list the provider the person signed
-    // in to.
+  it("lists provider models from ACP even when OpenCode 2 rejects models --verbose", async () => {
     const dir = scratch("omb-docs-opencode2-");
-    const cli = join(dir, "opencode2.mjs");
-    writeFileSync(cli, [
-      "#!/usr/bin/env node",
-      "const args = process.argv.slice(2);",
-      "if (args[0] === 'models' && args.includes('--verbose')) {",
-      "  process.stderr.write('ERROR Unrecognized flag: --verbose in command opencode models\\n');",
-      "  process.exit(1);",
-      "}",
-      "if (args[0] === 'models') { process.stdout.write('openrouter/deepseek/deepseek-chat\\n'); process.exit(0); }",
-      "process.exit(2);",
-      "",
-    ].join("\n"));
-    chmodSync(cli, 0o755);
-    resetOpenCodeModelCache();
-
-    const catalog = await discoverOpenCodeModels({ ...process.env, HOME: dir, USERPROFILE: dir, XDG_CONFIG_HOME: join(dir, "config"), XDG_DATA_HOME: join(dir, "data") }, cli);
-    const ids = catalog.options.map((option) => option.id);
-    // Once discovery reads 2.x (batch-1 moves it to an ACP session), this
-    // fails: drop the first "Known problems" bullet and the note after step 3
-    // of the OpenCode section, then this test.
-    const changed = "OpenCode 2.x discovery changed: update the OpenCode 2.x known problems in model-providers.mdx";
-    expect(ids, changed).not.toContain("openrouter/deepseek/deepseek-chat");
-    expect(ids.length, changed).toBeGreaterThan(0);
-    expect(ids.every((id) => id.startsWith("opencode/") && id.endsWith("-free")), changed).toBe(true);
-
-    const text = section("## OpenCode 2.x");
-    const problems = text.slice(text.indexOf("Known problems:"));
-    expect(problems.indexOf("Until the next update, OpenMausBot can't read 2.x's model list, so the picker shows only OpenCode's free models.")).toBe(
-      "Known problems: - ".length,
-    );
-    expect(problems).toContain("install OpenCode from **Settings → Engines**, which installs 1.x and takes priority.");
-    expect(section("### OpenCode")).toContain("On OpenCode 2.x they don't appear yet; see [OpenCode 2.x](#opencode-2x).");
+    const catalog = await discoverOpenCodeModels({
+      ...process.env, HOME: dir, USERPROFILE: dir,
+      XDG_CONFIG_HOME: join(dir, "config"), XDG_DATA_HOME: join(dir, "data"),
+      FAKE_ACP_MODELS_LIST: "v2",
+      FAKE_ACP_MODELS: "openrouter/deepseek/deepseek-chat,opencode/longcat-2.5-preview-free",
+    }, join(ROOT, "server", "testing", "fake-acp-cli.ts"));
+    expect(catalog.options.map((option) => option.id)).toEqual([
+      "openrouter/deepseek/deepseek-chat", "opencode/longcat-2.5-preview-free",
+    ]);
+    expect(section("### OpenCode")).toContain("OpenMausBot reads the model list from an ACP session on both OpenCode 1.x and 2.x.");
+    expect(section("## OpenCode 2.x")).not.toContain("picker shows only OpenCode's free models");
   });
 });
 
@@ -218,9 +194,4 @@ describe("Keys exported on a server", () => {
     expect(text).toContain("Keys exported this way reach every engine on that server, and any bot that can run commands can read them.");
   });
 
-  it("promises only what OpenMausBot itself sends", () => {
-    const coming = section("## What's coming");
-    expect(coming).toContain("OpenMausBot will only send a key to the address it was checked against.");
-    expect(coming).not.toContain("A key will only be sent to the address");
-  });
 });
