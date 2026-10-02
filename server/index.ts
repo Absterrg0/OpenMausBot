@@ -2895,7 +2895,13 @@ function requestedTaskBot(botId: string, rawThreadId: unknown): BotRecord {
   return task;
 }
 
-async function interruptDirectThread(botId: string, threadId: string): Promise<void> {
+async function interruptDirectThread(botId: string, threadId: string, options?: { preserveComputerResume?: boolean }): Promise<void> {
+  // A parked turn has settled its provider but still owns a future resume.
+  // Stop cancels that work too. The parking teardown itself preserves it.
+  if (!options?.preserveComputerResume && pendingComputerResumes.delete(threadId)
+      && store.taskByThread(botId, threadId)?.activity === "parked.computer") {
+    store.setTaskActivity(botId, threadId, "idle");
+  }
   const requestOwner = directRequestOwners.get(threadId);
   if (requestOwner) {
     requestOwner.stopped = true;
@@ -2936,7 +2942,7 @@ function noteTeammatesLeftRunning(botId: string, threadId: string, running: Room
 }
 
 async function interruptAllDirectThreads(botId: string): Promise<void> {
-  const threads = store.tasks(botId).filter((task) => task.busy || directTurnDispatchClaims.has(task.threadId) || roomHandoffs.activeDirect(task.threadId));
+  const threads = store.tasks(botId).filter((task) => task.busy || directTurnDispatchClaims.has(task.threadId) || roomHandoffs.activeDirect(task.threadId) || pendingComputerResumes.has(task.threadId));
   // Revoke every sibling before yielding to any provider teardown.
   for (const task of threads) {
     cancelDirectTurnDispatch(botId, task.threadId);
@@ -5198,6 +5204,7 @@ function cancelGroupTurnOperations(
     detail: "Stopped by you.",
   },
 ) {
+  pendingComputerResumes.delete(threadId);
   cancelTeamSetupResumesForThread(threadId);
   roomHandoffs.cancelRoom(groupId, threadId);
   for (const operation of groupTurnOperations.get(groupId) ?? []) {
@@ -9688,7 +9695,7 @@ async function startTurn(
             generation: resourceOwner.generation,
             afterMessageId: store.activePath(threadId).findLast((entry) => entry.role === "user")?.id,
           });
-          void interruptDirectThread(bot.id, threadId).catch(() => {});
+          void interruptDirectThread(bot.id, threadId, { preserveComputerResume: true }).catch(() => {});
           return;
         }
         const message = `computer unavailable — ${label} could not be claimed for this turn (${failure})`;

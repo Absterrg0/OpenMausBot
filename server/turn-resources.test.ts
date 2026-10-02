@@ -338,5 +338,4 @@ describe("parked-resume idle availability", () => {
     leases.release(b);
     expect(leases.claim(seat, a, { now: 95_000, idle: policy })).toBe(true);
   });
-  });
 });

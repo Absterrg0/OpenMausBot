@@ -3459,12 +3459,12 @@ describe("harness HTTP API", () => {
       // bot's active-thread pointer, so a bare interrupt would hit the
       // newest waiter instead of the turn holding the desktop.
       holderThread = bot.threadId;
-      managedBoxCreateMode = "success";
-      managedBoxCreateId = "bx_queuedsk";
-      managedBoxCreateName = "";
+      managedBoatCreateMode = "success";
+      managedBoatCreateId = "bx_queuedsk";
+      managedBoatCreateName = "";
       expect((await api("POST", "/api/team-computers", { requestId, name: "Queue desktop", acknowledgeCost: true })).status).toBe(201);
       expect((await api("PATCH", `/api/team-computers/${requestId}`, { section, acknowledgeSharedAccess: true })).status).toBe(200);
-      const promptsOnBox = () => boxRouteCalls.filter(call => call.method === "POST" && call.path === `/boxes/${managedBoxCreateId}/prompt`).length;
+      const promptsOnBox = () => boatRouteCalls.filter(call => call.method === "POST" && call.path === `/boxes/${managedBoatCreateId}/prompt`).length;
       const threadMessages = async (threadId: string) =>
         ((await api("GET", `/api/threads/${threadId}/messages`)).body.messages as Array<{ tool?: { name?: string } }>);
       const threadEvents = async (threadId: string) =>
@@ -3474,7 +3474,7 @@ describe("harness HTTP API", () => {
       // The holder keeps the desktop until it is interrupted.
       expect((await api("POST", `/api/bots/${botId}/messages`, { text: "hold the queue desktop" })).status).toBe(202);
       await expect.poll(promptsOnBox, { timeout: 5_000 }).toBe(1);
-      const promptBaseline = boxPromptBodies.length;
+      const promptBaseline = boatPromptBodies.length;
 
       // Three sibling tasks arrive one after another. Each chip names its
       // stable position in arrival order, and no estimate exists yet.
@@ -3492,7 +3492,7 @@ describe("harness HTTP API", () => {
       // one new provider prompt, carrying the first waiter's arrival text.
       expect((await api("POST", `/api/bots/${botId}/interrupt`, { threadId: holderThread })).status).toBe(200);
       await expect.poll(promptsOnBox, { timeout: 10_000 }).toBe(2);
-      expect(String(boxPromptBodies.slice(promptBaseline).at(-1)?.prompt)).toContain("arrival 1 of the queue");
+      expect(String(boatPromptBodies.slice(promptBaseline).at(-1)?.prompt)).toContain("arrival 1 of the queue");
       await expect.poll(async () => JSON.stringify(await threadMessages(waiterThreads[0]!)), { timeout: 5_000 })
         .toMatch(/Computer free — continuing after waiting /);
       // Positions 2 and 3 keep waiting: nobody jumped the released seat.
@@ -3515,22 +3515,22 @@ describe("harness HTTP API", () => {
       // next, again by its own arrival text.
       expect((await api("POST", `/api/bots/${botId}/interrupt`, { threadId: waiterThreads[0] })).status).toBe(200);
       await expect.poll(promptsOnBox, { timeout: 10_000 }).toBe(3);
-      expect(String(boxPromptBodies.slice(promptBaseline).at(-1)?.prompt)).toContain("arrival 2 of the queue");
+      expect(String(boatPromptBodies.slice(promptBaseline).at(-1)?.prompt)).toContain("arrival 2 of the queue");
     } finally {
       if (holderThread) await api("POST", `/api/bots/${botId}/interrupt`, { threadId: holderThread }).catch(() => undefined);
       for (const threadId of waiterThreads) await api("POST", `/api/bots/${botId}/interrupt`, { threadId }).catch(() => undefined);
       await api("POST", `/api/bots/${botId}/interrupt`, {}).catch(() => undefined);
       await api("POST", `/api/team-computers/${requestId}/control`, { action: "release" }).catch(() => undefined);
       await api("PATCH", `/api/team-computers/${requestId}`, { section: null, acknowledgeSharedAccess: true }).catch(() => undefined);
-      managedBoxRows = [];
-      managedBoxCreatedIds.clear();
+      managedBoatRows = [];
+      managedBoatCreatedIds.clear();
       if (botId) await api("DELETE", `/api/bots/${botId}`).catch(() => undefined);
       await api("PUT", "/api/config", { box: { token: "" } }).catch(() => undefined);
       await api("PUT", "/api/config", { threads: { maxConcurrentPerBot: 3 } }).catch(() => undefined);
-      managedBoxCreateMode = "refuse";
-      managedBoxCreateId = "bx_cdefghjk";
-      managedBoxCreateName = "";
-      boxRouteCalls.length = 0;
+      managedBoatCreateMode = "refuse";
+      managedBoatCreateId = "bx_cdefghjk";
+      managedBoatCreateName = "";
+      boatRouteCalls.length = 0;
       rmSync(fakeClaudeDump, { force: true });
     }
   }, 60_000);
@@ -3587,6 +3587,7 @@ describe("harness HTTP API", () => {
     let botId = "";
     let holderThreadId = "";
     let siblingThreadId = "";
+    let stoppedThreadId = "";
     let roomBotId = "";
     let roomId = "";
     try {
@@ -3693,11 +3694,33 @@ describe("harness HTTP API", () => {
         return task ? task.busy : "";
       }, { timeout: 5_000 }).toBe(true);
 
+      // Stop also cancels settled, parked work: freeing its requested seat
+      // must not start another provider turn in either a direct task or room.
+      const stoppedTask = (await isolatedApi("POST", `/api/bots/${botId}/tasks`, { title: "Stopped parked wait" })).body.task;
+      stoppedThreadId = stoppedTask.threadId;
+      expect((await isolatedApi("POST", `/api/bots/${botId}/messages`, { text: "park then stop this direct task", threadId: stoppedThreadId })).status).toBe(202);
+      await expect.poll(async () => (await isolatedApi("GET", "/api/bots?messages=0")).body.bots
+        .find((entry: any) => entry.id === botId)?.tasks.find((task: any) => task.threadId === stoppedThreadId)?.activity,
+      { timeout: 8_000 }).toBe("parked.computer");
+      expect((await isolatedApi("POST", `/api/bots/${botId}/interrupt`, { threadId: stoppedThreadId })).status).toBe(200);
+      expect((await isolatedApi("GET", "/api/bots?messages=0")).body.bots
+        .find((entry: any) => entry.id === botId)?.tasks.find((task: any) => task.threadId === stoppedThreadId)?.activity).toBe("idle");
+      expect((await isolatedApi("POST", `/api/groups/${roomId}/messages`, { text: "park then stop this room" })).status).toBe(202);
+      await expect.poll(async () => JSON.stringify((await isolatedApi("GET", `/api/threads/${room.threadId}/messages`)).body),
+        { timeout: 8_000 }).toMatch(/park then stop this room[\s\S]*Parked — it continues automatically when the computer is free/);
+      expect((await isolatedApi("POST", `/api/groups/${roomId}/interrupt`, {})).status).toBe(200);
+      expect((await isolatedApi("POST", `/api/bots/${botId}/interrupt`, { threadId: siblingThreadId })).status).toBe(200);
+      await new Promise((resolve) => setTimeout(resolve, 3_000));
+      expect(promptsOnParkBox()).toBe(4);
+      expect((await isolatedApi("GET", "/api/bots?messages=0")).body.bots
+        .find((entry: any) => entry.id === botId)?.tasks.find((task: any) => task.threadId === stoppedThreadId)?.busy).toBe(false);
+
     } finally {
       await isolatedApi("POST", `/api/groups/${roomId}/interrupt`, {}).catch(() => undefined);
       await isolatedApi("POST", `/api/bots/${roomBotId}/interrupt`, {}).catch(() => undefined);
       await isolatedApi("POST", `/api/bots/${botId}/interrupt`, { threadId: holderThreadId }).catch(() => undefined);
       await isolatedApi("POST", `/api/bots/${botId}/interrupt`, { threadId: siblingThreadId }).catch(() => undefined);
+      if (stoppedThreadId) await isolatedApi("POST", `/api/bots/${botId}/interrupt`, { threadId: stoppedThreadId }).catch(() => undefined);
       await isolatedApi("DELETE", `/api/bots/${botId}`).catch(() => undefined);
       await isolatedApi("PUT", "/api/config", { box: { token: "" } }).catch(() => undefined);
       managedBoatRows = [];
