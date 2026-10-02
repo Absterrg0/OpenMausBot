@@ -1,5 +1,5 @@
-// The three small menus in the sidebar header — New or share (+), Active
-// Threads and density — must close on Escape and on a press outside them, and
+// The small menus in the sidebar header — New or share (+) and Active
+// Threads — must close on Escape and on a press outside them, and
 // must not lay an invisible backdrop over the window that eats the click the
 // user aimed at something else.
 import { Children, isValidElement, type EffectCallback, type ReactElement, type ReactNode } from "react";
@@ -21,10 +21,12 @@ vi.mock("react", async (original) => ({
     return fixture.values[index];
   },
   useCallback: (callback: unknown) => callback,
+  useSyncExternalStore: (_subscribe: unknown, snapshot: () => unknown) => snapshot(),
   useEffect: (effect: EffectCallback) => { fixture.effects.push(effect); },
   useLayoutEffect: () => {},
 }));
 vi.mock("react-dom", () => ({ createPortal: (node: ReactNode) => node }));
+vi.mock("./MenuMotion", () => ({ useMenuMotion: (open: boolean) => ({ shown: open, closing: false, className: "", exitProps: {} }) }));
 vi.mock("./DesktopCapabilities", async () => {
   const { initialDesktopCapabilities } = await import("@/lib/desktop");
   return { useDesktopCapabilities: () => ({ capabilities: initialDesktopCapabilities() }) };
@@ -75,7 +77,6 @@ function press(target: unknown) {
 const menus = [
   { name: "New or share", label: "New or share", item: "Create team" },
   { name: "Active Threads", label: "Active Threads", item: "No active threads" },
-  { name: "density", label: "Choose sidebar density", item: "Avatars only" },
 ];
 const text = (tree: ReactElement<Props>[]) => tree.map((node) => Children.toArray(node.props.children).filter((child) => typeof child === "string").join(" ")).join(" ");
 
