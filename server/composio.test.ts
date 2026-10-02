@@ -58,6 +58,15 @@ let malformedConnectedAccounts = false;
 let connectedAccountsUnavailable = false;
 let emptyConnectedAccounts = false;
 let connectedAccountsOverride: Array<{ id: string; alias?: string; status?: string; toolkit: { slug: string } }> | null = null;
+/** When set, the account list is exactly these, and a link request adds the
+ * account it would create, as upstream does. */
+let linkedAccounts: Array<{
+  id: string;
+  alias?: string | null;
+  toolkit: { slug: string };
+  status: string;
+  updated_at: string;
+}> | null = null;
 // The grant editor's tools/list fixture: null keeps the legacy one-frame
 // {source:"broker"} answer the relayMcp tests assert on.
 let brokerMcpTools: Array<{ name: string; description?: string }> | null = null;
@@ -350,6 +359,7 @@ beforeAll(async () => {
       if (malformedConnectedAccounts) return res.end(JSON.stringify({ items: {} }));
       if (emptyConnectedAccounts) return res.end(JSON.stringify({ items: [] }));
       if (connectedAccountsOverride) return res.end(JSON.stringify({ items: connectedAccountsOverride }));
+      if (linkedAccounts) return res.end(JSON.stringify({ items: linkedAccounts }));
       if (url.searchParams.get("cursor") === "accounts-page-2") {
         return res.end(JSON.stringify({
           items: [
@@ -380,6 +390,13 @@ beforeAll(async () => {
           },
         }));
       }
+      linkedAccounts?.push({
+        id: `ca_linked_${linkedAccounts.length + 1}`,
+        alias: body.alias ?? null,
+        toolkit: { slug: body.toolkit },
+        status: "INITIATED",
+        updated_at: "2026-09-01T17:00:00Z",
+      });
       res.writeHead(201, { "content-type": "application/json" });
       return res.end(JSON.stringify({ redirect_url: `https://connect.composio.dev/link/${body.toolkit}` }));
     }
@@ -1244,11 +1261,24 @@ describe.sequential("Composio Sessions", () => {
         await expect(authorizeService(cfg, "slack")).rejects.toThrow(/alias.*not replaced/i);
         connectedAccountsOverride.push({ id: "ca_unfinished", status: "INITIALIZING", toolkit: { slug: "slack" } });
         await expect(authorizeService(cfg, "slack")).rejects.toThrow(/alias.*not replaced/i);
-        await expect(authorizeService(cfg, "slack", "personal")).rejects.toThrow(/already in use/i);
-        expect(calls.slice(before).some((call) => call.method === "POST" && call.path.endsWith("/link"))).toBe(false);
+        const linkCalls = () => calls.slice(before).filter((call) => call.method === "POST" && call.path.endsWith("/link"));
+        if (/^(failed|expired)$/i.test(status ?? "")) {
+          // A lapsed attempt no longer owns its alias: the explicit alias may
+          // connect again as a fresh attempt (see the alias-retry tests).
+          await expect(authorizeService(cfg, "slack", "personal")).resolves.toEqual({ url: "https://connect.composio.dev/link/slack" });
+          expect(linkCalls()).toHaveLength(1);
+        } else if (status === "PENDING") {
+          // An unfinished attempt still holds the alias; with no link known
+          // here it is refused as in progress rather than replaced.
+          await expect(authorizeService(cfg, "slack", "personal")).rejects.toThrow(/still in progress/i);
+          expect(linkCalls()).toHaveLength(0);
+        } else {
+          await expect(authorizeService(cfg, "slack", "personal")).rejects.toThrow(/already in use/i);
+          expect(linkCalls()).toHaveLength(0);
+        }
       }
       connectedAccountsOverride = [{ id: "ca_expired", alias: "Personal", status: "EXPIRED", toolkit: { slug: "slack" } }];
-      await expect(authorizeService(cfg, "slack", "personal")).rejects.toThrow(/already in use/i);
+      await expect(authorizeService(cfg, "slack", "personal")).resolves.toEqual({ url: "https://connect.composio.dev/link/slack" });
       await expect(authorizeService(cfg, "slack", "  team  ")).resolves.toEqual({ url: "https://connect.composio.dev/link/slack" });
       expect(calls.filter((call) => call.method === "POST" && call.path.endsWith("/link")).at(-1)?.body).toEqual({
         toolkit: "slack", alias: "team",
@@ -1272,6 +1302,58 @@ describe.sequential("Composio Sessions", () => {
       expect(calls.slice(before).some((call) => call.method === "POST" && call.path.endsWith("/link"))).toBe(false);
     } finally {
       connectedAccountsOverride = null;
+    }
+  });
+
+  it("retries an unfinished attempt under its alias instead of calling the alias taken", async () => {
+    const cfg: AppConfig = {
+      composio: { apiKey: "ak_test", userId: "openmausbot_existing", sessionId: "trs_test" },
+    };
+    // ca_notion "team" is INITIATED: its link was minted and never completed,
+    // yet upstream already reserves the alias for it.
+    const before = calls.length;
+    await expect(authorizeService(cfg, "notion", "Team")).resolves.toEqual({
+      url: "https://connect.composio.dev/link/notion",
+    });
+    const retry = calls.slice(before).filter((call) => call.method === "DELETE" || call.path.endsWith("/link"));
+    expect(retry.map((call) => `${call.method} ${call.path.split("/").slice(-2).join("/")}`)).toEqual([
+      "DELETE connected_accounts/ca_notion",
+      "POST trs_test/link",
+    ]);
+    expect(retry[0].query).toBe("?revoke_on_delete=true");
+    expect(retry[1].body).toEqual({ toolkit: "notion", alias: "Team" });
+
+    // A connected account's alias stays taken, and nothing is removed for it.
+    const untouched = calls.length;
+    await expect(authorizeService(cfg, "github", "WORK")).rejects.toMatchObject({ status: 409 });
+    expect(calls.slice(untouched).some((call) => call.method === "DELETE" || call.path.endsWith("/link"))).toBe(false);
+  });
+
+  it("lets an alias be used again once the attempt that carried it has lapsed", async () => {
+    const cfg: AppConfig = {
+      composio: { apiKey: "ak_test", userId: "openmausbot_existing", sessionId: "trs_test" },
+    };
+    // Upstream frees an alias when its link expires but keeps the record.
+    linkedAccounts = [{
+      id: "ca_lapsed",
+      alias: "work",
+      toolkit: { slug: "googledrive" },
+      status: "EXPIRED",
+      updated_at: "2026-09-01T16:00:00Z",
+    }];
+    try {
+      const before = calls.length;
+      await expect(authorizeService(cfg, "googledrive", "work")).resolves.toEqual({
+        url: "https://connect.composio.dev/link/googledrive",
+      });
+      const sent = calls.slice(before).filter((call) => call.method === "DELETE" || call.path.endsWith("/link"));
+      expect(sent.map((call) => call.method)).toEqual(["POST"]);
+      expect(sent[0].body).toEqual({ toolkit: "googledrive", alias: "work" });
+      // Once that retry connects, the alias is owned again.
+      linkedAccounts[1].status = "ACTIVE";
+      await expect(authorizeService(cfg, "googledrive", "work")).rejects.toMatchObject({ status: 409 });
+    } finally {
+      linkedAccounts = null;
     }
   });
 });

@@ -132,6 +132,11 @@ interface SessionCreateRequest {
 }
 const MAX_CONNECTED_ACCOUNT_PAGES = 100;
 const ACCOUNT_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
+/** An auth link was minted and never completed: nothing is connected yet. */
+const UNFINISHED_ACCOUNT = /^(initiated|initializing|pending)$/i;
+/** An attempt that ended without connecting. Composio keeps the record and
+ * its alias on show, but no longer reserves that alias. */
+const LAPSED_ACCOUNT = /^(expired|failed)$/i;
 const printableAliasSchema = z.string().min(1).max(64).refine((value) => {
   for (const character of value) {
     const codePoint = character.codePointAt(0);
@@ -1276,7 +1281,26 @@ export async function authorizeService(cfg: AppConfig, slug: string, requestedAl
   const serviceAccounts = accounts.filter((account) =>
     account.toolkit?.slug !== undefined && canonicalToolkitSlug(account.toolkit.slug) === toolkit
   );
-  const usableAccounts = serviceAccounts.filter((account) => /^(active|initiated|initializing|pending)$/i.test(account.status ?? ""));
+  // Only a connected account owns its alias. Composio creates the account,
+  // alias included, when the auth link is minted, and stops reserving the
+  // alias when that link expires. An attempt the user never finished is
+  // therefore this same connection, retried: refusing it as a duplicate
+  // leaves no way to connect under the requested alias. An unfinished
+  // attempt holds no credentials and is replaced; a lapsed one is left as is.
+  const requestedAlias = alias;
+  const sameAlias = requestedAlias
+    ? serviceAccounts.filter((account) => account.alias?.trim().toLowerCase() === requestedAlias.toLowerCase())
+    : [];
+  const retried = sameAlias.filter((account) => UNFINISHED_ACCOUNT.test(account.status ?? ""));
+  if (
+    retried.some((account) => !validAccountId(account.id))
+    || sameAlias.some((account) => !retried.includes(account) && !LAPSED_ACCOUNT.test(account.status ?? ""))
+  ) {
+    throw inputError(`Account alias "${alias}" is already in use for ${toolkit}`, 409);
+  }
+  const usableAccounts = serviceAccounts.filter((account) =>
+    !retried.includes(account) && /^(active|initiated|initializing|pending)$/i.test(account.status ?? "")
+  );
   if (usableAccounts.length >= MULTI_ACCOUNT_CONFIG.max_accounts_per_toolkit) {
     throw inputError(`${toolkit} already has the maximum of ${MULTI_ACCOUNT_CONFIG.max_accounts_per_toolkit} accounts`, 409);
   }
@@ -1289,8 +1313,12 @@ export async function authorizeService(cfg: AppConfig, slug: string, requestedAl
       throw inputError("Add an account alias so the existing connection is not replaced");
     }
   }
-  if (alias && serviceAccounts.some((account) => account.alias?.trim().toLowerCase() === alias.toLowerCase())) {
-    throw inputError(`Account alias "${alias}" is already in use for ${toolkit}`, 409);
+  for (const account of retried) {
+    const removed = await fetch(
+      `${apiBase()}/connected_accounts/${encodeURIComponent(account.id!)}?revoke_on_delete=true`,
+      { method: "DELETE", headers: projectHeaders(apiKey), signal: AbortSignal.timeout(30_000) },
+    );
+    if (!removed.ok) throw new Error(await responseError(removed, `Composio authorization: HTTP ${removed.status}`));
   }
   const linkRequest: AccountLinkRequest = { toolkit };
   if (alias) linkRequest.alias = alias;

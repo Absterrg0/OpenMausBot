@@ -174,7 +174,7 @@ describe("connected-apps broker boundaries", () => {
         }
         return Response.json(accounts);
       }
-      if (url.includes("/connected_accounts/ca_work") && init?.method === "DELETE") return Response.json({ success: true });
+      if (/\/connected_accounts\/ca_(work|personal)\?/.test(url) && init?.method === "DELETE") return Response.json({ success: true });
       return Response.json({ error: "not found" }, { status: 404 });
     });
     const installation = {
@@ -278,6 +278,28 @@ describe("connected-apps broker boundaries", () => {
     await expect(authorized.json()).resolves.toEqual({ url: "https://connect.composio.dev/link/gmail" });
     const linkCall = fetchCalls.find((call) => call.url.endsWith("/tool_router/session/trs_multi/link"));
     expect(JSON.parse(String(linkCall?.init?.body))).toEqual({ toolkit: "gmail", alias: "second" });
+
+    // A connected account keeps its alias.
+    const taken = await authorize("gmail", "Work", installation, env as never, ctx as never);
+    expect(taken.status).toBe(409);
+    // An attempt nobody finished still holds its alias upstream, so asking
+    // for that link again replaces the attempt instead of refusing it.
+    const before = fetchCalls.length;
+    const retried = await authorize("gmail", "Personal", installation, env as never, ctx as never);
+    expect(retried.status).toBe(200);
+    const retry = fetchCalls.slice(before).filter((call) => call.init?.method === "DELETE" || call.url.endsWith("/link"));
+    expect(retry.map((call) => `${call.init?.method} ${new URL(call.url).pathname.split("/").slice(-2).join("/")}`)).toEqual([
+      "DELETE connected_accounts/ca_personal",
+      "POST trs_multi/link",
+    ]);
+    expect(JSON.parse(String(retry[1].init?.body))).toEqual({ toolkit: "gmail", alias: "Personal" });
+
+    // A lapsed attempt no longer reserves its alias and is left in place.
+    accounts.items.push({ id: "ca_lapsed", alias: "old", toolkit: { slug: "gmail" }, status: "EXPIRED", updated_at: "2026-08-21T09:00:00Z" });
+    const afterLapse = fetchCalls.length;
+    const reused = await authorize("gmail", "old", installation, env as never, ctx as never);
+    expect(reused.status).toBe(200);
+    expect(fetchCalls.slice(afterLapse).some((call) => call.init?.method === "DELETE")).toBe(false);
   });
 
   it("retries only unfinished or expired accounts without replacing grants", async () => {
