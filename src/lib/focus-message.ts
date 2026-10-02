@@ -46,7 +46,8 @@ export async function landOnSearchHit(
 }
 
 function matchRange(root: HTMLElement, text: string): Range | null {
-  if (!text) return null;
+  const needle = text.trim();
+  if (!needle) return null;
   const nodes: Text[] = [];
   const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
   let rendered = "";
@@ -55,7 +56,7 @@ function matchRange(root: HTMLElement, text: string): Range | null {
     nodes.push(node);
     rendered += node.data;
   }
-  const pattern = text.trim().split(/\s+/).map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("\\s+");
+  const pattern = needle.split(/\s+/).map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("\\s+");
   const match = new RegExp(pattern, "iu").exec(rendered);
   if (!match) return null;
   const range = document.createRange();
