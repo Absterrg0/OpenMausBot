@@ -5,11 +5,13 @@ import { createOpenAIChatRuntime } from "./openai-chat.ts";
 // Cerebras serves open models on wafer-scale chips: same OpenAI chat
 // contract, several times the tokens per second of a GPU cloud.
 const DEFAULT_URL = "https://api.cerebras.ai/v1";
+// The account tier is unknown: use the shared free-tier limit, not paid 128K.
+// https://inference-docs.cerebras.ai/models/overview
 const DEFAULT_MODELS: ModelCatalog = {
   default: "gpt-oss-120b",
   options: [
-    { id: "gpt-oss-120b", label: "GPT OSS 120B", contextWindow: 131072 },
-    { id: "qwen-3.8-27b", label: "Qwen3.8 27B", contextWindow: 131072 },
+    { id: "gpt-oss-120b", label: "GPT OSS 120B", contextWindow: 65536 },
+    { id: "qwen-3.8-27b", label: "Qwen3.8 27B", contextWindow: 65536 },
   ],
 };
 const configSchema = z.object({

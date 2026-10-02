@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ASK_USER_TOOL_DEFINITION } from "../../shared/ask-question.ts";
 import { recordEvents } from "../testing/events.ts";
+import { compactBudget, contextWindowFor, shouldCompact } from "../context-budget.ts";
 import { CerebrasDriver } from "./cerebras.ts";
 
 afterEach(() => { vi.unstubAllGlobals(); vi.unstubAllEnvs(); });
@@ -11,6 +12,13 @@ const create = (config = {}) => CerebrasDriver.create({
 });
 
 describe("Cerebras provider", () => {
+  it("compacts known models before the free-tier context limit", () => {
+    for (const { id } of CerebrasDriver.models.options) {
+      const window = contextWindowFor(id, CerebrasDriver.models);
+      expect(window).toBeLessThanOrEqual(65536);
+      expect(shouldCompact({ contextTokens: 60000, estimatedBytes: 0, budget: compactBudget(window), window })).toBe(true);
+    }
+  });
   it("rejects invalid tools flags and non-TLS remote endpoints", () => {
     expect(() => CerebrasDriver.decodeConfig({ tools: "false" })).toThrow();
     expect(() => CerebrasDriver.decodeConfig({ url: "http://example.com/v1" })).toThrow("HTTPS");
@@ -38,7 +46,7 @@ describe("Cerebras provider", () => {
     expect(instance.models.default).toBe("private-model");
     expect(instance.models.options).toEqual([
       { id: "private-model", label: "private-model" },
-      { id: "gpt-oss-120b", label: "GPT OSS 120B", contextWindow: 131072 },
+      { id: "gpt-oss-120b", label: "GPT OSS 120B", contextWindow: 65536 },
       { id: "brand-new-model", label: "brand-new-model" },
     ]);
     expect(fetcher.mock.calls[0]).toMatchObject(["https://api.cerebras.ai/v1/models", {
