@@ -11,8 +11,10 @@ its model. This is useful for local models with a small context window.
 
 Enter one selector per line, then choose **Save tool selection**. Changes take
 effect on the next turn. Finish the bot's active tasks before saving. A failed
-save leaves its existing selection in force. Duplicating a bot preserves its
-selection from the moment the copy is created.
+save never grants newly enabled tools. Changes that remove tool access can
+remain active in the running app even if saving fails; retry the save to keep
+them after a restart. Duplicating a bot preserves its selection from the moment
+the copy is created.
 
 ## Names and examples
 
