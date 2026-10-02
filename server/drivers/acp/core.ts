@@ -378,9 +378,18 @@ const ACP_PROMPT_RE_ANCHOR_TURNS = 8;
 // streams thought chunks, then goes silent forever and never resolves). 0
 // disables the guard, restoring the pre-fix "hang until the user cancels"
 // behavior.
+//
+// Healthy agents go silent for minutes too. Qwen Code 0.24 sends nothing
+// over ACP while it compresses history, while it backs off a rate limit
+// (60 s up to 5 min per wait), or while one model request runs (its SDK
+// waits up to 600 s). The old 180 s default killed those turns mid-work,
+// and the retry redid it all. A false trip costs the whole turn; a real
+// wedge only costs waiting, and the user can press Stop - so the default
+// sits above the longest normal silence.
+export const DEFAULT_ACP_PROMPT_IDLE_MS = 15 * 60_000;
 const promptIdleTimeoutMs = (): number => {
   const raw = process.env.OPENMAUS_ACP_PROMPT_IDLE_TIMEOUT_MS;
-  if (raw === undefined) return 180_000;
+  if (raw === undefined) return DEFAULT_ACP_PROMPT_IDLE_MS;
   const ms = Number(raw);
   return Number.isFinite(ms) && ms > 0 ? ms : 0;
 };

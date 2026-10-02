@@ -17,7 +17,7 @@ import { ensureDirs, NATIVE_DIR } from "../../config.ts";
 import type { ProviderInstance } from "../../contracts.ts";
 import { TurnNotStartedError } from "../../contracts.ts";
 import { recordEvents, type EventRecorder } from "../../testing/events.ts";
-import { createAcpDriver, skipSubscriptionAuthForLocalInject, type AcpSupport } from "./core.ts";
+import { createAcpDriver, DEFAULT_ACP_PROMPT_IDLE_MS, skipSubscriptionAuthForLocalInject, type AcpSupport } from "./core.ts";
 import { GrokAgentDriver, grokAcceptsUnadvertisedImages } from "./grok.ts";
 import { GeminiAgentDriver } from "./gemini.ts";
 import { KimiAgentDriver } from "./kimi.ts";
@@ -1281,6 +1281,13 @@ describe("ACP turns (fake CLI)", () => {
     expect(await recorder.until(e => e.type === "turn.completed")).toMatchObject({ ok: false, stopReason: "rpc_error" });
     expect(recorder.events.find(e => e.type === "runtime.error")?.message).toMatch(/no tool running/i);
     expect(instance.adapter.hasSession("t-stall-tool")).toBe(false);
+  });
+
+  // Qwen Code goes quiet for minutes while it compresses history, backs off
+  // a rate limit (up to 5 min a wait) or waits on one model request (its SDK
+  // allows 600 s). At 180 s the guard cut those turns off mid-work.
+  it("defaults the prompt idle guard above an agent's longest normal silence", () => {
+    expect(DEFAULT_ACP_PROMPT_IDLE_MS).toBeGreaterThan(600_000);
   });
 
   it("an agent that goes silent mid-answer is failed and closed by the prompt idle guard", async () => {
