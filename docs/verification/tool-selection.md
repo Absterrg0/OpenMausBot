@@ -7,7 +7,7 @@ not read the user's OpenMausBot data or connect a real mail account.
 
 ```sh
 pnpm exec vitest run shared/tool-scope.test.ts server/mcp-gate.test.ts server/mcp-gate-config.test.ts server/mcp-remote-proxy.test.ts
-pnpm exec vitest run server/tool-scope.e2e.test.ts server/drivers/tool-scope-coverage.test.ts server/drivers/acp/tool-scope.test.ts
+pnpm exec vitest run server/store.test.ts server/tool-scope.e2e.test.ts server/drivers/tool-scope-coverage.test.ts server/drivers/acp/tool-scope.test.ts
 pnpm exec vitest run server/drivers/pi.test.ts server/drivers/pi-mcp-extension.test.ts server/drivers/chat-mcp-tools.test.ts server/drivers/openai-chat.test.ts server/openai-tools.e2e.test.ts
 pnpm exec vitest run src/components/bot-settings/AccessSection.test.ts src/state/store.test.ts src/lib/create-configured-bot.test.ts src/lib/bot-creation-draft.test.ts
 OMB_UI_E2E=1 pnpm exec vitest run scripts/testing/tool-selection-ui.e2e.test.ts
@@ -28,6 +28,12 @@ zero result budgets and source-free packaged helpers. Adapter checks cover
 fresh and resumed policy, approval modes, instance restrictions, unsupported
 engines and refusal before prompting. An excluded tool must be absent from
 the provider's definitions **and** absent from the fixture's execution log.
+
+Persistence checks inject failed saves and interrupt actual API creation after
+its first record. Wider tool access becomes live only after a successful save;
+runtime revocations still take effect if persistence fails. Explicit selections
+and inherited defaults are present in the first durable bot record, so an
+interrupted creation cannot restart with an unrestricted catalog.
 
 ## Official CLI contract checks
 

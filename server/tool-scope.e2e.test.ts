@@ -3,6 +3,7 @@ import { once } from "node:events";
 import { existsSync, openSync, closeSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { DatabaseSync } from "node:sqlite";
 import { expect, it } from "vitest";
 import { launchVerificationServer, runControlOmb, verificationServerEnvironment } from "../scripts/control-omb.ts";
 
@@ -53,6 +54,31 @@ it("validates, saves, clears and creates owner tool selections through the isola
     expect((await api("PATCH", "/api/config", { newBotDefaults: { profile: { toolScope: { allow: [] } } } })).status).toBe(200);
     expect((await api("POST", "/api/bots", { name: "Inherited no tools" })).body.bot.toolScope).toEqual({ allow: [] });
     expect((await api("POST", "/api/bots", { name: "Explicit reset", settings: { toolScope: null } })).body.bot).not.toHaveProperty("toolScope");
+  });
+}, 60_000);
+
+it.each(["explicit", "inherited"] as const)("persists the %s tool selection before creation can be interrupted", async (source) => {
+  await withFixture("happy", async ({ api, dataDir }) => {
+    const toolScope = { allow: [] };
+    if (source === "inherited") {
+      expect((await api("PATCH", "/api/config", { newBotDefaults: { profile: { toolScope } } })).status).toBe(200);
+    }
+    const database = new DatabaseSync(join(dataDir, "messages.db"));
+    try {
+      // Interrupt the real creation after its first durable record, before
+      // the route can apply any remaining template settings.
+      database.exec("CREATE TRIGGER reject_scope_fixture_greeting BEFORE INSERT ON messages BEGIN SELECT RAISE(ABORT, 'fixture greeting failure'); END");
+      const name = `Interrupted ${source} scope fixture`;
+      const result = await api("POST", "/api/bots", { name, ...(source === "explicit" ? { settings: { toolScope } } : {}) });
+      expect(result.status).toBe(500);
+      const saved = JSON.parse(readFileSync(join(dataDir, "bots.json"), "utf8"));
+      expect(saved.find((bot: { name: string }) => bot.name === name)?.toolScope).toEqual(toolScope);
+      const live = await api("GET", "/api/bots?messages=0");
+      expect(live.body.bots.find((bot: { name: string }) => bot.name === name)?.toolScope).toEqual(toolScope);
+    } finally {
+      database.exec("DROP TRIGGER IF EXISTS reject_scope_fixture_greeting");
+      database.close();
+    }
   });
 }, 60_000);
 

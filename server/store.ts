@@ -7,7 +7,7 @@ import { chmodSync, existsSync, readFileSync, mkdirSync, rmSync, statSync, unlin
 import { join } from "node:path";
 
 import { writeFileAtomic } from "./atomic.ts";
-import { parseToolScope } from "../shared/tool-scope.ts";
+import { parseToolScope, toolScopeWidens } from "../shared/tool-scope.ts";
 import { ensureSections, readSections, changeEmptySection } from "./section-context.ts";
 import type { TeamComputers } from "./team-computers.ts";
 import { removeBotFolder, soulFile, soulHash, writeSoulMirror } from "./bot-folder.ts";
@@ -1714,7 +1714,7 @@ export class Store {
     profile: Partial<
       Pick<
         BotRecord,
-        "name" | "title" | "description" | "soul" | "color" | "mascotExpression" | "mascotBody" | "modelSelection" | "section" | "cwd" | "visibility"
+        "name" | "title" | "description" | "soul" | "color" | "mascotExpression" | "mascotBody" | "modelSelection" | "section" | "cwd" | "visibility" | "toolScope"
       >
     > = {},
     opts: {
@@ -1723,6 +1723,8 @@ export class Store {
       seedMessages?: boolean;
     } = {},
   ): BotRecord {
+    const toolScope = parseToolScope(profile.toolScope);
+    if (!toolScope.ok) throw new Error(toolScope.error);
     this.rememberSections([profile.section]);
     const name = profile.name?.trim() || pickBotName(this.bots.map((b) => b.name));
     const section = sectionKey(profile.section);
@@ -1740,6 +1742,7 @@ export class Store {
       ...(profile.mascotBody ? { mascotBody: profile.mascotBody } : {}),
       // Restricted from its first frame: no one else is ever told it exists.
       ...(profile.visibility && profile.visibility !== "everyone" ? { visibility: structuredClone(profile.visibility) } : {}),
+      ...(toolScope.scope ? { toolScope: toolScope.scope } : {}),
       unread: false,
       modelSelection: this.newBotSelection(profile.modelSelection),
       resumeCursors: {},
@@ -1758,8 +1761,10 @@ export class Store {
       activity: "idle",
       busy: false,
     }];
+    // Persist the selection in the first record, before publishing the bot
+    // or starting its greeting. An interrupted creation cannot inherit tools.
+    this.saveBots([bot, ...this.bots]);
     this.bots.unshift(bot);
-    this.saveBots();
     // The folder exists from the first moment, so the user can open
     // SOUL.md before the bot has said a word. The record is canonical: a
     // mirror-write failure must never fail bot creation.
@@ -1936,6 +1941,12 @@ export class Store {
       if (!parsed.ok) throw new Error(parsed.error);
       patch = { ...patch, toolScope: parsed.scope };
     }
+    const wideningToolScope = Object.hasOwn(patch, "toolScope") && toolScopeWidens(bot.toolScope, patch.toolScope);
+    const nextToolScope = patch.toolScope;
+    if (wideningToolScope) {
+      patch = { ...patch };
+      delete patch.toolScope;
+    }
     // Runtime revocations must become effective in memory even when disk is
     // unavailable. Profile edits use the separate atomic path below.
     Object.assign(bot, patch);
@@ -1948,7 +1959,12 @@ export class Store {
       }
       bot.unread = bot.tasks!.some(taskCountsAsBotUnread);
     }
-    this.saveBots();
+    if (wideningToolScope) {
+      // New authority becomes live only after its durable save succeeds.
+      // Other runtime revocations above still take effect on a failed write.
+      this.saveBots(this.bots.map((candidate) => candidate === bot ? { ...bot, toolScope: nextToolScope } : candidate));
+      bot.toolScope = nextToolScope;
+    } else this.saveBots();
     this.emit({ type: "bot", botId: id });
     return bot;
   }

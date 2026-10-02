@@ -38,6 +38,52 @@ describe("Store", () => {
     expect(new Store(selection).bot(bot.id)).not.toHaveProperty("toolScope");
   });
 
+  it.each([undefined, { allow: ["native:read"] }, { deny: ["native:bash"] }])("does not activate a wider tool selection when saving %j fails", (toolScope) => {
+    const store = new Store(selection);
+    const bot = store.createBot();
+    store.patchBot(bot.id, { toolScope: { allow: [] }, browser: true });
+    const save = vi.spyOn(store as unknown as { saveBots(): void }, "saveBots")
+      .mockImplementationOnce(() => { throw new Error("disk full"); });
+    expect(() => store.patchBot(bot.id, { toolScope, browser: false })).toThrow("disk full");
+    expect(store.bot(bot.id)).toBe(bot);
+    expect(bot.toolScope).toEqual({ allow: [] });
+    expect(allowsTool(bot.toolScope, { kind: "native", name: "read" })).toBe(false);
+    // A failed widening must not undo a runtime revocation in the same edit.
+    expect(bot.browser).toBe(false);
+    expect(new Store(selection).bot(bot.id)?.toolScope).toEqual({ allow: [] });
+    save.mockRestore();
+    store.patchBot(bot.id, { toolScope });
+    expect(allowsTool(bot.toolScope, { kind: "native", name: "read" })).toBe(true);
+    expect(new Store(selection).bot(bot.id)?.toolScope).toEqual(toolScope);
+  });
+
+  it("keeps tool revocations effective in memory when persistence fails", () => {
+    const store = new Store(selection);
+    const bot = store.createBot();
+    const save = vi.spyOn(store as unknown as { saveBots(): void }, "saveBots")
+      .mockImplementationOnce(() => { throw new Error("disk full"); });
+    expect(() => store.patchBot(bot.id, { toolScope: { allow: [] } })).toThrow("disk full");
+    expect(allowsTool(bot.toolScope, { kind: "native", name: "read" })).toBe(false);
+    save.mockRestore();
+  });
+
+  it("does not publish a new restricted bot when its first save fails", () => {
+    const store = new Store(selection);
+    const save = vi.spyOn(store as unknown as { saveBots(): void }, "saveBots")
+      .mockImplementationOnce(() => { throw new Error("disk full"); });
+    expect(() => store.createBot({ name: "Failed restricted creation", toolScope: { allow: [] } })).toThrow("disk full");
+    expect(store.bots).toEqual([]);
+    save.mockRestore();
+    expect(new Store(selection).bots).toEqual([]);
+  });
+
+  it("rejects malformed tool selection before creating a bot", () => {
+    const store = new Store(selection);
+    expect(() => store.createBot({ toolScope: { allow: "all" } } as never)).toThrow(/tool selection/i);
+    expect(store.bots).toEqual([]);
+    expect(new Store(selection).bots).toEqual([]);
+  });
+
   it("retains corrupt persisted tool selection as denied access instead of inheriting all tools", () => {
     const store = new Store(selection);
     const bot = store.createBot({ name: "Corrupt selection fixture" });
