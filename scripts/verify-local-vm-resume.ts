@@ -9,7 +9,7 @@ import { mountPreview } from "./testing/preview-fixture.ts";
 import { agentBrowser, ensureUiBrowser, sessionEnv } from "./testing/control-omb-ui.ts";
 
 const fixture = await launchVerificationServer();
-const home = mkdtempSync(join(tmpdir(), "omb-resume-browser-"));
+const home = mkdtempSync(join(tmpdir(), "omb-vmr-")); // Keep macOS browser sockets below their path limit.
 let preview: Awaited<ReturnType<typeof mountPreview>> | undefined;
 let browser: { binary: string; env: NodeJS.ProcessEnv } | undefined;
 try {
