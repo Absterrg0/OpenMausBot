@@ -21,6 +21,7 @@ import {
   Pencil,
   PanelLeftClose,
   PanelLeftOpen,
+  Phone,
   Pin,
   PinOff,
   Plus,
@@ -30,7 +31,7 @@ import {
   Users,
   X,
 } from "lucide-react";
-import { api, useStore, formatTime, visibleMessages, currentTaskBot, type AppState, type Bot, type Group } from "@/state/store";
+import { api, useStore, formatTime, visibleMessages, currentTaskBot, openThread, type AppState, type Bot, type Group } from "@/state/store";
 import { approvalModeFor } from "../../shared/approval-mode";
 import { peerLine } from "@/lib/peer-message";
 import { liveActivityLabel } from "@/lib/live-activity";
@@ -111,6 +112,8 @@ import { botShowsUnread } from "@/lib/bot-unread";
 import { attentionJumpAction, attentionUnpinAction, AttentionThreadRows, crossBotAttentionThreads, crossBotPinnedThreads, SidebarBotActivity, sidebarBotActivityTasks } from "./SidebarBotActivity";
 import { SidebarAttentionPanel } from "./SidebarAttentionPanel";
 import { SidebarPinnedThreadsPanel } from "./SidebarPinnedThreadsPanel";
+import { useLiveMedia } from "@/lib/live-call-media";
+import { LiveCallPill, liveBadgeFor } from "./LiveCallPill";
 import { ShortcutHint } from "./ShortcutHint";
 import { citationPreviewText } from "@/lib/citations";
 import { usePopoverDismiss } from "@/hooks/use-popover-dismiss";
@@ -1279,6 +1282,7 @@ export function BotListItem({
 }) {
   const { state, dispatch } = useStore();
   const showThreads = useShowThreads();
+  const liveMedia = useLiveMedia();
   const remoteClient = typeof window !== "undefined" && window.ogb?.remoteClient?.active === true;
   const [renaming, setRenaming] = useState(false);
   const [creatingProject, setCreatingProject] = useState(false);
@@ -1327,6 +1331,8 @@ export function BotListItem({
   const teammateWait = !waiting && !working && (Boolean(bot.waitingForTeammates) || activityTasks.some((task) => Boolean(task.waitingForTeammates)));
   const queued = activityTasks.some((task) => task.queued);
   const unread = botShowsUnread(bot);
+  // this window, a phone or another window is on a Live call with the bot
+  const onLiveCall = liveBadgeFor(bot.id, liveMedia, state.liveCall);
   // quiet rows drop the last-message preview but keep a line that reports
   // something happening now; an idle bot is just its name
   const statusLine = deleting || working || waiting || teammateWait || queued;
@@ -1365,6 +1371,15 @@ export function BotListItem({
           className={cn("absolute -right-0.5 -bottom-0.5 rounded-full border-2 border-panel bg-accent", iconOnly ? "size-3" : "size-2.5")} />}
         {!teammateWait && !waiting && !working && queued && <span data-testid="queued-dot" role="status" aria-label={t("task.queued")} title={t("task.queued")}
           className={cn("absolute -right-0.5 -bottom-0.5 rounded-full border-2 border-panel bg-ink-secondary", iconOnly ? "size-3" : "size-2.5")} />}
+        {onLiveCall && iconOnly && (
+          // icons-only rows have no name line: the badge sits on the avatar,
+          // opposite the presence dot
+          <span className="absolute -right-1 -top-1 flex rounded-full bg-panel p-0.5">
+            <Phone className="size-3 shrink-0 text-success" role="img" aria-label={t("call.live.badge")} data-testid="live-call-badge">
+              <title>{t("call.live.badge")}</title>
+            </Phone>
+          </span>
+        )}
       </span>
       <div className={cn("min-w-0 flex-1", iconOnly && "hidden")}>
         {title && !renaming && !quiet && (
@@ -1400,6 +1415,11 @@ export function BotListItem({
               <Crown size={12} className="shrink-0 text-accent" role="img" aria-label={t("sidebar.bot.chiefOfStaff")} data-testid="chief-crown">
                 <title>{t("sidebar.bot.chiefOfStaff")}</title>
               </Crown>
+            )}
+            {onLiveCall && !iconOnly && !renaming && (
+              <Phone className="size-3 shrink-0 text-success" role="img" aria-label={t("call.live.badge")} data-testid="live-call-badge">
+                <title>{t("call.live.badge")}</title>
+              </Phone>
             )}
           </span>
           {selected && last && !renaming && !expanded && (
@@ -1468,7 +1488,7 @@ export function BotListItem({
           !renaming && iconOnly
             ? deleting
               ? t("sidebar.bot.deletingAria", { name: bot.name })
-              : `${bot.name}${waiting ? ` · ${t("sidebar.preview.waiting")}` : working ? ` · ${t("chat.activity.working")}` : teammateWait ? ` · ${t("sidebar.preview.waitingOnTeammate")}` : queued ? ` · ${t("task.queued")}` : ""}${unread ? ` · ${t("task.unread")}` : ""}`
+              : `${bot.name}${onLiveCall ? ` · ${t("call.live.badge")}` : ""}${waiting ? ` · ${t("sidebar.preview.waiting")}` : working ? ` · ${t("chat.activity.working")}` : teammateWait ? ` · ${t("sidebar.preview.waitingOnTeammate")}` : queued ? ` · ${t("task.queued")}` : ""}${unread ? ` · ${t("task.unread")}` : ""}`
             : undefined
         }
         aria-busy={deleting || undefined}
@@ -2561,6 +2581,14 @@ export function Sidebar({ open, onClose, collapseToIcons = false }: {
       <p className="sr-only" aria-live="polite" aria-atomic="true">
         {reorderAnnouncement}
       </p>
+
+      {/* This window's Live call, while its chat is not on screen. Outside
+          the scrolling sections, so it always shows. */}
+      <LiveCallPill
+        currentBotId={state.activeView === "chat" ? state.selectedId : null}
+        onOpen={(botId, threadId) => openThread(dispatch, { botId, threadId }, state)}
+        iconOnly={density === "icons"}
+      />
 
       {/* Footer */}
       <div className={cn("pb-3 pt-2", density === "icons" ? "px-2" : "px-3")}>

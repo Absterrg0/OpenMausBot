@@ -97,7 +97,7 @@ describe("composer call button", () => {
 
   it("starts the call with the same telemetry as the header button did", () => {
     render().button.props.onClick!();
-    expect(fixture.track).toHaveBeenCalledWith("call_started", { driver: "codex" });
+    expect(fixture.track).toHaveBeenCalledWith("call_started", { driver: "codex", mode: "turns" });
     expect(fixture.startCall).toHaveBeenCalledWith("pepper");
     expect(fixture.endCall).not.toHaveBeenCalled();
   });
