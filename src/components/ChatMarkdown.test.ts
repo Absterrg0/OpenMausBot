@@ -146,6 +146,38 @@ describe("math rendering", () => {
     expect(html).not.toContain('class="katex"');
   });
 
+  it.each([
+    "R$ 120.\n\n![receipt](/workspace/receipt.png)",
+    "Pay $5.\n\n![receipt][image]\n\n[image]: /workspace/receipt.png",
+  ])("keeps local image authorization offsets after prices: %s", (text) => {
+    const preview = vi.spyOn(AttachmentPreview, "MarkdownImagePreview");
+    try {
+      renderToStaticMarkup(createElement(ChatMarkdown, {
+        text, message: { threadId: "thread-1", messageId: "message-1" },
+      }));
+      expect(preview.mock.calls[0][0].sourceOffset).toBe(text.indexOf("!["));
+    } finally {
+      preview.mockRestore();
+    }
+  });
+
+  it("keeps separate authorization offsets for repeated images after normalized math and code", () => {
+    const image = "![receipt $5](/workspace/receipt.png)";
+    const text = `Price R$ 120; \\( x^2 \\) and \`$5\`.\n\n${image}\n\nPay $10.\n\n${image}`;
+    const preview = vi.spyOn(AttachmentPreview, "MarkdownImagePreview");
+    try {
+      const html = renderToStaticMarkup(createElement(ChatMarkdown, {
+        text, message: { threadId: "thread-1", messageId: "message-1" },
+      }));
+      expect(html).toContain('class="katex"');
+      expect(preview.mock.calls.map(([props]) => props.sourceOffset)).toEqual([
+        text.indexOf(image), text.lastIndexOf(image),
+      ]);
+    } finally {
+      preview.mockRestore();
+    }
+  });
+
   it("normalizes math in messages that also contain an image", () => {
     const html = renderToStaticMarkup(createElement(ChatMarkdown, {
       text: "![diagram](https://example.test/diagram.png)\n\n\\(x^2\\)",

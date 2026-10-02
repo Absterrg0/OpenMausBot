@@ -20,6 +20,7 @@ import Markdown, { defaultUrlTransform } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
 import rehypeKatex from "rehype-katex";
+import { fromMarkdown } from "mdast-util-from-markdown";
 import { Check, Copy, Download, LoaderCircle, RotateCcw, WrapText } from "lucide-react";
 import { remarkMentions, type MentionPeer } from "@/lib/mentions";
 
@@ -777,15 +778,28 @@ function escapeLiteralDollars(text: string): string {
  * Fenced and inline code are protected so examples such as `\\(x\\)` remain
  * literal. Unmatched delimiters are left untouched while a response streams,
  * and dollar signs that read as money are escaped. */
-export function normalizeMathDelimiters(text: string): string {
-  const protectedCode: string[] = [];
-  const protect = (value: string): string => {
+export function normalizeMathDelimiters(text: string, imageOffsets?: Map<number, number>): string {
+  const protectedCode: Array<{ value: string; imageOffset?: number }> = [];
+  const protect = (value: string, imageOffset?: number): string => {
     const token = `\u0000OMB_CODE_${protectedCode.length}\u0000`;
-    protectedCode.push(value);
+    protectedCode.push({ value, imageOffset });
     return token;
   };
+  if (imageOffsets) {
+    const images: Array<{ start: number; end: number }> = [];
+    const visit = (node: { type: string; children?: any[]; position?: { start: { offset?: number }; end: { offset?: number } } }) => {
+      const start = node.position?.start.offset;
+      const end = node.position?.end.offset;
+      if ((node.type === "image" || node.type === "imageReference") && start !== undefined && end !== undefined) images.push({ start, end });
+      node.children?.forEach(visit);
+    };
+    visit(fromMarkdown(text, { mdastExtensions: [windowsPathDestinations] }));
+    for (const { start, end } of images.reverse()) {
+      text = text.slice(0, start) + protect(text.slice(start, end), start) + text.slice(end);
+    }
+  }
   const tokenized = protectFencedCode(text, protect)
-    .replace(/(`+)[\s\S]*?\1/g, protect);
+    .replace(/(`+)[\s\S]*?\1/g, (value) => protect(value));
   let normalized = tokenized
     .replace(/\\\[([\s\S]*?)\\\]/g, (_match, math: string) => `$$\n${math}\n$$`)
     .replace(/\\\(([\s\S]*?)\\\)/g, (_match, math: string) => `$${math.trim()}$`)
@@ -793,8 +807,14 @@ export function normalizeMathDelimiters(text: string): string {
     // their own lines; accept the compact form models commonly produce.
     .replace(/\$\$[ \t]*([^\n][\s\S]*?)[ \t]*\$\$/g, (_match, math: string) => `$$\n${math}\n$$`);
   normalized = escapeLiteralDollars(normalized);
-  protectedCode.forEach((value, index) => {
-    normalized = normalized.split(`\u0000OMB_CODE_${index}\u0000`).join(value);
+  let shift = 0;
+  normalized = normalized.replace(/\u0000OMB_CODE_(\d+)\u0000/g, (token, index: string, at: number) => {
+    const part = protectedCode[Number(index)];
+    if (!part) return token;
+    const { value, imageOffset } = part;
+    if (imageOffset !== undefined) imageOffsets?.set(at + shift, imageOffset);
+    shift += value.length - token.length;
+    return value;
   });
   return normalized;
 }
@@ -810,9 +830,10 @@ function ChatMarkdownComponent({ text, streaming = false, message, mentionPeers 
   // A near-miss table from a model renders as an unreadable run of pipes
   // unless it is repaired before parsing. Table repair moves image source
   // offsets, so image messages skip that repair but still normalize math.
-  const source = normalizeMathDelimiters(text.includes(MARKDOWN_IMAGE)
+  const imageOffsets = text.includes(MARKDOWN_IMAGE) ? new Map<number, number>() : undefined;
+  const source = normalizeMathDelimiters(imageOffsets
     ? text
-    : repairMarkdownTables(text));
+    : repairMarkdownTables(text), imageOffsets);
   return (
     <div className="chat-md min-w-0 [&>*+*]:mt-2">
       <Markdown
@@ -852,7 +873,7 @@ function ChatMarkdownComponent({ text, streaming = false, message, mentionPeers 
                 openUrl={markdownImageOpenUrl(typeof (props as Record<string, unknown>)["data-open-url"] === "string" ? String((props as Record<string, unknown>)["data-open-url"]) : src)}
                 filePath={filePath}
                 message={filePath ? message : undefined}
-                sourceOffset={sourceOffset}
+                sourceOffset={sourceOffset === undefined ? undefined : imageOffsets?.get(sourceOffset) ?? sourceOffset}
               />
             );
           },
