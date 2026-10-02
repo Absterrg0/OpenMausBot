@@ -379,6 +379,8 @@ export interface BotRecord extends Omit<WireBot, "avatarUrl" | "tasks"> {
     threadId?: string;
     /** Composer grant: leave the bot default and other threads unchanged. */
     threadOnly?: true;
+    /** Copy the saved bot default onto threadId, including standing approvals. */
+    refreshPermissions?: true;
     /** Explicit bot-wide grant, including existing threads. */
     allThreads?: true;
   };
@@ -2514,6 +2516,23 @@ export class Store {
     Object.assign(bot, patch, { approvalGrant: undefined });
     this.emit({ type: "bot", botId });
     return bot;
+  }
+
+  /** Copy this bot's saved approval level and standing approvals onto one
+   * thread. A new thread already gets them; this is how an existing
+   * conversation catches up. Other threads, the transcript, and the bot
+   * default stay put. A grant that has not committed yet is ignored, so a
+   * refresh cannot copy the temporary Ask mask. */
+  refreshTaskPermissions(botId: string, threadId: string): TaskRecord | null {
+    const bot = this.bot(botId);
+    const task = this.taskByThread(botId, threadId);
+    if (!bot || !task) return null;
+    const mode = approvalModeFor({ ...bot, approvalGrant: undefined });
+    const alwaysAllow = structuredClone(bot.alwaysAllow ?? []);
+    const autoApprove = mode === "auto";
+    const sameAllow = JSON.stringify(task.alwaysAllow ?? []) === JSON.stringify(alwaysAllow);
+    if (task.approvalMode === mode && task.autoApprove === autoApprove && sameAllow) return task;
+    return this.patchTask(botId, threadId, { approvalMode: mode, autoApprove, alwaysAllow });
   }
 
   private mirrorActiveTask(bot: BotRecord, task: TaskRecord) {

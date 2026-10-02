@@ -3896,6 +3896,8 @@ function handleDesktopTrustedApprovalMessage(raw: unknown): boolean {
     ) {
       if (bot.approvalGrant.allThreads && mode === "full") {
         store.setAllThreadApprovalMode(botId, mode);
+      } else if (bot.approvalGrant.refreshPermissions && bot.approvalGrant.threadId) {
+        store.refreshTaskPermissions(botId, bot.approvalGrant.threadId);
       } else if (bot.approvalGrant.threadId) {
         store.patchTask(botId, bot.approvalGrant.threadId, { approvalMode: mode, autoApprove: false });
       }
@@ -4102,6 +4104,38 @@ function handleDesktopTrustedApprovalMessage(raw: unknown): boolean {
   }
   if (message.threadOnly !== undefined && typeof message.threadOnly !== "boolean") {
     respond({ ok: false, error: "Invalid thread approval scope" });
+    return true;
+  }
+  if (message.refreshPermissions !== undefined && message.refreshPermissions !== true) {
+    respond({ ok: false, error: "Invalid permission refresh" });
+    return true;
+  }
+  if (message.refreshPermissions === true) {
+    const target = typeof threadId === "string" ? store.projectBotForTask(botId, threadId) : null;
+    const savedMode = approvalModeFor({ ...existing, approvalGrant: undefined });
+    if (message.threadOnly !== true || !target || message.allThreads === true || message.modelSelection !== undefined || message.updateBotDefault !== undefined || savedMode !== mode) {
+      respond({ ok: false, error: "Choose this bot's approval level in bot settings before refreshing a thread" });
+      return true;
+    }
+    if (existing.approvalGrant || threadBusy(botId, target.threadId)) {
+      respond({ ok: false, error: "Stop this thread and finish its pending approval change first" });
+      return true;
+    }
+    if (!supportsApprovalMode(target.modelSelection, mode)) {
+      respond({ ok: false, error: "This thread's provider does not support that approval level" });
+      return true;
+    }
+    if (mode === "auto" && target.computer === "local" && approvalModeFor(target) !== "auto" && message.acknowledgeLocalAuto !== true) {
+      respond({ ok: false, error: "Auto mode on this computer requires confirming the warning" });
+      return true;
+    }
+    if (mode === "full" || mode === "custom") {
+      store.patchBot(botId, { approvalGrant: { requestId, mode, phase: "prepared", threadId: target.threadId, threadOnly: true, refreshPermissions: true } });
+    } else if (!store.refreshTaskPermissions(botId, target.threadId)) {
+      respond({ ok: false, error: "That thread is no longer available" });
+      return true;
+    }
+    respond({ ok: true, bot: wireTrustedApprovalBot(store.bot(botId)!) });
     return true;
   }
   if (message.threadOnly === true) {
@@ -21319,7 +21353,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       if (!body || typeof body !== "object" || Array.isArray(body)) return json(res, 400, { error: "body must be a JSON object" });
       const current = store.projectBotForTask(m[1], m[2]);
       if (!current) return json(res, 404, { error: "no such task" });
-      const allowed = new Set(["title", "projectId", "modelSelection", "updateBotDefault", "resetApprovalToAsk", "approvalMode", "autoApprove", "requireAvailableModel", "pinnedMessageId", "acknowledgeLocalAuto", "archivedAt", "pinned", "snoozedUntil", "surface"]);
+      const allowed = new Set(["title", "projectId", "modelSelection", "updateBotDefault", "resetApprovalToAsk", "approvalMode", "autoApprove", "requireAvailableModel", "pinnedMessageId", "acknowledgeLocalAuto", "archivedAt", "pinned", "snoozedUntil", "surface", "refreshPermissions"]);
       if (Object.keys(body).some((key) => !allowed.has(key))) return json(res, 400, { error: "unsupported thread setting" });
       const notYours = cloudThreadRefusal(auth, m[2]);
       if (notYours) return json(res, 403, { error: notYours });
@@ -21327,7 +21361,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       // asking them, even in a conversation someone else started, and what
       // the bot itself defaults to.
       if (CLOUD_HOME && !cloudOwnerSession(auth) &&
-        (body.approvalMode !== undefined || body.autoApprove !== undefined || body.acknowledgeLocalAuto !== undefined || body.updateBotDefault === true)) {
+        (body.approvalMode !== undefined || body.autoApprove !== undefined || body.acknowledgeLocalAuto !== undefined || body.updateBotDefault === true || body.refreshPermissions === true)) {
         return json(res, 403, { error: "On this Cloud only its owner can change how a bot asks for approval, or its default model." });
       }
       for (const key of ["requireAvailableModel", "acknowledgeLocalAuto", "updateBotDefault", "resetApprovalToAsk"] as const) {
@@ -21338,6 +21372,45 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       if (body.resetApprovalToAsk === true && (body.modelSelection === undefined ||
         (body.approvalMode !== undefined && body.approvalMode !== "ask") || body.autoApprove === true)) {
         return json(res, 400, { error: "resetApprovalToAsk requires a model selection and cannot be combined with another approval mode" });
+      }
+      if (body.refreshPermissions !== undefined && body.refreshPermissions !== true) {
+        return json(res, 400, { error: "refreshPermissions must be true" });
+      }
+      if (body.refreshPermissions === true) {
+        const extra = Object.keys(body).filter((key) => key !== "refreshPermissions" && key !== "acknowledgeLocalAuto");
+        if (extra.length) return json(res, 400, { error: "refreshPermissions cannot be combined with other thread settings" });
+        const profile = store.bot(m[1]);
+        if (!profile) return json(res, 404, { error: "no such bot" });
+        if (profile.approvalGrant) return json(res, 409, { error: "the bot's approval mode is still being confirmed" });
+        if (threadBusy(profile.id, m[2])) return json(res, 409, { error: "stop this thread before changing its approval mode" });
+        const nextMode = approvalModeFor({ ...profile, approvalGrant: undefined });
+        // Full and Custom never travel over the bot-reachable HTTP surface.
+        // The desktop's private channel copies those levels, and it is also
+        // the only way to leave Custom.
+        if (nextMode === "full" || nextMode === "custom") {
+          return json(res, 403, { error: "Refresh Full or Custom access from the packaged desktop app" });
+        }
+        if (approvalModeFor(current) === "custom") {
+          return json(res, 403, { error: "Leaving Custom approval requires the packaged desktop app" });
+        }
+        if (!supportsApprovalMode(current.modelSelection, nextMode)) {
+          return json(res, 400, { error: "This provider does not support the selected approval level" });
+        }
+        if (nextMode === "auto" && current.computer === "local" && approvalModeFor(current) !== "auto" && body.acknowledgeLocalAuto !== true) {
+          return json(res, 400, { error: "Auto mode on this computer requires confirming the warning first (acknowledgeLocalAuto)" });
+        }
+        const approvalRank = { ask: 0, edits: 1, auto: 2, full: 3, custom: 4 } as const;
+        const widensMode = approvalRank[nextMode] > approvalRank[approvalModeFor(current)];
+        const nextAllow = profile.alwaysAllow ?? [];
+        const widensAllow = nextAllow.some((key) => !(current.alwaysAllow ?? []).includes(key));
+        if ((widensMode || widensAllow) && auth.kind === "loopback" && !DESKTOP_MANAGED && !req.headers.origin && store.bots.some((bot) => bot.busy)) {
+          return json(res, 409, { error: "Change approval mode from the app or a paired device while bots are working." });
+        }
+        const task = store.refreshTaskPermissions(profile.id, m[2]);
+        if (!task) return json(res, 404, { error: "no such task" });
+        const fresh = botWithThread(store.bot(profile.id)!);
+        broadcast({ kind: "bot", bot: fresh });
+        return json(res, 200, { task: wireTask(task), bot: fresh });
       }
       const patch: Parameters<typeof store.patchTask>[2] = {};
       if (body.projectId !== undefined) {

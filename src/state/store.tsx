@@ -1167,6 +1167,7 @@ export type Action =
   | { type: "newBot"; role?: BotRole; visibility?: BotVisibility; section?: string; preserveSelection?: boolean; onCreated?: (bot: Bot) => void; onError?: (message: string) => void }
   | { type: "botCreationPending"; on: boolean }
   | { type: "updateTask"; botId: string; threadId: string; patch: TaskUpdatePatch }
+  | { type: "refreshTaskPermissions"; botId: string; threadId: string; acknowledgeLocalAuto?: boolean }
   | { type: "createProject"; botId: string; name: string; emoji?: string | null; onCreated?: (project: BotProject) => void; onError?: (message: string) => void }
   | { type: "updateProject"; botId: string; projectId: string; patch: ProjectUpdatePatch; onSaved?: () => void; onError?: (message: string) => void }
   | { type: "deleteProject"; botId: string; projectId: string; onDeleted?: () => void; onError?: (message: string) => void }
@@ -2310,6 +2311,7 @@ export function reducer(state: AppState, action: Action): AppState {
     case "cancelRoutineRun":
     case "markRoutineRunSeen":
     case "markAllRoutineRunsSeen":
+    case "refreshTaskPermissions":
       return state;
     case "sendGroup": {
       if (!action.sendId) return state;
@@ -2453,7 +2455,7 @@ type TrustedApprovalBridge = {
   setMode(
     botId: string,
     mode: ApprovalMode,
-    options?: { acknowledgeLocalAuto?: boolean; threadId?: string; threadOnly?: boolean; allThreads?: boolean },
+    options?: { acknowledgeLocalAuto?: boolean; threadId?: string; threadOnly?: boolean; allThreads?: boolean; refreshPermissions?: boolean },
   ): Promise<BotAnnouncement>;
 };
 
@@ -3444,6 +3446,34 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         case "updateTask":
           persistTaskPatch(action.botId, action.threadId, action.patch);
           break;
+        case "refreshTaskPermissions": {
+          const bot = stateRef.current.bots.find((candidate) => candidate.id === action.botId);
+          const task = bot?.tasks?.find((candidate) => candidate.threadId === action.threadId);
+          if (!bot || !task) {
+            showError(new Error("That thread is no longer available"));
+            break;
+          }
+          const mode = approvalModeFor(bot);
+          const current = approvalModeFor(currentTaskBot(bot, action.threadId));
+          const acknowledgeLocalAuto = action.acknowledgeLocalAuto === true;
+          // Full, Custom, and leaving Custom stay on the private desktop
+          // channel. Ask, Edits, and Auto can use the thread settings route.
+          const needsDesktop = mode === "full" || mode === "custom" || current === "custom";
+          const refreshed = needsDesktop
+            ? window.ogb?.approvals
+              ? window.ogb.approvals.setMode(action.botId, mode, {
+                threadId: action.threadId, threadOnly: true, refreshPermissions: true, acknowledgeLocalAuto,
+              })
+              : Promise.reject(new Error("This approval change requires the packaged desktop app"))
+            : api<{ bot: BotAnnouncement }>(`/api/bots/${action.botId}/tasks/${action.threadId}`, {
+              method: "PATCH",
+              body: JSON.stringify({ refreshPermissions: true, ...(acknowledgeLocalAuto ? { acknowledgeLocalAuto: true } : {}) }),
+            }).then((result) => result.bot);
+          void refreshed.then((updated) => {
+            if (updated) rawDispatch({ type: "botPatched", bot: withTaskWrites(updated) });
+          }).catch(showError);
+          break;
+        }
         case "createProject":
           api(`/api/bots/${action.botId}/projects`, { method: "POST", body: JSON.stringify({ name: action.name, emoji: action.emoji }) })
             .then(({ bot, project }) => {
