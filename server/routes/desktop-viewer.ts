@@ -209,7 +209,10 @@ export function createDesktopViewer(deps: {
     closeForOwner: (owner: string, botId?: string) => {
       let closed = 0;
       for (const upgrade of upgrades.values()) {
-        if (upgrade.socket.destroyed || upgrade.owner !== owner || (botId !== undefined && upgrade.botId !== botId)) continue;
+        if (upgrade.owner !== owner || (botId !== undefined && upgrade.botId !== botId)) continue;
+        // A viewer already closed stays listed until its socket's close
+        // event, which arrives later on Windows: not closed or counted again.
+        if (upgrade.socket.destroyed) continue;
         upgrade.close();
         closed++;
       }
