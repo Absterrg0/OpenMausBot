@@ -160,6 +160,12 @@ describe("the call button", () => {
 });
 
 describe("the call mode menu", () => {
+  it("opens upward from the composer and downward from the header", () => {
+    const props = { id: "m", mode: "live" as const, onChoose: vi.fn(), onClose: vi.fn() };
+    expect(renderToStaticMarkup(createElement(CallModeMenu, { ...props, placement: "composer" }))).toContain("bottom-full");
+    expect(renderToStaticMarkup(createElement(CallModeMenu, props))).toContain("top-full");
+  });
+
   it("offers both modes as radio items, the current one checked", () => {
     const markup = renderToStaticMarkup(createElement(CallModeMenu, { id: "m", mode: "live", onChoose: vi.fn(), onClose: vi.fn() }));
     expect(markup).toContain('role="menu"');

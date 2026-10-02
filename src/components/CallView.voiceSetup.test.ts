@@ -172,7 +172,7 @@ describe("setting up a voice from the call button", () => {
     expect(fixture.dialog!.ready).toBe(true);
 
     (fixture.dialog!.onStartCall as () => void)();
-    expect(fixture.track).toHaveBeenCalledWith("call_started", { driver: "codex" });
+    expect(fixture.track).toHaveBeenCalledWith("call_started", { driver: "codex", mode: "turns" });
     expect(fixture.startCall).toHaveBeenCalledWith("pepper");
     expect(render().html).not.toContain("data-voice-setup-stub");
   });

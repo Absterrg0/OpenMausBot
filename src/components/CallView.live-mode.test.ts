@@ -114,6 +114,9 @@ describe("call modes", () => {
     setCallMode("live");
     await startLiveCall({ botId: bot.id, threadId: bot.threadId });
     expect(render(createElement(CallButton, { bot }))).toContain('aria-label="OpenAI API key for Live calls"');
+    const composer = render(createElement(CallButton, { bot, placement: "composer" }));
+    expect(composer).toContain('aria-label="OpenAI API key for Live calls"');
+    expect(composer).toContain("bottom-full");
     expect(render(createElement(CallButton, { bot: { ...bot, id: "juniper" } }))).not.toContain("OpenAI API key");
     // Leaving the chat (or closing the prompt) drops it: it does not open
     // again by itself on a later visit. Another chat leaving keeps it.
