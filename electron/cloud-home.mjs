@@ -70,26 +70,18 @@ export function parseCloudPurchase(input) {
   return { state: input.state, ...(tier ? { tier } : {}), ...(moment(input.paidAt) ? { paidAt: input.paidAt } : {}) };
 }
 
-/** Disk per plan when the Admin does not say (openmaus-cloud
- * server/cloud-plans.ts): every Cloud starts at 10 GB, and the disk of a
- * plan whose maximum is larger grows as it fills. */
-export const CLOUD_PLAN_DISK_GB = Object.freeze({
-  personal: Object.freeze({ startGb: 10, maxGb: 10 }),
-  pro: Object.freeze({ startGb: 10, maxGb: 50 }),
-  max: Object.freeze({ startGb: 10, maxGb: 100 }),
-});
-
-/** The disk a verified paid plan's Cloud has now (when known) and may grow
- * to. The Admin's own `cloud.disk` wins; without it, the plan's table entry.
- * No tier is an Admin that sells only Pro. Null: no paid plan, or a plan this
- * app does not know (its Cloud's own free space is then all there is). */
+/** The paid plan with the largest disk: nobody on it is pointed at a larger one. */
+const LARGEST_TIER = "max";
+/** The disk a verified paid plan's Cloud has now and may grow to, only as
+ * the Admin says it (`cloud.disk`). Without that word the Cloud's own free
+ * space is all a move is measured against: an Admin that does not say how
+ * far the disk grows cannot grow it for a move either (Pro's disk, for one,
+ * is fixed unless the Admin is set to let it grow). `largest`: the top plan. */
 export function cloudPlanDisk(state) {
   if (state?.status !== "connected" || state.entitlement?.plan !== "pro") return null;
   const disk = state.machine?.disk;
-  if (disk) return { volumeBytes: disk.gb * GB, maxBytes: disk.maxGb * GB };
-  const tier = state.entitlement.tier ?? "pro";
-  const plan = Object.hasOwn(CLOUD_PLAN_DISK_GB, tier) ? CLOUD_PLAN_DISK_GB[tier] : null;
-  return plan ? { maxBytes: plan.maxGb * GB, startBytes: plan.startGb * GB } : null;
+  if (!disk) return null;
+  return { volumeBytes: disk.gb * GB, maxBytes: disk.maxGb * GB, ...(state.entitlement.tier === LARGEST_TIER ? { largest: true } : {}) };
 }
 
 /** The person's Cloud address, remembered for their account while a check

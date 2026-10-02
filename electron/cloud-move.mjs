@@ -83,7 +83,9 @@ export function moveFit({ localBytes, freeBytes, uploadReceived = 0, volumeBytes
     const sizeGb = Math.min(Math.floor(maxBytes / GB), Math.ceil((volume + neededBytes - available) / GB / DISK_STEP_GB) * DISK_STEP_GB);
     return { fit: "grow", neededBytes, freeBytes: available, maxBytes, sizeGb };
   }
-  return { fit: "never", neededBytes, freeBytes: available, ...(maxBytes ? { maxBytes } : {}) };
+  // What it is up against: the plan's whole disk (`maxBytes`, `largest` on the
+  // top plan) or, when the Admin does not say, this Cloud's disk as it is now.
+  return { fit: "never", neededBytes, freeBytes: available, ...(maxBytes ? { maxBytes, ...(disk?.largest === true ? { largest: true } : {}) } : volume ? { volumeBytes: volume } : {}) };
 }
 export function parseCloudMoveStatus(value) {
   if (!record(value) || !record(value.contents) || !["bots", "rooms", "chats"].every(key => count(value.contents[key])) ||
@@ -359,9 +361,11 @@ export function createCloudMove({ localRequest, pairHome, fetchImpl = fetch, tem
     publish({ phase: "growing", action: "move" });
     const details = { freeBytes: fit.freeBytes, neededBytes: fit.neededBytes, maxBytes: fit.maxBytes };
     let answer = null;
-    try { answer = await growCloud(fit.sizeGb); } catch { /* the same as not yet */ }
+    // No answer (offline, a slip): trying again later can work.
+    try { answer = await growCloud(fit.sizeGb); } catch { signal.throwIfAborted(); fail("cloud_grow_unavailable", "Your Cloud could not make room for this move just now.", details); }
     signal.throwIfAborted();
-    if (!answer?.supported) fail("cloud_grow_unavailable", "Your Cloud could not make room for this move yet.", details);
+    // This Admin cannot grow a disk for a move: trying again will not help.
+    if (!answer?.supported) fail("cloud_grow_unsupported", "Your Cloud can't make room for a move this size yet.", details);
     if (answer.refused) fail("cloud_full", "Your Cloud does not have enough space for this move.", details);
     const deadline = now() + growTimeoutMs;
     for (;;) {
@@ -421,7 +425,8 @@ export function createCloudMove({ localRequest, pairHome, fetchImpl = fetch, tem
       try { disk = cloudDisk(); } catch { /* today's free space only */ }
       const fit = moveFit({ localBytes: local.bytes, freeBytes: cloud.freeBytes, uploadReceived: cloud.uploadReceived, volumeBytes: cloud.volumeBytes, disk });
       if (fit.fit === "never") {
-        fail("cloud_full", "Your Cloud does not have enough free space for this move.", { freeBytes: fit.freeBytes, neededBytes: fit.neededBytes, ...(fit.maxBytes ? { maxBytes: fit.maxBytes } : {}) });
+        const details = { ...fit }; delete details.fit;
+        fail("cloud_full", "Your Cloud does not have enough free space for this move.", details);
       }
       if (fit.fit === "grow") await makeRoom(session, fit, signal);
       const archived = await archive(local, signal);

@@ -31,12 +31,24 @@ export const formatMoveBytes = (value: number) => {
 /** The person-facing sentence for a failed move: what happened, and the next step. */
 export function cloudMoveErrorText(error: CloudMoveState["error"]): string {
   if (!error) return "";
+  const needed = error.neededBytes;
   if (error.code === "cloud_full") {
-    // Not even the plan's largest disk holds it.
-    if (error.maxBytes !== undefined && error.neededBytes !== undefined) return t("cloudMove.error.planFull", { needed: formatMoveBytes(error.neededBytes), max: formatMoveBytes(error.maxBytes) });
-    return error.freeBytes !== undefined && error.neededBytes !== undefined
-      ? t("cloudMove.error.cloudFull", { free: formatMoveBytes(error.freeBytes), needed: formatMoveBytes(error.neededBytes) })
+    // More than the plan's whole disk: only a larger plan (or, on the largest, we) can take it.
+    if (error.maxBytes !== undefined && needed !== undefined && needed > error.maxBytes) {
+      return t(error.largest ? "cloudMove.error.planFullLargest" : "cloudMove.error.planFull", { needed: formatMoveBytes(needed), max: formatMoveBytes(error.maxBytes) });
+    }
+    // More than this Cloud's disk now, and the Admin does not say it can grow: removing files will not do it.
+    if (error.maxBytes === undefined && error.volumeBytes !== undefined && needed !== undefined && needed > error.volumeBytes) {
+      return t("cloudMove.error.growUnsupported", { needed: formatMoveBytes(needed) });
+    }
+    // The disk could hold it: what is already on the Cloud is in the way.
+    return error.freeBytes !== undefined && needed !== undefined
+      ? t("cloudMove.error.cloudFull", { free: formatMoveBytes(error.freeBytes), needed: formatMoveBytes(needed) })
       : t("cloudMove.error.cloudFullPlain");
+  }
+  // This Admin cannot grow the disk for a move: no "try again".
+  if (error.code === "cloud_grow_unsupported") {
+    return needed !== undefined ? t("cloudMove.error.growUnsupported", { needed: formatMoveBytes(needed) }) : t("cloudMove.error.growUnsupportedPlain");
   }
   // It fits the plan's disk, which could not grow for it just now.
   if (error.code === "cloud_grow_unavailable") {
@@ -108,7 +120,9 @@ export function moveNextSteps(state: CloudMoveState): string[] {
 /** Before a move that cannot fit even at the plan's largest disk: say so now. */
 export function moveFitNote(overview: CloudMoveOverview | null): string | null {
   const fit = overview?.fit;
-  return fit?.fit === "never" ? cloudMoveErrorText({ code: "cloud_full", message: "", freeBytes: fit.freeBytes, neededBytes: fit.neededBytes, ...(fit.maxBytes ? { maxBytes: fit.maxBytes } : {}) }) : null;
+  if (fit?.fit !== "never") return null;
+  return cloudMoveErrorText({ code: "cloud_full", message: "", freeBytes: fit.freeBytes, neededBytes: fit.neededBytes,
+    ...(fit.maxBytes ? { maxBytes: fit.maxBytes } : {}), ...(fit.largest ? { largest: true as const } : {}), ...(fit.volumeBytes ? { volumeBytes: fit.volumeBytes } : {}) });
 }
 
 /** Settings → OMB Cloud, below "Your Cloud" once it is Ready. */

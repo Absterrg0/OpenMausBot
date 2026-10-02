@@ -12,7 +12,7 @@ vi.mock("react", async original => ({ ...await original<typeof import("react")>(
 import { CloudAccountSettings, CloudPlanOnCloud, cloudLinkAction, cloudPlanLabel } from "./CloudAccountSettings";
 type Node = ReactElement<{ children?: ReactNode; onClick?: () => void }>;
 function nodes(value: ReactNode): Node[] { if (!isValidElement(value)) return []; const node = value as Node; return [node, ...Children.toArray(node.props.children).flatMap(nodes)]; }
-function render(props?: { linkRequest?: number }) { f.index = 0; f.effects = []; let tree: ReactNode; function Capture() { tree = CloudAccountSettings(props); return tree; }
+function render(props?: { linkRequest?: number; cloudHome?: boolean }) { f.index = 0; f.effects = []; let tree: ReactNode; function Capture() { tree = CloudAccountSettings(props); return tree; }
   const html = renderToStaticMarkup(createElement(Capture)); return { html, nodes: nodes(tree) }; }
 const flush = async () => { for (let i = 0; i < 20; i++) await Promise.resolve(); };
 const click = (label: string) => { const button = render().nodes.find(node => node.type === "button" && node.props.children === label); expect(button).toBeTruthy(); button!.props.onClick!(); };
@@ -158,7 +158,9 @@ it("setting up shows the Cloud page's steps, a slow setup and a failed setup's n
 it("on the person's own Cloud, Settings shows the plan read only, with Manage and Switch to this computer", async () => {
   const plan = { state: vi.fn().mockResolvedValue({ status: "paid", tier: "max" }), manage: vi.fn().mockResolvedValue(undefined), useThisComputer: vi.fn().mockResolvedValue(undefined) };
   vi.stubGlobal("window", { ogb: { cloudPlan: plan } });
-  const settings = render().html; expect(settings).not.toContain("local desktop app");
+  const settings = render({ cloudHome: true }).html; expect(settings).not.toContain("local desktop app");
+  // Any other server open in this window (a VPS, a hosted workspace) has no plan of this person's to show.
+  expect(render().html).toContain("local desktop app"); expect(render().html).not.toContain("Manage in your browser");
   const view = () => { f.index = 0; f.effects = []; let tree: ReactNode; function Capture() { tree = CloudPlanOnCloud({ bridge: plan }); return tree; }
     return { html: renderToStaticMarkup(createElement(Capture)), nodes: nodes(tree) }; };
   view(); f.effects[0](); await flush();
@@ -168,6 +170,15 @@ it("on the person's own Cloud, Settings shows the plan read only, with Manage an
   await flush(); expect(plan.manage).toHaveBeenCalledExactlyOnceWith(); expect(plan.useThisComputer).toHaveBeenCalledExactlyOnceWith();
   plan.state.mockResolvedValueOnce({ status: "checking", tier: "pro" }); f.values = []; view(); f.effects[0](); await flush();
   expect(view().html).toContain("Pro · checking with OMB Cloud…");
+  // This computer's sign-in ended: the plan stays named, with the one next step, and nothing to buy.
+  plan.state.mockResolvedValueOnce({ status: "signin", tier: "max" }); f.values = []; view(); f.effects[0](); await flush();
+  all(view().html, ["Max plan", "This computer needs to sign in to OMB Cloud again", "Switch to this computer"]); none(view().html, [...BUY, "Could not complete"]);
+  // This app cannot vouch for this Cloud: where the plan is managed, and nothing that would fail.
+  plan.state.mockRejectedValueOnce(new Error("cloud-plan:state is only available in this app's window")); f.values = []; view(); f.effects[0](); await flush();
+  const refused = view();
+  expect(refused.html).toContain("Your plan is managed in the OpenMausBot app on your computer.");
+  expect(refused.nodes.some(node => node.type === "button")).toBe(false);
+  none(refused.html, ["Could not complete", 'role="alert"', "Loading"]);
 });
 
 const pro: CloudAccountState = { ...free, entitlement: { plan: "pro", status: "active", expiresAt: 1_900_000_000_000, version: 2 } };

@@ -42,6 +42,9 @@ function planHint(value) {
   if (!value || typeof value !== "object" || typeof value.active !== "boolean") return null;
   return { ...(typeof value.tier === "string" && TIER.test(value.tier) ? { tier: value.tier } : {}), active: value.active };
 }
+/** The Admin's own answer that this computer's sign-in no longer counts: its
+ * JSON "invalid_token" (a page from in between carries no code). */
+const signInEnded = error => [401, 403].includes(error?.status) && error.code === "invalid_token";
 const sameHint = (left, right) => (left?.tier ?? null) === (right?.tier ?? null) && (left?.active ?? null) === (right?.active ?? null);
 
 /** Personal account only. No model provider, organization policy, workspace,
@@ -97,8 +100,10 @@ export function createCloudAccountClient({ store, openBrowser, platform, deviceN
     finally { reader?.releaseLock(); }
     let data;
     try { data = JSON.parse(Buffer.concat(chunks).toString("utf8")); } catch {
-      // A route this Admin does not have may answer with no JSON at all.
-      if (!response.ok) throw Object.assign(new Error("Cloud request failed."), { status: response.status });
+      // Not an answer from the Admin's API: a route this Admin does not have,
+      // or a page from something in between (a firewall or bot check). The
+      // status is kept for growDisk; `opaque` keeps it from ending anything.
+      if (!response.ok) throw Object.assign(new Error("Cloud request failed."), { status: response.status, opaque: true });
       throw new Error("Invalid Cloud response.");
     }
     if (!response.ok) throw Object.assign(new Error("Cloud request failed."), { status: response.status, code: data?.error, interval: data?.interval });
@@ -129,7 +134,8 @@ export function createCloudAccountClient({ store, openBrowser, platform, deviceN
   }
   async function revoke(previous) {
     try { await request("session", { method: "DELETE", body: {}, token: previous.token, signal: AbortSignal.timeout(20_000) }); }
-    catch (error) { if (![401, 403].includes(error?.status)) throw error; }
+    // Already ended, by the Admin's own answer; a page from in between revoked nothing.
+    catch (error) { if (![401, 403].includes(error?.status) || error.opaque) throw error; }
   }
   /** The verified machine to connect to; null unless a current session
    * reports one that is running. */
@@ -166,7 +172,7 @@ export function createCloudAccountClient({ store, openBrowser, platform, deviceN
       if (!current(stamp) || grant !== previous) return state();
       const next = identity(result);
       if (next.device.id !== previous.device.id || next.account.id !== previous.account.id || next.account.email !== previous.account.email || next.expiresAt <= now()) {
-        throw Object.assign(new Error("Cloud identity changed."), { status: 401 });
+        throw Object.assign(new Error("Cloud identity changed."), { status: 401, code: "invalid_token" });
       }
       const access = entitlement(result.entitlement);
       // The Admin's state decides what the machine allows (a lapsed payment
@@ -194,7 +200,10 @@ export function createCloudAccountClient({ store, openBrowser, platform, deviceN
       schedule(refresh, Math.min(settingUp ? SETUP_REFRESH_MS : REFRESH_MS, verifiedUntil - now()));
     } catch (error) {
       if (!current(stamp)) return state();
-      if ([401, 403].includes(error?.status)) { verifiedUntil = 0; failures = 0; stopTimer(); return publish(view("reauth-required", "access-ended")); }
+      // Only the Admin itself ends a sign-in: its JSON "invalid_token". A
+      // 401/403 page from anything in between (Cloudflare, a proxy) is a
+      // failed check like any other, never "sign in again".
+      if (signInEnded(error)) { verifiedUntil = 0; failures = 0; stopTimer(); return publish(view("reauth-required", "access-ended")); }
       // Not an answer (offline, a timeout, a malformed reply): the last
       // verified snapshot stands while it is current, and is never replaced
       // by what failed. state() says "checking" after repeated failures.
@@ -232,7 +241,7 @@ export function createCloudAccountClient({ store, openBrowser, platform, deviceN
       if (issued) return signOut();
       if (error?.code === "slow_down") attempt.interval = Math.min(60_000, Math.max(attempt.interval + 5000, Number.isSafeInteger(error.interval) ? error.interval * 1000 : 0));
       else if (["access_denied", "expired_token", "invalid_grant"].includes(error?.code)) { pending = null; return publish({ status: "signed-out", message: "enrollment-ended" }); }
-      else if (error?.status && error.code !== "authorization_pending" && error.status !== 429) { pending = null; return publish({ status: "signed-out", message: "signin-failed" }); }
+      else if (error?.status && !error.opaque && error.code !== "authorization_pending" && error.status !== 429) { pending = null; return publish({ status: "signed-out", message: "signin-failed" }); }
       schedule(poll, Math.min(attempt.interval, attempt.expiresAt - now()));
       return state();
     }
@@ -328,6 +337,9 @@ export function cloudPlanSnapshot(state) {
   const tier = state?.status === "connected" ? state.entitlement?.tier : state?.lastPlan?.tier;
   const named = typeof tier === "string" ? { tier } : {};
   if (state?.status === "connected" && state.entitlement?.plan === "pro") return { status: state.entitlement.status === "active" ? "paid" : "attention", ...named };
+  // This computer's sign-in ended: the plan still shows (`tier` "pro" when it
+  // had none), and the next step is on the computer, not here.
+  if (state?.status === "reauth-required") return { status: "signin", ...(state.lastPlan ? { tier: state.lastPlan.tier ?? "pro" } : {}) };
   if (state?.status !== "connected" && state?.lastPlan) return { status: "checking", ...named };
   return { status: "none" };
 }

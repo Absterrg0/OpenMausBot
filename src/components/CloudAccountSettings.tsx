@@ -93,21 +93,30 @@ function dashboardLabel(account: CloudAccountState, view: CloudPlanView): string
 }
 
 /** On the person's own Cloud, open in this app's window: the plan, read only,
- * Manage in the browser, and back to this computer. */
+ * Manage in the browser, and back to this computer. When this app cannot
+ * vouch for this Cloud (its state is refused), it says where the plan is
+ * managed and offers nothing that would fail. */
 export function CloudPlanOnCloud({ bridge }: { bridge: CloudPlanBridge }) {
-  const [plan, setPlan] = useState<CloudPlanSnapshot | null>(null), [failed, setFailed] = useState(false);
+  const [plan, setPlan] = useState<CloudPlanSnapshot | null>(null), [failed, setFailed] = useState(false), [refused, setRefused] = useState(false);
   useEffect(() => {
     let active = true;
-    void bridge.state().then(next => { if (active) setPlan(next); }).catch(() => { if (active) setFailed(true); });
+    void bridge.state().then(next => { if (active) setPlan(next); }).catch(() => { if (active) setRefused(true); });
     return () => { active = false; };
   }, [bridge]);
+  if (refused) {
+    return <Card title={t("settings.section.cloudAccount")}>
+      <p data-cloud-plan="elsewhere" className="text-[13px] text-ink-secondary">{t("cloudAccount.onCloudNone")}</p>
+    </Card>;
+  }
   const label = cloudPlanLabel(plan?.tier);
   const line = plan?.status === "paid" ? t("cloudAccount.pro", { plan: label }) : plan?.status === "attention" ? t("cloudAccount.inactive", { plan: plan.tier ? label : "OMB Cloud" })
-    : plan?.status === "checking" ? t("cloudAccount.lastPlan", { plan: label }) : plan ? t("cloudAccount.onCloudNone") : null;
+    : plan?.status === "checking" ? t("cloudAccount.lastPlan", { plan: label }) : plan?.status === "signin" ? (plan.tier ? t("cloudAccount.planName", { plan: label }) : null)
+      : plan ? t("cloudAccount.onCloudNone") : null;
   const act = (action: () => Promise<void>) => { setFailed(false); void action().catch(() => setFailed(true)); };
   return <Card title={t("settings.section.cloudAccount")} subtitle={t("cloudAccount.onCloud")}>
     <div data-cloud-plan={plan?.status ?? "loading"} className="flex flex-col items-start gap-3">
-      {line ? <p role="status" className="text-[15px] font-medium text-ink">{line}</p> : !failed && <p role="status" className="text-[13px] text-ink-secondary">{t("cloudAccount.loading")}</p>}
+      {line ? <p role="status" className="text-[15px] font-medium text-ink">{line}</p> : !plan && <p role="status" className="text-[13px] text-ink-secondary">{t("cloudAccount.loading")}</p>}
+      {plan?.status === "signin" && <p className="text-[13px] text-ink-secondary">{t("cloudAccount.onCloudSignIn")}</p>}
       <div className="flex flex-wrap gap-2">
         <button type="button" className="ui-button" onClick={() => act(() => bridge.manage())}>{t("cloudAccount.manageInBrowser")}</button>
         <button type="button" className="ui-button" onClick={() => act(() => bridge.useThisComputer())}>{t("cloudAccount.useThisComputer")}</button>
@@ -119,7 +128,7 @@ export function CloudPlanOnCloud({ bridge }: { bridge: CloudPlanBridge }) {
 
 /** The public native snapshot carries no credential and cannot activate a plan.
  * `linkRequest` is non-zero only while openmausbot://cloud has this open. */
-export function CloudAccountSettings({ linkRequest = 0 }: { linkRequest?: number } = {}) {
+export function CloudAccountSettings({ linkRequest = 0, cloudHome = false }: { linkRequest?: number; cloudHome?: boolean } = {}) {
   const bridge = window.ogb?.remoteClient?.active ? undefined : window.ogb?.cloudAccount;
   const [account, setAccount] = useState<CloudAccountState | null>(null);
   const [busy, setBusy] = useState(false), [error, setError] = useState(false), [confirm, setConfirm] = useState(false);
@@ -167,7 +176,9 @@ export function CloudAccountSettings({ linkRequest = 0 }: { linkRequest?: number
     if (action === "connect") { link.current.connected = true; connectHome(); }
   }, [bridge, linkRequest, account, busy]);
   if (!bridge) {
-    const plan = window.ogb?.remoteClient?.active ? undefined : window.ogb?.cloudPlan;
+    // Only on an OMB Cloud home: any other server open in this window (a VPS,
+    // a hosted workspace, someone else's) has no plan of this person's to show.
+    const plan = window.ogb?.remoteClient?.active || !cloudHome ? undefined : window.ogb?.cloudPlan;
     return plan ? <CloudPlanOnCloud bridge={plan} /> : <p className="text-[13px] text-ink-secondary">{t("cloudAccount.desktopOnly")}</p>;
   }
   const view = cloudPlanView(account);

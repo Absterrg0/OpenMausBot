@@ -13,6 +13,7 @@ import environments from "./environments.cjs";
 import localOrigin from "./local-origin.cjs";
 import { cloudPageSenderAllowed, createCloudMove, moveFit, parseMoveEstimate } from "./cloud-move.mjs";
 import { cloudPlanSnapshot } from "./cloud-account.mjs";
+import { cloudPlanDisk } from "./cloud-home.mjs";
 
 const ORIGIN = "https://omb-u-1a2b3c4d5e6f.fly.dev";
 const MAGIC = Buffer.from("OMB-WORKSPACE-1\n");
@@ -198,8 +199,11 @@ test("a move is measured against the plan's largest disk when the disk grows, an
   // Personal's disk does not grow: it truly cannot fit, and says the plan's size.
   assert.deepEqual(moveFit({ localBytes: local, freeBytes: free, disk: { maxBytes: 10 * GB, startBytes: 10 * GB } }),
     { fit: "never", neededBytes: 3 * local + MARGIN, freeBytes: free, maxBytes: 10 * GB });
-  // No plan known: today's free space is all there is.
+  // The top plan says so, so nobody is pointed at a larger one.
+  assert.equal(moveFit({ localBytes: 40 * GB, freeBytes: 5 * GB, volumeBytes: 10 * GB, disk: { maxBytes: 100 * GB, volumeBytes: 10 * GB, largest: true } }).largest, true);
+  // No plan known: today's free space is all there is; the Cloud's own disk size says why.
   assert.deepEqual(moveFit({ localBytes: local, freeBytes: free }), { fit: "never", neededBytes: 3 * local + MARGIN, freeBytes: free });
+  assert.deepEqual(moveFit({ localBytes: local, freeBytes: free, volumeBytes: 10 * GB }), { fit: "never", neededBytes: 3 * local + MARGIN, freeBytes: free, volumeBytes: 10 * GB });
   // The Cloud's own volume size wins over the plan's starting size; the ask never passes the plan.
   assert.equal(moveFit({ localBytes: 10 * GB, freeBytes: 15 * GB, volumeBytes: 40 * GB, disk: { maxBytes: 100 * GB, startBytes: 10 * GB } }).sizeGb, 60);
   assert.equal(moveFit({ localBytes: 28 * GB, freeBytes: 15 * GB, volumeBytes: 20 * GB, disk: { maxBytes: 100 * GB, startBytes: 10 * GB } }).sizeGb, 90);
@@ -208,6 +212,29 @@ test("a move is measured against the plan's largest disk when the disk grows, an
   assert.equal(moveFit({ localBytes: 1 * GB, freeBytes: 2 * GB, uploadReceived: 2 * GB }).fit, "now");
   assert.deepEqual(parseMoveEstimate({ bots: 1, rooms: 0, chats: 2, bytes: 10, files: 1, routines: 4 }).routines, 4);
   assert.equal(parseMoveEstimate({ bots: 1, rooms: 0, chats: 2, bytes: 10, files: 1, routines: -1 }).routines, undefined);
+});
+
+test("the Cloud's card offers a move only when it can fit: growth counts only when the Admin says the disk grows", async () => {
+  const source = readFileSync(new URL("./main.mjs", import.meta.url), "utf8");
+  const start = source.indexOf("async function cloudMoveOverview("), end = source.indexOf("/** Local Settings, and (for the card)", start);
+  // The audit's case: 3.4 GB here, 8.9 GB free on a new 10 GB Max Cloud.
+  const local = { bots: 3, rooms: 1, chats: 12, bytes: 3.4 * GB, files: 100 };
+  const max = machine => ({ status: "connected", account: { id: "a1", email: "p@example.test" },
+    entitlement: { plan: "pro", tier: "max", status: "active", expiresAt: 1, version: 1 }, machine });
+  const overview = async state => {
+    const context = vm.createContext({ moveFit, cloudPlanDisk, cloudMoveDismissed: () => false,
+      ensureCloudMove: () => ({ estimate: async () => local, state: () => ({ phase: "idle" }) }),
+      ensureCloudAccount: () => ({ homeTarget: () => ({ origin: ORIGIN }), state: () => state }),
+      peekCloudMove: async () => ({ empty: true, freeBytes: 8.9 * GB, uploadReceived: 0, volumeBytes: 10 * GB, contents: { bots: 0, rooms: 0, chats: 0 }, previous: null }) });
+    vm.runInContext(`${source.slice(start, end)}\nglobalThis.cloudMoveOverview = cloudMoveOverview;`, context);
+    return context.cloudMoveOverview(true);
+  };
+  // Today's Admin says nothing about the disk: today's free space decides, so no card offers a move it would refuse.
+  let result = await overview(max({ status: "ready", origin: ORIGIN }));
+  assert.equal(result.fit.fit, "never"); assert.equal(result.fit.volumeBytes, 10 * GB); assert.equal(result.suggest, false);
+  // An Admin that says the disk grows to 100 GB: the move fits once it grows, and the card offers it.
+  result = await overview(max({ status: "ready", origin: ORIGIN, disk: { gb: 10, maxGb: 100 } }));
+  assert.equal(result.fit.fit, "grow"); assert.equal(result.suggest, true);
 });
 
 test("a Cloud whose plan's disk grows makes room first, then the move continues", async () => {
@@ -226,7 +253,8 @@ test("a Cloud whose plan's disk grows makes room first, then the move continues"
 
 test("when the disk cannot grow for the move (an Admin without it, too slow, or over the plan), it says so and moves nothing", async () => {
   const cases = [
-    ["cloud_grow_unavailable", async () => ({ supported: false })],
+    // An Admin that cannot grow a disk: its own code, so the text never says "try again".
+    ["cloud_grow_unsupported", async () => ({ supported: false })],
     ["cloud_grow_unavailable", async () => { throw new Error("offline"); }],
     ["cloud_full", async () => ({ supported: true, refused: true })],
   ];
@@ -495,7 +523,7 @@ test("Settings on the person's own Cloud shows the plan read only, and can only 
     activeEnvironment: environments.activeEnvironment, rendererOrigin: () => LOCAL, desktopRemoteAccess: false,
     mainWindow: { isDestroyed: () => false, webContents: cloudContents },
     environmentsState: { environments: [{ id: "cloud", name: "My Cloud", origin: ORIGIN }], activeId: "cloud" },
-    cloudAccount: { homeTarget: () => ({ origin: ORIGIN }), state: () => account }, cloudPlanSnapshot, LOCAL_ID: environments.LOCAL_ID,
+    cloudAccount: { homeTarget: () => ({ origin: ORIGIN }), state: () => account }, cloudPlanSnapshot, LOCAL_ID: environments.LOCAL_ID, rememberedHome: null,
     ensureCloudAccount: () => ({ openDashboard: async (...args) => { calls.push(["dashboard", ...args]); return account; } }),
     workspaceMenuAction: action => action(), switchEnvironment: id => { calls.push(["switch", id]); },
   });
@@ -508,7 +536,28 @@ test("Settings on the person's own Cloud shows the plan read only, and can only 
   for (const sender of [{ sender: cloudContents, senderFrame: { url: "https://other.example.test/" } }, { sender: {}, senderFrame: cloudFrame }]) {
     for (const channel of ["cloud-plan:state", "cloud-plan:manage", "cloud-plan:local"]) assert.throws(() => handlers.get(channel)(sender), /only available/);
   }
-  assert.deepEqual(cloudPlanSnapshot({ status: "reauth-required", message: "expired", lastPlan: { tier: "pro", active: true } }), { status: "checking", tier: "pro" });
+  // The sign-in is being checked, or has ended: there is no verified Cloud to
+  // connect to, but the one this account last verified still answers, never an error.
+  let current = { status: "reauth-required", message: "expired", account: account.account, lastPlan: { tier: "max", active: true } };
+  context.cloudAccount = { homeTarget: () => null, state: () => current };
+  assert.throws(() => handlers.get("cloud-plan:state")(event), /only available/);
+  context.rememberedHome = { accountId: "a1", origin: ORIGIN };
+  assert.deepEqual(await handlers.get("cloud-plan:state")(event), { status: "signin", tier: "max" });
+  current = { status: "unavailable", account: account.account, lastPlan: { tier: "max", active: true } };
+  assert.deepEqual(await handlers.get("cloud-plan:state")(event), { status: "checking", tier: "max" });
+  await handlers.get("cloud-plan:local")(event);
+  assert.deepEqual(calls.at(-1), ["switch", environments.LOCAL_ID]);
+  // Only this account's Cloud, and only on that Cloud's own page; Move and lending are not widened.
+  context.rememberedHome = { accountId: "someone-else", origin: ORIGIN };
+  assert.throws(() => handlers.get("cloud-plan:state")(event), /only available/);
+  context.rememberedHome = { accountId: "a1", origin: ORIGIN };
+  assert.throws(() => handlers.get("cloud-plan:state")({ sender: cloudContents, senderFrame: { url: "https://other.example.test/" } }), /only available/);
+  assert.throws(() => handlers.get("cloud-lending:open")(event), /only available/);
+  context.cloudAccount = { homeTarget: () => ({ origin: ORIGIN }), state: () => account };
+  assert.deepEqual(cloudPlanSnapshot({ status: "reauth-required", message: "expired", lastPlan: { tier: "pro", active: true } }), { status: "signin", tier: "pro" });
+  assert.deepEqual(cloudPlanSnapshot({ status: "reauth-required", message: "access-ended", lastPlan: { active: true } }), { status: "signin", tier: "pro" });
+  assert.deepEqual(cloudPlanSnapshot({ status: "reauth-required", message: "access-ended" }), { status: "signin" });
+  assert.deepEqual(cloudPlanSnapshot({ status: "unavailable", lastPlan: { tier: "pro", active: true } }), { status: "checking", tier: "pro" });
   assert.deepEqual(cloudPlanSnapshot({ ...account, entitlement: { ...account.entitlement, status: "inactive" } }), { status: "attention", tier: "max" });
   assert.deepEqual(cloudPlanSnapshot({ status: "signed-out" }), { status: "none" });
 });

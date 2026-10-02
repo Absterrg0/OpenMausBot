@@ -13,7 +13,7 @@ async function fixture(t, options = {}) {
   const f = { now: 1_800_000_000_000, requests: [], browsers: [], states: [], saved: null, approved: false, revoked: false,
     sessionStatus: 200, invalidIdentity: false, invalidEntitlement: false, badUrl: false, failWrite: false, slowToken: null,
     entitlement: { plan: "free", status: "inactive", expiresAt: null, version: 0 }, timer: null, delay: null, cloud: undefined, expiresIn: 600,
-    disk: { status: 404, body: "<!doctype html>not here" } };
+    disk: { status: 404, body: "<!doctype html>not here" }, sessionPage: null, sessionError: null, tokenPage: null };
   const identity = () => ({ cloudContractVersion: 1, expiresAt: f.now + 86400_000, device: { id: "fixture-device" }, account: { id: "fixture-account", email: "person@example.test" } });
   const server = createServer(async (req, res) => {
     let body = ""; for await (const chunk of req) body += chunk;
@@ -26,12 +26,15 @@ async function fixture(t, options = {}) {
       return send(f.disk.status, f.disk.body);
     }
     if (req.url === "/api/cloud/desktop/token") {
+      if (f.tokenPage) { res.writeHead(f.tokenPage, { "content-type": "text/html" }); return res.end("<!doctype html>Just a moment"); }
       if (f.slowToken) await f.slowToken;
       return f.approved ? send(200, { ...identity(), accessToken }) : send(400, { error: "authorization_pending" });
     }
     if (req.url === "/api/cloud/desktop/session" && req.headers.authorization === `Bearer ${accessToken}`) {
-      if (req.method === "DELETE") { if (f.sessionStatus === 503) return send(503, { error: "unavailable" }); f.revoked = true; return send(200, { revoked: true }); }
+      if (req.method === "DELETE") { if (f.sessionPage) { res.writeHead(f.sessionPage, { "content-type": "text/html" }); return res.end("<!doctype html>Attention required"); } if (f.sessionStatus === 503) return send(503, { error: "unavailable" }); f.revoked = true; return send(200, { revoked: true }); }
       if (f.revoked) return send(401, { error: "invalid_token" });
+      if (f.sessionPage) { res.writeHead(f.sessionPage, { "content-type": "text/html" }); return res.end("<!doctype html>Attention required"); }
+      if (f.sessionError) return send(f.sessionError.status, f.sessionError.body);
       if (f.sessionStatus !== 200) return send(f.sessionStatus, { error: "unavailable" });
       return send(200, { ...identity(), ...(f.invalidIdentity ? { account: { id: "someone-else", email: "other@example.test" } } : {}),
         entitlement: f.invalidEntitlement ? { plan: "pro", status: "active" } : f.entitlement, ...(f.cloud === undefined ? {} : { cloud: f.cloud }) });
@@ -248,6 +251,36 @@ test("the sign-in code may last up to 30 minutes, no longer", async t => {
   assert.equal((await g.client.begin()).message, "signin-failed");
 });
 
+test("only the Admin's own answer ends a sign-in: a 401/403 page from in between is a failed check", async t => {
+  const f = await fixture(t); await f.connect();
+  const paid = { plan: "pro", tier: "max", status: "active", expiresAt: f.now + 3 * 3600_000, version: 1 };
+  f.entitlement = paid; await f.client.refresh();
+  // A firewall or bot-check page (Cloudflare serves cloud.openmausbot.com).
+  f.sessionPage = 403;
+  let state = await f.client.refresh();
+  assert.equal(state.status, "connected"); assert.deepEqual(state.entitlement, paid); assert.equal(state.checking, undefined);
+  f.sessionPage = 401; state = await f.client.refresh();
+  assert.equal(state.status, "connected"); assert.equal(state.checking, true); assert.equal(f.saved.token, accessToken);
+  // A JSON 403 that is not about the sign-in (a wrong origin) does not end it either.
+  f.sessionPage = null; f.sessionError = { status: 403, body: { error: "invalid_origin" } };
+  state = await f.client.refresh(); assert.equal(state.status, "connected"); assert.deepEqual(state.entitlement, paid);
+  // The Admin's own "invalid_token": sign in again, the plan still named.
+  f.sessionError = { status: 401, body: { error: "invalid_token" } };
+  state = await f.client.refresh(); assert.equal(state.status, "reauth-required"); assert.equal(state.message, "access-ended");
+  assert.deepEqual(state.lastPlan, { tier: "max", active: true });
+  assert.ok(!f.requests.some(row => row.method === "DELETE"));
+});
+
+test("a page from in between during sign-in keeps waiting for the approval", async t => {
+  const f = await fixture(t);
+  await f.client.begin();
+  f.tokenPage = 403; f.tick();
+  await until(() => f.requests.some(row => row.route.endsWith("/token")) && f.timer);
+  assert.equal(f.client.state().status, "connecting"); assert.equal(f.client.state().enrollment.userCode, "ABCDE-FGHJK");
+  f.tokenPage = null; f.approved = true; f.tick();
+  await until(() => f.client.state().status === "connected");
+});
+
 test("growing the Cloud's disk: an Admin without it says so, a size over the plan is refused, and a grown disk is reported", async t => {
   const f = await fixture(t);
   await assert.rejects(f.client.growDisk(20), /not ready/);
@@ -271,6 +304,9 @@ test("sign-out durably forgets personal Cloud and revokes only its credential; o
   assert.ok(f.requests.every(row => row.route.startsWith("/api/cloud/desktop/")));
   f.revoked = false; await f.connect(); f.sessionStatus = 503;
   assert.equal((await f.client.signOut()).message, "signout-local-only"); assert.equal(f.saved, null);
+  // A 403 page from in between (a firewall) revoked nothing: it is disclosed, never taken as done.
+  f.sessionStatus = 200; await f.connect(); f.sessionPage = 403;
+  assert.equal((await f.client.signOut()).message, "signout-local-only"); assert.equal(f.revoked, false);
 });
 
 test("failed durable sign-out blocks reconnect until cleanup succeeds", async t => {

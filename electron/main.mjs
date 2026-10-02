@@ -2887,7 +2887,8 @@ function dismissCloudMove() {
 async function cloudMoveOverview(onCloudPage) {
   const move = ensureCloudMove(), account = ensureCloudAccount(), target = account.homeTarget();
   const [local, cloud] = await Promise.all([move.estimate().catch(() => null), target ? peekCloudMove(target.origin) : null]);
-  // Measured as the move will be: a plan whose disk grows, at its largest disk.
+  // Measured as the move will be: at the plan's largest disk only when the
+  // Admin says the disk grows (machine.disk); otherwise today's free space.
   const fit = local && cloud ? moveFit({ localBytes: local.bytes, freeBytes: cloud.freeBytes, uploadReceived: cloud.uploadReceived, volumeBytes: cloud.volumeBytes, disk: cloudPlanDisk(account.state()) }) : null;
   // The card on an empty Cloud, once: only when this computer has work to bring, and it can fit.
   const hasWork = Boolean(local && (local.bots > 1 || local.rooms > 0 || local.chats > 0));
@@ -2896,10 +2897,14 @@ async function cloudMoveOverview(onCloudPage) {
 }
 
 /** Local Settings, and (for the card) the verified Cloud page in the main window. */
-const cloudMoveSender = (channel, handler, { cloudPage = false } = {}) => (event) => {
+const cloudMoveSender = (channel, handler, { cloudPage = false, remembered = false } = {}) => (event) => {
   const contents = mainWindow && !mainWindow.isDestroyed() ? mainWindow.webContents : null;
   if (senderIsLocal(event) && workspaceSenderAllowed(event, contents, environmentsState, rendererOrigin())) return handler(false);
-  if (cloudPage && !desktopRemoteAccess && cloudPageSenderAllowed(event, { contents, homeOrigin: cloudAccount?.homeTarget()?.origin, activeOrigin: activeEnvironment(environmentsState)?.origin })) return handler(true);
+  // `remembered`: also the Cloud this account last verified, so its Settings
+  // says "checking" or "sign in again on your computer" while the sign-in is
+  // being checked or has ended, never an error.
+  const last = remembered && rememberedHome?.accountId && rememberedHome.accountId === cloudAccount?.state()?.account?.id ? rememberedHome.origin : undefined;
+  if (cloudPage && !desktopRemoteAccess && cloudPageSenderAllowed(event, { contents, homeOrigin: cloudAccount?.homeTarget()?.origin ?? last, activeOrigin: activeEnvironment(environmentsState)?.origin })) return handler(true);
   throw new Error(`${channel} is only available in this app's window`);
 };
 // Finished: show the Cloud, with what was moved, in this window.
@@ -2917,9 +2922,9 @@ ipcMain.handle("cloud-move:restore-previous", cloudMoveSender("cloud-move:restor
 ipcMain.handle("cloud-lending:open", cloudMoveSender("cloud-lending:open", () => openLendingSettings(), { cloudPage: true }));
 // Settings on the person's own Cloud: the plan, read only (no account or
 // credential), Manage in the browser, and back to this computer.
-ipcMain.handle("cloud-plan:state", cloudMoveSender("cloud-plan:state", () => cloudPlanSnapshot(cloudAccount?.state()), { cloudPage: true }));
-ipcMain.handle("cloud-plan:manage", cloudMoveSender("cloud-plan:manage", async () => { await ensureCloudAccount().openDashboard(); }, { cloudPage: true }));
-ipcMain.handle("cloud-plan:local", cloudMoveSender("cloud-plan:local", () => workspaceMenuAction(() => switchEnvironment(LOCAL_ID)), { cloudPage: true }));
+ipcMain.handle("cloud-plan:state", cloudMoveSender("cloud-plan:state", () => cloudPlanSnapshot(cloudAccount?.state()), { cloudPage: true, remembered: true }));
+ipcMain.handle("cloud-plan:manage", cloudMoveSender("cloud-plan:manage", async () => { await ensureCloudAccount().openDashboard(); }, { cloudPage: true, remembered: true }));
+ipcMain.handle("cloud-plan:local", cloudMoveSender("cloud-plan:local", () => workspaceMenuAction(() => switchEnvironment(LOCAL_ID)), { cloudPage: true, remembered: true }));
 // ── end Move to Cloud ──
 
 const savedWorkspace = id => {

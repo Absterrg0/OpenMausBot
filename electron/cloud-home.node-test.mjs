@@ -217,16 +217,15 @@ test("a payment being linked is read on its own, and only in its two known state
   for (const input of [null, undefined, "held", { state: "claimed" }, { state: "active", plan: "pro" }, []]) assert.equal(parseCloudPurchase(input), null);
 });
 
-test("a plan's disk: the Admin's word first, then the plan's table; none without a verified paid plan", () => {
+test("a plan's disk is only what the Admin says; without its word a move is measured against today's free space", () => {
   const GB = 1024 ** 3, paid = tier => ({ status: "connected", entitlement: { plan: "pro", ...(tier ? { tier } : {}), status: "active", expiresAt: NOW + 1, version: 1 } });
-  assert.deepEqual(cloudPlanDisk(paid("personal")), { maxBytes: 10 * GB, startBytes: 10 * GB });
-  assert.deepEqual(cloudPlanDisk(paid("pro")), { maxBytes: 50 * GB, startBytes: 10 * GB });
-  assert.deepEqual(cloudPlanDisk(paid()), { maxBytes: 50 * GB, startBytes: 10 * GB });
-  assert.deepEqual(cloudPlanDisk(paid("max")), { maxBytes: 100 * GB, startBytes: 10 * GB });
-  assert.equal(cloudPlanDisk(paid("team")), null);
-  assert.deepEqual(cloudPlanDisk({ ...paid("max"), machine: { status: "ready", origin, disk: { gb: 30, maxGb: 80 } } }), { volumeBytes: 30 * GB, maxBytes: 80 * GB });
+  // Today's Admin sends no disk: no plan is assumed to grow (Pro's disk is fixed unless the Admin is set to let it grow).
+  for (const tier of ["personal", "pro", undefined, "max", "team"]) assert.equal(cloudPlanDisk({ ...paid(tier), machine: { status: "ready", origin } }), null);
+  assert.deepEqual(cloudPlanDisk({ ...paid("pro"), machine: { status: "ready", origin, disk: { gb: 10, maxGb: 50 } } }), { volumeBytes: 10 * GB, maxBytes: 50 * GB });
+  // The top plan is marked, so nobody on it is pointed at a larger one.
+  assert.deepEqual(cloudPlanDisk({ ...paid("max"), machine: { status: "ready", origin, disk: { gb: 30, maxGb: 80 } } }), { volumeBytes: 30 * GB, maxBytes: 80 * GB, largest: true });
   for (const state of [null, { status: "signed-out" }, { status: "unavailable", lastPlan: { tier: "max", active: true } },
-    { status: "connected", entitlement: { plan: "free", status: "inactive", expiresAt: null, version: 0 } }]) assert.equal(cloudPlanDisk(state), null);
+    { status: "connected", entitlement: { plan: "free", status: "inactive", expiresAt: null, version: 0 }, machine: { status: "ready", origin, disk: { gb: 10, maxGb: 10 } } }]) assert.equal(cloudPlanDisk(state), null);
 });
 
 test("the Cloud's address is remembered through a failed check for the same account, and forgotten otherwise", () => {

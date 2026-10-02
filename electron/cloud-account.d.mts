@@ -40,7 +40,8 @@ export interface CloudAccountBridge {
 }
 /** On the person's own Cloud, open in this app's window: the plan, read
  * only, and two ways out. No account, credential or address. */
-export interface CloudPlanSnapshot { status: "paid" | "attention" | "checking" | "none"; tier?: string }
+/** `signin`: this computer's sign-in ended; `tier` names the plan last verified, if any. */
+export interface CloudPlanSnapshot { status: "paid" | "attention" | "checking" | "signin" | "none"; tier?: string }
 export interface CloudPlanBridge {
   state(): Promise<CloudPlanSnapshot>;
   manage(): Promise<void>;

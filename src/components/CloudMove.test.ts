@@ -9,7 +9,7 @@ vi.mock("react", async original => ({ ...await original<typeof import("react")>(
   useRef: (initial: unknown) => { const index = f.index++; if (!(index in f.values)) f.values[index] = { current: initial }; return f.values[index]; },
   useEffect: (effect: EffectCallback) => { f.effects.push(effect); },
 }));
-import { CloudMoveSettings, CloudMoveSuggestion, cloudMoveErrorText, moveNextSteps } from "./CloudMove";
+import { CloudMoveSettings, CloudMoveSuggestion, cloudMoveErrorText, moveFitNote, moveNextSteps } from "./CloudMove";
 
 type Node = ReactElement<{ children?: ReactNode; onClick?: () => void; disabled?: boolean }>;
 function nodes(value: ReactNode): Node[] { if (!isValidElement(value)) return []; const node = value as Node; return [node, ...Children.toArray(node.props.children).flatMap(nodes)]; }
@@ -130,6 +130,23 @@ it("a plan whose disk grows makes room first; a move that cannot fit says so bef
     .toBe("Your Cloud's disk grows as it fills, up to 100 GB, but it could not make room for this move just now. Nothing was moved. Try again in a few minutes; if it still can't, tell us through Send Feedback and we'll make room.");
   expect(cloudMoveErrorText({ code: "cloud_full", message: "", freeBytes: 9 * 1024 ** 3, neededBytes: 11 * 1024 ** 3, maxBytes: 10 * 1024 ** 3 }))
     .toBe("This move needs about 11 GB of room on your Cloud while it installs, and your plan's disk holds 10 GB. Nothing was moved. A plan with a larger disk can take it: see your Cloud dashboard.");
+  // The plan's disk would hold it; what is on the Cloud is in the way: make room, never "a larger plan".
+  const GB = 1024 ** 3;
+  const used = cloudMoveErrorText({ code: "cloud_full", message: "", freeBytes: 15 * GB, neededBytes: 19.8 * GB, maxBytes: 50 * GB });
+  expect(used).toBe("Your Cloud has 15 GB free and this move needs about 19.8 GB. Nothing was moved. Make room on your Cloud (for example, remove large files there), then try again.");
+  // The largest plan is never pointed at a larger one.
+  const largest = cloudMoveErrorText({ code: "cloud_full", message: "", freeBytes: 90 * GB, neededBytes: 120 * GB, maxBytes: 100 * GB, largest: true });
+  expect(largest).toContain("the largest there is"); expect(largest).toContain("Send Feedback"); expect(largest).not.toContain("larger disk");
+  // An Admin that cannot grow the disk for a move: no "try again" that cannot work.
+  const unsupported = cloudMoveErrorText({ code: "cloud_grow_unsupported", message: "", freeBytes: 9 * GB, neededBytes: 20 * GB, maxBytes: 100 * GB });
+  expect(unsupported).toBe("This move needs about 20 GB of room on your Cloud while it installs, more than your Cloud can make room for yet. Nothing was moved. Tell us through Send Feedback and we'll make room.");
+  expect(cloudMoveErrorText({ code: "cloud_grow_unsupported", message: "" })).not.toMatch(/try again/i);
+  // Today's Admin (no disk word): more than the Cloud's whole disk is not "remove files"; less is.
+  expect(cloudMoveErrorText({ code: "cloud_full", message: "", freeBytes: 8.9 * GB, neededBytes: 10.5 * GB, volumeBytes: 10 * GB })).toBe(unsupported.replace("20 GB", "10.5 GB"));
+  expect(cloudMoveErrorText({ code: "cloud_full", message: "", freeBytes: 2 * GB, neededBytes: 5 * GB, volumeBytes: 10 * GB })).toContain("Make room on your Cloud");
+  expect(moveFitNote(overview({ fit: { fit: "never", neededBytes: 19.8 * GB, freeBytes: 15 * GB, maxBytes: 50 * GB } }))).not.toContain("larger disk");
+  expect(moveFitNote(overview({ fit: { fit: "never", neededBytes: 10.5 * GB, freeBytes: 8.9 * GB, volumeBytes: 10 * GB } }))).toContain("Tell us through Send Feedback");
+  expect(moveFitNote(overview({ fit: { fit: "never", neededBytes: 120 * GB, freeBytes: 90 * GB, maxBytes: 100 * GB, largest: true } }))).toContain("the largest there is");
   f.values = []; push = () => {};
   await ready(settings, overview({ fit: { fit: "never", neededBytes: 11 * 1024 ** 3, freeBytes: 9 * 1024 ** 3, maxBytes: 10 * 1024 ** 3 } }));
   html = render(settings).html; expect(html).toContain("disk holds 10 GB. Nothing was moved.");

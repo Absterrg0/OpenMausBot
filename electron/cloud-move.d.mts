@@ -25,8 +25,9 @@ export interface CloudMoveState {
   progress?: { bytesTransferred: number; totalBytes: number };
   /** The Cloud had work of its own, which is backed up before it is replaced. */
   replacing?: boolean;
-  /** `maxBytes`: the most the plan's disk holds, when known. */
-  error?: { code: string; message: string; freeBytes?: number; neededBytes?: number; maxBytes?: number };
+  /** `maxBytes`: the most the plan's disk holds, when the Admin says
+   * (`largest`: the top plan); otherwise `volumeBytes`, the Cloud's disk now. */
+  error?: { code: string; message: string; freeBytes?: number; neededBytes?: number; maxBytes?: number; largest?: true; volumeBytes?: number };
   /** A stopped upload keeps its archive; moving again continues it. */
   resumable?: boolean;
   moved?: MoveContents;
@@ -34,7 +35,7 @@ export interface CloudMoveState {
   /** Routines that were on here and arrived paused on the Cloud. */
   routines?: number;
 }
-export interface MoveFit { fit: "now" | "grow" | "never"; neededBytes: number; freeBytes: number; maxBytes?: number; sizeGb?: number }
+export interface MoveFit { fit: "now" | "grow" | "never"; neededBytes: number; freeBytes: number; maxBytes?: number; largest?: true; volumeBytes?: number; sizeGb?: number }
 /** What Settings and the Cloud's suggestion card read (main adds the parts it knows). */
 export interface CloudMoveOverview extends CloudMoveState {
   local: MoveEstimate | null;

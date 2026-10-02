@@ -840,8 +840,11 @@ without them works as before; a malformed one is dropped, never the machine):
   the Cloud page, and says when setup is slow.
 - `cloud.retryAt` (ms) when `failed`: the time of the next automatic try.
 - `cloud.disk: {gb, maxGb}`: the volume now and the most the plan lets it grow
-  to. Without it the app uses the plan's table (Personal 10 GB; Pro up to 50;
-  Max up to 100; all start at 10).
+  to. Only with it does Move to Cloud count on a larger disk (and ask the Admin
+  to grow it, below). Without it the app assumes nothing: a move is measured
+  against the Cloud's free space today, and one larger than the Cloud's whole
+  disk says "tell us and we'll make room", never "remove files" or "try again".
+  The Admin should send it together with `POST /api/cloud/desktop/disk`.
 - `cloud.purchase: {state: "confirming" | "held", plan, paidAt}`: a payment
   received but not yet linked to this account. While it is there, the app shows
   "payment received" and offers nothing to buy. It never activates anything.
@@ -854,9 +857,12 @@ the Cloud card and Connect never blink; after two failures in a row the
 snapshot says `checking`. Only a longer outage makes it `unavailable`, and even
 then the plan last verified is named (`lastPlan`, display only, kept beside the
 encrypted credential as `planHint`; it activates nothing). When the device
-token reaches its `expiresAt`, or the Admin answers `401`, the app asks the
-person to **Sign in again** (one step, the plan unaffected) instead of offering
-a plan. Nobody signed in with a paid plan, in payment trouble, with a payment
+token reaches its `expiresAt`, or the Admin itself answers `401`/`403` with
+its JSON `{error: "invalid_token"}`, the app asks the person to **Sign in
+again** (one step, the plan unaffected) instead of offering a plan. A `401` or
+`403` page from anything in between (Cloudflare's bot check, a proxy), or any
+other refusal, is a failed check like a dropped connection: it never ends the
+sign-in. Nobody signed in with a paid plan, in payment trouble, with a payment
 being linked, or whose state is unknown is offered a plan anywhere in the app.
 
 In the Server menu, **My Cloud** goes through the same connection as
@@ -865,6 +871,16 @@ opens **Settings → OMB Cloud**, which says the next step. In the desktop app a
 `/pair#code=` link connects without a second click; a browser still asks. On a
 Cloud home the pairing page says where its connection starts (the environment
 descriptor's `capabilities.cloudHome`).
+
+On the person's own Cloud, open in the app's window, **Settings → OMB Cloud**
+shows the plan read only (`cloud-plan:*`: its name and whether it is active,
+**Manage in your browser** and **Switch to this computer**). It is listed only
+on an OMB Cloud home (`config.cloudHome`), never on another server open in the
+window. Main answers it for the Cloud this account verified, or last verified
+while a check is failing or the sign-in has ended, so that page says
+"checking" or "sign in again on your computer" rather than an error; where the
+app cannot vouch for the Cloud it only says the plan is managed in the app on
+the computer.
 
 **Connect to my Cloud** first asks the machine whether this app is already
 signed in there (`GET <origin>/api/auth/session` with its cookie). If not, it
@@ -951,16 +967,21 @@ do not.
    files), plus twice its own workspace (the backup it takes first, briefly
    with its snapshot), plus 256 MB. A part stored by an earlier upload, of any
    file, counts as free: a new upload replaces it. Every Cloud starts at
-   10 GB; a plan whose disk grows (Pro, Max) grows it as it fills, up to the
-   plan's maximum. Before anything is exported the app measures the move the
-   same way against the plan's largest disk (`moveFit`, with the Cloud's own
-   `volumeBytes` from `GET /api/cloud-move`): if it fits only once the disk
+   10 GB; a plan whose disk grows grows it as it fills, up to the plan's
+   maximum. Before anything is exported the app measures the move the same
+   way (`moveFit`, with the Cloud's own `volumeBytes` from
+   `GET /api/cloud-move`), against the plan's largest disk only when the
+   Admin says how far it grows (`cloud.disk`): if it fits only once the disk
    grows, it asks the Admin to grow it now (`POST /api/cloud/desktop/disk
-   {sizeGb}`, answered `{disk: {gb, maxGb}}`; `404` means this Admin cannot
-   yet, `409`/`422` over the plan) and waits until the Cloud reports the room.
-   Not enough room is `507` with `freeBytes` and `neededBytes`, and the app
-   shows both, with the next step; a move that cannot fit even the plan's
-   largest disk says so before it starts. Nothing has been moved at that
+   {sizeGb}`, answered `{disk: {gb, maxGb}}`; `404` means this Admin cannot,
+   so the app says "tell us and we'll make room" with no "try again";
+   `409`/`422` over the plan) and waits until the Cloud reports the room
+   (only a timeout or no answer says "try again"). Not enough room is `507`
+   with `freeBytes` and `neededBytes`, and the app shows both, with the next
+   step: "make room on your Cloud" when the disk could hold it; "a plan with a
+   larger disk" only when the move is larger than the plan's whole disk, and
+   never on Max, the largest. A move that cannot fit says so before it
+   starts, and the Cloud's own card offers no move it would refuse. Nothing has been moved at that
    point. A new upload also deletes whatever an earlier attempt staged.
 4. Parts of 16 MB (at most 64): `PUT /api/cloud-move/upload/<sha256>?offset=n`.
    A part already stored is accepted again without being written; any other

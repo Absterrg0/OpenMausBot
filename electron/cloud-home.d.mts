@@ -15,13 +15,13 @@ export interface CloudMachine {
 export interface CloudPurchase { state: "confirming" | "held"; tier?: string; paidAt?: number }
 export interface CloudHomeGrant { origin: string; code: string; expiresAt: number }
 export interface CloudHomeTarget { origin: string; grant: CloudHomeGrant | null }
-export interface CloudPlanDisk { maxBytes: number; volumeBytes?: number; startBytes?: number }
+/** `largest`: the top plan, so nobody is pointed at a larger one. */
+export interface CloudPlanDisk { maxBytes: number; volumeBytes?: number; startBytes?: number; largest?: true }
 export interface RememberedCloudHome { accountId: string; origin: string }
 export declare const CLOUD_HOME_NAME: string;
 export declare const CLOUD_MACHINE_STATUSES: readonly CloudMachineStatus[];
 export declare const CLOUD_MACHINE_CONNECTABLE: readonly CloudMachineStatus[];
 export declare const CLOUD_SETUP_STEPS: readonly CloudSetupStep[];
-export declare const CLOUD_PLAN_DISK_GB: Readonly<Record<"personal" | "pro" | "max", Readonly<{ startGb: number; maxGb: number }>>>;
 export declare function parseCloudSummary(input: unknown): CloudMachine | null;
 export declare function parseCloudPurchase(input: unknown): CloudPurchase | null;
 export declare function cloudPlanDisk(state: unknown): CloudPlanDisk | null;
