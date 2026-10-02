@@ -265,8 +265,7 @@ export async function hangUpLiveCall(): Promise<void> {
   set({ phase: "ending", hangingUp: true });
   // Hang up stops capturing now, even if the harness is slow or unreachable.
   // Keep the channel alive until its close command and the end request leave.
-  microphone?.getTracks().forEach((track) => track.stop());
-  microphone = null;
+  stopCapturing();
   sendClose();
   if (callId) await endOnServer(callId);
   // The harness's end frame, or a newer call, got here first: leave it be.
@@ -377,6 +376,10 @@ function applyServerCall(call: LiveCallState | null) {
   // as a call still running (as on both phones).
   if (call.status !== "connecting") serverAttached = true;
   if (call.status === "ending") {
+    // The line is closing, even when another device asked for it: keep the
+    // title until its reason arrives, but stop sending microphone audio now.
+    stopCapturing();
+    stopConnectWait();
     if (state.phase !== "ending") set({ phase: "ending" });
     return;
   }
@@ -433,6 +436,8 @@ function onChannelMessage(raw: unknown) {
     return;
   }
   if (event.type === "session.closed") {
+    stopCapturing();
+    stopConnectWait();
     // The harness normally reports the end first; if its sideband is gone,
     // stop anyway. A sign-in that ended has no end frame coming: ask.
     if (!closeTimer) void checkLiveSignIn();
@@ -485,13 +490,17 @@ function sendClose() {
   }
 }
 
+function stopCapturing() {
+  microphone?.getTracks().forEach((track) => track.stop());
+  microphone = null;
+}
+
 function release() {
   for (const timer of [heardTimer, closeTimer, noticeTimer, connectTimer]) if (timer) clearTimeout(timer);
   heardTimer = closeTimer = noticeTimer = connectTimer = null;
   stopGestureWait?.();
   stopGestureWait = null;
-  microphone?.getTracks().forEach((track) => track.stop());
-  microphone = null;
+  stopCapturing();
   try { channel?.close(); } catch { /* already closed */ }
   channel = null;
   try { peer?.close(); } catch { /* already closed */ }

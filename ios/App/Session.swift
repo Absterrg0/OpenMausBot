@@ -2191,7 +2191,9 @@ final class Session: ObservableObject {
     /// LiveCallController can tell a missing key from a busy line from a
     /// dead network; it turns each into words. A revoked token still goes
     /// back to pairing first, as it does from every other action.
-    func startLiveCall(botId: String, threadId: String, sdp: String) async throws -> LiveCallStart {
+    func startLiveCall(botId: String, threadId: String, sdp: String) async throws -> (
+        start: LiveCallStart, end: @MainActor () -> Task<LiveCallState?, Never>
+    ) {
         guard let client else { throw APIError.transport("This computer is offline.") }
         do {
             let answer = try await client.startLiveCall(botId: botId, threadId: threadId, sdp: sdp)
@@ -2199,7 +2201,9 @@ final class Session: ObservableObject {
                 _ = try? await Task { try await client.endLiveCall(callId: answer.call.callId) }.value
                 throw APIError.transport("The computer changed while the call was starting.")
             }
-            return answer
+            // The controller may be suspended applying the answer when the
+            // computer changes. Its abandoned-start cleanup still belongs here.
+            return (answer, { self.endLiveCall(callId: answer.call.callId, using: client) })
         } catch let error as APIError where error.isUnauthorized {
             // A computer this phone just left does not speak for the next one.
             if self.client?.connection.id == client.connection.id { status = .unauthorized }
@@ -2217,7 +2221,10 @@ final class Session: ObservableObject {
     /// (`leavingComputer`), then replaces `client` before the task runs.
     @discardableResult
     func endLiveCall(callId: String) -> Task<LiveCallState?, Never> {
-        let client = self.client
+        endLiveCall(callId: callId, using: client)
+    }
+
+    private func endLiveCall(callId: String, using client: CompanionClient?) -> Task<LiveCallState?, Never> {
         return Task {
             guard let client else { return nil }
             let current = { self.client?.connection.id == client.connection.id }

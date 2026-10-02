@@ -208,8 +208,12 @@ public struct LiveCallMachine: Equatable, Sendable {
             phase = .stopped(target, notice: .micDenied)
             return [.closeMedia(sendClose: false)]
         case let (.starting(target), .started(call)):
-            phase = .live(target, call: call)
             lastCallId = call.callId
+            if call.status == .ended {
+                stop(target, LiveCallNotice.forEnd(call), callId: call.callId)
+                return [.closeMedia(sendClose: false)]
+            }
+            phase = .live(target, call: call)
             // The answer is in; from here the audio has `connectTimeout`.
             return (mediaConnected ? [] : [.awaitMedia(callId: call.callId)]) + goLive()
         case (.starting, .mediaConnected), (.live, .mediaConnected):

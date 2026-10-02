@@ -309,6 +309,7 @@ export function CallTargetButton({
           className="animate-pop-in absolute right-0 top-full z-30 mt-1.5 w-[340px] max-w-[90vw] rounded-xl shadow-2xl"
         >
           <LiveKeySetup
+            key={`${targetId}:${liveThreadId}`}
             compact
             onSaved={() => {
               setKeyOpen(false);

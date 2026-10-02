@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { api, useStore, type ConfigStatus } from "@/state/store";
 import { cn } from "@/lib/cn";
@@ -11,6 +11,11 @@ export function LiveKeySetup({ onSaved, compact = false }: { onSaved: () => void
   const [key, setKey] = useState("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true;
+    return () => { mounted.current = false; };
+  }, []);
   const save = async () => {
     const value = key.trim();
     if (!value || saving) return;
@@ -21,12 +26,15 @@ export function LiveKeySetup({ onSaved, compact = false }: { onSaved: () => void
         ? await window.ogb.setCredential("openaiLiveKey", value)
         : await api("/api/config", { method: "PUT", body: JSON.stringify({ live: { key: value } }) });
       dispatch({ type: "configStatus", config: status });
+      // Saving the key may finish after the prompt was dismissed. Do not
+      // turn that completed save into a call the user has already cancelled.
+      if (!mounted.current) return;
       setKey("");
       onSaved();
     } catch (saveError) {
-      setError(saveError instanceof Error ? saveError.message : String(saveError));
+      if (mounted.current) setError(saveError instanceof Error ? saveError.message : String(saveError));
     } finally {
-      setSaving(false);
+      if (mounted.current) setSaving(false);
     }
   };
   return (

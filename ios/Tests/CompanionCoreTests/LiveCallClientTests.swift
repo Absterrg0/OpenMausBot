@@ -88,6 +88,19 @@ final class LiveCallClientTests: XCTestCase {
 
     // MARK: - POST /api/live/session
 
+    // App-target lifecycle code cannot be linked by the portable Swift suite.
+    // Pin the source binding across the controller's suspending SDP apply.
+    func testNativeAbandonedStartKeepsTheClientThatReturnedTheAnswer() throws {
+        let iosDirectory = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        let source = try String(contentsOf: iosDirectory.appendingPathComponent("App/Session.swift"), encoding: .utf8)
+        let controller = try String(contentsOf: iosDirectory.appendingPathComponent("App/LiveCallController.swift"), encoding: .utf8)
+        XCTAssertTrue(source.contains("return (answer, { self.endLiveCall(callId: answer.call.callId, using: client) })"))
+        XCTAssertTrue(controller.contains("created = (start.call.callId, end)"))
+        XCTAssertTrue(controller.contains("_ = await created.end().value"))
+        XCTAssertFalse(controller.contains("_ = await session.endLiveCall(callId: created.callId).value"))
+    }
+
     func testStartPostsTheOfferAsThisPhoneAndWaitsLongerThanUsual() async throws {
         LiveCallStub.statusCode = 201
         LiveCallStub.responseBody = Data(#"{"call":\#(Self.call),"transport":{"type":"webrtc","sdp":"v=0\r\nanswer"}}"#.utf8)

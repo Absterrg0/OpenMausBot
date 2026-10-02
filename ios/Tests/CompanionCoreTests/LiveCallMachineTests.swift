@@ -40,6 +40,16 @@ final class LiveCallMachineTests: XCTestCase {
         XCTAssertEqual(machine.call?.callId, "c1")
     }
 
+    func testAnAcceptanceThatAlreadyEndedStopsWithTheComputersReason() {
+        var machine = LiveCallMachine()
+        _ = machine.handle(.start(ada))
+        let ended = call(.ended, endReason: "sideband-lost")
+        XCTAssertEqual(machine.handle(.started(ended)), [.closeMedia(sendClose: false)])
+        XCTAssertEqual(machine.phase, .stopped(ada, notice: .dropped))
+        XCTAssertEqual(machine.lastCallId, "c1")
+        XCTAssertFalse(machine.isActive)
+    }
+
     func testADeniedMicrophoneStopsWithoutARetry() {
         var machine = LiveCallMachine()
         _ = machine.handle(.start(ada))

@@ -91,6 +91,7 @@ posixOnly("Live call e2e", () => {
           acp: { driver: "grokAgent", environment: { FAKE_ACP_MODE: "hang" }, config: { cli: FAKE_ACP, fullAuto: true } },
           // every turn asks permission to run a command
           asks: { driver: "grokAgent", environment: { FAKE_ACP_MODE: "permission" }, config: { cli: FAKE_ACP, fullAuto: false } },
+          questions: { driver: "grokAgent", environment: { FAKE_ACP_MODE: "question" }, config: { cli: FAKE_ACP, fullAuto: false } },
         },
       }),
     );
@@ -351,6 +352,59 @@ posixOnly("Live call e2e", () => {
       await post("/api/live/call/end", { callId: call.callId });
     }
   }, 60_000);
+
+  it("reports a rejected question answer honestly and can retry it after the provider settles", async () => {
+    const bot = await createBot("questions", "fake-model");
+    const { call, session } = await startCall(bot.id);
+    try {
+      await live.waitForAttach(session.id);
+      live.emit(session.id, { type: "session.input_transcript.delta", delta: "ask me which color", start_ms: 100, end_ms: 900 });
+      live.emit(session.id, { type: "session.delegation.created", offset_ms: 950, delegation: { id: "del_question", target: "client" } });
+      await live.waitForCommand(session.id, (c) => c.type === "session.instructions.append" && String(c.content).includes("Which color"), 20_000);
+      type Line = { id: string; role: string; replyToId?: string; via?: string; card?: { requestId?: string; answered?: string; answeredText?: string; answeredBy?: unknown } };
+      const lines = async (): Promise<Line[]> => ((await (await fetch(`${base}/api/threads/${bot.threadId}/messages`)).json()) as { messages: Line[] }).messages;
+      const original = (await lines()).find((m) => m.card?.requestId)!;
+      live.emit(session.id, { type: "session.input_transcript.delta", delta: "Purple", start_ms: 5_000, end_ms: 5_300 });
+      live.emit(session.id, { type: "session.delegation.created", offset_ms: 5_400, delegation: { id: "del_rejected", target: "client" } });
+      await live.waitForCommand(session.id, (c) => c.type === "session.commentary.append" && String(c.content).includes("could not be saved"), 5_000);
+      expect((await lines()).find((m) => m.id === original.id)?.card).not.toHaveProperty("answeredText");
+      expect(session.commands.some((c) => c.type === "session.thinking.append" && c.content === LIVE_COPY.answerPassed)).toBe(false);
+      await expect.poll(() => isBusy(bot.id), { timeout: 5_000 }).toBe(false);
+
+      live.emit(session.id, { type: "session.input_transcript.delta", delta: "Blue", start_ms: 8_000, end_ms: 8_300 });
+      live.emit(session.id, { type: "session.delegation.created", offset_ms: 8_400, delegation: { id: "del_retry", target: "client" } });
+      await expect.poll(async () => (await lines()).find((m) => m.id === original.id)?.card, { timeout: 10_000 }).toMatchObject({ answered: "answer", answeredText: "Blue", answeredBy: { kind: "loopback", via: "call" } });
+      expect((await lines()).find((m) => m.role === "user" && m.replyToId === original.id)).toMatchObject({ via: "call" });
+      expect(serverOutput()).not.toContain("text=Blue");
+    } finally {
+      await post("/api/bots/" + bot.id + "/interrupt", { threadId: bot.threadId });
+      await post("/api/live/call/end", { callId: call.callId });
+    }
+  }, 40_000);
+
+  it("delivers a spoken answer to a persistent question after its turn is stopped", async () => {
+    const bot = await createBot("questions", "fake-model");
+    const { call, session } = await startCall(bot.id);
+    try {
+      await live.waitForAttach(session.id);
+      live.emit(session.id, { type: "session.input_transcript.delta", delta: "ask me which color", start_ms: 100, end_ms: 900 });
+      live.emit(session.id, { type: "session.delegation.created", offset_ms: 950, delegation: { id: "del_stopped_question", target: "client" } });
+      await live.waitForCommand(session.id, (c) => c.type === "session.instructions.append" && String(c.content).includes("Which color"), 20_000);
+      type Line = { id: string; role: string; replyToId?: string; via?: string; card?: { requestId?: string; answered?: string; answeredText?: string; answeredBy?: unknown } };
+      const lines = async (): Promise<Line[]> => ((await (await fetch(`${base}/api/threads/${bot.threadId}/messages`)).json()) as { messages: Line[] }).messages;
+      const original = (await lines()).find((m) => m.card?.requestId)!;
+      expect((await post(`/api/bots/${bot.id}/interrupt`, { threadId: bot.threadId })).status).toBe(200);
+      await expect.poll(() => isBusy(bot.id), { timeout: 5_000 }).toBe(false);
+      live.emit(session.id, { type: "session.input_transcript.delta", delta: "Green", start_ms: 5_000, end_ms: 5_300 });
+      live.emit(session.id, { type: "session.delegation.created", offset_ms: 5_400, delegation: { id: "del_late", target: "client" } });
+      await expect.poll(async () => (await lines()).find((m) => m.id === original.id)?.card, { timeout: 5_000 }).toMatchObject({ answered: "answer", answeredText: "Green", answeredBy: { kind: "loopback", via: "call" } });
+      expect((await lines()).find((m) => m.role === "user" && m.replyToId === original.id)).toMatchObject({ via: "call" });
+      expect(serverOutput()).not.toContain("text=Green");
+    } finally {
+      await post(`/api/bots/${bot.id}/interrupt`, { threadId: bot.threadId });
+      await post("/api/live/call/end", { callId: call.callId });
+    }
+  }, 40_000);
 
   it("ends the call and tells clients when the sideband drops", async () => {
     const bot = await createBot();

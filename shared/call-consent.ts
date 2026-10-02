@@ -10,6 +10,9 @@ const FILLER = /^(?:(?:um+|uh+|er+|so|well|hmm+)[\s,.!?-]+)+/i;
  * your permission" heard back through a phone's speaker. They are filler
  * there, never the answer; a clear yes or no after them still counts. */
 const LIVE_HEDGES = /^(?:(?:um+|uh+|er+|so|well|hmm+|ok|okay|sure|fine)(?:[\s,.!?-]+|$))+/i;
+// A Live approval grants the entire action on the card. Extra conditions,
+// questions or corrections are not permission for that unchanged action.
+const LIVE_YES = /^(?:yes|yeah|yep|yup|go ahead|do it|allow(?: it)?|approve(?: it)?|approved|please do)(?:[\s,]+(?:please|go ahead|do it))*[.!]*$/i;
 
 /** "allow", "deny", or null when the words are not a clear decision. The
  * answer must open the utterance; filler before it ("uh, yes") is dropped.
@@ -19,7 +22,7 @@ const LIVE_HEDGES = /^(?:(?:um+|uh+|er+|so|well|hmm+|ok|okay|sure|fine)(?:[\s,.!
  * the bot talks. */
 export function spokenConsent(text: string, mode: "turns" | "live" = "turns"): "allow" | "deny" | null {
   const said = text.trim().replace(mode === "live" ? LIVE_HEDGES : FILLER, "");
-  if (YES.test(said)) return "allow";
+  if ((mode === "live" ? LIVE_YES : YES).test(said)) return "allow";
   if (NO.test(said)) return "deny";
   return null;
 }

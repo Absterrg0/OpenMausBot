@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { APPEND_CHAR_LIMIT, clampAppend, commentaryChunks, FULL_ANSWER_IN_CHAT, joinFragments, LiveTranscript } from "./live-call.ts";
+import { clampAppend, commentaryChunks, FULL_ANSWER_IN_CHAT, joinFragments, LiveTranscript } from "./live-call.ts";
 
 describe("LiveTranscript", () => {
   it("rebuilds each delegated request from the words spoken since the previous one", () => {
@@ -72,14 +72,14 @@ describe("commentaryChunks", () => {
     const utterances = Array.from({ length: 200 }, () => sentence.trim());
     const chunks = commentaryChunks(utterances);
     expect(chunks.length).toBe(3);
-    for (const chunk of chunks) expect(chunk.length).toBeLessThanOrEqual(APPEND_CHAR_LIMIT);
+    for (const chunk of chunks) expect(new TextEncoder().encode(chunk).length).toBeLessThanOrEqual(500);
     expect(chunks.at(-1)?.endsWith(FULL_ANSWER_IN_CHAT)).toBe(true);
     expect(chunks.slice(0, -1).some((chunk) => chunk.includes(FULL_ANSWER_IN_CHAT))).toBe(false);
   });
 
   it("splits a single overlong utterance instead of dropping it", () => {
     const long = "word ".repeat(600).trim();
-    const chunks = commentaryChunks([long], 500, 10);
+    const chunks = commentaryChunks([long]);
     expect(chunks.length).toBeGreaterThan(1);
     for (const chunk of chunks) expect(chunk.length).toBeLessThanOrEqual(500);
   });
@@ -87,13 +87,27 @@ describe("commentaryChunks", () => {
   it("returns nothing for an empty answer", () => {
     expect(commentaryChunks(["", "  "])).toEqual([]);
   });
+
+  it("keeps multilingual chunks inside a conservative 500-byte token bound", () => {
+    const chunks = commentaryChunks(["😀漢字".repeat(400)]);
+    expect(chunks.length).toBe(3);
+    for (const chunk of chunks) expect(new TextEncoder().encode(chunk).length).toBeLessThanOrEqual(500);
+    expect(chunks.at(-1)?.endsWith(FULL_ANSWER_IN_CHAT)).toBe(true);
+  });
 });
 
 describe("clampAppend", () => {
   it("leaves short content alone and trims long content at a word", () => {
     expect(clampAppend("  hello   there ")).toBe("hello there");
     const clamped = clampAppend("alpha ".repeat(400));
-    expect(clamped.length).toBeLessThanOrEqual(APPEND_CHAR_LIMIT);
+    expect(new TextEncoder().encode(clamped).length).toBeLessThanOrEqual(500);
+    expect(clamped.endsWith("…")).toBe(true);
+  });
+
+  it("bounds appends containing multibyte text without splitting a code point", () => {
+    const clamped = clampAppend("😀漢字".repeat(100));
+    expect(new TextEncoder().encode(clamped).length).toBeLessThanOrEqual(500);
+    expect(clamped).not.toMatch(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/);
     expect(clamped.endsWith("…")).toBe(true);
   });
 });

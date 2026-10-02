@@ -43,6 +43,14 @@ describe("spokenConsent", () => {
       expect(spokenConsent("fine, don't", "live")).toBe("deny");
     });
 
+    it("does not grant a qualified, corrected or questioning yes", () => {
+      for (const said of ["yes, but do not delete it", "yes — wait, no", "yes, what does that delete?", "yes, only if you make a backup"]) {
+        expect(spokenConsent(said, "live"), said).toBeNull();
+      }
+      expect(spokenConsent("Yes, go ahead.", "live")).toBe("allow");
+      expect(spokenConsent("yes please", "live")).toBe("allow");
+    });
+
     it("leaves take turns as it was", () => {
       expect(spokenConsent("okay")).toBe("allow");
       expect(spokenConsent("sure", "turns")).toBe("allow");

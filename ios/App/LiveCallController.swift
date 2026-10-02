@@ -214,7 +214,7 @@ final class LiveCallController: ObservableObject {
             let media = makeMedia()
             self.media = media
             observe(media)
-            var created: LiveCallState?
+            var created: (callId: String, end: @MainActor () -> Task<LiveCallState?, Never>)?
             do {
                 let offer = try await media.createOffer()
                 await previous?.value
@@ -224,11 +224,15 @@ final class LiveCallController: ObservableObject {
                 // but the Mac has already made the call, and it would hold
                 // the line until its idle timer. Run to the answer instead;
                 // the catch below ends whatever a 201 created.
-                let start = try await Task {
+                let (start, end) = try await Task {
                     try await session.startLiveCall(botId: target.botId, threadId: target.threadId, sdp: offer)
                 }.value
-                created = start.call
+                created = (start.call.callId, end)
                 try Task.checkCancellation()
+                if start.call.status == .ended {
+                    dispatch(.started(start.call))
+                    return
+                }
                 try await media.accept(answer: start.transport.sdp)
                 try Task.checkCancellation()
                 media.setSpeaker(speakerOn)
@@ -246,7 +250,7 @@ final class LiveCallController: ObservableObject {
                 if let created {
                     log.info("live call: ending a call whose start did not finish")
                     dispatch(.startAbandoned(callId: created.callId))
-                    _ = await session.endLiveCall(callId: created.callId).value
+                    _ = await created.end().value
                 }
                 guard !Task.isCancelled else { return }
                 let notice = LiveCallNotice.forStartFailure(error) { [weak session] botId in

@@ -14,13 +14,7 @@
 
 export const LIVE_MODEL = "gpt-live-1";
 const OPENAI_BASE = "https://api.openai.com";
-export const LIVE_SESSIONS_URL = `${OPENAI_BASE}/v1/live/sessions`;
 export const DEFAULT_LIVE_VOICE = "marin";
-/** GPT-Live built-in voices (openai-node 7.23 `BuiltInVoice`). */
-export const LIVE_VOICES = [
-  "alloy", "ash", "ballad", "beacon", "bossa", "cedar", "cinder", "coral", "delta", "echo", "gleam",
-  "marin", "meridian", "quartz", "ripple", "sage", "shimmer", "stone", "tempo", "verse", "vesper", "willow",
-] as const;
 /** Largest SDP offer accepted from the renderer — a real offer is a few KB. */
 export const MAX_SDP_BYTES = 64 * 1024;
 
@@ -135,9 +129,8 @@ export function liveInitialInput(history: LiveHistoryMessage[]) {
     : { type: "message" as const, role: "assistant" as const, content: [{ type: "output_text" as const, text: message.text }] });
 }
 
-/** The configured voice name, or the default. Names outside LIVE_VOICES are
- * passed through: OpenAI adds voices faster than this list, and it rejects
- * an unknown one with a clear 400 (see liveErrorMessage). */
+/** The configured voice name, or the default. OpenAI validates the name and
+ * rejects an unknown one with a clear 400 (see liveErrorMessage). */
 export function liveVoice(voice: string | undefined): string {
   const name = voice?.trim().toLowerCase() ?? "";
   return /^[a-z]{2,40}$/.test(name) ? name : DEFAULT_LIVE_VOICE;

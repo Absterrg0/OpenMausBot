@@ -540,6 +540,7 @@ describe("ending a call", () => {
     // the iPhone's remote bar hangs this window's call up
     onServerCall({ ...call, status: "ending" });
     expect(liveMedia()).toMatchObject({ phase: "ending", hangingUp: false, notice: null });
+    expect(track.stopped).toBe(true);
     onServerCall({ ...call, status: "ended", endReason: "hung-up" });
     expect(liveMedia()).toMatchObject({ phase: "ended", notice: "Call ended.", canRetry: false, hangingUp: false });
     expect(track.stopped).toBe(true);
@@ -552,6 +553,16 @@ describe("ending a call", () => {
     expect(liveMedia()).toMatchObject({ phase: "ending", hangingUp: false });
     onServerCall({ ...call, status: "ended", endReason: "idle" });
     expect(liveMedia()).toMatchObject({ phase: "ended", notice: "Call ended after a long silence.", canRetry: false });
+  });
+
+  it("stops capturing as soon as OpenAI closes the call, before the reason grace period", async () => {
+    vi.useFakeTimers();
+    await live();
+    peer.channel.onmessage?.({ data: JSON.stringify({ type: "session.closed" }) });
+    expect(track.stopped).toBe(true);
+    expect(liveMedia()).toMatchObject({ phase: "live", notice: null });
+    onServerCall({ ...call, status: "ended", endReason: "idle" });
+    expect(liveMedia()).toMatchObject({ phase: "ended", notice: "Call ended after a long silence." });
   });
 
   it("says Hanging up… after this window's own Hang up, and ends quietly on the computer's word", async () => {
