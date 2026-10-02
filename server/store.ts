@@ -1910,10 +1910,14 @@ export class Store {
     const rooms = this.groups.filter((g) => !g.dm && g.memberIds.includes(id));
     for (const g of rooms) {
       g.memberIds = g.memberIds.filter((member) => member !== id);
-      if (g.busyBotId === id) g.busyBotId = null;
+      if (g.busyBotId === id) { g.busyBotId = null; delete g.turnStartedAt; }
       g.defaultResponder = normalizeGroupDefaultResponder(g.defaultResponder, g.memberIds, false);
     }
-    if (rooms.length) this.saveGroups();
+    if (rooms.length) {
+      // Bot removal is already durable. Finish erasing its data even if this
+      // write fails; startup repair removes these stale memberships later.
+      try { this.saveGroups(); } catch (error) { console.warn("store: room cleanup will retry on restart", error); }
+    }
     // every task's transcript goes with the bot, not just the open one
     for (const threadId of new Set([bot.threadId, ...(bot.tasks ?? []).map((t) => t.threadId)])) {
       this.deleteThreadRecord(threadId);

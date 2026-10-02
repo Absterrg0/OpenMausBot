@@ -34,16 +34,32 @@ describe("Store", () => {
     const store = new Store(selection);
     const [ada, ben, cleo] = [store.createBot({}), store.createBot({}), store.createBot({})];
     const room = store.createGroup("Launch team", [ada.id, ben.id, cleo.id], false);
-    store.patchGroup(room.id, { defaultResponder: { kind: "member", botId: ben.id } });
+    store.patchGroup(room.id, { defaultResponder: { kind: "member", botId: ben.id }, busyBotId: ben.id });
     const pair = store.createGroup("Ada & Ben", [ada.id, ben.id], true);
     const changes: unknown[] = [];
     store.onChange((change) => changes.push(change));
 
     expect(store.deleteBot(ben.id)).toBe(true);
     expect(store.group(room.id)).toMatchObject({ memberIds: [ada.id, cleo.id], defaultResponder: { kind: "member", botId: ada.id } });
+    expect(store.group(room.id)?.turnStartedAt).toBeUndefined();
     expect(store.group(pair.id)?.memberIds).toEqual([ada.id, ben.id]);
     expect(changes).toContainEqual({ type: "group", groupId: room.id });
     expect(new Store(selection).group(room.id)?.memberIds).toEqual([ada.id, cleo.id]);
+  });
+
+  it("finishes bot erasure if the room registry cannot persist, then repairs it on restart", () => {
+    const store = new Store(selection);
+    const [ada, ben] = [store.createBot({}), store.createBot({})];
+    const room = store.createGroup("Launch team", [ada.id, ben.id], false);
+    const internals = store as unknown as { saveGroups: () => void };
+    vi.spyOn(internals, "saveGroups").mockImplementationOnce(() => { throw new Error("fixture write failure"); });
+
+    expect(store.deleteBot(ben.id)).toBe(true);
+    expect(store.bot(ben.id)).toBeNull();
+    expect(store.messagesFor(ben.threadId)).toEqual([]);
+    expect(existsSync(soulFile(ben.id))).toBe(false);
+    expect(JSON.parse(readFileSync(join(DATA_DIR, "groups.json"), "utf8"))[0].memberIds).toContain(ben.id);
+    expect(new Store(selection).group(room.id)?.memberIds).toEqual([ada.id]);
   });
 
   it("repairs rooms that still list a deleted bot when it starts", () => {

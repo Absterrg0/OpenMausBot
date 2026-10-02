@@ -214,7 +214,8 @@ describe("augmentedPath", () => {
     try {
       Object.defineProperty(process, "platform", { value: "win32" });
       process.env.LOCALAPPDATA = localAppData;
-      process.env.PATHEXT = ".COM;.EXE;.BAT;.CMD";
+      // The simulated Windows platform still has the host's case-sensitive filesystem.
+      process.env.PATHEXT = ".com;.exe;.bat;.cmd";
       const cursorDir = join(localAppData, "cursor-agent");
       mkdirSync(join(cursorDir, "versions", "2026.09.28-64d2043"), { recursive: true });
       for (const name of ["cursor-agent.cmd", "cursor-agent.ps1", "agent.cmd", "agent.ps1"]) writeFileSync(join(cursorDir, name), "@echo off\n");
