@@ -2,7 +2,7 @@ import AVFoundation
 import CompanionCore
 import SwiftUI
 
-/// The one-voice rule for transcript audio: playing one note pauses any
+/// The one-voice rule for transcript audio and voice previews: playing one pauses any
 /// other, exactly as the web bubble's claimExternalVoice does. The audio
 /// session itself arbitrates against call mode — its reconfiguration
 /// arrives here as an interruption, which pauses the holder. The current
@@ -22,6 +22,8 @@ final class VoiceNoteCenter {
     /// True while a voice-note player configured the shared session for
     /// playback and no input owner has taken it since.
     private var ownsPlaybackSession = false
+
+    var playbackAllowed: Bool { inputOwners.isEmpty }
 
     func claim(_ player: VoiceNotePlayer) {
         if current !== player { current?.pause() }
@@ -50,7 +52,7 @@ final class VoiceNoteCenter {
     /// owner holds it, so starting dictation or Walkie silences the
     /// transcript instead of the two fighting over the route.
     func beginPlaybackSession() -> Bool {
-        guard inputOwners.isEmpty else { return false }
+        guard playbackAllowed else { return false }
         ownsPlaybackSession = true
         return true
     }
@@ -108,12 +110,17 @@ final class VoiceNotePlayer: NSObject, ObservableObject {
         elapsed = 0
     }
 
-    func play() {
+    func play(mode: AVAudioSession.Mode = .default) {
         guard let player, player.duration > 0,
               VoiceNoteCenter.shared.beginPlaybackSession() else { return }
         let session = AVAudioSession.sharedInstance()
-        try? session.setCategory(.playback, mode: .default)
-        try? session.setActive(true)
+        do {
+            try session.setCategory(.playback, mode: mode)
+            try session.setActive(true)
+        } catch {
+            VoiceNoteCenter.shared.endPlaybackSession()
+            return
+        }
         guard player.play() else {
             VoiceNoteCenter.shared.endPlaybackSession()
             return
@@ -124,6 +131,7 @@ final class VoiceNotePlayer: NSObject, ObservableObject {
 
     func pause() {
         player?.pause()
+        if isPlaying { VoiceNoteCenter.shared.endPlaybackSession() }
         isPlaying = false
         stopTicker()
     }
@@ -159,7 +167,6 @@ final class VoiceNotePlayer: NSObject, ObservableObject {
         let value = (raw as? NSNumber)?.uintValue ?? (raw as? UInt)
         if value == AVAudioSession.InterruptionType.began.rawValue {
             pause()
-            VoiceNoteCenter.shared.endPlaybackSession()
         }
     }
 
