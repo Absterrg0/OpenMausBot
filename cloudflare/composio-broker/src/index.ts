@@ -523,6 +523,10 @@ async function authorize(
     // The list is already a moment old. A sign-in finished in another tab
     // since then makes this a connected account, which must not be removed:
     // read it again and only replace an attempt that is still unfinished.
+    // Composio's delete takes no status condition, so this narrows the gap
+    // to the one request between the read and the delete; it does not close
+    // it. Clearing the alias instead would leave the old link live, and a
+    // sign-in finished there would connect an account with no alias.
     const path = `/connected_accounts/${encodeURIComponent(account.id!)}`;
     const current = await composioRequest(env, path);
     if (current.status === 404) continue;
