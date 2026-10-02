@@ -8786,11 +8786,11 @@ describe("harness HTTP API", () => {
             return { busy: member?.busy, working: group?.working };
           }, { timeout: 5_000 }).toEqual({ busy: false, working: false });
         }
-        const configCleanup = await api("PATCH", "/api/config", { features: { browser: false }, browserProfiles: [] });
-        expect(configCleanup.status, JSON.stringify(configCleanup.body)).toBe(200);
       } finally {
+        const configCleanup = await api("PATCH", "/api/config", { features: { browser: false }, browserProfiles: [] });
         if (room) await api("DELETE", `/api/groups/${room.id}`).catch(() => undefined);
         const botCleanup = await api("DELETE", `/api/bots/${bot.id}`);
+        expect(configCleanup.status, JSON.stringify(configCleanup.body)).toBe(200);
         expect(botCleanup.status, JSON.stringify(botCleanup.body)).toBe(200);
       }
     }

@@ -983,7 +983,7 @@ describe("Group Local VM ownership on the real isolated server", () => {
       await idle(holder.id);
       const resumed = await dump();
       expect(computer(resumed)).toBeTruthy();
-      expect(resumed.prompt.message.content).toContain("Continue the task that parked waiting for it");
+      expect(resumed).toMatchObject({ prompt: { message: { content: expect.stringContaining("Continue the task that parked waiting for it") } } });
       expect(JSON.parse(readFileSync(stateFile, "utf8")).actions).toEqual([{ action: "start", target: "shared" }]);
       expect((await gate(computer(resumed))).status).toBe(200);
     } finally {
