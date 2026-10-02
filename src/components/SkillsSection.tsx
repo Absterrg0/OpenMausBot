@@ -189,7 +189,7 @@ export function SkillsSection() {
   };
 
   const inputClass =
-    "w-full rounded-lg border border-hairline/40 bg-inset px-3 py-2 text-[14px] text-ink placeholder:text-ink-secondary focus:border-hairline focus:outline-none";
+    "w-full rounded-lg border border-hairline/40 bg-inset px-3 py-2 text-[14px] text-ink placeholder:text-ink-secondary focus:outline-none";
 
   return (
     <div className="flex flex-col gap-4">

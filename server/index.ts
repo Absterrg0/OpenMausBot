@@ -5715,7 +5715,7 @@ async function answerRequest(
   // An answered question keeps its words. `request.resolved` only records
   // the behavior, so without this the card reads "answer" forever and the
   // person can no longer see what they told the bot.
-  if (outcome !== "unavailable" && behavior === "answer" && message && cardMessage) {
+  if (outcome === "answered" && behavior === "answer" && message && cardMessage) {
     const settled = store.messagesFor(threadId).find((m) => m.id === cardMessage.id)?.card;
     if (settled) {
       store.patchMessage(threadId, cardMessage.id, { card: { ...settled, answeredText: message } });
