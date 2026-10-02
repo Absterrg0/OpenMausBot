@@ -10,7 +10,7 @@ The script starts the standard fake-engine server in a disposable home, a
 synthetic `docker` that answers only inspection and the two screenshot execs,
 an offline password-protected RFB desktop (`scripts/testing/fake-vnc-desktop.ts`)
 published as the VM's noVNC port, and the companion sidecar pointed at that
-server. It creates a bot named Vee
+server. It selects per-bot Local VM mode and creates a bot named Vee
 with `computer: "vm"`, checks that
 `POST /api/bots/:id/local-computer/screenshot` returns a PNG, then prints the
 sidecar address and a pairing code. The desktop is a captured Local VM session
@@ -71,20 +71,19 @@ A phone paired with `openmausbot serve` itself (a headless server, reached over
 Tailscale Serve or a tunnel) has no companion sidecar, so nothing rewrites the
 VM's noVNC address for it. The join route answers such a phone differently: a
 path on the server's own authenticated desktop proxy
-(`/api/desktop-viewer/local/shared/websockify` for the shared VM; per-bot
-targets likewise), bound to the phone's control lease and to the
+(`socketPath` in the join response), bound to the phone's control lease and to the
 conversation whose VM seat the join picked, plus the VNC password. The phone never sees a loopback address, and the
 proxy re-checks the lease and the session every few seconds and closes the
 socket when either lapses. Computer access is the pairing's scope: a Full
 access pairing (`openmausbot pair`) may; a chat-only one (`--client`) is
 answered 403, which the phone shows as computer access being off.
 
-Phone control is unavailable in pool mode, through either connection path.
-A bot's control hold does not reserve a pool seat against other bots. The
-join route refuses pool mode, and the desktop proxy independently refuses
-lease-bound pool URLs before reading credentials or opening a socket.
-Shared and per-bot desktops remain supported. Reserving a pool seat for the
-whole viewer lifetime is required before enabling interactive pool viewers.
+Phone control is unavailable in shared and pool modes, through either connection
+path. A bot's control hold does not reserve those desktops against other bots. The
+join route refuses both modes, and the desktop proxy independently refuses
+their lease-bound URLs before reading credentials or opening a socket. Stills
+remain available in every mode. Reserving the desktop for the whole viewer
+lifetime is required before enabling interactive shared or pool viewers.
 
 Check it against the same fixture, talking to the printed `harness` address
 rather than the sidecar. With `BOT` and `THREAD` from the fixture's output and
@@ -94,9 +93,8 @@ rather than the sidecar. With `BOT` and `THREAD` from the fixture's output and
    owner), then `POST /api/auth/pair` with the code. Use its token as a bearer
    below. Pair a second one with `{"scopes":["client"]}` for the chat-only case.
 2. Chat-only: `POST /api/bots/BOT/local-computer/join?threadId=THREAD&controlLeaseId=LEASE`
-   and a WebSocket upgrade of
-   `/api/desktop-viewer/local/shared/websockify?botId=BOT&threadId=THREAD&controlLeaseId=LEASE`
-   both answer 403.
+   and a WebSocket upgrade of the bot's desktop proxy with
+   `botId=BOT&threadId=THREAD&controlLeaseId=LEASE` both answer 403.
 3. Full access, before taking control: the join answers 409 "Take control of
    this computer first", and so does the proxy.
 4. `POST /api/bots/BOT/computer/control` with `{"action":"take","controlLeaseId":"LEASE"}`,

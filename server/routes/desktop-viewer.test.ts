@@ -335,10 +335,12 @@ it("uses the same authenticated proxy for VPS and releases only its own connecti
 // A phone paired with the server directly drives the Local VM through this
 // proxy under its control lease, with no sidecar in between.
 const lease = "phone-lease-0123456789";
-const bound = (query = `botId=test-bot&controlLeaseId=${lease}`) => `${base}/websockify?${query}`;
+const phoneTarget = viewerTargetId(perBotLocalVmTarget("test-bot"));
+const phoneBase = `/api/desktop-viewer/${phoneTarget}`;
+const bound = (query = `botId=test-bot&controlLeaseId=${lease}`) => `${phoneBase}/websockify?${query}`;
 
-it("refuses phone control of a pool seat even with a valid bot lease", async () => {
-  const target = viewerTargetId(poolLocalVmTarget(1));
+it.each([SHARED_LOCAL_VM_TARGET, poolLocalVmTarget(1)])("refuses phone control of a shared desktop even with a valid bot lease: %j", async desktop => {
+  const target = viewerTargetId(desktop);
   leases.add(leaseKey(target, "test-bot", lease));
   const query = `botId=test-bot&threadId=th-1&controlLeaseId=${lease}`;
   for (const response of [
@@ -346,7 +348,7 @@ it("refuses phone control of a pool seat even with a valid bot lease", async () 
     await get(`/api/desktop-viewer/${target}?${query}`),
   ]) {
     expect(response.status).toBe(409);
-    expect(JSON.stringify(response.body)).toContain("pooled Local VMs");
+    expect(JSON.stringify(response.body)).toContain("per-bot Local VM");
   }
   expect(inspected).toEqual([]);
 });
@@ -358,7 +360,7 @@ it("opens a lease-bound viewer only while that lease holds the bot's computer", 
   // Nothing was inspected for a caller that does not hold the computer.
   expect(inspected).toEqual([]);
 
-  leases.add(leaseKey("local/shared", "test-bot", lease));
+  leases.add(leaseKey(phoneTarget, "test-bot", lease));
   const answer = await open(bound(), { authorization: `Bearer ${admin.token}`, "sec-websocket-protocol": "binary" });
   expect(answer.status).toBe(101);
   const socket = answer.socket!;
@@ -378,10 +380,10 @@ it("opens a lease-bound viewer only while that lease holds the bot's computer", 
 }, 10_000);
 
 it("binds a lease to one bot's desktop and refuses malformed or half-given lease names", async () => {
-  leases.add(leaseKey("local/shared", "test-bot", lease));
+  leases.add(leaseKey(phoneTarget, "test-bot", lease));
   // The same lease, asked against another bot or another desktop, holds nothing.
   expect((await open(bound(`botId=other-bot&controlLeaseId=${lease}`))).status).toBe(409);
-  expect((await open(`/api/desktop-viewer/${viewerTargetId(targets[1])}/websockify?botId=test-bot&controlLeaseId=${lease}`)).status).toBe(409);
+  expect((await open(`/api/desktop-viewer/${viewerTargetId(perBotLocalVmTarget("other-bot"))}/websockify?botId=test-bot&controlLeaseId=${lease}`)).status).toBe(409);
   for (const query of ["botId=test-bot", `controlLeaseId=${lease}`, "botId=test-bot&controlLeaseId=short", `botId=bad%20bot&controlLeaseId=${lease}`,
     "threadId=th-1", `botId=test-bot&threadId=bad%20thread&controlLeaseId=${lease}`]) {
     expect((await open(bound(query))).status).toBe(400);
@@ -390,14 +392,14 @@ it("binds a lease to one bot's desktop and refuses malformed or half-given lease
   expect((await open(bound(`botId=test-bot&threadId=th-1&controlLeaseId=${lease}`))).status).toBe(101);
   expect((await open(bound(`botId=test-bot&threadId=th-2&controlLeaseId=${lease}`))).status).toBe(409);
   // The password read goes through the same binding.
-  expect((await get(`${base}?botId=test-bot&controlLeaseId=${lease}`)).body).toEqual({ password: "fixture-secret" });
+  expect((await get(`${phoneBase}?botId=test-bot&controlLeaseId=${lease}`)).body).toEqual({ password: "fixture-secret" });
   leases.clear();
-  expect((await get(`${base}?botId=test-bot&controlLeaseId=${lease}`)).status).toBe(409);
+  expect((await get(`${phoneBase}?botId=test-bot&controlLeaseId=${lease}`)).status).toBe(409);
 });
 
 it("keeps the session and scope checks ahead of the lease, and closes a session's viewers per bot or all at once", async () => {
-  leases.add(leaseKey("local/shared", "test-bot", lease));
-  leases.add(leaseKey("local/shared", "other-bot", lease));
+  leases.add(leaseKey(phoneTarget, "test-bot", lease));
+  leases.add(leaseKey(phoneTarget, "other-bot", lease));
   expect((await open(bound(), { cookie: `test_session=${member.token}` })).status).toBe(403);
   expect((await open(bound(), { cookie: "test_session=revoked" })).status).toBe(401);
   const mine = (await open(bound())).socket!;
@@ -407,6 +409,8 @@ it("keeps the session and scope checks ahead of the lease, and closes a session'
   const closedMine = once(mine, "close");
   expect(viewer.closeForOwner("nobody", "test-bot")).toBe(0);
   expect(viewer.closeForOwner(admin.session.id, "test-bot")).toBe(1);
+  // Asked again before the socket's close event: nothing left to close.
+  expect(viewer.closeForOwner(admin.session.id, "test-bot")).toBe(0);
   await closedMine;
   expect(other.destroyed).toBe(false);
   expect(browser.destroyed).toBe(false);

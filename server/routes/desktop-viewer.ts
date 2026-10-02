@@ -42,8 +42,8 @@ export function createDesktopViewer(deps: {
   /** Bind a viewer to a control lease: a phone driving the Local VM directly,
    * without the companion sidecar. Answers nothing unless `controlLeaseId`
    * holds `botId`'s computer right now and the target is that computer;
-   * otherwise a probe that says whether the lease still holds. Pool targets
-   * are refused before this callback because a bot hold cannot reserve a seat. */
+   * otherwise a probe that says whether the lease still holds. Shared and pool
+   * targets are refused because a bot hold cannot reserve their desktop. */
   lease?: (id: string, botId: string, controlLeaseId: string, threadId?: string) => (() => boolean) | undefined;
 }) {
   const upgrades = new Map<IncomingMessage, Upgrade>();
@@ -109,9 +109,9 @@ export function createDesktopViewer(deps: {
     }
     if (botId === null && threadId !== undefined) return json(res, 400, { error: "threadId needs botId and controlLeaseId" });
     // Do not let a saved or constructed socket URL bypass the join refusal:
-    // a bot's control lease does not exclude other users of a pooled seat.
-    if (botId !== null && match[1].startsWith("local/pool-")) {
-      return json(res, 409, { error: "Phone control is not available for pooled Local VMs. Use shared or per-bot mode in Settings → Computers." });
+    // a bot's control lease does not exclude other users of a shared desktop.
+    if (botId !== null && (match[1] === "local/shared" || match[1].startsWith("local/pool-"))) {
+      return json(res, 409, { error: "Phone control requires a per-bot Local VM. Select per-bot mode in Settings → Computers." });
     }
     const bound = botId === null ? undefined : deps.lease!(match[1], botId, controlLeaseId!, threadId);
     if (botId !== null && !bound) return json(res, 409, { error: "Take control of this computer first" });
@@ -210,6 +210,9 @@ export function createDesktopViewer(deps: {
       let closed = 0;
       for (const upgrade of upgrades.values()) {
         if (upgrade.owner !== owner || (botId !== undefined && upgrade.botId !== botId)) continue;
+        // A viewer already closed stays listed until its socket's close
+        // event, which arrives later on Windows: not closed or counted again.
+        if (upgrade.socket.destroyed) continue;
         upgrade.close();
         closed++;
       }
