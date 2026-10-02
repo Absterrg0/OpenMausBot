@@ -50,7 +50,7 @@ describe("skills library migration", () => {
     for (const order of [["enabled", "disabled"], ["disabled", "enabled"]] as const) {
       const name = `order-${order[0]}-${order[1]}`;
       const content = SKILL(name);
-      const ids = { enabled: botA, disabled: botB };
+      const ids = { enabled: `${botA}-${order[0]}`, disabled: `${botB}-${order[0]}` };
       const reports: Partial<Record<"enabled" | "disabled", ReturnType<typeof migration.migrateBotSkillsToLibrary>>> = {};
       for (const state of order) {
         skills.installSkill(ids[state], "private:test", [{ path: "SKILL.md", content }]);
@@ -65,10 +65,11 @@ describe("skills library migration", () => {
 
       if (order[0] === "enabled") {
         // enabled first: the entry is approved, the enabled bot is
-        // assigned, and the disabled copy deduplicates into bytes that
-        // bot cannot use
+        // assigned, and the disabled copy stays private so its per-bot
+        // switch is preserved independently of shared review state.
         expect(enabledReport.outcomes).toEqual([expect.objectContaining({ outcome: "migrated" })]);
-        expect(disabledReport.outcomes).toEqual([expect.objectContaining({ outcome: "deduplicated" })]);
+        expect(disabledReport.outcomes).toEqual([expect.objectContaining({ outcome: "skipped" })]);
+        expect(skills.listSkills(ids.disabled).map((skill) => [skill.name, skill.enabled])).toEqual([[name, false]]);
         expect(enabledReport.assignments[ids.enabled]).toEqual([name]);
         expect(library.readSkillLibraryIndex()[name]!.reviewState).toBe("approved");
       } else {
@@ -211,6 +212,17 @@ describe("skills library migration", () => {
 });
 
 describe("skills library boot sweep", () => {
+  it("does not assign a disabled private copy when shared approval changes later", () => {
+    const name = "disabled-not-assigned";
+    skills.installSkill(botA, "private:test", [{ path: "SKILL.md", content: SKILL(name) }]);
+    const patched: string[][] = [];
+    migration.runSkillsLibraryBootSweep({ bots: [{ id: botA }], patch: (_id, names) => patched.push(names) });
+    expect(patched).toEqual([]);
+    expect(library.setLibrarySkillReviewState(name, "approved")).not.toHaveProperty("error");
+    expect(skills.resolveBotSkills(botA, undefined)).toEqual([]);
+    expect(migration.readPendingAssignments()[botA]).toBeUndefined();
+  });
+
   it("recovers a newly migrated assignment after the bot save fails and boot retries", () => {
     const name = "restart-save-failure";
     skills.installSkill(botA, "private:test", [{ path: "SKILL.md", content: SKILL(name) }]);

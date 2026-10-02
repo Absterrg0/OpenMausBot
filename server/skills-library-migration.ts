@@ -115,14 +115,6 @@ export function migrateBotSkillsToLibrary(botId: string, root: string = skillsLi
         continue;
       }
       outcomes.push({ botId, name: copy.name, outcome: "migrated" });
-    } else if (copy.enabled && existing.reviewState === "disabled") {
-      // The bytes are identical, but this bot's copy was reviewed on while
-      // the library entry is off. Archiving here would silently retire an
-      // enabled skill, and assigning would hand the bot an entry nobody
-      // approved — so the copy stays in place and the next sweep retries
-      // once the entry is enabled in the library.
-      outcomes.push({ botId, name: copy.name, outcome: "skipped", detail: `the library already has an identical but disabled "${copy.name}" — enable it in the library to assign it` });
-      continue;
     } else {
       outcomes.push({ botId, name: copy.name, outcome: "deduplicated", detail: "identical sha256 already in the library" });
     }
@@ -134,7 +126,7 @@ export function migrateBotSkillsToLibrary(botId: string, root: string = skillsLi
     // archived skill with no manifest and no assignment.
     try {
       const pendingAssignments = readPendingAssignments(root);
-      writePendingAssignments({
+      if (copy.enabled) writePendingAssignments({
         ...pendingAssignments,
         [botId]: [...new Set([...(pendingAssignments[botId] ?? []), ...assigned, copy.name])].sort(),
       }, root);
