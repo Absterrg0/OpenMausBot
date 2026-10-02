@@ -32,16 +32,81 @@ function homeOrigin(value) {
   }
 }
 
+/** Setup's steps, in order, as the Cloud page names them. */
+export const CLOUD_SETUP_STEPS = Object.freeze(["reserving", "storage", "starting", "checking"]);
+const GB = 1024 ** 3;
+const record = value => Boolean(value) && typeof value === "object" && !Array.isArray(value);
+const moment = value => Number.isSafeInteger(value) && value > 0;
+const wholeGb = value => Number.isSafeInteger(value) && value >= 1 && value <= 10_000;
+
 /** Validate the session's `cloud` summary. A malformed one means no machine,
- * never a partly trusted one. Only the state and the address are read: Cloud
- * Pro includes no AI, so there is no allowance to show. */
+ * never a partly trusted one. The state and the address decide; the rest is
+ * optional and additive (an Admin may not send it yet), so a malformed extra
+ * is dropped, never the machine: `setup` (the step setting up is at, and
+ * whether it is slow), `retryAt` (when a failed setup is tried again) and
+ * `disk` (the volume now and the most the plan lets it grow to). */
 export function parseCloudSummary(input) {
-  if (!input || typeof input !== "object" || Array.isArray(input)) return null;
+  if (!record(input)) return null;
   const status = Object.hasOwn(ADMIN_STATES, input.state) ? ADMIN_STATES[input.state] : null;
   if (!status) return null;
   const origin = input.origin === undefined || input.origin === null ? null : homeOrigin(input.origin);
   if ((input.origin !== undefined && input.origin !== null && !origin) || (CLOUD_MACHINE_CONNECTABLE.includes(status) && !origin)) return null;
-  return { status, ...(origin ? { origin } : {}) };
+  const setup = status === "provisioning" && record(input.setup) && CLOUD_SETUP_STEPS.includes(input.setup.step)
+    ? { step: input.setup.step, ...(input.setup.slow === true ? { slow: true } : {}) } : null;
+  const retryAt = status === "failed" && moment(input.retryAt) ? input.retryAt : null;
+  const disk = record(input.disk) && wholeGb(input.disk.gb) && wholeGb(input.disk.maxGb) && input.disk.maxGb >= input.disk.gb
+    ? { gb: input.disk.gb, maxGb: input.disk.maxGb } : null;
+  return { status, ...(origin ? { origin } : {}), ...(setup ? { setup } : {}), ...(retryAt ? { retryAt } : {}), ...(disk ? { disk } : {}) };
+}
+
+const PURCHASE_STATES = Object.freeze(["confirming", "held"]);
+const TIER = /^[a-z][a-z0-9-]{0,23}$/;
+/** A payment the Admin has received but not yet linked to this account
+ * (`cloud.purchase`, additive): while it exists, nobody is asked to pay
+ * again. It never activates anything; only the entitlement does. */
+export function parseCloudPurchase(input) {
+  if (!record(input) || !PURCHASE_STATES.includes(input.state)) return null;
+  const tier = typeof input.plan === "string" && TIER.test(input.plan) ? input.plan : null;
+  return { state: input.state, ...(tier ? { tier } : {}), ...(moment(input.paidAt) ? { paidAt: input.paidAt } : {}) };
+}
+
+/** Disk per plan when the Admin does not say (openmaus-cloud
+ * server/cloud-plans.ts): every Cloud starts at 10 GB, and the disk of a
+ * plan whose maximum is larger grows as it fills. */
+export const CLOUD_PLAN_DISK_GB = Object.freeze({
+  personal: Object.freeze({ startGb: 10, maxGb: 10 }),
+  pro: Object.freeze({ startGb: 10, maxGb: 50 }),
+  max: Object.freeze({ startGb: 10, maxGb: 100 }),
+});
+
+/** The disk a verified paid plan's Cloud has now (when known) and may grow
+ * to. The Admin's own `cloud.disk` wins; without it, the plan's table entry.
+ * No tier is an Admin that sells only Pro. Null: no paid plan, or a plan this
+ * app does not know (its Cloud's own free space is then all there is). */
+export function cloudPlanDisk(state) {
+  if (state?.status !== "connected" || state.entitlement?.plan !== "pro") return null;
+  const disk = state.machine?.disk;
+  if (disk) return { volumeBytes: disk.gb * GB, maxBytes: disk.maxGb * GB };
+  const tier = state.entitlement.tier ?? "pro";
+  const plan = Object.hasOwn(CLOUD_PLAN_DISK_GB, tier) ? CLOUD_PLAN_DISK_GB[tier] : null;
+  return plan ? { maxBytes: plan.maxGb * GB, startBytes: plan.startGb * GB } : null;
+}
+
+/** The person's Cloud address, remembered for their account while a check
+ * with OMB Cloud is pending or has failed, so the Server menu still knows
+ * "My Cloud" is theirs. Forgotten on sign-out or another account. */
+export function rememberedCloudHome(previous, state) {
+  const accountId = state?.account?.id ?? null;
+  if (!accountId) return null;
+  const origin = state.status === "connected" ? state.machine?.origin ?? null : null;
+  if (origin) return { accountId, origin };
+  return previous?.accountId === accountId ? previous : null;
+}
+
+/** Whether choosing this Server entry means "open my Cloud", which goes
+ * through the Cloud's own connection (no pairing code to type). */
+export function isCloudHomeEntry(entry, { homeOrigin = null, remembered = null } = {}) {
+  return Boolean(entry?.origin) && (entry.origin === homeOrigin || entry.origin === remembered?.origin);
 }
 
 /** Validate `POST /api/cloud/desktop/pairing` for the machine it was asked for. */

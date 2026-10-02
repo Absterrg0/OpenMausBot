@@ -1,12 +1,25 @@
 import { createManagedDesktopStore } from "./managed-desktop.mjs";
-import { CLOUD_MACHINE_CONNECTABLE, parseCloudSummary, parsePairingGrant } from "./cloud-home.mjs";
+import { CLOUD_MACHINE_CONNECTABLE, parseCloudPurchase, parseCloudSummary, parsePairingGrant } from "./cloud-home.mjs";
 
 export const CLOUD_ORIGIN = "https://cloud.openmausbot.com";
 const TOKEN = /^omc_[A-Za-z0-9_-]{43}$/;
 const CODE = /^[A-HJ-NP-Z2-9]{5}-[A-HJ-NP-Z2-9]{5}$/;
 const PRIVATE_CODE = /^[A-Za-z0-9_-]{43}$/;
 const TIER = /^[a-z][a-z0-9-]{0,23}$/;
+/** A verified session is asked again this often... */
 const REFRESH_MS = 60_000;
+/** ...and stays current this long without a newer answer. A check that fails
+ * in between keeps it: one dropped request is not news, so the plan, the
+ * Cloud card and Connect never blink out. Only a longer outage turns it into
+ * "unavailable", and even then the plan last seen is still shown. */
+const STEADY_MS = 15 * 60_000;
+/** While the Cloud is being set up (or a payment is being linked), progress is asked for this often. */
+const SETUP_REFRESH_MS = 15_000;
+/** Failed checks in a row before the snapshot quietly says it is checking. */
+const CHECKING_AFTER = 2;
+const RETRY_MS = [15_000, 30_000, 60_000];
+/** The longest sign-in window accepted from the Admin (it may allow 15 minutes). */
+const MAX_ENROLL_SECONDS = 1800;
 // Never accept an address from the renderer. Tests explicitly inject loopback.
 export function cloudOrigin(value = CLOUD_ORIGIN, fixture = false) {
   const url = new URL(value);
@@ -21,6 +34,15 @@ export const createCloudAccountStore = createManagedDesktopStore;
 // oxlint-disable-next-line no-control-regex
 const text = (value, max) => typeof value === "string" && value.length > 0 && value.length <= max && !/[\x00-\x1f\x7f]/.test(value);
 const timestamp = value => Number.isSafeInteger(value) && value > 0;
+/** The paid plan last verified for this sign-in, kept beside the credential
+ * for display only: what Settings shows while OMB Cloud cannot be asked, or
+ * after this computer's sign-in has ended. It activates nothing, and is never
+ * an entitlement. */
+function planHint(value) {
+  if (!value || typeof value !== "object" || typeof value.active !== "boolean") return null;
+  return { ...(typeof value.tier === "string" && TIER.test(value.tier) ? { tier: value.tier } : {}), active: value.active };
+}
+const sameHint = (left, right) => (left?.tier ?? null) === (right?.tier ?? null) && (left?.active ?? null) === (right?.active ?? null);
 
 /** Personal account only. No model provider, organization policy, workspace,
  * local settings or companion state is changed by this client. */
@@ -29,18 +51,34 @@ export function createCloudAccountClient({ store, openBrowser, platform, deviceN
   setTimer = setTimeout, clearTimer = clearTimeout, warn = message => console.warn(message) }) {
   origin = cloudOrigin(origin, fixture);
   let grant = null, issued = null, cleanup = null, pending = null, cleanupNeeded = false;
-  let value = { status: "signed-out" }, generation = 0, timer = null, closed = false, clearing = null, refreshing = null;
-  let verifiedUntil = 0, restoring = false, controller = new AbortController();
+  // "restoring": not yet known whether a saved sign-in exists. Nobody is
+  // offered a plan or a sign-in for it (start() settles it).
+  let value = { status: "signed-out", message: "restoring" }, generation = 0, timer = null, closed = false, clearing = null, refreshing = null;
+  let verifiedUntil = 0, restoring = false, controller = new AbortController(), failures = 0;
+  // `plan`: the last verified paid plan of this account (display only); `savedHint`: what the record holds.
+  let plan = null, savedHint = null;
   const newerPlans = new Set();
-  const view = (status, message) => ({ status, ...(message ? { message } : {}), ...(grant ? { account: grant.account, deviceId: grant.device.id, expiresAt: grant.expiresAt } : {}) });
-  const state = () => structuredClone(value.status === "connected" && now() >= verifiedUntil ? view("unavailable", "verification-expired") : value);
+  const lastPlan = () => plan && grant && plan.accountId === grant.account.id ? { ...(plan.tier ? { tier: plan.tier } : {}), active: plan.active } : null;
+  const view = (status, message) => {
+    const known = status === "connected" ? null : lastPlan();
+    return { status, ...(message ? { message } : {}), ...(grant ? { account: grant.account, deviceId: grant.device.id, expiresAt: grant.expiresAt } : {}), ...(known ? { lastPlan: known } : {}) };
+  };
+  const state = () => {
+    if (value.status === "connected") {
+      if (grant && grant.expiresAt <= now()) return structuredClone(view("reauth-required", "expired"));
+      if (now() >= verifiedUntil) return structuredClone(view("unavailable", "verification-expired"));
+      if (failures >= CHECKING_AFTER) return structuredClone({ ...value, checking: true });
+    }
+    return structuredClone(value);
+  };
   const publish = next => { value = next; onState(state()); return state(); };
+  const record = (saved, hint) => ({ ...saved, ...(hint ? { planHint: hint } : {}) });
   const stopTimer = () => { if (timer !== null) clearTimer(timer); timer = null; };
   const schedule = (work, delay) => {
     stopTimer();
     if (!closed) { timer = setTimer(() => { timer = null; void work().catch(() => {}); }, Math.max(1, delay)); timer?.unref?.(); }
   };
-  const reset = () => { generation++; stopTimer(); controller.abort(); controller = new AbortController(); pending = null; verifiedUntil = 0; return generation; };
+  const reset = () => { generation++; stopTimer(); controller.abort(); controller = new AbortController(); pending = null; verifiedUntil = 0; failures = 0; return generation; };
   const current = stamp => !closed && generation === stamp;
   async function request(route, { method = "GET", body, token, signal = controller.signal } = {}) {
     const response = await fetcher(`${origin}/api/cloud/desktop/${route}`, {
@@ -58,7 +96,11 @@ export function createCloudAccountClient({ store, openBrowser, platform, deviceN
     } catch (error) { await reader?.cancel().catch(() => {}); throw error; }
     finally { reader?.releaseLock(); }
     let data;
-    try { data = JSON.parse(Buffer.concat(chunks).toString("utf8")); } catch { throw new Error("Invalid Cloud response."); }
+    try { data = JSON.parse(Buffer.concat(chunks).toString("utf8")); } catch {
+      // A route this Admin does not have may answer with no JSON at all.
+      if (!response.ok) throw Object.assign(new Error("Cloud request failed."), { status: response.status });
+      throw new Error("Invalid Cloud response.");
+    }
     if (!response.ok) throw Object.assign(new Error("Cloud request failed."), { status: response.status, code: data?.error, interval: data?.interval });
     return data;
   }
@@ -96,23 +138,29 @@ export function createCloudAccountClient({ store, openBrowser, platform, deviceN
     const machine = current.status === "connected" ? current.machine : undefined;
     return machine?.origin && CLOUD_MACHINE_CONNECTABLE.includes(machine.status) ? { origin: machine.origin } : null;
   }
-  function signOut() {
+  /** Forget this computer's sign-in. `quiet`: on the way to signing in
+   * again, so "signed out" is never shown in between. */
+  function forget({ quiet = false } = {}) {
     if (clearing) return clearing;
     const previous = grant ?? issued ?? cleanup, stamp = reset();
-    grant = null; issued = null; cleanup = previous; cleanupNeeded = true;
-    publish({ status: "signed-out" });
+    grant = null; issued = null; cleanup = previous; cleanupNeeded = true; plan = null; savedHint = null;
+    if (!quiet) publish({ status: "signed-out" });
     const operation = (async () => {
       const [persisted, revoked] = await Promise.allSettled([Promise.resolve().then(() => store.write(null)), previous ? revoke(previous) : Promise.resolve()]);
       if (persisted.status === "fulfilled") { cleanup = null; cleanupNeeded = false; }
       if (!current(stamp)) return state();
       if (persisted.status === "rejected") return publish({ status: "unavailable", message: "signout-storage-failed" });
+      if (quiet) return state();
       return publish({ status: "signed-out", ...(revoked.status === "rejected" ? { message: "signout-local-only" } : {}) });
     })().finally(() => { if (clearing === operation) clearing = null; });
     clearing = operation; return operation;
   }
+  const signOut = () => forget();
   async function synchronize(stamp) {
     if (!grant || !current(stamp)) return state();
-    if (grant.expiresAt <= now()) return publish(view("reauth-required", "expired"));
+    // A sign-in this computer holds lasts as long as OMB Cloud said; after
+    // that, signing in again is the one next step (the plan is unaffected).
+    if (grant.expiresAt <= now()) { stopTimer(); return publish(view("reauth-required", "expired")); }
     try {
       const previous = grant, result = await request("session", { token: previous.token });
       if (!current(stamp) || grant !== previous) return state();
@@ -124,22 +172,36 @@ export function createCloudAccountClient({ store, openBrowser, platform, deviceN
       // The Admin's state decides what the machine allows (a lapsed payment
       // is "payment-problem", not a hidden machine). A malformed one is none.
       const machine = parseCloudSummary(result.cloud);
+      const purchase = parseCloudPurchase(result.cloud?.purchase);
+      const hint = access.plan === "pro" ? { ...(access.tier ? { tier: access.tier } : {}), active: access.status === "active" } : null;
       if (next.expiresAt !== previous.expiresAt) {
         const replacement = { ...previous, expiresAt: next.expiresAt };
-        await store.write(replacement);
+        await store.write(record(replacement, hint));
         if (!current(stamp) || grant !== previous) return state();
-        grant = replacement;
+        grant = replacement; savedHint = hint;
+      } else if (!sameHint(savedHint, hint)) {
+        // Display only: a locked keychain must not hold up the verified state.
+        try { await store.write(record(previous, hint)); savedHint = hint; } catch { /* tried again next time */ }
+        if (!current(stamp) || grant !== previous) return state();
       }
-      verifiedUntil = Math.min(grant.expiresAt, now() + REFRESH_MS,
+      plan = hint ? { accountId: grant.account.id, ...hint } : null;
+      failures = 0;
+      verifiedUntil = Math.min(grant.expiresAt, now() + STEADY_MS,
         access.status === "active" && access.expiresAt !== null ? access.expiresAt : Infinity);
-      publish({ ...view("connected"), entitlement: access, ...(machine ? { machine } : {}), verifiedAt: now(), verifiedUntil });
-      schedule(async () => { publish(view("unavailable", "verification-expired")); return refresh(); }, verifiedUntil - now());
+      publish({ ...view("connected"), entitlement: access, ...(machine ? { machine } : {}), ...(purchase ? { purchase } : {}), verifiedAt: now(), verifiedUntil });
+      // The next check comes well before this one stops counting.
+      const settingUp = machine?.status === "provisioning" || (access.status === "active" && !machine) || Boolean(purchase);
+      schedule(refresh, Math.min(settingUp ? SETUP_REFRESH_MS : REFRESH_MS, verifiedUntil - now()));
     } catch (error) {
       if (!current(stamp)) return state();
-      verifiedUntil = 0;
-      if ([401, 403].includes(error?.status)) return publish(view("reauth-required", "access-ended"));
-      publish(view("unavailable", "unreachable"));
-      schedule(refresh, Math.min(REFRESH_MS, grant.expiresAt - now()));
+      if ([401, 403].includes(error?.status)) { verifiedUntil = 0; failures = 0; stopTimer(); return publish(view("reauth-required", "access-ended")); }
+      // Not an answer (offline, a timeout, a malformed reply): the last
+      // verified snapshot stands while it is current, and is never replaced
+      // by what failed. state() says "checking" after repeated failures.
+      failures++;
+      if (value.status === "connected") publish(value);
+      else publish(view("unavailable", "unreachable"));
+      schedule(refresh, Math.min(RETRY_MS[Math.min(failures, RETRY_MS.length) - 1], grant.expiresAt - now()));
     }
     return state();
   }
@@ -162,7 +224,8 @@ export function createCloudAccountClient({ store, openBrowser, platform, deviceN
       issued = next;
       await store.write(next);
       if (!current(stamp)) return state();
-      grant = next; issued = null; pending = null;
+      grant = next; issued = null; pending = null; savedHint = null;
+      if (plan?.accountId !== next.account.id) plan = null;
       return refresh();
     } catch (error) {
       if (!current(stamp)) return state();
@@ -174,6 +237,24 @@ export function createCloudAccountClient({ store, openBrowser, platform, deviceN
       return state();
     }
   }
+  async function begin() {
+    if (closed || restoring || clearing || grant || issued || cleanupNeeded) throw new Error("Sign out before starting another Cloud connection.");
+    const stamp = reset();
+    publish({ status: "connecting" });
+    try {
+      if (!text(deviceName, 100) || !["darwin", "win32", "linux"].includes(platform)) throw new Error("Invalid desktop.");
+      const result = await request("authorize", { method: "POST", body: { deviceName, platform, ...(text(appVersion, 40) ? { appVersion } : {}) } });
+      if (!current(stamp)) return state();
+      if (result.cloudContractVersion !== 1 || !PRIVATE_CODE.test(result.deviceCode) || !CODE.test(result.userCode) ||
+        result.verificationUriComplete !== `${origin}/cloud/desktop?code=${result.userCode}` || !Number.isSafeInteger(result.expiresIn) || result.expiresIn < 1 || result.expiresIn > MAX_ENROLL_SECONDS ||
+        !Number.isSafeInteger(result.interval) || result.interval < 5 || result.interval > 60) throw new Error("Invalid Cloud authorization.");
+      pending = { deviceCode: result.deviceCode, verificationUri: result.verificationUriComplete, expiresAt: now() + result.expiresIn * 1000, interval: result.interval * 1000 };
+      publish({ status: "connecting", enrollment: { userCode: result.userCode, expiresAt: pending.expiresAt } });
+      await openBrowser(pending.verificationUri);
+      if (current(stamp)) schedule(poll, pending.interval);
+    } catch { if (current(stamp)) { pending = null; publish({ status: "signed-out", message: "signin-failed" }); } }
+    return state();
+  }
   return {
     state,
     async start() {
@@ -183,27 +264,23 @@ export function createCloudAccountClient({ store, openBrowser, platform, deviceN
         const saved = await store.read();
         if (!current(stamp)) return state();
         grant = saved ? validateGrant(saved) : null;
+        savedHint = grant ? planHint(saved.planHint) : null;
+        plan = grant && savedHint ? { accountId: grant.account.id, ...savedHint } : null;
       } catch { if (current(stamp)) { cleanupNeeded = true; return publish({ status: "unavailable", message: "restore-failed" }); } return state(); }
       finally { restoring = false; }
+      if (!grant) return value.message === "restoring" ? publish({ status: "signed-out" }) : state();
       return refresh();
     },
-    async begin() {
-      if (closed || restoring || clearing || grant || issued || cleanupNeeded) throw new Error("Sign out before starting another Cloud connection.");
-      const stamp = reset();
+    begin,
+    /** After this computer's sign-in ended (it lasts a set time, or was
+     * removed): forget it and start a new sign-in in one step, never showing
+     * "signed out" in between. */
+    async signInAgain() {
+      if (state().status !== "reauth-required") throw new Error("This computer is still signed in to OMB Cloud.");
       publish({ status: "connecting" });
-      try {
-        if (!text(deviceName, 100) || !["darwin", "win32", "linux"].includes(platform)) throw new Error("Invalid desktop.");
-        const result = await request("authorize", { method: "POST", body: { deviceName, platform, ...(text(appVersion, 40) ? { appVersion } : {}) } });
-        if (!current(stamp)) return state();
-        if (result.cloudContractVersion !== 1 || !PRIVATE_CODE.test(result.deviceCode) || !CODE.test(result.userCode) ||
-          result.verificationUriComplete !== `${origin}/cloud/desktop?code=${result.userCode}` || !Number.isSafeInteger(result.expiresIn) || result.expiresIn < 1 || result.expiresIn > 600 ||
-          !Number.isSafeInteger(result.interval) || result.interval < 5 || result.interval > 60) throw new Error("Invalid Cloud authorization.");
-        pending = { deviceCode: result.deviceCode, verificationUri: result.verificationUriComplete, expiresAt: now() + result.expiresIn * 1000, interval: result.interval * 1000 };
-        publish({ status: "connecting", enrollment: { userCode: result.userCode, expiresAt: pending.expiresAt } });
-        await openBrowser(pending.verificationUri);
-        if (current(stamp)) schedule(poll, pending.interval);
-      } catch { if (current(stamp)) { pending = null; publish({ status: "signed-out", message: "signin-failed" }); } }
-      return state();
+      const forgotten = await forget({ quiet: true });
+      if (forgotten.status === "unavailable") return forgotten;
+      return begin();
     },
     async reopen() {
       if (pending && value.status === "connecting" && pending.expiresAt > now()) await openBrowser(pending.verificationUri);
@@ -213,6 +290,23 @@ export function createCloudAccountClient({ store, openBrowser, platform, deviceN
     refresh, signOut,
     async openDashboard() { await openBrowser(`${origin}/cloud`); return state(); },
     homeTarget,
+    /** Ask OMB Cloud to grow this account's Cloud disk to `sizeGb` (at most
+     * the plan's own maximum), for a move that needs the room now rather than
+     * as the disk fills. `supported: false`: this Admin cannot do that yet. */
+    async growDisk(sizeGb) {
+      const current = grant;
+      if (!current || state().status !== "connected") throw new Error("Your Cloud is not ready yet.");
+      if (!Number.isSafeInteger(sizeGb) || sizeGb < 1 || sizeGb > 10_000) throw new Error("Invalid Cloud disk size.");
+      let result;
+      try { result = await request("disk", { method: "POST", body: { sizeGb }, token: current.token }); } catch (error) {
+        if ([404, 405, 501].includes(error?.status)) return { supported: false };
+        if ([409, 422].includes(error?.status)) return { supported: true, refused: true };
+        throw error;
+      }
+      const disk = result?.disk;
+      if (!disk || !Number.isSafeInteger(disk.gb) || !Number.isSafeInteger(disk.maxGb) || disk.gb < 1 || disk.maxGb < disk.gb) throw new Error("Invalid Cloud disk response.");
+      return { supported: true, disk: { gb: disk.gb, maxGb: disk.maxGb } };
+    },
     /** Ask the Admin for one single-use pairing code on that machine. The
      * code is returned to main only, for one navigation; it is not kept. */
     async pairHome() {
@@ -225,4 +319,15 @@ export function createCloudAccountClient({ store, openBrowser, platform, deviceN
     },
     close() { closed = true; reset(); },
   };
+}
+
+/** What the person's own Cloud, open in this app's window, may show of the
+ * plan in its Settings: the plan's name and whether it is active. Never the
+ * account, a credential or an address. */
+export function cloudPlanSnapshot(state) {
+  const tier = state?.status === "connected" ? state.entitlement?.tier : state?.lastPlan?.tier;
+  const named = typeof tier === "string" ? { tier } : {};
+  if (state?.status === "connected" && state.entitlement?.plan === "pro") return { status: state.entitlement.status === "active" ? "paid" : "attention", ...named };
+  if (state?.status !== "connected" && state?.lastPlan) return { status: "checking", ...named };
+  return { status: "none" };
 }
