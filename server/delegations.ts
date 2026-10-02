@@ -537,8 +537,11 @@ function appendDeliveryMessage(
   item: PendingDelegationItem,
   message: Omit<Message, "id" | "at">,
 ): void {
-  const threadId = item.oneWay ? item.targetThreadId : sourceThreadId;
-  if (!threadId || (item.oneWay && !bus.store.taskByThread(item.toBotId, threadId))) return;
+  const threadId = item.oneWay && item.targetThreadId && bus.store.taskByThread(item.toBotId, item.targetThreadId)
+    ? item.targetThreadId : sourceThreadId;
+  // A failed independent send needs a visible receipt, not a source wake.
+  // Never recreate a deleted conversation just to post that failure.
+  if (item.oneWay && threadId === sourceThreadId && !sourceThreadBelongsToBot(bus.store, item.sourceBotId, sourceThreadId)) return;
   bus.store.appendMessage(threadId, message);
 }
 

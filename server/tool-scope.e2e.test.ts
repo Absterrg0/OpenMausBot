@@ -112,10 +112,12 @@ it.each(["direct", "preview", "room", "goal"] as const)("keeps a corrupt persist
       expect(await preview.json()).not.toHaveProperty("error");
       expect((await fetch(`${fixture.info.url}/api/bots/${bot.id}/local-computer?threadId=not-a-task`)).status).toBe(404);
     } else if (surface === "direct") {
-      await control(["send", "--bot", bot.id, "--text", "Must not run."]);
-      await control(["wait", "--bot", bot.id, "--timeout", "30"]);
-      const messages = await control(["messages", "--bot", bot.id, "--limit", "10"]);
-      expect(JSON.stringify(messages)).toMatch(/tool selection is invalid/i);
+      const before = await control(["messages", "--bot", bot.id, "--limit", "10"]);
+      const sent = await fetch(`${fixture.info.url}/api/bots/${bot.id}/messages`, { method: "POST",
+        headers: { "content-type": "application/json" }, body: JSON.stringify({ text: "Must not run." }) });
+      expect(sent.status).toBe(409);
+      expect(await sent.json()).toMatchObject({ error: expect.stringMatching(/tool selection is invalid/i) });
+      expect(await control(["messages", "--bot", bot.id, "--limit", "10"])).toEqual(before);
     } else {
       if (surface === "goal") {
         const sent = await fetch(`${fixture.info.url}/api/groups/${channel.id}/messages`, { method: "POST",

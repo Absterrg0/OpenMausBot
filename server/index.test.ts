@@ -1479,13 +1479,14 @@ describe("harness HTTP API", () => {
     } finally {
       writeFileSync(isolatedFinishGate, "finish");
       questionSocket?.destroy();
-      if (activeServer) {
-        await expect.poll(async () => (await isolatedApi("GET", "/api/bots?messages=0")).body.bots
-          .some((candidate: { busy?: boolean }) => candidate.busy), { timeout: 5_000 }).toBe(false);
-        await waitForExit(activeServer.child, { signal: "SIGTERM" });
-        expectStoppedTestServerCleanly(activeServer.child, activeServer.stderr());
+      try {
+        if (activeServer) {
+          await waitForExit(activeServer.child, { signal: "SIGTERM" });
+          expectStoppedTestServerCleanly(activeServer.child, activeServer.stderr());
+        }
+      } finally {
+        await removeTempDir(isolatedHome);
       }
-      await removeTempDir(isolatedHome);
     }
   }, 30_000);
 
@@ -8775,20 +8776,23 @@ describe("harness HTTP API", () => {
       { timeout: 5_000 }).toBe("dispatched");
     } finally {
       rmSync(failureMarker, { force: true });
-      if (room) {
-        await api("POST", `/api/groups/${room.id}/interrupt`, {}).catch(() => undefined);
-        await expect.poll(async () => {
-          const current = (await api("GET", "/api/bots?messages=20")).body;
-          const member = current.bots.find((candidate: { id: string }) => candidate.id === bot.id);
-          const group = current.groups.find((candidate: { id: string }) => candidate.id === room.id);
-          return { busy: member?.busy, working: group?.working };
-        }, { timeout: 5_000 }).toEqual({ busy: false, working: false });
+      try {
+        if (room) {
+          await api("POST", `/api/groups/${room.id}/interrupt`, {}).catch(() => undefined);
+          await expect.poll(async () => {
+            const current = (await api("GET", "/api/bots?messages=20")).body;
+            const member = current.bots.find((candidate: { id: string }) => candidate.id === bot.id);
+            const group = current.groups.find((candidate: { id: string }) => candidate.id === room.id);
+            return { busy: member?.busy, working: group?.working };
+          }, { timeout: 5_000 }).toEqual({ busy: false, working: false });
+        }
+        const configCleanup = await api("PATCH", "/api/config", { features: { browser: false }, browserProfiles: [] });
+        expect(configCleanup.status, JSON.stringify(configCleanup.body)).toBe(200);
+      } finally {
+        if (room) await api("DELETE", `/api/groups/${room.id}`).catch(() => undefined);
+        const botCleanup = await api("DELETE", `/api/bots/${bot.id}`);
+        expect(botCleanup.status, JSON.stringify(botCleanup.body)).toBe(200);
       }
-      const configCleanup = await api("PATCH", "/api/config", { features: { browser: false }, browserProfiles: [] });
-      expect(configCleanup.status, JSON.stringify(configCleanup.body)).toBe(200);
-      if (room) await api("DELETE", `/api/groups/${room.id}`).catch(() => undefined);
-      const botCleanup = await api("DELETE", `/api/bots/${bot.id}`);
-      expect(botCleanup.status, JSON.stringify(botCleanup.body)).toBe(200);
     }
   });
 

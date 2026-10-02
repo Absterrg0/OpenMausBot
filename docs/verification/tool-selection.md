@@ -35,6 +35,10 @@ runtime revocations still take effect if persistence fails. Explicit selections
 and inherited defaults are present in the first durable bot record, so an
 interrupted creation cannot restart with an unrestricted catalog.
 
+A corrupt saved selection refuses a direct send with HTTP 409 before appending
+the message or preparing a computer. The isolated API regression also verifies
+the transcript is unchanged and no provider is launched.
+
 ## Official CLI contract checks
 
 Install the official Pi CLI into a disposable prefix, then supply its absolute

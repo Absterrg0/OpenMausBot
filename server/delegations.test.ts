@@ -688,6 +688,30 @@ describe("drainDelegations", () => {
     expect(runTargetCalls).toEqual([]);
   });
 
+  it.each(["missing target", "deleted target thread", "deleted source too"] as const)(
+    "reports one-way delivery failure after %s without waking the sender or recreating a thread",
+    async (change) => {
+      const source = store.createTask(from.id, "Source", false)!;
+      const opened = store.createTask(target.id, "Recipient", false)!;
+      const queued = queueDelegation(commsBus, from, {
+        toBotId: target.id, message: "Independent work", depth: 0, oneWay: true,
+        ...(change !== "missing target" ? { targetThreadId: opened.threadId } : {}),
+      }, 1, source.threadId);
+      if (change === "missing target") store.deleteBot(target.id);
+      else store.deleteTask(target.id, opened.threadId);
+      if (change === "deleted source too") store.deleteTask(from.id, source.threadId);
+      const runTarget = vi.fn();
+      const settled = vi.fn();
+      drainDelegations(commsBus, approvalBus, source.threadId, runTarget, settled);
+      await waitFor(() => findDelegationReceipt(queued.id!) && _pendingCount(source.threadId) === 0);
+      expect(runTarget).not.toHaveBeenCalled();
+      expect(settled).not.toHaveBeenCalled();
+      expect(store.messagesFor(opened.threadId)).toEqual([]);
+      if (change === "deleted source too") expect(store.messagesFor(source.threadId)).toEqual([]);
+      else expect(store.messagesFor(source.threadId).some(message => message.tool?.ok === false)).toBe(true);
+    },
+  );
+
   it("auto-allows when alwaysAllow already covers the pair (no card pushed)", async () => {
     store.patchBot(from.id, {
       approvePeerComms: true,

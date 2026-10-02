@@ -1,7 +1,9 @@
 import { describe, expect, it, beforeEach } from "vitest";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 // config.ts resolves DATA_DIR at import time; isolate before importing.
 process.env.OMB_DATA_DIR = mkdtempSync(join(tmpdir(), "omb-skills-migration-"));
@@ -22,6 +24,21 @@ beforeEach(() => {
 });
 
 describe("skills library migration", () => {
+  it("rejects missing --data-dir values before importing or migrating", () => {
+    const directory = mkdtempSync(join(tmpdir(), "omb-migration-args-"));
+    try {
+      for (const args of [["--data-dir"], ["--data-dir", "--other-option"]]) {
+        const result = spawnSync(process.execPath, ["--experimental-strip-types",
+          fileURLToPath(new URL("../scripts/migrate-skills-library.ts", import.meta.url)), ...args], {
+          cwd: directory, env: { ...process.env, HOME: directory, USERPROFILE: directory, OMB_DATA_DIR: directory }, encoding: "utf8",
+        });
+        expect(result.status).toBe(2);
+        expect(result.stderr).toMatch(/usage:.*--data-dir/i);
+        expect(readdirSync(directory)).toEqual([]);
+      }
+    } finally { rmSync(directory, { recursive: true, force: true }); }
+  });
+
   it("keeps multi-file skills private so scripts and references remain usable", () => {
     const name = "auxiliary-files";
     skills.installSkill(botA, "private:test", [{ path: "SKILL.md", content: SKILL(name, "Run scripts/probe.js and read references/notes.md.") }]);
