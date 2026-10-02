@@ -7,6 +7,7 @@
 import { Search, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { t } from "@/lib/i18n";
+import { useModalDialog } from "@/hooks/use-modal-dialog";
 import { useStore } from "@/state/store";
 import { Card, Switch } from "./SettingsPrimitives";
 import type { SkillsLibrarySkillWire } from "../../shared/wire";
@@ -48,13 +49,13 @@ export function SkillsSection() {
   const [error, setError] = useState("");
   const [query, setQuery] = useState("");
   const [activeTag, setActiveTag] = useState<string | null>(null);
-  const [viewing, setViewing] = useState<{ name: string; text: string } | null>(null);
+  const [viewing, setViewing] = useState<{ skill: SkillsLibrarySkillWire; text: string; review: boolean } | null>(null);
   const [working, setWorking] = useState("");
   const [importText, setImportText] = useState("");
   const [importing, setImporting] = useState(false);
   const [importMessage, setImportMessage] = useState("");
   const [assignBot, setAssignBot] = useState("");
-  const dialogRef = useRef<HTMLDivElement>(null);
+  const busy = useRef(false);
 
   const bots = state.bots.filter((bot) => !bot.hidden);
   const tags = useMemo(
@@ -87,28 +88,20 @@ export function SkillsSection() {
     };
   }, []);
 
-  useEffect(() => {
-    if (!viewing) return;
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        event.preventDefault();
-        setViewing(null);
-      }
-    };
-    window.addEventListener("keydown", onKey);
-    dialogRef.current?.focus();
-    return () => window.removeEventListener("keydown", onKey);
-  }, [viewing]);
-
-  /** A bot's assignment list, rebuilt from the browse rows. Assignments can
-   * only name library entries, so this is the full list, not a subset. */
-  const assignmentsFor = (botId: string) =>
-    skills.filter((skill) => skill.assignedBots.some((bot) => bot.id === botId)).map((skill) => skill.name);
-
-  const putAssignments = async (botId: string, next: string[], label: string) => {
+  const putAssignments = async (botId: string, name: string, remove: boolean) => {
+    if (busy.current) return;
+    busy.current = true;
+    const label = `${name}:${botId}`;
     setWorking(label);
     setError("");
     try {
+      // Read the complete current list while mutations are serialized: a
+      // second row (or a failed browse refresh) must not overwrite a prior assignment.
+      const listing = await fetch("/api/skills-library");
+      const listed = (await listing.json()) as { skills?: SkillsLibrarySkillWire[]; error?: string };
+      if (!listing.ok) throw new Error(listed.error ?? t("skills.library.loadError"));
+      const current = (listed.skills ?? []).filter((skill) => skill.assignedBots.some((bot) => bot.id === botId)).map((skill) => skill.name);
+      const next = remove ? current.filter((skill) => skill !== name) : [...new Set([...current, name])];
       const response = await fetch(`/api/bots/${encodeURIComponent(botId)}/skills-library`, {
         method: "PUT",
         headers: { "content-type": "application/json" },
@@ -120,20 +113,24 @@ export function SkillsSection() {
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Could not update assignments.");
     } finally {
+      busy.current = false;
       setWorking("");
     }
   };
 
   const assign = async (skill: SkillsLibrarySkillWire) => {
     if (!assignBot) return;
-    await putAssignments(assignBot, [...new Set([...assignmentsFor(assignBot), skill.name])], `${skill.name}:${assignBot}`);
+    await putAssignments(assignBot, skill.name, false);
   };
 
   const unassign = async (skill: SkillsLibrarySkillWire, botId: string) => {
-    await putAssignments(botId, assignmentsFor(botId).filter((name) => name !== skill.name), `${skill.name}:${botId}`);
+    await putAssignments(botId, skill.name, true);
   };
 
-  const toggle = async (skill: SkillsLibrarySkillWire) => {
+  const toggle = async (skill: SkillsLibrarySkillWire, reviewed = false) => {
+    if (busy.current) return;
+    if (!skill.enabled && !reviewed) return view(skill, true);
+    busy.current = true;
     setWorking(skill.name);
     setError("");
     try {
@@ -144,21 +141,24 @@ export function SkillsSection() {
       });
       const body = (await response.json()) as { error?: string };
       if (!response.ok) throw new Error(body.error ?? "Could not update this skill.");
+      if (reviewed) setViewing(null);
       await refresh();
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Could not update this skill.");
     } finally {
+      busy.current = false;
       setWorking("");
     }
   };
 
-  const view = async (skill: SkillsLibrarySkillWire) => {
+  const view = async (skill: SkillsLibrarySkillWire, review = false) => {
     setError("");
     try {
       const response = await fetch(`/api/skills-library/${encodeURIComponent(skill.name)}`);
       const body = (await response.json()) as { text?: string; error?: string };
       if (!response.ok) throw new Error(body.error ?? "Could not load this skill.");
-      setViewing({ name: skill.name, text: body.text ?? "" });
+      if (!body.text) throw new Error("The skill contents are unavailable; import it again.");
+      setViewing({ skill, text: body.text, review });
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Could not load this skill.");
     }
@@ -253,7 +253,7 @@ export function SkillsSection() {
                     <Switch
                       checked={skill.enabled}
                       aria-label={skill.enabled ? t("skills.library.disable", { skill: skill.name }) : t("skills.library.enable", { skill: skill.name })}
-                      disabled={working === skill.name}
+                      disabled={Boolean(working || importing)}
                       onClick={() => void toggle(skill)}
                     />
                   </div>
@@ -272,7 +272,7 @@ export function SkillsSection() {
                             type="button"
                             aria-label={t("skills.library.removeAssignment", { bot: bot.name })}
                             title={t("skills.library.removeAssignment", { bot: bot.name })}
-                            disabled={working === `${skill.name}:${bot.id}`}
+                            disabled={Boolean(working || importing)}
                             onClick={() => void unassign(skill, bot.id)}
                             className="flex size-4 items-center justify-center rounded-full text-ink-secondary hover:bg-danger/10 hover:text-danger disabled:opacity-40"
                           >
@@ -287,6 +287,7 @@ export function SkillsSection() {
                       <select
                         aria-label={t("skills.library.assignLabel")}
                         value={assignBot}
+                        disabled={Boolean(working || importing)}
                         onChange={(e) => setAssignBot(e.target.value)}
                         className="max-w-45 truncate rounded-lg border border-hairline/40 bg-inset px-2 py-1 text-[11.5px] text-ink"
                       >
@@ -297,7 +298,7 @@ export function SkillsSection() {
                       </select>
                       <button
                         type="button"
-                        disabled={!assignBot || working === `${skill.name}:${assignBot}`}
+                        disabled={!assignBot || Boolean(working || importing)}
                         onClick={() => void assign(skill)}
                         className="rounded-lg bg-control px-2.5 py-1 text-[11.5px] text-ink hover:bg-raised-hover disabled:opacity-50"
                       >
@@ -332,7 +333,7 @@ export function SkillsSection() {
             {importMessage ? <div className="text-[12px] text-ink-secondary">{importMessage}</div> : <span />}
             <button
               type="submit"
-              disabled={importing || !importText.trim()}
+              disabled={importing || Boolean(working) || !importText.trim()}
               className="shrink-0 rounded-lg bg-control px-3 py-2 text-[13px] text-ink hover:bg-raised-hover disabled:opacity-50"
             >
               {importing ? t("skills.library.importing") : t("skills.library.importButton")}
@@ -341,7 +342,21 @@ export function SkillsSection() {
         </form>
       </Card>
 
-      {viewing && (
+      {viewing && <SkillSourceDialog viewing={viewing} error={error} working={Boolean(working)} onClose={() => { if (!working) setViewing(null); }} onEnable={() => void toggle(viewing.skill, true)} />}
+    </div>
+  );
+}
+
+function SkillSourceDialog({ viewing, error, working, onClose, onEnable }: {
+  viewing: { skill: SkillsLibrarySkillWire; text: string; review: boolean };
+  error: string;
+  working: boolean;
+  onClose: () => void;
+  onEnable: () => void;
+}) {
+  const dialogRef = useRef<HTMLDivElement>(null);
+  useModalDialog(dialogRef, onClose);
+  return (
         <div
           ref={dialogRef}
           tabIndex={-1}
@@ -352,25 +367,28 @@ export function SkillsSection() {
         >
           <div className="flex max-h-[min(760px,90vh)] w-full max-w-2xl flex-col rounded-2xl bg-card p-5 shadow-2xl">
             <div className="flex items-center justify-between gap-3">
-              <div id="skills-library-view-title" className="text-[16px] font-semibold text-ink">{viewing.name}</div>
+              <div id="skills-library-view-title" className="text-[16px] font-semibold text-ink">{viewing.review ? `Review ${viewing.skill.name} before enabling` : viewing.skill.name}</div>
               <button
                 type="button"
-                onClick={() => setViewing(null)}
+                disabled={working}
+                onClick={onClose}
                 className="rounded-md px-2 py-1 text-[13px] text-ink-secondary hover:bg-control hover:text-ink"
               >
                 {t("skills.library.close")}
               </button>
             </div>
+            {viewing.review && <LibrarySkillMeta skill={viewing.skill} />}
+            {viewing.skill.warnings.length > 0 && <div className="mt-2 text-[11.5px] text-warning">{viewing.skill.warnings.join(" · ")}</div>}
             <pre
               tabIndex={0}
-              aria-label={`${t("skills.library.view", { skill: viewing.name })}`}
+              aria-label={`${t("skills.library.view", { skill: viewing.skill.name })}`}
               className="mt-3 min-h-0 flex-1 overflow-auto whitespace-pre-wrap break-words rounded-xl bg-inset p-3 font-mono text-[12px] leading-relaxed text-ink"
             >
               {viewing.text}
             </pre>
+            {error && <div role="alert" className="mt-2 text-[12px] text-danger">{error}</div>}
+            {viewing.review && <button type="button" disabled={working} onClick={onEnable} className="mt-4 self-end rounded-lg bg-accent px-4 py-2 text-[13px] font-semibold text-white disabled:opacity-40">Enable reviewed skill</button>}
           </div>
         </div>
-      )}
-    </div>
   );
 }

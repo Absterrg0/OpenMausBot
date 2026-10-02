@@ -58,6 +58,7 @@ export function SkillsSection({ bot }: { bot: Bot }) {
   const [importing, setImporting] = useState(false);
   const [importMessage, setImportMessage] = useState("");
   const skillDialogRef = useRef<HTMLDivElement>(null);
+  const assignmentBusy = useRef(false);
   const skillDialogOpen = Boolean(viewing || reviewing);
 
   useEffect(() => {
@@ -128,11 +129,10 @@ export function SkillsSection({ bot }: { bot: Bot }) {
     };
   }, [bot.id]);
 
-  /** This bot's library assignments, straight from the server's assignment
-   * list: merged rows hide assignments a private skill shadows. */
-  const libraryAssignments = () => assignedSkills;
-
-  const putAssignments = async (next: string[]) => {
+  const putAssignments = async (name: string, remove = false) => {
+    const listing = (await api(`/api/bots/${bot.id}/skills`)) as { assignedSkills?: string[] };
+    const current = listing.assignedSkills ?? assignedSkills;
+    const next = remove ? current.filter((skill) => skill !== name) : [...new Set([...current, name])];
     await api(`/api/bots/${bot.id}/skills-library`, {
       method: "PUT",
       body: JSON.stringify({ skills: next }),
@@ -142,14 +142,16 @@ export function SkillsSection({ bot }: { bot: Bot }) {
 
   const addToBot = async () => {
     const name = addFromLibrary.trim();
-    if (!name) return;
+    if (!name || assignmentBusy.current) return;
+    assignmentBusy.current = true;
     setWorking(name);
     setError("");
     try {
-      await putAssignments([...new Set([...libraryAssignments(), name])]);
+      await putAssignments(name);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Could not assign that skill.");
     } finally {
+      assignmentBusy.current = false;
       setWorking("");
     }
   };
@@ -158,9 +160,9 @@ export function SkillsSection({ bot }: { bot: Bot }) {
     setWorking(skill.name);
     setError("");
     try {
-      if (skill.origin === "library") {
+      if (skill.origin === "library" && skill.enabled) {
         // Library skills share one review state across every bot assigned
-        // to them; the switch flips it library-wide.
+        // to them; disabling is immediate, enabling still requires review below.
         await api(`/api/skills-library/${encodeURIComponent(skill.name)}`, {
           method: "PATCH",
           body: JSON.stringify({ enabled: !skill.enabled }),
@@ -172,7 +174,7 @@ export function SkillsSection({ bot }: { bot: Bot }) {
         // A disabled import has not necessarily been reviewed. Fetch the
         // integrity-checked bytes and require one explicit review step before
         // they can reach the bot's prompt or native skill discovery.
-        const result = (await api(`/api/bots/${bot.id}/skills/${encodeURIComponent(skill.name)}`)) as { text?: string };
+        const result = (await api(skill.origin === "library" ? `/api/skills-library/${encodeURIComponent(skill.name)}` : `/api/bots/${bot.id}/skills/${encodeURIComponent(skill.name)}`)) as { text?: string };
         if (!result.text) throw new Error("The skill contents are unavailable; remove and import or learn it again.");
         setReviewing({ skill, text: result.text });
         return;
@@ -195,7 +197,7 @@ export function SkillsSection({ bot }: { bot: Bot }) {
     setWorking(skill.name);
     setError("");
     try {
-      await api(`/api/bots/${bot.id}/skills/${encodeURIComponent(skill.name)}`, {
+      await api(skill.origin === "library" ? `/api/skills-library/${encodeURIComponent(skill.name)}` : `/api/bots/${bot.id}/skills/${encodeURIComponent(skill.name)}`, {
         method: "PATCH",
         body: JSON.stringify({ enabled: true }),
       });
@@ -210,14 +212,17 @@ export function SkillsSection({ bot }: { bot: Bot }) {
 
   const remove = async (skill: ManagedSkill) => {
     if (skill.origin === "library") {
+      if (assignmentBusy.current) return;
       if (!window.confirm(`Unassign “${skill.name}” from this bot? The skill stays in the library.`)) return;
+      assignmentBusy.current = true;
       setWorking(skill.name);
       setError("");
       try {
-        await putAssignments(libraryAssignments().filter((name) => name !== skill.name));
+        await putAssignments(skill.name, true);
       } catch (cause) {
         setError(cause instanceof Error ? cause.message : "Could not unassign that skill.");
       } finally {
+        assignmentBusy.current = false;
         setWorking("");
       }
       return;
@@ -287,6 +292,7 @@ export function SkillsSection({ bot }: { bot: Bot }) {
                 <select
                   aria-label="Add a skill from the library"
                   value={addFromLibrary}
+                  disabled={Boolean(working)}
                   onChange={(e) => setAddFromLibrary(e.target.value)}
                   className={inputCls + " truncate"}
                 >
@@ -297,7 +303,7 @@ export function SkillsSection({ bot }: { bot: Bot }) {
                 </select>
                 <button
                   type="button"
-                  disabled={!addFromLibrary || working === addFromLibrary}
+                  disabled={!addFromLibrary || Boolean(working)}
                   onClick={() => void addToBot()}
                   className="shrink-0 rounded-lg bg-control px-3 py-2 text-[13px] text-ink hover:bg-raised-hover disabled:opacity-50"
                 >
@@ -363,13 +369,13 @@ export function SkillsSection({ bot }: { bot: Bot }) {
                   <Switch
                     checked={skill.enabled}
                     aria-label={`${skill.enabled ? "Disable" : "Enable"} ${skill.name}`}
-                    disabled={working === skill.name}
+                    disabled={Boolean(working)}
                     onClick={() => void toggle(skill)}
                   />
                   <button
                     aria-label={`Remove ${skill.name}`}
                     title="Remove skill"
-                    disabled={working === skill.name}
+                    disabled={Boolean(working)}
                     onClick={() => void remove(skill)}
                     className="flex size-8 shrink-0 items-center justify-center rounded-md text-ink-secondary hover:bg-danger/10 hover:text-danger disabled:opacity-40"
                   >
