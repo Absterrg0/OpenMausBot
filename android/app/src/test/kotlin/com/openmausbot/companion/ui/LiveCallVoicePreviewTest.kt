@@ -108,6 +108,10 @@ class LiveCallVoicePreviewTest {
 
         compose.runOnIdle { liveCalls.start(fixture.id, fixture.threadId, fixture.name, MicrophoneAccess { it(true) }) }
         compose.waitUntil(10_000) { compose.runOnIdle { liveCalls.state.value.phase } == LiveCallPhase.LIVE }
+        // The manager's transition can precede collectAsState and recomposition.
+        compose.waitUntil(5_000) {
+            compose.onAllNodesWithText(LiveCallRules.PREVIEW_DURING_CALL).fetchSemanticsNodes().isNotEmpty()
+        }
         compose.onNodeWithText(LiveCallRules.PREVIEW_DURING_CALL).assertExists()
         compose.onNodeWithText("Preview voice").assertIsNotEnabled()
         // The tap, through the row's click action (see above on scrolling),
