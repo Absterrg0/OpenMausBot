@@ -1266,18 +1266,32 @@ describe.sequential("Composio Sessions", () => {
     linkedAccounts = [];
     try {
       const before = calls.length;
-      const [first, second, other] = await Promise.all([
+      // The same key and toolkit, but another Composio user's Session.
+      const elsewhere: AppConfig = {
+        composio: { apiKey: "ak_test", userId: "openmausbot_elsewhere", sessionId: "trs_elsewhere" },
+      };
+      const [first, second, other, theirs] = await Promise.all([
         authorizeService(cfg, "googledrive", "work"),
         authorizeService(cfg, "googledrive", "Work"),
         authorizeService(cfg, "googledrive", "personal"),
+        authorizeService(elsewhere, "googledrive", "work"),
       ]);
       expect(second).toBe(first);
       expect(other).not.toBe(first);
-      // One link for "work" and one for "personal"; nothing was replaced.
-      expect(links(before)).toBe(2);
+      expect(theirs).not.toBe(first);
+      // One link each for "work", "personal" and the other Session's "work";
+      // nothing was replaced.
+      expect(links(before)).toBe(3);
       expect(calls.slice(before).some((call) => call.method === "DELETE")).toBe(false);
       // A later request is a retry in its own right.
-      accountStatusNow = { ca_linked_1: "INITIATED", ca_linked_2: "INITIATED" };
+      linkedAccounts = [{
+        id: "ca_first",
+        alias: "work",
+        toolkit: { slug: "googledrive" },
+        status: "INITIATED",
+        updated_at: "2026-09-01T17:00:00Z",
+      }];
+      accountStatusNow = { ca_first: "INITIATED" };
       const later = calls.length;
       await authorizeService(cfg, "googledrive", "work");
       expect(links(later)).toBe(1);

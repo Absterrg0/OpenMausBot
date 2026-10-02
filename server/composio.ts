@@ -1229,10 +1229,11 @@ export async function removeAccount(cfg: AppConfig, slug: string, accountId: str
   return { removed: 1 };
 }
 
-/** Auth links being minted right now, by backend, toolkit and alias. A
- * request replaces the unfinished attempt left by an earlier one, so two that
- * overlap must share one link: the second would otherwise remove the account
- * the first has just created and leave its caller holding a dead link. */
+/** Auth links being minted right now, by backend, Composio user and Session,
+ * toolkit and alias. A request replaces the unfinished attempt left by an
+ * earlier one, so two that overlap must share one link: the second would
+ * otherwise remove the account the first has just created and leave its
+ * caller holding a dead link. */
 const authorizationsInFlight = new Map<string, Promise<{ url: string }>>();
 
 /** Mint a browser auth link for one service. Returns { url } or throws. */
@@ -1242,7 +1243,15 @@ export async function authorizeService(cfg: AppConfig, slug: string, requestedAl
   const mode = connectionMode(cfg);
   const unavailable = managedConnectorUnavailableReason(mode, toolkit);
   if (unavailable) throw inputError(unavailable, 409);
-  const key = JSON.stringify([connectorToolsIdentity(cfg), toolkit, alias?.toLowerCase() ?? ""]);
+  // A settings change can swap the Session while a request is in flight; a
+  // link minted for the old one is not the new one's to hand out.
+  const key = JSON.stringify([
+    connectorToolsIdentity(cfg),
+    cfg.composio?.userId ?? "",
+    cfg.composio?.sessionId ?? "",
+    toolkit,
+    alias?.toLowerCase() ?? "",
+  ]);
   const inFlight = authorizationsInFlight.get(key);
   if (inFlight) return inFlight;
   const minted = mintAuthLink(cfg, toolkit, alias).finally(() => {
@@ -1301,6 +1310,10 @@ async function mintAuthLink(cfg: AppConfig, toolkit: string, alias: string | und
     // The list is already a moment old. A sign-in finished in another tab
     // since then makes this a connected account, which must not be removed:
     // read it again and only replace an attempt that is still unfinished.
+    // Composio's delete takes no status condition, so this narrows the gap
+    // to the one request between the read and the delete; it does not close
+    // it. Clearing the alias instead would leave the old link live, and a
+    // sign-in finished there would connect an account with no alias.
     const path = `${apiBase()}/connected_accounts/${encodeURIComponent(account.id!)}`;
     const current = await fetch(path, { headers: projectHeaders(apiKey), signal: AbortSignal.timeout(15_000) });
     if (current.status === 404) continue;
