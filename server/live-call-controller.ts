@@ -497,7 +497,7 @@ export class LiveCallController {
   // ── voice → bot ──────────────────────────────────────────────────────
 
   private async delegate(call: Call, id: string, offsetMs: number): Promise<void> {
-    if (call.state.status === "ended") return;
+    if (call.state.status !== "live") return;
     const heard = call.transcript.takeRequestParts(offsetMs);
     const said = heard.text;
     if (call.approval && !call.approval.submitted) {
@@ -560,6 +560,7 @@ export class LiveCallController {
   /** `said`: the person's words; `heard`: everything heard, echo included
    * (asking again only makes sense when something was heard at all). */
   private async decide(call: Call, said: string, delegationId: string | null, heard: string = said): Promise<void> {
+    if (call.state.status !== "live") return;
     const open = call.approval;
     if (!open || open.submitted) return;
     // Live's rule: hedges ("okay…", "sure") never decide on an open microphone

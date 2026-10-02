@@ -138,6 +138,24 @@ describe("LiveCallController lifecycle", () => {
     await expect(second).resolves.toMatchObject({ status: "ended", endReason: "hung-up" });
   });
 
+  it.each(["request", "approval"])("does not dispatch a settled spoken %s after hang-up", async (kind) => {
+    const t = setup();
+    const { call } = await t.start();
+    if (kind === "approval") {
+      t.message({ id: "approval", kind: "options", card: { title: "Approval needed", subtitle: "delete build", options: ["Allow", "Deny"], requestId: "r1", tool: "Bash" } });
+      await vi.advanceTimersByTimeAsync(0);
+    }
+    t.socket().receive({ type: "session.input_transcript.delta", delta: kind === "approval" ? "yes" : "delete build", start_ms: 100, end_ms: 200 });
+    t.socket().receive({ type: "session.delegation.created", offset_ms: 250, delegation: { id: "late", target: "client" } });
+    const ending = t.controller.end(call.callId);
+    await vi.advanceTimersByTimeAsync(CONSENT_SETTLE_MS + 1);
+    expect(t.controller.current()?.status).toBe("ending");
+    expect(t.deps.send).not.toHaveBeenCalled();
+    expect(t.deps.respond).not.toHaveBeenCalled();
+    t.socket().receive({ type: "session.closed", reason: "close_requested" });
+    await ending;
+  });
+
   it("ends with sideband-lost when attach never opens", async () => {
     const t = setup();
     await t.controller.start({ auth: owner, ...BOT, client: "desktop", sdp: "a" });
