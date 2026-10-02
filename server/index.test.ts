@@ -10996,9 +10996,21 @@ describe("harness HTTP API", () => {
       const poll = () => api("GET", `${card(work, "status")}?threadId=${bot.threadId}`);
       expect((await poll()).body.connected).toBe(false);
       expect((await api("POST", card(work, "resume"), { threadId: bot.threadId })).status).toBe(409);
+      // An active account that came back without the alias is not proof that
+      // this card's account connected: keep waiting rather than guess.
+      const unlabelled = { id: "ca_unlabelled", status: "ACTIVE", toolkit: { slug: "gmail" } };
+      connectorAccounts.push(unlabelled);
+      expect((await poll()).body).toEqual({ connected: false, pending: false, status: "not_connected" });
+      connectorAccounts.splice(connectorAccounts.indexOf(unlabelled), 1);
+      // A lapsed attempt keeps its alias on show beside the retry that
+      // replaced it: the card follows the retry, not the dead record.
+      const lapsed = { id: "ca_lapsed", alias: "work", status: "EXPIRED", toolkit: { slug: "gmail" } };
+      connectorAccounts.push(lapsed);
+      expect((await poll()).body).toMatchObject({ connected: false, status: "EXPIRED" });
       const pending = { id: "ca_work", alias: "Work", status: "INITIATED", toolkit: { slug: "gmail" } };
       connectorAccounts.push(pending);
       expect((await poll()).body).toMatchObject({ connected: false, pending: true });
+      connectorAccounts.splice(connectorAccounts.indexOf(lapsed), 1);
       pending.status = "FAILED";
       expect((await poll()).body).toMatchObject({ connected: false, status: "FAILED" });
       pending.status = "ACTIVE";

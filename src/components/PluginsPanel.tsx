@@ -80,6 +80,17 @@ export function preloadConnectedApps(force = false): Promise<ConnectorInventory>
   return connectorStatusRequest;
 }
 
+/** What one connected-account row says: the alias the account was connected
+ * under leads, with the generated id kept beside its status. An account with
+ * no alias has only its id to go by. */
+export function connectedAccountRow(account: { id: string; alias?: string; status: string }) {
+  const status = account.status.toLowerCase();
+  return {
+    label: account.alias || account.id,
+    detail: account.alias ? `${account.id} · ${status}` : status,
+  };
+}
+
 export function disconnectAccountConfirmation(
   service: string,
   account: { id: string; alias?: string },
@@ -851,15 +862,16 @@ export function PluginsPanel() {
                     <div className="ml-14 mt-3 space-y-2">
                       {accounts.map((account) => {
                         const active = /^active$/i.test(account.status);
+                        const row = connectedAccountRow(account);
                         return (
                           <div key={account.id} className="flex items-center gap-2 rounded-lg bg-raised/45 px-3 py-2">
                             <div className="min-w-0 flex-1">
                               <div className="flex items-center gap-1.5 text-[12.5px] font-medium text-ink">
                                 {active && <Check size={13} className="shrink-0 text-success" />}
-                                <span className="truncate">{account.alias || account.id}</span>
+                                <span className="truncate">{row.label}</span>
                               </div>
                               <div className="mt-0.5 truncate text-[10.5px] text-ink-secondary">
-                                {account.alias ? `${account.id} · ` : ""}{account.status.toLowerCase()}
+                                {row.detail}
                               </div>
                             </div>
                             <button
@@ -871,7 +883,7 @@ export function PluginsPanel() {
                               }}
                               className="rounded-md px-2 py-1 text-[11px] text-ink-secondary transition-colors hover:bg-danger/10 hover:text-danger disabled:opacity-40"
                               aria-label={t("connectors.disconnectAria", {
-                                account: account.alias || account.id,
+                                account: row.label,
                                 service: card.label,
                               })}
                             >

@@ -135,19 +135,29 @@ interface ConnectorRequest {
   alias?: string;
 }
 
+function requestedAlias(row: { alias?: unknown; account?: unknown }): string {
+  return (typeof row.alias === "string" ? row.alias : typeof row.account === "string" ? row.account : "").trim();
+}
+
 function connectorAdds(args: unknown): ConnectorRequest[] {
   if (!args || typeof args !== "object" || Array.isArray(args)) return [];
   const toolkits = (args as { toolkits?: unknown }).toolkits;
   if (!Array.isArray(toolkits)) return [];
+  // A multi-account Session takes `{ name, action, alias }` items. A Session
+  // Composio did not grant multi-account to advertises plain slugs with no
+  // place for an alias, so an agent that names the account puts it beside
+  // the list. That alias labels every add in the call that carries none of
+  // its own; dropping it connects an account shown only by its id (#686).
+  const shared = requestedAlias(args as { alias?: unknown; account?: unknown });
   const seen = new Set<string>();
   const requests: ConnectorRequest[] = [];
   for (const item of toolkits) {
     if (typeof item === "string") {
       const slug = item.trim().toLowerCase();
-      const key = JSON.stringify([slug, ""]);
+      const key = JSON.stringify([slug, shared.toLowerCase()]);
       if (!seen.has(key)) {
         seen.add(key);
-        requests.push({ slug });
+        requests.push({ slug, ...(shared ? { alias: shared } : {}) });
       }
       continue;
     }
@@ -158,7 +168,7 @@ function connectorAdds(args: unknown): ConnectorRequest[] {
     const slug = typeof row.toolkit === "string" ? row.toolkit : row.name;
     if (typeof slug !== "string") continue;
     const normalized = slug.trim().toLowerCase();
-    const alias = (typeof row.alias === "string" ? row.alias : typeof row.account === "string" ? row.account : "").trim();
+    const alias = requestedAlias(row) || shared;
     const key = JSON.stringify([normalized, alias.toLowerCase()]);
     if (seen.has(key)) continue;
     seen.add(key);

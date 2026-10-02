@@ -4,6 +4,7 @@ import {
   botsMissingConnectedApps,
   botsWithLimitedServiceTools,
   hasUsableConnectedApps,
+  connectedAccountRow,
   connectedInventoryCopy,
   connectorActionLabel,
   connectorSetupNotice,
@@ -241,6 +242,18 @@ describe("connected-app status races", () => {
     expect(disconnectAccountConfirmation("GitHub", { id: "ca_personal" })).toContain(
       "Disconnect “ca_personal” from GitHub? Only this GitHub account will be revoked.",
     );
+  });
+
+  it("leads an account row with its alias and keeps the generated id beside the status", () => {
+    expect(connectedAccountRow({ id: "ca_NhYGETXHiETn", alias: "work", status: "ACTIVE" })).toEqual({
+      label: "work",
+      detail: "ca_NhYGETXHiETn · active",
+    });
+    // No alias reached the inventory: the id is all there is to show.
+    expect(connectedAccountRow({ id: "ca_NhYGETXHiETn", status: "ACTIVE" })).toEqual({
+      label: "ca_NhYGETXHiETn",
+      detail: "active",
+    });
   });
 
   it("recognizes the existing-account alias guard and ignores unrelated errors", () => {

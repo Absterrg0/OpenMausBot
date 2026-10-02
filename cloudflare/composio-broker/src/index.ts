@@ -96,6 +96,11 @@ const MULTI_ACCOUNT_CONFIG = {
 // accounts per page nobody real is near the ceiling.
 const MAX_CONNECTED_ACCOUNT_PAGES = 20;
 const ACCOUNT_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
+/** An auth link was minted and never completed: nothing is connected yet. */
+const UNFINISHED_ACCOUNT = /^(initiated|initializing|pending)$/i;
+/** An attempt that ended without connecting. Composio keeps the record and
+ * its alias on show, but no longer reserves that alias. */
+const LAPSED_ACCOUNT = /^(expired|failed)$/i;
 /** Composio's catalog cursor is base64 of the page and limit. */
 const CATALOG_CURSOR = /^[A-Za-z0-9+/_=-]{1,256}$/;
 const printableAliasSchema = z.string().min(1).max(64).refine((value) => {
@@ -485,15 +490,37 @@ async function authorize(
   // work, with the alias guardrails degrading to first-account behavior.
   const accounts = await listConnectedAccounts(env, installation.composio_user_id, [slug]).catch(() => []);
   const serviceAccounts = accounts.filter((account) => account.toolkit?.slug?.toLowerCase() === slug);
-  const usableAccounts = serviceAccounts.filter((account) => /^(active|initiated|initializing|pending)$/i.test(account.status ?? ""));
+  // Only a connected account owns its alias. Composio reserves an alias from
+  // the moment its auth link is minted and frees it when that link expires,
+  // so an attempt the user never finished is this same connection, retried.
+  // An unfinished attempt holds no credentials and is replaced; a lapsed one
+  // is left as is.
+  const sameAlias = alias
+    ? serviceAccounts.filter((account) => account.alias?.trim().toLowerCase() === alias.toLowerCase())
+    : [];
+  const retried = sameAlias.filter((account) => UNFINISHED_ACCOUNT.test(account.status ?? ""));
+  if (
+    retried.some((account) => !account.id || !ACCOUNT_ID.test(account.id))
+    || sameAlias.some((account) => !retried.includes(account) && !LAPSED_ACCOUNT.test(account.status ?? ""))
+  ) {
+    return json({ error: `Account alias "${alias}" is already in use for ${slug}` }, 409);
+  }
+  const usableAccounts = serviceAccounts.filter((account) =>
+    !retried.includes(account) && /^(active|initiated|initializing|pending)$/i.test(account.status ?? "")
+  );
   if (usableAccounts.length >= MULTI_ACCOUNT_CONFIG.max_accounts_per_toolkit) {
     return json({ error: `${slug} already has the maximum of ${MULTI_ACCOUNT_CONFIG.max_accounts_per_toolkit} accounts` }, 409);
   }
   if (usableAccounts.length > 0 && !alias) {
     return json({ error: "Add an account alias so the existing connection is not replaced" }, 400);
   }
-  if (alias && serviceAccounts.some((account) => account.alias?.trim().toLowerCase() === alias.toLowerCase())) {
-    return json({ error: `Account alias "${alias}" is already in use for ${slug}` }, 409);
+  for (const account of retried) {
+    const removed = await composioRequest(
+      env,
+      `/connected_accounts/${encodeURIComponent(account.id!)}?revoke_on_delete=true`,
+      { method: "DELETE" },
+    );
+    if (!removed.ok) return json({ error: await upstreamError(removed, "Authorization unavailable") }, 502);
   }
   const linkRequest: AccountLinkRequest = { toolkit: slug };
   if (alias) linkRequest.alias = alias;

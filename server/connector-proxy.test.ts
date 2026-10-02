@@ -125,6 +125,47 @@ describe("connector MCP bridge", () => {
     });
   });
 
+  it("keeps an alias the agent supplies beside plain toolkit slugs", async () => {
+    let received: any = null;
+    const harness = await listen((request, response) => {
+      let body = "";
+      request.on("data", (chunk) => { body += chunk; });
+      request.on("end", () => {
+        received = JSON.parse(body);
+        response.writeHead(200, { "content-type": "application/json" });
+        response.end("{}");
+      });
+    });
+    const lines = start({
+      OMB_HARNESS_URL: harness,
+      OMB_CONNECTOR_TOKEN: "bridge-secret",
+      OMB_BOT_ID: "bot-1",
+      OMB_THREAD_ID: "thread-1",
+    });
+    child!.stdin.write(`${JSON.stringify({
+      jsonrpc: "2.0",
+      id: 9,
+      method: "tools/call",
+      params: {
+        name: "COMPOSIO_MANAGE_CONNECTIONS",
+        arguments: {
+          // Composio documents `toolkits` as slugs; the alias sits beside it.
+          toolkits: ["GoogleDrive", { toolkit: "gmail" }, { toolkit: "gmail", alias: "personal" }, "googledrive"],
+          alias: " work ",
+        },
+      },
+    })}\n`);
+    const reply = await nextJson(lines);
+    expect(reply.id).toBe(9);
+    expect(reply.result.content[0].text).toMatch(/card for googledrive \(work\), gmail \(work\), gmail \(personal\)\./i);
+    expect(received.items).toEqual([
+      { slug: "googledrive", alias: "work" },
+      { slug: "gmail", alias: "work" },
+      // an item's own alias wins over the call-level one
+      { slug: "gmail", alias: "personal" },
+    ]);
+  });
+
   it("answers initialize locally so a missing or failing upstream cannot fail the MCP handshake", async () => {
     const lines = start({});
     child!.stdin.write(`${JSON.stringify({
