@@ -8457,11 +8457,13 @@ describe("harness HTTP API", () => {
   });
 
   it("hands out a Local VM's viewer only to the lease holding the computer, once the VM is ready", async () => {
+    const previous = (await api("GET", "/api/config")).body.localVm;
     const bot = (await api("POST", "/api/bots")).body.bot;
     const lease = "phone-lease-0123456789";
     const join = (controlLeaseId = lease) =>
       api("POST", `/api/bots/${bot.id}/local-computer/join?controlLeaseId=${controlLeaseId}`, {});
     try {
+      expect((await api("PATCH", "/api/config", { localVm: { ...previous, mode: "per-bot" } })).status).toBe(200);
       expect((await api("POST", `/api/bots/${bot.id}/local-computer/join`, {})).status).toBe(400);
       const unheld = await join();
       expect(unheld.status).toBe(409);
@@ -8490,11 +8492,13 @@ describe("harness HTTP API", () => {
       expect((await api("POST", "/api/bots/no-such-bot/local-computer/join", {})).status).toBe(404);
     } finally {
       await api("POST", `/api/bots/${bot.id}/computer/control`, { action: "release" }).catch(() => undefined);
+      await api("PATCH", "/api/config", { localVm: previous }).catch(() => undefined);
       await api("DELETE", `/api/bots/${bot.id}`).catch(() => undefined);
     }
   });
 
   it("lets a phone paired directly with Full access ask for the Local VM desktop under its lease, and nobody else", async () => {
+    const previous = (await api("GET", "/api/config")).body.localVm;
     const bot = (await api("POST", "/api/bots")).body.bot;
     const lease = "phone-lease-0123456789";
     const owner = await asPairedPerson("Owner's phone");
@@ -8511,8 +8515,10 @@ describe("harness HTTP API", () => {
       return { status: res.status, body: await res.json() as any };
     };
     const join = `/api/bots/${bot.id}/local-computer/join?controlLeaseId=${lease}`;
-    const proxy = `/api/desktop-viewer/local/shared?botId=${bot.id}&controlLeaseId=${lease}`;
+    const target = `local/bot-${createHash("sha256").update(bot.id).digest("hex")}`;
+    const proxy = `/api/desktop-viewer/${target}?botId=${bot.id}&controlLeaseId=${lease}`;
     try {
+      expect((await api("PATCH", "/api/config", { localVm: { ...previous, mode: "per-bot" } })).status).toBe(200);
       // Chat-only: no computer access at all, on every step of the way.
       expect((await asChatOnly("POST", `/api/bots/${bot.id}/computer/control`, { action: "take", controlLeaseId: lease })).status).toBe(403);
       expect((await asChatOnly("POST", join, {})).status).toBe(403);
@@ -8540,7 +8546,7 @@ describe("harness HTTP API", () => {
       expect(boundProxy.status).toBe(409);
       expect(boundProxy.body.error).not.toMatch(/take control/i);
       // Another bot's lease, or a lease that is not this one, holds nothing here.
-      expect((await owner.call("GET", `/api/desktop-viewer/local/shared?botId=${bot.id}&controlLeaseId=phone-lease-9876543210`)).status).toBe(409);
+      expect((await owner.call("GET", `/api/desktop-viewer/${target}?botId=${bot.id}&controlLeaseId=phone-lease-9876543210`)).status).toBe(409);
 
       // Hand back: closing the viewer is allowed and idempotent, and the proxy refuses again.
       expect((await owner.call("POST", `/api/bots/${bot.id}/computer/viewer-close`, {})).body).toEqual({ closed: false });
@@ -8548,23 +8554,24 @@ describe("harness HTTP API", () => {
       expect((await owner.call("GET", proxy)).status).toBe(409);
     } finally {
       await api("POST", `/api/bots/${bot.id}/computer/control`, { action: "release" }).catch(() => undefined);
+      await api("PATCH", "/api/config", { localVm: previous }).catch(() => undefined);
       await api("DELETE", `/api/bots/${bot.id}`).catch(() => undefined);
     }
   });
 
-  it("refuses Local VM phone joins in pool mode for direct and companion callers", async () => {
+  it.each(["shared", "pool"])("refuses Local VM phone joins in %s mode for direct and companion callers", async testedMode => {
     const { mode, maxInstances } = (await api("GET", "/api/config")).body.localVm;
     const previous = { mode, maxInstances };
     const bot = (await api("POST", "/api/bots")).body.bot;
     const owner = await asPairedPerson("Pool viewer phone");
     const lease = "phone-pool-lease-0123456789";
     try {
-      expect((await api("PATCH", "/api/config", { localVm: { ...previous, mode: "pool" } })).status).toBe(200);
+      expect((await api("PATCH", "/api/config", { localVm: { ...previous, mode: testedMode } })).status).toBe(200);
       expect((await owner.call("POST", `/api/bots/${bot.id}/computer/control`, { action: "take", controlLeaseId: lease })).body.owned).toBe(true);
       const join = `/api/bots/${bot.id}/local-computer/join?controlLeaseId=${lease}`;
       for (const response of [await owner.call("POST", join, {}), await api("POST", join, {})]) {
         expect(response.status).toBe(409);
-        expect(response.body.error).toContain("pooled Local VMs");
+        expect(response.body.error).toContain("per-bot Local VM");
         expect(response.body.joinUrl).toBeUndefined();
         expect(response.body.socketPath).toBeUndefined();
         expect(response.body.password).toBeUndefined();
