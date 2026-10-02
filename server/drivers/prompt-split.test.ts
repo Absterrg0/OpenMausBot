@@ -78,6 +78,19 @@ describe("prompt-split receipts", () => {
     }
     deletePromptSplitReceipt(scope, key);
   });
+
+  it("retains the context high-water mark separately from the final report", () => {
+    const scope = "test-driver";
+    const key = randomUUID();
+    const receipt = { ...promptSplitFingerprints("stable rules", "memory"), lastUsed: 75000, peakUsed: 100000 };
+    writePromptSplitReceipt(scope, key, receipt);
+    expect(readPromptSplitReceipt(scope, key)).toEqual(receipt);
+    for (const invalid of [0, -4096, "100000", null, undefined]) {
+      writePromptSplitReceipt(scope, key, { ...receipt, peakUsed: invalid } as unknown as PromptSplitReceipt);
+      expect(readPromptSplitReceipt(scope, key)?.peakUsed).toBeUndefined();
+    }
+    deletePromptSplitReceipt(scope, key);
+  });
 });
 
 describe("splitSessionPrompt", () => {

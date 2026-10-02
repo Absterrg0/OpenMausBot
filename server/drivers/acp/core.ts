@@ -1707,6 +1707,7 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
         session.current = current;
 
         (async () => {
+          let pendingSplitReceipt: { key: string; receipt: PromptSplitReceipt; previous: PromptSplitReceipt | null } | null = null;
           try {
             // The handshake is paid once per process, not once per turn. It
             // is a function so the establishment retry below can pay it
@@ -1982,13 +1983,12 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
             // adapter call) keeps the legacy full-prompt shape.
             const halves = promptHalves(turn);
             let promptInput = promptTurn;
-            let pendingSplitReceipt: { key: string; receipt: PromptSplitReceipt; previous: PromptSplitReceipt | null } | null = null;
             if (halves.stable !== null) {
               const receiptKey = JSON.stringify([threadId, sessionId]);
               const previousReceipt = readPromptSplitReceipt(DRIVER_KIND, receiptKey);
-              // seed the peak from the last turn, so a compaction before this
-              // turn's first report still shows as a collapse
-              state.usagePeak = typeof previousReceipt?.lastUsed === "number" ? previousReceipt.lastUsed : null;
+              // Carry the high-water mark, not just the final report: several
+              // ordinary dips across turns can add up to a compaction.
+              state.usagePeak = previousReceipt?.peakUsed ?? previousReceipt?.lastUsed ?? null;
               const composed = splitSessionPrompt(
                 halves.stable,
                 halves.volatile,
@@ -2048,9 +2048,11 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
                 writePromptSplitReceipt(
                   DRIVER_KIND,
                   pendingSplitReceipt.key,
-                  lastUsed === undefined
-                    ? pendingSplitReceipt.receipt
-                    : { ...pendingSplitReceipt.receipt, lastUsed },
+                  {
+                    ...pendingSplitReceipt.receipt,
+                    ...(lastUsed === undefined ? {} : { lastUsed }),
+                    ...(state.usagePeak === null ? {} : { peakUsed: state.usagePeak }),
+                  },
                 );
               }
             }
@@ -2102,6 +2104,11 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
               settle(threadId, session, false, reason ?? "failed");
             }
           } catch (e) {
+            // A rejected prompt can still have compacted native history. Its
+            // old receipt must not suppress the next turn's standing rules.
+            if (pendingSplitReceipt && state.promptSent && state.usageCompacted) {
+              deletePromptSplitReceipt(DRIVER_KIND, pendingSplitReceipt.key);
+            }
             if (!state.settled) {
               const message = e instanceof Error ? e.message : String(e);
               const code = support.classifyError?.(e);

@@ -235,6 +235,7 @@ describe("ACP turns (fake CLI)", () => {
     delete process.env.FAKE_ACP_RPC_FAILURE_FILE;
     delete process.env.FAKE_ACP_RPC_FAILURE_METHOD;
     delete process.env.FAKE_ACP_RPC_FAILURE_AFTER_OUTPUT;
+    delete process.env.FAKE_ACP_RPC_FAILURE_AFTER_USAGE;
     delete process.env.FAKE_ACP_LOAD_ERROR;
     delete process.env.FAKE_ACP_ALLOW_ALWAYS;
     delete process.env.FAKE_ACP_PERMISSION_ANSWER;
@@ -432,7 +433,7 @@ describe("ACP turns (fake CLI)", () => {
     await create();
     const threadId = `t-acp-${name}-` + randomUUID();
     const usage = (...used: number[]) => writeFileSync(usageFile, JSON.stringify(used));
-    const send = async (text: string) => {
+    const send = async (text: string, ok = true) => {
       const { turnId } = await instance.adapter.sendTurn({
         threadId,
         text,
@@ -440,7 +441,7 @@ describe("ACP turns (fake CLI)", () => {
         systemStable: "Standing rules.",
         systemVolatile: "Memory: likes quiet hours.",
       });
-      await recorder.until((event) => event.type === "turn.completed" && event.turnId === turnId);
+      expect(await recorder.until((event) => event.type === "turn.completed" && event.turnId === turnId)).toMatchObject({ ok });
       return (JSON.parse(readFileSync(dump + ".prompt.json", "utf8")) as Array<{ type: string; text: string }>)[0]?.text;
     };
     return { threadId, usage, send };
@@ -479,6 +480,34 @@ describe("ACP turns (fake CLI)", () => {
     expect(await send("turn 3")).toBe("turn 3");
     usage();
     expect(await send("turn 4")).toBe(FULL + "\n\nturn 4");
+  });
+
+  it("detects a cumulative collapse against an earlier turn's high-water mark", async () => {
+    const { usage, send } = await usageThread("cumulative-collapse");
+    usage(100000, 75000);
+    expect(await send("turn 1")).toBe(FULL + "\n\nturn 1");
+    // Neither adjacent dip exceeds 40%, but the total fall from the peak does.
+    usage(50000);
+    expect(await send("turn 2")).toBe("turn 2");
+    usage();
+    expect(await send("turn 3")).toBe(FULL + "\n\nturn 3");
+    expect(await send("turn 4")).toBe("turn 4");
+  });
+
+  it.each([40000, 75000])("invalidates a rejected prompt's receipt only after compaction (usage: %s)", async (used) => {
+    const failureFile = join(scratch, "compaction-failure.json");
+    process.env.FAKE_ACP_RPC_FAILURE_FILE = failureFile;
+    process.env.FAKE_ACP_RPC_FAILURE_AFTER_USAGE = "1";
+    const { usage, send } = await usageThread("rejected-compaction");
+    usage(100000);
+    expect(await send("turn 1")).toBe(FULL + "\n\nturn 1");
+    usage(used);
+    writeFileSync(failureFile, JSON.stringify({ code: -32603, message: "Internal error after compaction" }));
+    expect(await send("turn 2", false)).toBe("turn 2");
+    unlinkSync(failureFile);
+    usage();
+    expect(await send("turn 3")).toBe(used < 60000 ? FULL + "\n\nturn 3" : "turn 3");
+    expect(await send("turn 4")).toBe("turn 4");
   });
 
   it("ignores a zero usage report", async () => {

@@ -79,6 +79,7 @@
 //   FAKE_ACP_RPC_FAILURE_METHOD  initialize, session/new or session/prompt (default).
 //   FAKE_ACP_RPC_FAILURE_GATE  hold the error until this file exists.
 //   FAKE_ACP_RPC_FAILURE_AFTER_OUTPUT  emit text + a tool result before failing.
+//   FAKE_ACP_RPC_FAILURE_AFTER_USAGE  emit scripted usage updates before failing.
 //   FAKE_ACP_LOAD_ERROR  JSON-RPC error object returned by session/load.
 //   FAKE_ACP_MODELS      comma-separated model ids. Enables the opencode-shaped
 //                        surface: session/new and session/load return
@@ -420,11 +421,24 @@ let agentsMcp: McpEntry | null = null;
 // the session this process established, for FAKE_ACP_REJECT_LIVE_LOAD_FILE
 let liveSession: string | null = null;
 let rpcFailure: unknown = null;
+function emitUsageUpdates(): void {
+  const usageFile = process.env.FAKE_ACP_USAGE_UPDATES_FILE;
+  if (usageFile && existsSync(usageFile)) {
+    try {
+      for (const used of JSON.parse(readFileSync(usageFile, "utf8")) as unknown[]) {
+        if (typeof used === "number") {
+          out({ jsonrpc: "2.0", method: "session/update", params: { update: { sessionUpdate: "usage_update", used, size: 200000 } } });
+        }
+      }
+    } catch {}
+  }
+}
 function failRpc(msg: { method: string; id: unknown }): boolean {
   if (msg.method !== (process.env.FAKE_ACP_RPC_FAILURE_METHOD ?? "session/prompt")) return false;
   const failureFile = process.env.FAKE_ACP_RPC_FAILURE_FILE;
   if (failureFile && existsSync(failureFile)) rpcFailure = JSON.parse(readFileSync(failureFile, "utf8"));
   if (!rpcFailure) return false;
+  if (msg.method === "session/prompt" && process.env.FAKE_ACP_RPC_FAILURE_AFTER_USAGE === "1") emitUsageUpdates();
   if (msg.method === "session/prompt" && process.env.FAKE_ACP_RPC_FAILURE_AFTER_OUTPUT === "1") playTurn();
   const fail = () => {
     recordMethod(`${msg.method}.error`);
@@ -805,16 +819,7 @@ function handle(msg: any) {
         return;
       }
       const complete = () => {
-        const usageFile = process.env.FAKE_ACP_USAGE_UPDATES_FILE;
-        if (usageFile && existsSync(usageFile)) {
-          try {
-            for (const used of JSON.parse(readFileSync(usageFile, "utf8")) as unknown[]) {
-              if (typeof used === "number") {
-                out({ jsonrpc: "2.0", method: "session/update", params: { update: { sessionUpdate: "usage_update", used, size: 200000 } } });
-              }
-            }
-          } catch {}
-        }
+        emitUsageUpdates();
         recordMethod("session/prompt.result");
         result(
           msg.id,

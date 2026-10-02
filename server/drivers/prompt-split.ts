@@ -63,6 +63,8 @@ export interface PromptSplitReceipt {
   /** Last reported context size, for compaction detection; absent on
    * receipts written before it existed. */
   lastUsed?: number;
+  /** Highest reported context size since the last detected compaction. */
+  peakUsed?: number;
 }
 
 const digest = (value: string) => createHash("sha256").update(value).digest("hex");
@@ -84,13 +86,14 @@ export function readPromptSplitReceipt(scope: string, key: string): PromptSplitR
   try {
     const raw = JSON.parse(readFileSync(receiptPath(scope, key), "utf8")) as unknown;
     if (raw && typeof raw === "object" && !Array.isArray(raw)) {
-      const record = raw as { stable?: unknown; volatile?: unknown; turnsSinceFull?: unknown; lastUsed?: unknown };
+      const record = raw as { stable?: unknown; volatile?: unknown; turnsSinceFull?: unknown; lastUsed?: unknown; peakUsed?: unknown };
       if (typeof record.stable === "string" && typeof record.volatile === "string") {
         return {
           stable: record.stable,
           volatile: record.volatile,
           ...(typeof record.turnsSinceFull === "number" ? { turnsSinceFull: record.turnsSinceFull } : {}),
           ...(typeof record.lastUsed === "number" && record.lastUsed > 0 ? { lastUsed: record.lastUsed } : {}),
+          ...(typeof record.peakUsed === "number" && record.peakUsed > 0 ? { peakUsed: record.peakUsed } : {}),
         };
       }
     }
