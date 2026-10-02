@@ -808,6 +808,7 @@ export function normalizeMathDelimiters(text: string, imageOffsets?: Map<number,
     .replace(/\$\$[ \t]*([^\n][\s\S]*?)[ \t]*\$\$/g, (_match, math: string) => `$$\n${math}\n$$`);
   normalized = escapeLiteralDollars(normalized);
   let shift = 0;
+  // oxlint-disable-next-line no-control-regex -- restore opaque code and image sentinels
   normalized = normalized.replace(/\u0000OMB_CODE_(\d+)\u0000/g, (token, index: string, at: number) => {
     const part = protectedCode[Number(index)];
     if (!part) return token;
