@@ -131,8 +131,13 @@ it("keeps live room questions fenced but allows task changes after their turn se
     await fixture.close();
     await removeTempDir(gates);
     const evidencePath = `${fixture.info.logPath}.room-question-tasks.json`;
-    writeFileSync(evidencePath, JSON.stringify(evidence, null, 2));
-    expect(existsSync(fixture.info.dataDir)).toBe(false);
-    console.info(JSON.stringify({ ...fixture.info, evidencePath, fixtureRemoved: true }));
+    try {
+      writeFileSync(evidencePath, JSON.stringify(evidence, null, 2));
+    } catch (error) {
+      console.warn("Could not write room-question test evidence", error);
+    }
+    const fixtureRemoved = !existsSync(fixture.info.dataDir);
+    expect.soft(fixtureRemoved).toBe(true);
+    console.info(JSON.stringify({ ...fixture.info, evidencePath, fixtureRemoved }));
   }
 }, 45_000);
