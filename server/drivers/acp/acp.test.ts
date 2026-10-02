@@ -256,6 +256,12 @@ describe("ACP turns (fake CLI)", () => {
     delete process.env.FAKE_ACP_TOOL_MS;
     delete process.env.FAKE_ACP_DUMP_PROMPT;
     delete process.env.OPENMAUS_ACP_PROMPT_IDLE_TIMEOUT_MS;
+    delete process.env.OMB_ACP_QUIET_NOTICE_MS;
+    delete process.env.OMB_ACP_QUIET_TICK_MS;
+    delete process.env.FAKE_ACP_QUIET_MS;
+    delete process.env.FAKE_ACP_QWEN_LOG;
+    delete process.env.FAKE_ACP_LOG_EVERY_MS;
+    delete process.env.QWEN_HOME;
     delete process.env.OMB_ACP_SESSION_IDLE_MS;
     delete process.env.OMB_ACP_SESSION_IDLE_MIN_MS;
     delete process.env.FAKE_ACP_LAUNCH_COUNT_FILE;
@@ -1281,6 +1287,39 @@ describe("ACP turns (fake CLI)", () => {
     expect(await recorder.until(e => e.type === "turn.completed")).toMatchObject({ ok: false, stopReason: "rpc_error" });
     expect(recorder.events.find(e => e.type === "runtime.error")?.message).toMatch(/no tool running/i);
     expect(instance.adapter.hasSession("t-stall-tool")).toBe(false);
+  });
+
+  // A quiet agent is not a black box: the person is told what it is doing.
+  it("tells the person what a quiet agent is doing, then finishes the turn", async () => {
+    process.env.OMB_ACP_QUIET_NOTICE_MS = "150";
+    process.env.OMB_ACP_QUIET_TICK_MS = "50";
+    process.env.FAKE_ACP_QUIET_MS = "700";
+    await create(GrokAgentDriver, "quiet-then-answer");
+    await instance.adapter.sendTurn({ threadId: "t-quiet", text: "go" });
+    expect(await recorder.until(e => e.type === "turn.completed")).toMatchObject({ ok: true });
+    const notices = recorder.events.filter(e => e.type === "runtime.notice") as Array<{ message: string }>;
+    expect(notices.length).toBeGreaterThanOrEqual(1);
+    expect(notices[0].message).toMatch(/^Grok (is waiting on its model|is busy|has sent nothing)/);
+    expect(recorder.events.some(e => e.type === "runtime.error")).toBe(false);
+  });
+
+  it("reads Qwen's debug log: a logged rate-limit retry is reported and keeps the turn alive", async () => {
+    process.env.QWEN_HOME = scratch;
+    process.env.OPENMAUS_ACP_PROMPT_IDLE_TIMEOUT_MS = "400";
+    process.env.OMB_ACP_QUIET_NOTICE_MS = "150";
+    process.env.OMB_ACP_QUIET_TICK_MS = "50";
+    process.env.FAKE_ACP_QUIET_MS = "1200";
+    process.env.FAKE_ACP_QWEN_LOG = JSON.stringify([
+      "[ERROR] [OPENAI_ERROR] OpenAI API Error: 429 rate limited {",
+      "[WARN] [RETRY] Attempt 1 failed with status 429. Retrying after explicit delay of 20000ms... {",
+    ]);
+    await create(QwenAgentDriver, "quiet-then-answer");
+    await instance.adapter.sendTurn({ threadId: "t-qwen-retry", text: "go" });
+    // silent on the wire three times longer than the idle limit, yet alive
+    expect(await recorder.until(e => e.type === "turn.completed")).toMatchObject({ ok: true });
+    const notices = (recorder.events.filter(e => e.type === "runtime.notice") as Array<{ message: string }>).map(n => n.message);
+    expect(notices.some(m => /Qwen hit a rate limit \(HTTP 429\) and is retrying \(attempt 2\)\. Next try in 20 s\./.test(m))).toBe(true);
+    expect(recorder.events.some(e => e.type === "runtime.error")).toBe(false);
   });
 
   // Qwen Code goes quiet for minutes while it compresses history, backs off
