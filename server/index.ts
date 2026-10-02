@@ -11209,6 +11209,18 @@ const tighteningRequests = new TighteningRequestService({
     return (record ? listBotSkills(record) : listSkills(botId)).filter((skill) => skill.enabled).map((skill) => skill.name);
   },
   disableSkill: (botId, name) => {
+    const record = store.bot(botId);
+    // Private skills win collisions, including disabled/private copies.
+    // Disabling one must not reveal a same-named shared skill instead.
+    if (skillsLibraryEnabled(cfg) && !listSkills(botId).some((skill) => skill.name === name)
+        && record?.assignedSkills?.includes(name)) {
+      try {
+        const saved = store.patchBot(botId, { assignedSkills: record.assignedSkills.filter((assigned) => assigned !== name) });
+        return saved ? { ok: true } : { ok: false, error: "that bot no longer exists" };
+      } catch (error) {
+        return { ok: false, error: error instanceof Error ? error.message : String(error) };
+      }
+    }
     const disabled = setSkillEnabled(botId, name, false);
     return typeof disabled === "object" && "error" in disabled ? { ok: false, error: disabled.error } : { ok: true };
   },

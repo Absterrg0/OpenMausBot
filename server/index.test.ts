@@ -10435,6 +10435,44 @@ describe("harness HTTP API", () => {
     }
   });
 
+  it("tightens an assigned library skill for one bot without disabling its teammates", async () => {
+    const name = `tightening-${randomUUID().slice(0, 8)}`;
+    const first = (await api("POST", "/api/bots", { name: "Tightening skill owner" })).body.bot;
+    const peer = (await api("POST", "/api/bots", { name: "Tightening skill peer" })).body.bot;
+    try {
+      expect((await api("PATCH", "/api/config", { features: { skillsLibrary: true } })).status).toBe(200);
+      const text = `---\nname: ${name}\ndescription: Synthetic tightening fixture.\n---\n\nReview the synthetic fixture only.\n`;
+      expect((await api("POST", "/api/skills-library", { text })).status).toBe(201);
+      expect((await api("PATCH", `/api/skills-library/${name}`, { enabled: true })).status).toBe(200);
+      for (const bot of [first, peer]) {
+        expect((await api("PUT", `/api/bots/${bot.id}/skills-library`, { skills: [name] })).status).toBe(200);
+      }
+      const token = await mintTestCapability(BASE, first.id, first.threadId);
+      const proposal = await fetch(`${BASE}/api/internal/tightening-requests`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+        body: JSON.stringify({ fromBotId: first.id, fromThreadId: first.threadId, intents: { skills: [name] }, reason: "No longer needed here" }),
+      });
+      expect(proposal.status).toBe(201);
+      const proposed = await proposal.json() as { requestId: string };
+      expect((await api("GET", `/api/bots/${first.id}/skills`)).body.assignedSkills).toEqual([name]);
+      const allowed = await api("POST", `/api/threads/${first.threadId}/respond`, { requestId: proposed.requestId, behavior: "allow" });
+      expect(allowed).toMatchObject({ status: 200, body: { ok: true, tighteningFields: ["skills"] } });
+      expect((await api("GET", `/api/bots/${first.id}/skills`)).body.assignedSkills).toEqual([]);
+      const other = await api("GET", `/api/bots/${peer.id}/skills`);
+      expect(other.body.assignedSkills).toEqual([name]);
+      expect(other.body.skills).toContainEqual(expect.objectContaining({ name, enabled: true, origin: "library" }));
+      expect((await api("GET", "/api/skills-library")).body.skills).toContainEqual(expect.objectContaining({ name, enabled: true }));
+      const persisted = JSON.parse(readFileSync(join(home, ".openmausbot", "bots.json"), "utf8"));
+      expect(persisted.find((bot: any) => bot.id === first.id).assignedSkills).toEqual([]);
+      expect(persisted.find((bot: any) => bot.id === peer.id).assignedSkills).toEqual([name]);
+      expect((await api("POST", `/api/threads/${first.threadId}/respond`, { requestId: proposed.requestId, behavior: "allow" })).status).toBe(200);
+    } finally {
+      await api("PATCH", "/api/config", { features: { skillsLibrary: false } });
+      for (const bot of [first, peer]) await api("DELETE", `/api/bots/${bot.id}`).catch(() => undefined);
+    }
+  });
+
   it("counts tightening cards against the shared proposal budget", async () => {
     const bot = (await api("POST", "/api/bots", { name: "Scout" })).body.bot;
     try {
