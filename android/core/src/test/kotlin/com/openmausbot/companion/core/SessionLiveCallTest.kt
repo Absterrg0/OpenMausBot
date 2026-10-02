@@ -50,6 +50,9 @@ class SessionLiveCallTest {
     @Volatile private var endBody = """{"error":"That call is not running."}"""
     /** Holds the answer to `POST /api/live/call/end` until the test lets it go. */
     @Volatile private var endGate: CountDownLatch? = null
+    @Volatile private var startGate: CountDownLatch? = null
+    private var startCode = 401
+    private var startBody = """{"error":"revoked"}"""
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private val http = OkHttpClient()
     private val running =
@@ -63,7 +66,10 @@ class SessionLiveCallTest {
                 requests.add(request)
                 return when (request.path) {
                     "/api/live/call" -> json(liveCallCode, liveCallBody)
-                    "/api/live/session" -> json(401, """{"error":"revoked"}""")
+                    "/api/live/session" -> {
+                        startGate?.await(5, TimeUnit.SECONDS)
+                        json(startCode, startBody)
+                    }
                     "/api/live/call/end" -> {
                         endGate?.await(5, TimeUnit.SECONDS)
                         json(endCode, endBody)
@@ -155,6 +161,39 @@ class SessionLiveCallTest {
             withTimeout(5_000) { session.status.first { it is Session.Status.Unauthorized } }
         } finally {
             session.disconnect()
+        }
+    }
+
+    @Test
+    fun aStartAnsweredAfterSwitchingComputersIsClosedOnItsOriginalComputer() = runBlocking<Unit> {
+        val other = MockWebServer()
+        val otherRequests = ConcurrentLinkedQueue<RecordedRequest>()
+        other.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                otherRequests.add(request)
+                return json(200, """{"call":null}""")
+            }
+        }
+        other.start()
+        val session = session(otherConnection = Connection("other", "Other", "127.0.0.1", other.port))
+        val gate = CountDownLatch(1).also { startGate = it }
+        startCode = 201
+        startBody = """{"call":$running,"transport":{"type":"webrtc","sdp":"answer"}}"""
+        try {
+            session.connect()
+            withTimeout(5_000) { session.status.first { it is Session.Status.Live } }
+            val pending = async { runCatching { session.startLiveCall("b1", "t1", "offer") } }
+            withTimeout(5_000) { while (requests.none { it.path == "/api/live/session" }) delay(10) }
+            session.switchComputer("other")
+            withTimeout(5_000) { session.connection.first { it?.id == "other" } }
+            gate.countDown()
+            assertEquals(true, pending.await().isFailure, "a previous computer's call must not become this one's call")
+            assertEquals(1, requests.count { it.path == "/api/live/call/end" })
+            assertEquals(0, otherRequests.count { it.path == "/api/live/call/end" })
+        } finally {
+            gate.countDown()
+            session.disconnect()
+            other.shutdown()
         }
     }
 
@@ -264,11 +303,12 @@ class SessionLiveCallTest {
         liveCallFn: suspend (CompanionClient) -> LiveCallState? = { it.liveCall() },
         /** What the stream carries after its hello. */
         frames: Flow<StreamFrame> = emptyFlow(),
+        otherConnection: Connection? = null,
     ): Session {
         val connection = Connection(id = "fixture", name = "Fixture", host = "127.0.0.1", port = server.port)
         val session = Session(
             scope = scope,
-            connectionStore = Store(connection),
+            connectionStore = Store(connection, otherConnection),
             tokenStore = Tokens(),
             onboardingStore = InMemoryOnboardingStore(),
             deviceNameProvider = { "Fixture phone" },
@@ -289,10 +329,13 @@ class SessionLiveCallTest {
         return session
     }
 
-    private class Store(var connection: Connection) : ConnectionStore {
+    private class Store(var connection: Connection, val other: Connection? = null) : ConnectionStore {
         override suspend fun load() = connection
         override suspend fun save(connection: Connection) { this.connection = connection }
         override suspend fun clear() = Unit
+        override suspend fun loadRegistry() = ConnectionRegistryRestore(
+            ConnectionRegistry(listOfNotNull(connection, other), connection.id), migratedLegacyConnection = false,
+        )
     }
 
     private class Tokens : TokenStore {

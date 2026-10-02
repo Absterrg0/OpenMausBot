@@ -15,8 +15,8 @@ import android.os.Looper
  * Where a Live call's audio goes and who owns it: MODE_IN_COMMUNICATION for
  * the call's lifetime, voice-communication audio focus (voice notes and
  * previews pause on it, as they already do for dictation), and the route.
- * A headset the person has on (wired, USB, Bluetooth, a hearing aid) always
- * takes the call, so the bot's replies are not played out loud to the room
+ * A headset the person has on (wired, USB, Bluetooth, a hearing aid) keeps
+ * the call off the loudspeaker, so replies are not played out loud to the room
  * while earbuds are in; the speaker setting only chooses between the
  * loudspeaker and the earpiece when no headset is connected. Behind an
  * interface so the manager's tests need no AudioManager. Needs
@@ -64,15 +64,17 @@ internal object LiveCallAudioRouting {
     )
 
     /**
-     * The headsets the system routes a call to by itself once the
-     * speakerphone is off. Below API 31, Bluetooth also needs SCO started by
-     * hand, which this route does not do.
+     * Connected outputs that keep private replies off the loudspeaker.
+     * ponytail: Below API 31 Bluetooth falls back to the earpiece; add SCO
+     * routing only after physical older-phone microphone/headset validation.
      */
-    private val SELF_ROUTED: List<Int> = listOf(
+    private val PRIVATE_OUTPUTS: List<Int> = listOf(
         AudioDeviceInfo.TYPE_HEARING_AID,
         AudioDeviceInfo.TYPE_WIRED_HEADSET,
         AudioDeviceInfo.TYPE_WIRED_HEADPHONES,
         AudioDeviceInfo.TYPE_USB_HEADSET,
+        AudioDeviceInfo.TYPE_BLUETOOTH_SCO,
+        AudioDeviceInfo.TYPE_BLUETOOTH_A2DP,
     )
 
     /**
@@ -88,10 +90,10 @@ internal object LiveCallAudioRouting {
 
     /**
      * API 26 to 30: whether to turn the speakerphone on. It stays off while a
-     * headset from [SELF_ROUTED] is among [outputs], because a forced
-     * speakerphone would override that headset.
+     * device from [PRIVATE_OUTPUTS] is among [outputs], including Bluetooth
+     * whose call route falls back to the earpiece on these older APIs.
      */
-    fun speakerphone(outputs: List<Int>, speaker: Boolean): Boolean = speaker && SELF_ROUTED.none { it in outputs }
+    fun speakerphone(outputs: List<Int>, speaker: Boolean): Boolean = speaker && PRIVATE_OUTPUTS.none { it in outputs }
 }
 
 internal class AndroidLiveCallAudioRoute(context: Context) : LiveCallAudioRoute {
@@ -153,12 +155,14 @@ internal class AndroidLiveCallAudioRoute(context: Context) : LiveCallAudioRoute 
     }
 
     override fun end() {
-        if (routing) audioManager.unregisterAudioDeviceCallback(deviceChanges)
-        routing = false
-        if (Build.VERSION.SDK_INT >= 31) audioManager.clearCommunicationDevice()
-        @Suppress("DEPRECATION")
-        audioManager.isSpeakerphoneOn = false
-        audioManager.mode = AudioManager.MODE_NORMAL
+        if (routing) {
+            audioManager.unregisterAudioDeviceCallback(deviceChanges)
+            routing = false
+            if (Build.VERSION.SDK_INT >= 31) audioManager.clearCommunicationDevice()
+            @Suppress("DEPRECATION")
+            audioManager.isSpeakerphoneOn = false
+            audioManager.mode = AudioManager.MODE_NORMAL
+        }
         focusRequest?.let(audioManager::abandonAudioFocusRequest)
         focusRequest = null
     }

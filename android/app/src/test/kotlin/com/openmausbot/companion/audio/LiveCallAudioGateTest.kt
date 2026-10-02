@@ -42,6 +42,17 @@ class LiveCallAudioGateTest {
         assertNull(shadowOf(audioManager).lastAudioFocusRequest, "nothing asked Android for the focus")
     }
 
+    @Test
+    fun endingWithoutAudioOwnershipDoesNotChangeAnotherCallsRoute() {
+        audioManager.mode = AudioManager.MODE_IN_CALL
+        @Suppress("DEPRECATION")
+        audioManager.isSpeakerphoneOn = true
+        AndroidLiveCallAudioRoute(context).end()
+        assertEquals(AudioManager.MODE_IN_CALL, audioManager.mode)
+        @Suppress("DEPRECATION")
+        assertEquals(true, audioManager.isSpeakerphoneOn)
+    }
+
     private fun idleLifecycle(): Lifecycle {
         val owner = object : LifecycleOwner {
             lateinit var registry: LifecycleRegistry

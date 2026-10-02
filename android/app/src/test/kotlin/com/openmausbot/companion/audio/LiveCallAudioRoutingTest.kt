@@ -80,14 +80,17 @@ class LiveCallAudioRoutingTest {
     }
 
     @Test
-    fun `below API 31 the speakerphone stays off while a plugged-in headset or a hearing aid is connected`() {
-        for (headset in listOf(TYPE_WIRED_HEADSET, TYPE_WIRED_HEADPHONES, TYPE_USB_HEADSET, TYPE_HEARING_AID)) {
+    fun `below API 31 connected headphones and hearing aids keep private replies off the loudspeaker`() {
+        for (headset in listOf(
+            TYPE_WIRED_HEADSET, TYPE_WIRED_HEADPHONES, TYPE_USB_HEADSET,
+            TYPE_HEARING_AID, TYPE_BLUETOOTH_SCO, TYPE_BLUETOOTH_A2DP,
+        )) {
             assertFalse(LiveCallAudioRouting.speakerphone(phone + headset, speaker = true), "headset type $headset")
         }
         assertTrue(LiveCallAudioRouting.speakerphone(phone, speaker = true))
         assertFalse(LiveCallAudioRouting.speakerphone(phone, speaker = false))
-        // Bluetooth below API 31 needs SCO started by hand, which the route does not do.
+        // Without SCO routing on these APIs, use the earpiece, never the loudspeaker.
         val bluetooth = listOf(TYPE_BLUETOOTH_SCO, TYPE_BLUETOOTH_A2DP)
-        assertTrue(LiveCallAudioRouting.speakerphone(phone + bluetooth, speaker = true))
+        assertFalse(LiveCallAudioRouting.speakerphone(phone + bluetooth, speaker = true))
     }
 }

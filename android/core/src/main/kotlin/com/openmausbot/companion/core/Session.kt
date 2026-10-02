@@ -1597,7 +1597,14 @@ class Session(
      * over a bar that has its own place for errors.
      */
     suspend fun startLiveCall(botId: String, threadId: String, sdp: String): LiveCallStart =
-        liveCallRequest { it.startLiveCall(botId, threadId, sdp) }
+        liveCallRequest { source ->
+            val answer = source.startLiveCall(botId, threadId, sdp)
+            if (_connection.value?.id != source.connection.id) {
+                if (answer is LiveCallStart.Started) runCatching { source.endLiveCall(answer.call.callId) }
+                throw APIError.Transport("The computer changed while the call was starting.")
+            }
+            answer
+        }
 
     /**
      * Hang up on the computer — this phone's own call, or another device's

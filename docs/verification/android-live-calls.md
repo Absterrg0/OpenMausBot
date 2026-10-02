@@ -67,6 +67,12 @@ pending WebRTC wait instead of touching a disposed peer.
 `audio/WebRtcLiveCallTransport.kt` imports `org.webrtc`, so the JVM suite
 never loads the native library.
 
+On API 26–30, connected Bluetooth keeps the loudspeaker off, but this app
+does not start a Bluetooth SCO call route: call audio falls back to the
+earpiece. Direct Bluetooth call routing uses the communication-device API
+on API 31 and later. The unit route checks do not validate a physical phone's
+microphone, earpiece, or headset audio.
+
 ## Emulator smoke against the fixture
 
 Three terminals on the host computer, from the repository root:
