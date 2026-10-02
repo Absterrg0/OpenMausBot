@@ -2194,7 +2194,12 @@ final class Session: ObservableObject {
     func startLiveCall(botId: String, threadId: String, sdp: String) async throws -> LiveCallStart {
         guard let client else { throw APIError.transport("This computer is offline.") }
         do {
-            return try await client.startLiveCall(botId: botId, threadId: threadId, sdp: sdp)
+            let answer = try await client.startLiveCall(botId: botId, threadId: threadId, sdp: sdp)
+            guard self.client?.connection.id == client.connection.id else {
+                _ = try? await Task { try await client.endLiveCall(callId: answer.call.callId) }.value
+                throw APIError.transport("The computer changed while the call was starting.")
+            }
+            return answer
         } catch let error as APIError where error.isUnauthorized {
             // A computer this phone just left does not speak for the next one.
             if self.client?.connection.id == client.connection.id { status = .unauthorized }

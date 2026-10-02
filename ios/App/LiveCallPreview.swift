@@ -204,7 +204,10 @@ final class PreviewLiveCallMedia: LiveCallMedia {
 
     func setMuted(_ muted: Bool) { self.muted = muted }
     func setSpeaker(_ speaker: Bool) {}
-    func sendClose() { closeSent = true }
+    func sendClose() {
+        assert(muted, "Hang-up must mute the microphone before waiting for session.close.")
+        closeSent = true
+    }
     func close() { emit.finish() }
 }
 

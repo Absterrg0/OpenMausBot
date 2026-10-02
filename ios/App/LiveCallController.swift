@@ -320,6 +320,7 @@ final class LiveCallController: ObservableObject {
             return
         }
         self.media = nil
+        media.setMuted(true)
         mediaTask?.cancel()
         mediaTask = nil
         if sendClose {
