@@ -700,42 +700,12 @@ function Spoiler({ children }: { children?: ReactNode }) {
 
 const NO_MENTION_PEERS: readonly MentionPeer[] = [];
 
-// A markdown image resolves its attachment by source offset, so a message
-// holding one must reach the parser byte-for-byte as written.
+// A markdown image resolves its attachment by its original source offset.
 const MARKDOWN_IMAGE = "![";
-
-/** Replace CommonMark fenced code blocks with opaque tokens while text is normalized. */
-function protectFencedCode(text: string, protect: (value: string) => string): string {
-  const opener =
-    /(^|\r?\n)((?: {0,3}>[ \t]?)* {0,3})(?:(`{3,})([^`\r\n]*)|(~{3,})([^\r\n]*))(?:\r?\n|$)/g;
-  let cursor = 0;
-  let tokenized = "";
-  let match: RegExpExecArray | null;
-
-  while ((match = opener.exec(text)) !== null) {
-    const fence = match[3] ?? match[5];
-    const fenceCharacter = fence[0];
-    const closer = new RegExp(
-      `(^|\\r?\\n)(?: {0,3}>[ \\t]?)* {0,3}${fenceCharacter}{${fence.length},}[ \\t]*(?=\\r?\\n|$)`,
-      "g",
-    );
-    closer.lastIndex = opener.lastIndex;
-    const closingMatch = closer.exec(text);
-    const end = closingMatch === null
-      ? text.length
-      : closingMatch.index + closingMatch[0].length;
-    tokenized += text.slice(cursor, match.index);
-    tokenized += protect(text.slice(match.index, end));
-    cursor = end;
-    opener.lastIndex = end;
-  }
-
-  return tokenized + text.slice(cursor);
-}
 
 // A currency sign glued to its code and followed by an amount ("R$ 120",
 // "US$5") is money, never a math delimiter.
-const CURRENCY_DOLLAR = /(?<![\p{L}\p{N}])(?:R|US|AU|A|CA|C|NZ|HK|SG|S|MX|NT|BZ|Z)\$(?=[ \t\u00a0]?\d)/gu;
+const CURRENCY_DOLLAR = /(?<![$\p{L}\p{N}])(?:R|US|AU|A|CA|C|NZ|HK|SG|S|MX|NT|BZ|Z)\$(?=[ \t\u00a0]?\d)/gu;
 
 /** Escape every single `$` that cannot delimit inline math, so prices such as
  * "$5 and $10" or "R$ 120 ... R$ 120" stay prose instead of turning the text
@@ -779,28 +749,33 @@ function escapeLiteralDollars(text: string): string {
  * literal. Unmatched delimiters are left untouched while a response streams,
  * and dollar signs that read as money are escaped. */
 export function normalizeMathDelimiters(text: string, imageOffsets?: Map<number, number>): string {
-  const protectedCode: Array<{ value: string; imageOffset?: number }> = [];
-  const protect = (value: string, imageOffset?: number): string => {
+  const protectedCode: Array<{ value: string; sourceOffset: number }> = [];
+  const protect = (value: string, sourceOffset: number): string => {
     const token = `\u0000OMB_CODE_${protectedCode.length}\u0000`;
-    protectedCode.push({ value, imageOffset });
+    protectedCode.push({ value, sourceOffset });
     return token;
   };
-  if (imageOffsets) {
-    const images: Array<{ start: number; end: number }> = [];
-    const visit = (node: { type: string; children?: any[]; position?: { start: { offset?: number }; end: { offset?: number } } }) => {
-      const start = node.position?.start.offset;
-      const end = node.position?.end.offset;
-      if ((node.type === "image" || node.type === "imageReference") && start !== undefined && end !== undefined) images.push({ start, end });
-      node.children?.forEach(visit);
-    };
-    visit(fromMarkdown(text, { mdastExtensions: [windowsPathDestinations] }));
-    for (const { start, end } of images.reverse()) {
-      text = text.slice(0, start) + protect(text.slice(start, end), start) + text.slice(end);
+  const spans: Array<{ start: number; end: number }> = [];
+  const imageStarts: number[] = [];
+  const visit = (node: { type: string; children?: any[]; position?: { start: { offset?: number }; end: { offset?: number } } }, protectedParent = false) => {
+    const start = node.position?.start.offset;
+    const end = node.position?.end.offset;
+    const image = node.type === "image" || node.type === "imageReference";
+    if (image && start !== undefined) imageStarts.push(start);
+    // Use the same CommonMark parser as attachment authorization. Protect
+    // whole syntax nodes once: code cannot swallow an image sentinel, and
+    // escaping a reference label cannot break its matching definition.
+    const protectedNode = node.type === "code" || node.type === "inlineCode" || node.type === "definition" || node.type === "linkReference" || (imageOffsets !== undefined && image);
+    if (!protectedParent && protectedNode && start !== undefined && end !== undefined) {
+      spans.push({ start, end });
     }
+    node.children?.forEach((child) => visit(child, protectedParent || protectedNode));
+  };
+  visit(fromMarkdown(text, { mdastExtensions: [windowsPathDestinations] }));
+  for (const { start, end } of spans.reverse()) {
+    text = text.slice(0, start) + protect(text.slice(start, end), start) + text.slice(end);
   }
-  const tokenized = protectFencedCode(text, protect)
-    .replace(/(`+)[\s\S]*?\1/g, (value) => protect(value));
-  let normalized = tokenized
+  let normalized = text
     .replace(/\\\[([\s\S]*?)\\\]/g, (_match, math: string) => `$$\n${math}\n$$`)
     .replace(/\\\(([\s\S]*?)\\\)/g, (_match, math: string) => `$${math.trim()}$`)
     // remark-math treats flow math as a block only when the fences occupy
@@ -812,8 +787,14 @@ export function normalizeMathDelimiters(text: string, imageOffsets?: Map<number,
   normalized = normalized.replace(/\u0000OMB_CODE_(\d+)\u0000/g, (token, index: string, at: number) => {
     const part = protectedCode[Number(index)];
     if (!part) return token;
-    const { value, imageOffset } = part;
-    if (imageOffset !== undefined) imageOffsets?.set(at + shift, imageOffset);
+    const { value, sourceOffset } = part;
+    // A protected reference link can contain images of its own. Their raw
+    // positions stay relative to that unchanged span when it is restored.
+    for (const imageOffset of imageStarts) {
+      if (imageOffset >= sourceOffset && imageOffset < sourceOffset + value.length) {
+        imageOffsets?.set(at + shift + imageOffset - sourceOffset, imageOffset);
+      }
+    }
     shift += value.length - token.length;
     return value;
   });

@@ -115,14 +115,14 @@ describe("math rendering", () => {
   });
 
   it("keeps prices literal instead of rendering the text between them as math", () => {
-    for (const text of [
-      "**1. R$ 120:** o plano custa R$ 120 por mês.",
-      "**2. Os R$1.500,00: à vista ou parcelado?** O total fica em R$ 1.500,00.",
-      "It costs $5 and the upgrade costs $10.",
-      "Plans: US$5, $20 per month, or $x$ per seat.",
-    ]) {
+    for (const [text, expected] of [
+      ["**1. R$ 120:** o plano custa R$ 120 por mês.", 0],
+      ["**2. Os R$1.500,00: à vista ou parcelado?** O total fica em R$ 1.500,00.", 0],
+      ["It costs $5 and the upgrade costs $10.", 0],
+      ["Plans: US$5, $20 per month, or $x$ per seat.", 1],
+    ] as const) {
       const html = renderToStaticMarkup(createElement(ChatMarkdown, { text }));
-      expect(html.match(/class="katex"/g)?.length ?? 0).toBeLessThanOrEqual(1);
+      expect(html.match(/class="katex"/g)?.length ?? 0).toBe(expected);
       expect(html).toContain("$");
     }
     const prose = renderToStaticMarkup(createElement(ChatMarkdown, {
@@ -141,6 +141,12 @@ describe("math rendering", () => {
     expect(html).toContain("Pay $5 now");
   });
 
+  it("does not treat a math closer as a currency sign", () => {
+    const html = renderToStaticMarkup(createElement(ChatMarkdown, { text: "$R$ 120 and US$5." }));
+    expect(html.match(/class="katex"/g)).toHaveLength(1);
+    expect(html).toContain("120 and US$5.");
+  });
+
   it("does not pair dollars across paragraphs", () => {
     const html = renderToStaticMarkup(createElement(ChatMarkdown, { text: "Costs $5.\n\nThen pay later$" }));
     expect(html).not.toContain('class="katex"');
@@ -149,13 +155,20 @@ describe("math rendering", () => {
   it.each([
     "R$ 120.\n\n![receipt](/workspace/receipt.png)",
     "Pay $5.\n\n![receipt][image]\n\n[image]: /workspace/receipt.png",
+    "` lone ![receipt](/workspace/receipt.png) ``code``",
+    "![receipt][R$5]\n\n[R$5]: /workspace/receipt.png",
+    "![R$5]\n\n[R$5]: /workspace/receipt.png",
+    "[R$5]: /workspace/receipt.png\n\nPay $10.\n\n![receipt][R$5]",
+    "Price R$ 120.\n\n[![receipt](/workspace/receipt.png)][R$5]\n\n[R$5]: https://example.test",
   ])("keeps local image authorization offsets after prices: %s", (text) => {
     const preview = vi.spyOn(AttachmentPreview, "MarkdownImagePreview");
     try {
       renderToStaticMarkup(createElement(ChatMarkdown, {
         text, message: { threadId: "thread-1", messageId: "message-1" },
       }));
+      expect(preview).toHaveBeenCalledOnce();
       expect(preview.mock.calls[0][0].sourceOffset).toBe(text.indexOf("!["));
+      expect(preview.mock.calls[0][0].filePath).toBe("/workspace/receipt.png");
     } finally {
       preview.mockRestore();
     }
