@@ -20,7 +20,7 @@ import Markdown, { defaultUrlTransform } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
 import rehypeKatex from "rehype-katex";
-import { fromMarkdown } from "mdast-util-from-markdown";
+import { fromMarkdown, type Options as MarkdownParseOptions } from "mdast-util-from-markdown";
 import { Check, Copy, Download, LoaderCircle, RotateCcw, WrapText } from "lucide-react";
 import { remarkMentions, type MentionPeer } from "@/lib/mentions";
 
@@ -126,6 +126,17 @@ function remarkWindowsPathDestinations(this: { data(): object }) {
   const data = this.data() as { fromMarkdownExtensions?: unknown[] };
   (data.fromMarkdownExtensions ??= []).push(windowsPathDestinations);
 }
+
+// Reuse the renderer's installed GFM plugin, including literal autolinks.
+const gfmParseData: {
+  micromarkExtensions?: MarkdownParseOptions["extensions"];
+  fromMarkdownExtensions?: MarkdownParseOptions["mdastExtensions"];
+} = {};
+remarkGfm.call({ data: () => gfmParseData });
+const normalizationParseOptions: MarkdownParseOptions = {
+  extensions: gfmParseData.micromarkExtensions,
+  mdastExtensions: [...(gfmParseData.fromMarkdownExtensions ?? []), windowsPathDestinations],
+};
 
 function unwrapLinkedImages() {
   return (tree: { children?: any[] }) => {
@@ -762,17 +773,18 @@ export function normalizeMathDelimiters(text: string, imageOffsets?: Map<number,
     const end = node.position?.end.offset;
     const image = node.type === "image" || node.type === "imageReference";
     if (image && start !== undefined) imageStarts.push(start);
-    // Use the same CommonMark parser as attachment authorization. Protect
-    // whole syntax nodes once: code cannot swallow an image sentinel, and
-    // escaping a reference label cannot break its matching definition.
-    const protectedNode = node.type === "code" || node.type === "inlineCode" || node.type === "definition" || node.type === "linkReference" || (imageOffsets !== undefined && image);
+    // Explicit links leave their labels available for math normalization;
+    // protect only the trailing destination syntax. Autolinks stay intact.
+    const labelEnd = node.type === "link" && start !== undefined && text[start] === "["
+      ? node.children?.at(-1)?.position?.end.offset : undefined;
+    const protectedNode = node.type === "code" || node.type === "inlineCode" || node.type === "definition" || node.type === "linkReference" || node.type === "link" || (imageOffsets !== undefined && image);
     if (!protectedParent && protectedNode && start !== undefined && end !== undefined) {
-      spans.push({ start, end });
+      spans.push({ start: labelEnd ?? start, end });
     }
-    node.children?.forEach((child) => visit(child, protectedParent || protectedNode));
+    node.children?.forEach((child) => visit(child, protectedParent || (protectedNode && labelEnd === undefined)));
   };
-  visit(fromMarkdown(text, { mdastExtensions: [windowsPathDestinations] }));
-  for (const { start, end } of spans.reverse()) {
+  visit(fromMarkdown(text, normalizationParseOptions));
+  for (const { start, end } of spans.sort((a, b) => b.start - a.start)) {
     text = text.slice(0, start) + protect(text.slice(start, end), start) + text.slice(end);
   }
   let normalized = text

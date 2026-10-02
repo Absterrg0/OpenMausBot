@@ -148,6 +148,25 @@ describe("math rendering", () => {
     expect(html).toContain("120 and US$5.");
   });
 
+  it.each([
+    ["https://shop.test/item/$5", "https://shop.test/item/$5"],
+    ["www.shop.test/item/$5", "http://www.shop.test/item/$5"],
+    ["<https://shop.test/item/$5>", "https://shop.test/item/$5"],
+    ["[Store](https://shop.test/item/$5)", "https://shop.test/item/$5"],
+  ])("keeps dollar signs in link destinations: %s", (text, href) => {
+    const html = renderToStaticMarkup(createElement(ChatMarkdown, { text }));
+    expect(html).toContain(`href="${href}"`);
+    expect(html).not.toContain("%5C");
+  });
+
+  it("normalizes math in explicit link labels without changing destinations", () => {
+    const html = renderToStaticMarkup(createElement(ChatMarkdown, {
+      text: "[\\(x^2\\)](https://shop.test/item/$5)",
+    }));
+    expect(html).toContain('href="https://shop.test/item/$5"');
+    expect(html.match(/class="katex"/g)).toHaveLength(1);
+  });
+
   it("contains long inline formulas in a horizontal scroll container", () => {
     const html = renderToStaticMarkup(createElement(ChatMarkdown, {
       text: `Inline $${"abcdefghijklmnopqrstuvwxyz".repeat(3)}$.`,
@@ -172,6 +191,7 @@ describe("math rendering", () => {
     "![R$5]\n\n[R$5]: /workspace/receipt.png",
     "[R$5]: /workspace/receipt.png\n\nPay $10.\n\n![receipt][R$5]",
     "Price R$ 120.\n\n[![receipt](/workspace/receipt.png)][R$5]\n\n[R$5]: https://example.test",
+    "Price R$ 120.\n\n[![receipt](/workspace/receipt.png)](https://shop.test/item/$5)",
   ])("keeps local image authorization offsets after prices: %s", (text) => {
     const preview = vi.spyOn(AttachmentPreview, "MarkdownImagePreview");
     try {
@@ -427,6 +447,19 @@ describe("ChatMarkdown attachments", () => {
     } finally {
       save.mockRestore();
       preview.mockRestore();
+    }
+  });
+
+  it("preserves dollar signs in Windows file destinations", () => {
+    const save = vi.spyOn(AttachmentPreview, "useLocalFileSave");
+    const filePath = "C:\\Users\\Maus\\R$5\\receipt.pdf";
+    try {
+      renderToStaticMarkup(createElement(ChatMarkdown, {
+        text: `[Receipt](${filePath})`, message: { threadId: "thread-1", messageId: "message-1" },
+      }));
+      expect(save.mock.calls[0]?.[0]).toBe(filePath);
+    } finally {
+      save.mockRestore();
     }
   });
 
