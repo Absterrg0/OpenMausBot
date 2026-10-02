@@ -138,8 +138,8 @@ describe("OpenCode 2.x section", () => {
 
 describe("OpenCode config file", () => {
   // The provider example on the page, exactly as a reader would paste it.
-  const example = () => {
-    const block = /```json\n([\s\S]*?)```/u.exec(PAGE.slice(PAGE.indexOf("### OpenCode")));
+  const example = (page = PAGE) => {
+    const block = /```json\r?\n([\s\S]*?)```/u.exec(page.slice(page.indexOf("### OpenCode")));
     expect(block, "the OpenCode section has no json example").not.toBeNull();
     return block![1]!.replace(/^ {3}/gmu, "");
   };
@@ -152,8 +152,8 @@ describe("OpenCode config file", () => {
   };
   const addLocalModel = (home: string) => ensureOpenCodeInjectModel("omlx::GLM-5.2-fp8", { HOME: home });
 
-  it("keeps the page's plain-JSON provider when OpenMausBot adds a local model", () => {
-    const source = example();
+  it.each(["\n", "\r\n"])("keeps the page's plain-JSON provider with %j line endings", (lineEnding) => {
+    const source = example(PAGE.replace(/\r?\n/gu, lineEnding));
     const pasted = JSON.parse(source) as { provider: Record<string, unknown> };
     const { home, path } = configHome(source);
 
