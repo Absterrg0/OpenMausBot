@@ -9806,7 +9806,10 @@ async function startTurn(
           });
           return true;
         } catch (error) {
-          if (strict) throw error;
+          // A wait ceiling settled this turn as parked, not as an unavailable
+          // Auto destination. Let dispatch register its resume instead of
+          // continuing the provider without the requested computer.
+          if (strict || error instanceof ComputerWaitParked) throw error;
           if (directTurnGenerationByThread.get(threadId) === dispatchClaimId) releaseLocalVmThread(threadId);
           return false;
         }
