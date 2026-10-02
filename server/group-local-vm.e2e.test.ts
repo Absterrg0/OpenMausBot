@@ -135,17 +135,23 @@ afterAll(async () => {
 });
 const rooms = new Map<string, string[]>();
 async function cleanupRooms() {
+  const pending = [...rooms];
+  rooms.clear();
+  const errors: unknown[] = [];
+  const attempt = async (operation: () => unknown | Promise<unknown>) => {
+    try { await operation(); } catch (error) { errors.push(error); }
+  };
   // Stop before releasing shared fixture gates: a cancelled setup must not
   // dispatch just as the next test starts using the same dump and finish files.
-  for (const id of rooms.keys()) await stop(id);
-  vmState();
-  writeFileSync(finishFile, "finish");
-  for (const [id, members] of rooms) {
-    for (const botId of members) await idle(botId);
-    await api("DELETE", `/api/groups/${id}`);
-    for (const botId of members) await api("DELETE", `/api/bots/${botId}`);
-    rooms.delete(id);
+  for (const [id] of pending) await attempt(() => stop(id));
+  await attempt(() => vmState());
+  await attempt(() => writeFileSync(finishFile, "finish"));
+  for (const [id, members] of pending) {
+    for (const botId of members) await attempt(() => idle(botId));
+    await attempt(() => api("DELETE", `/api/groups/${id}`));
+    for (const botId of members) await attempt(() => api("DELETE", `/api/bots/${botId}`));
   }
+  if (errors.length) throw new AggregateError(errors, "Fixture room cleanup failed");
 }
 afterEach(cleanupRooms);
 async function room() {
@@ -165,6 +171,21 @@ const send = (id: string) => api("POST", `/api/groups/${id}/messages`, { text: "
 const stop = (id: string) => api("POST", `/api/groups/${id}/interrupt`, {});
 
 describe("Group Local VM ownership on the real isolated server", () => {
+  it("cleans the remaining rooms after one cleanup operation fails", async () => {
+    rooms.set("missing-fixture-room", []);
+    const current = await room();
+    await send(current.group.id);
+    const previous = computer(await dump());
+    expect((await gate(previous)).status).toBe(200);
+
+    await expect(cleanupRooms()).rejects.toThrow(AggregateError);
+    const state = await api("GET", "/api/bots?messages=0");
+    expect(rooms.size).toBe(0);
+    expect(state.groups.some((group: any) => group.id === current.group.id)).toBe(false);
+    expect(state.bots.some((bot: any) => current.bots.some(member => member.id === bot.id))).toBe(false);
+    expect((await gate(previous)).status).toBe(401);
+  });
+
   it("removes an interrupted fixture room before another room takes the shared desktop", async () => {
     const first = await room();
     await send(first.group.id);
