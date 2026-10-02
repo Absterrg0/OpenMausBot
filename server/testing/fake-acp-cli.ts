@@ -15,7 +15,7 @@
 //                       session, so its load succeeds.
 //   FAKE_ACP_CACHED_LIVE_LOAD  acknowledge session/load of a live session but
 //                       keep its original MCP credentials, matching Qwen.
-//   FAKE_ACP_MODE   happy (default) | image | empty-reply | reasoning-only | exit-early | fail-after-text | hang | hang-initialize | stall-after-text | no-auth | auth-required | permission | question
+//   FAKE_ACP_MODE   happy (default) | image | empty-reply | reasoning-only | exit-early | fail-after-text | hang | hang-initialize | stall-after-text | unkeyed-tool | no-auth | auth-required | permission | question
 //                   | ask-question-unsupported (send a cursor/ask_question server→client
 //                     request mid-prompt; the driver must answer -32601 method
 //                     not found, and the prompt completes only after that
@@ -257,6 +257,7 @@ const dumpEnv = Object.fromEntries(
     "OPENROUTER_API_KEY",
     "ANTHROPIC_API_KEY",
     "XAI_API_KEY",
+    "GROK_AGENT",
     "BOX_TOKEN",
     "OMB_TTS_KEY",
     "OMB_FISH_AUDIO_API_KEY",
@@ -615,6 +616,9 @@ function handle(msg: any) {
     case "authenticate":
       result(msg.id, {});
       break;
+    case "_x.ai/mcp/list":
+      result(msg.id, { result: { servers: [], sessionMcpResolved: true } });
+      break;
     case "session/new": {
       if (failRpc(msg)) break;
       if (mode === "auth-required") {
@@ -627,6 +631,7 @@ function handle(msg: any) {
       }
       const servers: McpEntry[] = Array.isArray(msg.params?.mcpServers) ? msg.params.mcpServers : [];
       if (process.env.FAKE_ACP_DUMP) {
+        writeFileSync(`${process.env.FAKE_ACP_DUMP}.session.json`, JSON.stringify(msg.params));
         dumpState.mcpServers = servers;
         writeFileSync(process.env.FAKE_ACP_DUMP, JSON.stringify(dumpState, null, 2));
       }
@@ -866,6 +871,16 @@ function handle(msg: any) {
           out({ jsonrpc: "2.0", method: "session/update", params: { update: { sessionUpdate: "agent_message_chunk", content: { text: "done" } } } });
           complete();
         }, Number(process.env.FAKE_ACP_TOOL_MS ?? 600));
+        return;
+      }
+      if (mode === "unkeyed-tool") {
+        // An agent that violates the ACP spec by omitting toolCallId: the
+        // turn's lifecycle pair must still carry one stable id so consumers
+        // can pair the start with its completion (#1653 computer-call fence).
+        out({ jsonrpc: "2.0", method: "session/update", params: { update: { sessionUpdate: "tool_call", title: "run", rawInput: { command: "echo done" } } } });
+        out({ jsonrpc: "2.0", method: "session/update", params: { update: { sessionUpdate: "tool_call_update", status: "completed", rawOutput: { output: "done" } } } });
+        out({ jsonrpc: "2.0", method: "session/update", params: { update: { sessionUpdate: "agent_message_chunk", content: { text: "done" } } } });
+        complete();
         return;
       }
       const promptText = String(msg.params?.prompt?.[0]?.text ?? "");

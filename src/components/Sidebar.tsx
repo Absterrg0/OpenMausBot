@@ -76,6 +76,8 @@ import {
   setSidebarDensity,
   toggleCollapsedSection,
   useSidebarDensity,
+  usePinnedCircles,
+  useUniversalPins,
   type SidebarDensity,
 } from "@/lib/sidebar-preferences";
 import {
@@ -115,6 +117,7 @@ import { SidebarAttentionPanel } from "./SidebarAttentionPanel";
 import { SidebarPinnedThreadsPanel } from "./SidebarPinnedThreadsPanel";
 import { ShortcutHint } from "./ShortcutHint";
 import { citationPreviewText } from "@/lib/citations";
+import { usePopoverDismiss } from "@/hooks/use-popover-dismiss";
 
 const SECTION_LABEL_KEYS: Record<string, LocaleKey> = {
   [PINNED_SECTION_ID]: "sidebar.section.pinned",
@@ -155,6 +158,12 @@ interface MenuState {
   botId: string;
   x: number;
   y: number;
+}
+
+/** The same point the bot row's context menu and "more" button already use. */
+function openBotContextMenu(onMenu: (menu: MenuState) => void, botId: string, event: React.MouseEvent) {
+  event.preventDefault();
+  onMenu({ botId, x: event.clientX, y: event.clientY });
 }
 
 function groupPreview(group: Group, bots: Bot[]): string {
@@ -1143,6 +1152,114 @@ export function BotThreadList({ bot, selected, density = "comfortable", query = 
   );
 }
 
+function PinnedBotCircle({
+  bot,
+  onMenu,
+}: {
+  bot: Bot;
+  onMenu: (menu: MenuState) => void;
+}) {
+  const { state, dispatch } = useStore();
+  const selected = state.activeView === "chat" && state.selectedId === bot.id;
+  const visible = visibleMessages(bot);
+  const activityTasks = sidebarBotActivityTasks(bot, state.pendingQueued);
+  const waiting = bot.activity === "waiting-on-you" || activityTasks.some((task) => task.activity === "waiting-on-you");
+  const working = !waiting && (Boolean(bot.busy) || activityTasks.some((task) => task.busy || task.activity === "working"));
+  const unread = bot.unread || activityTasks.some((task) => task.unread);
+  const mascotMotion = selected && state.mascotMotion?.botId === bot.id ? state.mascotMotion : null;
+  return (
+    <button
+      type="button"
+      data-sidebar-bot-row={bot.id}
+      aria-current={selected ? "page" : undefined}
+      aria-label={`${bot.name}${waiting ? ` · ${t("sidebar.preview.waiting")}` : working ? ` · ${t("chat.activity.working")}` : ""}${unread ? ` · ${t("task.unread")}` : ""}`}
+      title={bot.name}
+      onClick={() => dispatch({ type: "select", id: bot.id })}
+      onContextMenu={(event) => openBotContextMenu(onMenu, bot.id, event)}
+      className="flex min-w-0 flex-col items-center gap-1 rounded-lg px-1 py-1 text-center outline-none focus-visible:ring-1 focus-visible:ring-accent/60"
+    >
+      <span className="relative">
+        <span className={cn(
+          "flex size-16 items-center justify-center overflow-hidden rounded-full",
+          selected && "ring-2 ring-accent ring-offset-2 ring-offset-panel",
+        )}>
+          <BotAvatar
+            bot={bot}
+            state={stateForBot({ ...bot, messages: visible })}
+            size={64}
+            motion={mascotMotion?.kind ?? "none"}
+            motionKey={mascotMotion?.nonce ?? 0}
+            animated={working || Boolean(bot.unread) || (mascotMotion?.kind ?? "none") !== "none"}
+          />
+        </span>
+        {unread && (
+          <span className="absolute top-0.5 right-0.5 size-2.5 rounded-full border-2 border-panel bg-accent" aria-label={t("task.unreadMany")} />
+        )}
+        {working && (
+          <span
+            data-testid="working-dot"
+            className="absolute -right-0.5 -bottom-0.5 size-3 rounded-full border-2 border-panel bg-success"
+          />
+        )}
+        {waiting && (
+          <span
+            data-testid="waiting-dot"
+            role="status"
+            aria-label={t("sidebar.preview.waiting")}
+            title={t("sidebar.preview.waiting")}
+            className="absolute -right-0.5 -bottom-0.5 size-3 rounded-full border-2 border-panel bg-warning"
+          />
+        )}
+      </span>
+      <span className="w-full truncate text-center text-[11px] leading-4 text-ink">{bot.name}</span>
+    </button>
+  );
+}
+
+function PinnedBotRoster({
+  bots,
+  density,
+  circles,
+  quiet,
+  query,
+  onMenu,
+}: {
+  bots: Bot[];
+  density: SidebarDensity;
+  circles: boolean;
+  quiet: boolean;
+  query: string;
+  onMenu: (menu: MenuState) => void;
+}) {
+  if (circles && density !== "icons") {
+    return (
+      <div
+        data-sidebar-pinned-circles=""
+        className="grid gap-1 px-1 pb-1"
+        style={{ gridTemplateColumns: "repeat(auto-fill, minmax(84px, 1fr))" }}
+      >
+        {bots.map((bot) => (
+          <PinnedBotCircle key={bot.id} bot={bot} onMenu={onMenu} />
+        ))}
+      </div>
+    );
+  }
+  return (
+    <>
+      {bots.map((bot) => (
+        <BotListItem
+          key={bot.id}
+          bot={bot}
+          density={density}
+          quiet={quiet}
+          query={query}
+          onMenu={onMenu}
+        />
+      ))}
+    </>
+  );
+}
+
 export function BotListItem({
   bot,
   density,
@@ -1324,8 +1441,7 @@ export function BotListItem({
     </>
   );
   const onContextMenu = (event: React.MouseEvent) => {
-    event.preventDefault();
-    onMenu({ botId: bot.id, x: event.clientX, y: event.clientY });
+    openBotContextMenu(onMenu, bot.id, event);
   };
   const onSelect = (event: React.MouseEvent) => {
     if (renaming) return;
@@ -1732,6 +1848,8 @@ export function Sidebar({ open, onClose, collapseToIcons = false }: {
   const [lastExpandedDensity, setLastExpandedDensity] = useState<Exclude<SidebarDensity, "icons">>(
     () => density === "icons" ? "comfortable" : density,
   );
+  const pinnedCircles = usePinnedCircles();
+  const universalPins = useUniversalPins();
   // Compact is the quiet sidebar: a row is its name and its status, nothing
   // else (see the `quiet` prop on BotListItem and GroupListItem).
   const quietRows = density === "compact";
@@ -1770,6 +1888,12 @@ export function Sidebar({ open, onClose, collapseToIcons = false }: {
     document.addEventListener("keydown", closeOnEscape);
     return () => document.removeEventListener("keydown", closeOnEscape);
   }, [open, onClose, confirm, deletingRoom]);
+
+  // Each header menu root wraps its trigger and its popover.
+  const attentionMenuRef = useRef<HTMLDivElement>(null);
+  const plusMenuRef = useRef<HTMLDivElement>(null);
+  usePopoverDismiss(attentionOpen, attentionMenuRef, () => setAttentionOpen(false));
+  usePopoverDismiss(plusOpen, plusMenuRef, () => setPlusOpen(false));
 
   useEffect(() => {
     if (remoteClient) return;
@@ -1873,7 +1997,7 @@ export function Sidebar({ open, onClose, collapseToIcons = false }: {
     sectionChiefs,
     sectionedBots,
     unsectionedBots,
-  } = partitionSidebarBots(matchingBots);
+  } = partitionSidebarBots(matchingBots, { universalPins });
   const { botChats, sectionedRooms, unsectionedRooms } = partitionSidebarGroups(visibleGroups);
 
   // User sections keep first-appearance order. The saved layout keeps an
@@ -1889,7 +2013,7 @@ export function Sidebar({ open, onClose, collapseToIcons = false }: {
     if (!sectionNames.includes(group.section!)) sectionNames.push(group.section!);
   }
   const naturalSectionIds = [
-    ...(pinnedBots.length > 0 ? [PINNED_SECTION_ID] : []),
+    ...(pinnedBots.length > 0 && !universalPins ? [PINNED_SECTION_ID] : []),
     ...(unsectionedRooms.length > 0 ? [CHANNELS_SECTION_ID] : []),
     ...(botChats.length > 0 ? [BOT_CHATS_SECTION_ID] : []),
     ...(unsectionedBots.length > 0 ? [BOTS_SECTION_ID] : []),
@@ -2030,7 +2154,7 @@ export function Sidebar({ open, onClose, collapseToIcons = false }: {
           >
             {density === "icons" ? <PanelLeftOpen size={20} /> : <PanelLeftClose size={20} />}
           </button>}
-          <div className={density === "icons" ? "relative" : "contents"}>
+          <div ref={attentionMenuRef} className={density === "icons" ? "relative" : "contents"}>
             <button
               type="button"
               onClick={() => setAttentionOpen((o) => !o)}
@@ -2045,7 +2169,6 @@ export function Sidebar({ open, onClose, collapseToIcons = false }: {
             </button>
             {attentionMotion.shown && (
               <>
-                <div className={cn("fixed inset-0 z-30", attentionMotion.closing && "pointer-events-none")} onMouseDown={() => setAttentionOpen(false)} />
                 <div className={cn(
                   "absolute top-full z-40 mt-1 overflow-hidden rounded-xl border border-hairline/50 bg-menu py-1.5 shadow-2xl shadow-black/60",
                   density === "icons" ? "left-0" : "right-0",
@@ -2073,6 +2196,8 @@ export function Sidebar({ open, onClose, collapseToIcons = false }: {
               </>
             )}
           </div>
+          {/* `contents` keeps the popover anchored to the header row */}
+          <div ref={plusMenuRef} className="contents">
           <button
             ref={importReturnRef}
             onClick={() => setPlusOpen((o) => !o)}
@@ -2084,7 +2209,6 @@ export function Sidebar({ open, onClose, collapseToIcons = false }: {
           </button>
           {plusMotion.shown && (
             <>
-              <div className={cn("fixed inset-0 z-30", plusMotion.closing && "pointer-events-none")} onMouseDown={() => setPlusOpen(false)} />
               <div className={cn(
                 "absolute top-full z-40 mt-1 w-52 overflow-hidden rounded-xl border border-hairline/50 bg-menu py-1.5 shadow-2xl shadow-black/60",
                 density === "icons" ? "left-0" : "right-0",
@@ -2145,6 +2269,7 @@ export function Sidebar({ open, onClose, collapseToIcons = false }: {
               </div>
             </>
           )}
+          </div>
         </div>
       </div>
 
@@ -2201,6 +2326,27 @@ export function Sidebar({ open, onClose, collapseToIcons = false }: {
           />
         </div>
       </div>
+
+      {universalPins && pinnedBots.length > 0 && (
+        <div
+          data-sidebar-universal-pins=""
+          className="max-h-[min(42%,280px)] shrink-0 overflow-y-auto border-b border-hairline/40 px-2 pb-2"
+        >
+          {density !== "icons" && !pinnedCircles && (
+            <div className="px-2 pb-1 pt-1 text-[11px] font-medium uppercase tracking-[0.08em] text-ink-secondary">
+              {t("sidebar.section.pinned")}
+            </div>
+          )}
+          <PinnedBotRoster
+            bots={pinnedBots}
+            density={density}
+            circles={pinnedCircles}
+            quiet={quietRows}
+            query={q}
+            onMenu={setMenu}
+          />
+        </div>
+      )}
 
       {attentionPinned && density !== "icons" && (
         <SidebarAttentionPanel
@@ -2336,7 +2482,16 @@ export function Sidebar({ open, onClose, collapseToIcons = false }: {
                         onMenu={setRoomMenu}
                       />
                     ))}
-                    {sectionBotItems.map((bot) => (
+                    {id === PINNED_SECTION_ID ? (
+                      <PinnedBotRoster
+                        bots={sectionBotItems}
+                        density={density}
+                        circles={pinnedCircles}
+                        quiet={quietRows}
+                        query={q}
+                        onMenu={setMenu}
+                      />
+                    ) : sectionBotItems.map((bot) => (
                       <BotListItem
                         key={bot.id}
                         bot={bot}

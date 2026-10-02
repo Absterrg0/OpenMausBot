@@ -441,6 +441,34 @@ describe("ClaudeDriver turns (fake CLI)", () => {
     scratch = mkdtempSync(join(tmpdir(), "omb-claude-test-"));
   });
 
+  it("refuses an unsupported native selection before launching, even with instance tools and Full access", async () => {
+    const dump = join(scratch, "scope-refused.json"); process.env.FAKE_CLAUDE_DUMP = dump;
+    await create("echo", {}, { tools: ["Read"], disallowedTools: ["Write"] });
+    await expect(instance.adapter.sendTurn({ threadId: "scope-refused", text: "Must not run", toolScope: { allow: ["native:Read", "native:Write"] }, approvalMode: "full", guestConfined: true })).rejects.toThrow(/native tool selection.*not supported/i);
+    expect(existsSync(dump)).toBe(false);
+  });
+
+  it("gates every eligible MCP mount while preserving guest and instance restrictions", async () => {
+    const dump = join(scratch, "scope-mcp.json"); process.env.FAKE_CLAUDE_DUMP = dump;
+    await create("echo", { FAKE_CLAUDE_VERSION: "2.1.284" }, { tools: ["Read"], disallowedTools: ["Write"] });
+    await instance.adapter.sendTurn({ threadId: "scope-mcp", text: "Fixture", approvalMode: "ask", guestConfined: true, toolScope: { allow: ["native:*", "mcp:agents:list_bots"] }, integrations: {
+      agents: { command: "node", args: ["agents"], env: {} }, browser: { command: "node", args: ["browser"], env: {} },
+    } });
+    await recorder.until((event) => event.type === "turn.completed");
+    const seen = JSON.parse(readFileSync(dump, "utf8"));
+    expect(seen.argv).toContain("--restricted");
+    expect(seen.argv[seen.argv.indexOf("--disallowedTools") + 1]).toBe("Write");
+    expect(seen.mcpConfig.mcpServers).not.toHaveProperty("browser");
+    expect(JSON.parse(seen.mcpConfig.mcpServers.agents.env.OMB_GATE_TOOL_SCOPE)).toEqual({ allow: ["native:*", "mcp:agents:list_bots"] });
+  });
+
+  it("refuses native MCP inheritance when a bot has an explicit selection", async () => {
+    const dump = join(scratch, "scope-inherited-mcp.json"); process.env.FAKE_CLAUDE_DUMP = dump;
+    await create();
+    await expect(instance.adapter.sendTurn({ threadId: "scope-inherited-mcp", text: "Must not run", mcpFromUserConfig: true, toolScope: { allow: ["native:*"] } })).rejects.toThrow(/restricted MCP configuration/);
+    expect(existsSync(dump)).toBe(false);
+  });
+
   afterEach(async () => {
     delete process.env.FAKE_CLAUDE_MODE;
     delete process.env.FAKE_CLAUDE_AUTO_UNAVAILABLE_MODELS;

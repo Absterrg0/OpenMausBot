@@ -1335,6 +1335,8 @@ export function ComputerPanel({
         <button
           onClick={() => dispatch({ type: "toggleComputer", open: false })}
           className="rounded-md p-1 text-ink-secondary hover:bg-control hover:text-ink"
+          aria-label={t("computer.close")}
+          title={t("computer.close")}
         >
           <X size={18} />
         </button>

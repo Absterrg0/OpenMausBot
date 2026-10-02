@@ -37,6 +37,7 @@ import {
 } from "../shared/approval-mode.ts";
 import { createApprovalModeSupport } from "./harness-capabilities.ts";
 import { escapeAttribute } from "../src/lib/composer-attachments.ts";
+import { threadRefUrl } from "../src/lib/thread-refs.ts";
 import {
   CREDENTIAL_TARGETS,
   credentialResumeOutcome,
@@ -104,6 +105,8 @@ import { RoomTurnDeadline, RoomTurnStallRegistry, roomTurnTimeoutMessage } from 
 import * as boat from "./boat.ts";
 import { TeamComputers, teamComputerAssignment, teamComputerCreate, teamComputerOwner, type TeamComputerRecord } from "./team-computers.ts";
 import { isEffortLevel, type BotVisibility, type CardAnswerer, type ResolvedSender, type WireBot, type WireGroup, type WireTask } from "../shared/wire.ts";
+import { isPersistentQuestionCard, QUESTION_DISMISS_MESSAGE, shouldSettleRequestCard } from "../shared/ask-question.ts";
+import { parseToolScope, toolScopeWidens } from "../shared/tool-scope.ts";
 import type { TeamComputersPayload } from "../shared/team-computer.ts";
 import { boatCreateRecoverySnapshot, retireDeletedBoatCreate } from "./boat-create-idempotency.ts";
 import { boatDeletionSnapshot } from "./boat-delete-journal.ts";
@@ -180,6 +183,7 @@ import {
   vpsSshAlias,
   browserEngineAttachCdpUrl,
   DATA_DIR,
+  skillsLibraryEnabled,
   EVENTS_DIR,
   NATIVE_DIR,
   customMcpServers,
@@ -192,6 +196,7 @@ import { ComputerControl } from "./computer-control.ts";
 import { augmentedPath, findCliCandidates, resetPathCache } from "./env-path.ts";
 import { registerEnginesBinDir } from "./engine-install.ts";
 import { appendUsage, parseUsageRange, readUsage, summarizeUsage, usageCsv, USAGE_GROUPINGS, flushUsageLedger, type UsageGroupBy, type UsageRow, type UsageTrigger } from "./usage-ledger.ts";
+import { loadPlanUsage, planAccountsFromInstances } from "./plan-usage.ts";
 import { GroupUsageReader } from "./group-thread-usage.ts";
 import { ledgerCost } from "./model-prices.ts";
 import type { PriceList } from "./prices.ts";
@@ -374,6 +379,8 @@ import {
   getStagedSkillWrite,
   installOrgSkill,
   installSkill,
+  listBotSkillsWithOrigin,
+  resolveBotSkills,
   parseSkillMd,
   scanSkillText,
   listSkills,
@@ -468,7 +475,20 @@ import { assertModelVariantSupported, memberTurnSelection } from "./member-turn.
 import { WebhookManager } from "./webhooks.ts";
 import type { WebhookTrigger } from "../shared/webhooks.ts";
 import { SPAWNED_PROXIES } from "./proxy-paths.ts";
-import { loadBundledSkills, loadUserSkills, mergeSkills, renderSkillInstructions, selectBundledSkills } from "./skill-library.ts";
+import {
+  installLibrarySkill,
+  listLibrarySkills,
+  loadBundledSkills,
+  loadUserSkills,
+  mergeSkills,
+  readLibrarySkillFile,
+  readSkillLibraryIndex,
+  renderSkillInstructions,
+  selectBundledSkills,
+  setLibrarySkillReviewState,
+} from "./skill-library.ts";
+import type { SkillsLibrarySkillWire } from "../shared/wire.ts";
+import { runSkillsLibraryBootSweep } from "./skills-library-migration.ts";
 import { installedPlaybookInstructions } from "./installed-playbooks.ts";
 import { createBotPackageExport, createLibraryPackageExport, createTeamPackageExport, picture as sharedPicture, TeamExportError, type ExportablePackageSkill, type TeamExportSkip } from "./package-export.ts";
 import { importPackageDocument, importTeamManifest, PackageImportError, type PackageImportDeps, type PackageImportResult } from "./package-import.ts";
@@ -483,7 +503,7 @@ import { MAX_TEAM_BACKUP_BYTES } from "../shared/team-backup.ts";
 import { shouldMountLocalComputer } from "./local-routing.ts";
 import { autoLocalVmAttachable, type ContainerComputerStatus } from "./container-computer.ts";
 import { startAutoVmClaim, type AutoVmClaimTable } from "./auto-vm-claims.ts";
-import { computerFreeAfterText, computerStillBusyText, computerStoppedWaitingText, computerWaitingText, type ComputerHolder } from "./computer-wait.ts";
+import { computerFreeAfterText, computerParkedText, computerStoppedWaitingText, computerWaitingText, type ComputerHolder } from "./computer-wait.ts";
 import { CloudOverflowConsent, CloudSeatLease, cloudOverflowAction, cloudOverflowConsentText, cloudOverflowOfferText, cloudSeatStartedText, cloudSeatStoppedText, type CloudOverflowSituation } from "./cloud-overflow.ts";
 import { modelContextWindow } from "./model-context-window.ts";
 import { parseSurface, resolveSurface, surfaceLabel, surfaceOfComputerKind, surfacePrompt, type Surface } from "./surface.ts";
@@ -1859,6 +1879,24 @@ await registry.load(providerConfigs(), decorateHostedProvider);
 const bundledSkills = loadBundledSkills();
 const availableSkills = () => mergeSkills(bundledSkills, loadUserSkills(join(DATA_DIR, "skills")));
 
+// Skills library (features.skillsLibrary). While the flag is off both
+// helpers reduce exactly to today's per-bot calls; assignments recorded on
+// bot records stay inert until it is on.
+const listBotSkills = (bot: BotRecord) =>
+  skillsLibraryEnabled(cfg) ? resolveBotSkills(bot.id, bot.assignedSkills) : listSkills(bot.id);
+const readBotSkillFile = (bot: BotRecord, name: string): string | null => {
+  const own = readSkillFile(bot.id, name);
+  if (own !== null || !skillsLibraryEnabled(cfg)) return own;
+  // A private listing whose stored bytes no longer verify must not fall
+  // through to a same-named library skill: private wins collisions, so a
+  // broken private file stays unreadable instead of exporting another
+  // bot's library instructions under this bot's name.
+  if (listSkills(bot.id).some((skill) => skill.name === name)) return null;
+  // The library fallback is by assignment only, never by name alone.
+  if (!bot.assignedSkills?.includes(name)) return null;
+  return readLibrarySkillFile(name);
+};
+
 // Electron's utility-process parent port is private to the desktop main
 // process. It lets a slow first-time managed Composio registration arrive
 // after first paint without putting the credential in the renderer or
@@ -2377,7 +2415,21 @@ type DirectTurnDispatchClaim = {
   phase: "setup" | "dispatching";
 };
 class DirectTurnSetupCancelled extends Error {}
-class ComputerWaitGaveUp extends Error {}
+/** The computer wait ceiling fired (ADR-2, #1651). The turn parks — settled
+ * with a registered resume — instead of failing; the carried resource names
+ * the seat the resume must wait to free. */
+class ComputerWaitParked extends Error {
+  readonly resource: string;
+  /** The parked turn's generation: the drain distinguishes the turn's own
+   * settle window (keep, retry later) from a newer turn that superseded it
+   * (delete). */
+  readonly generation: string;
+  constructor(message: string, resource: string, generation: string) {
+    super(message);
+    this.resource = resource;
+    this.generation = generation;
+  }
+}
 const directTurnDispatchClaims = new Map<string, DirectTurnDispatchClaim>();
 const directTurnGenerationByThread = new Map<string, string>();
 // Only the latest direct request per thread is retained. A fresh user turn
@@ -2424,6 +2476,12 @@ const turnResources = new TurnResources();
 const sharedComputerControl = new SharedComputerControl(turnResources, () => store.bots.some(bot => botComputerControlSnapshot(bot.id).held));
 const turnResourceOwners = new Map<string, TurnOwner>();
 const turnComputerResources = new Map<string, { owner: TurnOwner; resource: string }>();
+/** Screen-touching computer calls that started before their turn's computer
+ * claim was bound (#1653 over the lazy attach of #1361): the start event
+ * finds no claim to fence, so it waits here and bindTurnComputer carries it
+ * into the fresh claim, keeping the quiet window from releasing a seat
+ * under a call the desktop is already executing. */
+const pendingComputerCallStarts = new Map<string, { generation: string; count: number }>();
 const teamComputerTurns = new Map<string, { owner: TurnOwner; computerId: string; botId: string; remoteAgent: boolean }>();
 const settlingResourceOwners = new Map<string, string>();
 
@@ -2434,11 +2492,12 @@ const settlingResourceOwners = new Map<string, string>();
  * yields once another turn holds the seat. The durable VM profile keeps
  * its login state, so that re-claim is cheap. Read per claim: a flag
  * change applies to new claims, never to a seat held under the old
- * setting. */
+ * setting. computer:phone is excluded: it is the #1663 exclusivity lock,
+ * claimed once per turn with no activity signal to renew it. */
 const COMPUTER_CLAIM_IDLE_POLICY = new IdleReleasePolicy();
 
 function computerClaimIdlePolicy(resource: string): IdleReleasePolicy | undefined {
-  return resource.startsWith("computer:") && computerClaimIdleReleaseEnabled(cfg) ? COMPUTER_CLAIM_IDLE_POLICY : undefined;
+  return resource.startsWith("computer:") && resource !== "computer:phone" && computerClaimIdleReleaseEnabled(cfg) ? COMPUTER_CLAIM_IDLE_POLICY : undefined;
 }
 
 /** #1655: the consent ledger for local-wait cloud overflow, and the live
@@ -2589,11 +2648,15 @@ function releaseTurnResources(owner: TurnOwner | undefined): void {
   turnResources.release(owner);
   if (turnResourceOwners.get(owner.threadId)?.generation === owner.generation) turnResourceOwners.delete(owner.threadId);
   if (turnComputerResources.get(owner.threadId)?.owner.generation === owner.generation) turnComputerResources.delete(owner.threadId);
+  if (pendingComputerCallStarts.get(owner.threadId)?.generation === owner.generation) pendingComputerCallStarts.delete(owner.threadId);
   const teamTurn = teamComputerTurns.get(owner.threadId);
   if (teamTurn?.owner.generation === owner.generation) {
     stopScreenPoller(teamTurn.botId, owner.threadId);
     teamComputerTurns.delete(owner.threadId);
   }
+  // A freed seat is the parked-resume drain's trigger (#1651). Deferred past
+  // this synchronous settle so the drain reads post-cleanup state.
+  if (pendingComputerResumes.size > 0) queueMicrotask(drainComputerResumes);
 }
 
 async function bindTurnComputer(owner: TurnOwner, resource: string, exclusive = false): Promise<void> {
@@ -2608,7 +2671,7 @@ async function bindTurnComputer(owner: TurnOwner, resource: string, exclusive = 
   // bot running a titled thread, or a room. Read once, when the wait begins.
   let holder: ComputerHolder | undefined;
   let holderThreadRef: { botId: string; threadId: string; title: string } | undefined;
-  const deadline = Date.now() + GROUP_GOAL_WAIT_MAX_MS;
+  const deadline = Date.now() + COMPUTER_WAIT_MAX_MS;
   // The wait is history the transcript keeps (#1647): the waiting chip stays
   // exactly as written, a resolution line is appended beside it, and the
   // turn.wait_* events carry the same facts for the inspector log.
@@ -2629,19 +2692,21 @@ async function bindTurnComputer(owner: TurnOwner, resource: string, exclusive = 
       createdAt: new Date().toISOString(),
     };
   };
-  const endWait = (outcome: "acquired" | "gave_up" | "stopped") => {
+  const endWait = (outcome: "acquired" | "parked" | "stopped") => {
     if (!waitingMessage || waitEnded) return;
     waitEnded = true;
     const waitedMs = waitedSince === undefined ? 0 : Date.now() - waitedSince;
+    // Acquisition is the only wait that completes: it is the sample the
+    // per-resource estimate is built from (#1652).
+    if (outcome === "acquired") turnResources.noteWait(resource, waitedMs);
     const text = outcome === "acquired"
       ? computerFreeAfterText(holder, waitedMs)
-      : outcome === "gave_up"
-        ? computerStillBusyText(holder, waitedMs)
+      : outcome === "parked"
+        ? computerParkedText(holder, COMPUTER_WAIT_MAX_MS)
         : computerStoppedWaitingText(holder, waitedMs);
     store.appendMessage(owner.threadId, {
       role: "bot", kind: "activity",
-      ...(outcome === "gave_up" ? { turnSucceeded: false } : {}),
-      tool: { name: text, ok: outcome !== "gave_up" },
+      tool: { name: text, ok: true },
       ...(holderThreadRef ? { threadRef: holderThreadRef } : {}),
     });
     bus.publish({
@@ -2658,6 +2723,10 @@ async function bindTurnComputer(owner: TurnOwner, resource: string, exclusive = 
       if (!active()) throw new DirectTurnSetupCancelled("Computer wait cancelled");
       if (!exclusive || claimTurnResource(owner, resource)) break;
       if (!waitingMessage) {
+        // Arrival in the waitlist is the chip's timestamp: the position it
+        // reads is where this turn sits the moment it starts waiting (#1652).
+        const position = turnResources.startWaiting(resource, owner);
+        const estimateMs = turnResources.waitEstimateMs(resource);
         const blocker = turnResources.blocker(resource, owner);
         const holderBot = blocker && store.botByThread(blocker.threadId);
         const holderTask = holderBot && blocker && store.taskByThread(holderBot.id, blocker.threadId);
@@ -2670,7 +2739,7 @@ async function bindTurnComputer(owner: TurnOwner, resource: string, exclusive = 
           : undefined;
         waitingMessage = store.appendMessage(owner.threadId, {
           role: "bot", kind: "activity",
-          tool: { name: computerWaitingText(holder) },
+          tool: { name: computerWaitingText(holder, { position, estimateMs }) },
           ...(holderThreadRef ? { threadRef: holderThreadRef } : {}),
         });
         waitedSince = Date.now();
@@ -2678,6 +2747,7 @@ async function bindTurnComputer(owner: TurnOwner, resource: string, exclusive = 
           ...waitEventBase(),
           type: "turn.wait_started",
           resource,
+          position,
           ...(holder ? { holder } : {}),
         });
         // #1655: the wait is where an overflow choice gets made. The card
@@ -2706,8 +2776,12 @@ async function bindTurnComputer(owner: TurnOwner, resource: string, exclusive = 
       }
       sweepIdleCloudSeats();
       if (Date.now() >= deadline) {
-        endWait("gave_up");
-        throw new ComputerWaitGaveUp(computerStillBusyText(holder, GROUP_GOAL_WAIT_MAX_MS));
+        // ADR-2 (#1651): the ceiling parks the turn — settled, with a
+        // registered resume — instead of failing it. The owner mark lets the
+        // live lazy-claim rejection path park the same way.
+        endWait("parked");
+        owner.computerParkedOn = resource;
+        throw new ComputerWaitParked(computerParkedText(holder, COMPUTER_WAIT_MAX_MS), resource, owner.generation);
       }
       await new Promise<void>(resolve => setTimeout(resolve, 100));
     }
@@ -2715,9 +2789,20 @@ async function bindTurnComputer(owner: TurnOwner, resource: string, exclusive = 
     // Never patch the waiting chip over: the queue position this turn held
     // stays visible beside what the wait came to.
     endWait(active() && turnResources.owns(resource, owner) ? "acquired" : "stopped");
+    // Whatever the wait came to, this turn is no longer waiting: an owner
+    // left at the front would block the grant for everyone behind it.
+    turnResources.stopWaiting(resource, owner);
   }
   turnResourceOwners.set(owner.threadId, owner);
   turnComputerResources.set(owner.threadId, { owner, resource });
+  // A screen call that started before this bind (#1653) fenced nothing
+  // because no claim existed yet: carry its pending start into the fresh
+  // claim so the idle window still defers to the running call.
+  const pendingStarts = pendingComputerCallStarts.get(owner.threadId);
+  if (pendingStarts?.generation === owner.generation && pendingStarts.count > 0) {
+    pendingComputerCallStarts.delete(owner.threadId);
+    for (let i = 0; i < pendingStarts.count; i += 1) turnResources.beginComputerCall(resource, owner);
+  }
 }
 
 function botForThread(botId: string, threadId: string): BotRecord | null {
@@ -2810,7 +2895,13 @@ function requestedTaskBot(botId: string, rawThreadId: unknown): BotRecord {
   return task;
 }
 
-async function interruptDirectThread(botId: string, threadId: string): Promise<void> {
+async function interruptDirectThread(botId: string, threadId: string, options?: { preserveComputerResume?: boolean }): Promise<void> {
+  // A parked turn has settled its provider but still owns a future resume.
+  // Stop cancels that work too. The parking teardown itself preserves it.
+  if (!options?.preserveComputerResume && pendingComputerResumes.delete(threadId)
+      && store.taskByThread(botId, threadId)?.activity === "parked.computer") {
+    store.setTaskActivity(botId, threadId, "idle");
+  }
   const requestOwner = directRequestOwners.get(threadId);
   if (requestOwner) {
     requestOwner.stopped = true;
@@ -2851,7 +2942,7 @@ function noteTeammatesLeftRunning(botId: string, threadId: string, running: Room
 }
 
 async function interruptAllDirectThreads(botId: string): Promise<void> {
-  const threads = store.tasks(botId).filter((task) => task.busy || directTurnDispatchClaims.has(task.threadId) || roomHandoffs.activeDirect(task.threadId));
+  const threads = store.tasks(botId).filter((task) => task.busy || directTurnDispatchClaims.has(task.threadId) || roomHandoffs.activeDirect(task.threadId) || pendingComputerResumes.has(task.threadId));
   // Revoke every sibling before yielding to any provider teardown.
   for (const task of threads) {
     cancelDirectTurnDispatch(botId, task.threadId);
@@ -3356,7 +3447,7 @@ function checkedExportSkillNames(
   const names = [...value] as string[];
   if (new Set(names).size !== names.length) return { ok: false, error: "skillIds must not contain duplicates" };
   if (names.length > BOT_PACKAGE_MAX_SKILLS) return { ok: false, error: `skillIds must contain at most ${BOT_PACKAGE_MAX_SKILLS} names` };
-  const available = new Set(bots.flatMap((bot) => listSkills(bot.id).map((skill) => skill.name)));
+  const available = new Set(bots.flatMap((bot) => listBotSkills(bot).map((skill) => skill.name)));
   const unknown = names.find((name) => !available.has(name));
   if (unknown) return { ok: false, error: `skillIds contains unknown imported skill "${unknown}"` };
   return { ok: true, names };
@@ -3371,9 +3462,9 @@ function collectExportSkills(
   if (!selected.size) return byBot;
   for (const bot of bots) {
     const assigned: ExportablePackageSkill[] = [];
-    for (const listing of listSkills(bot.id)) {
+    for (const listing of listBotSkills(bot)) {
       if (!selected.has(listing.name)) continue;
-      const instructions = readSkillFile(bot.id, listing.name);
+      const instructions = readBotSkillFile(bot, listing.name);
       if (instructions === null) {
         throw new Error(`Skill "${listing.name}" changed or is unavailable and cannot be exported safely`);
       }
@@ -3404,7 +3495,7 @@ function collectTeamSkills(
   selection: unknown,
 ): { ok: true; all: boolean; skillsByBot: Map<string, ExportablePackageSkill[]>; skipped: TeamExportSkip[]; available: string[] } | { ok: false; error: string; available: string[] } {
   const all = selection === undefined || selection === "all";
-  const available = [...new Set(bots.flatMap((bot) => listSkills(bot.id).map((skill) => skill.name)))].sort();
+  const available = [...new Set(bots.flatMap((bot) => listBotSkills(bot).map((skill) => skill.name)))].sort();
   if (!all && (!Array.isArray(selection) || selection.some((name) => typeof name !== "string" || !isSkillName(name)))) {
     return { ok: false, error: "skills must be \"all\" or a list of skill names", available };
   }
@@ -3415,9 +3506,9 @@ function collectTeamSkills(
   const skipped: TeamExportSkip[] = [];
   for (const bot of bots) {
     const assigned: ExportablePackageSkill[] = [];
-    for (const listing of listSkills(bot.id)) {
+    for (const listing of listBotSkills(bot)) {
       if (!chosen.has(listing.name)) continue;
-      const instructions = readSkillFile(bot.id, listing.name);
+      const instructions = readBotSkillFile(bot, listing.name);
       if (instructions === null) {
         if (!all) return { ok: false, error: `Skill "${listing.name}" changed or is unavailable and cannot be shared safely`, available };
         const part = `skills[${listing.name}]`;
@@ -3552,6 +3643,25 @@ const sendSequencer = new SendSequencer();
 bootSelection = await defaultSelection();
 store.seedIfEmpty();
 hostedModels?.reconcile(store);
+// Skills library boot sweep (features.skillsLibrary): migrate per-bot
+// copies into the shared library and apply assignments. Flag-off boots
+// never enter this block, keeping per-bot behavior byte-identical.
+if (skillsLibraryEnabled(cfg)) {
+  try {
+    const sweep = runSkillsLibraryBootSweep({
+      bots: store.bots,
+      patch: (botId, assignedSkills) => {
+        store.patchBot(botId, { assignedSkills });
+      },
+    });
+    const applied = sweep.outcomes.filter((outcome) => outcome.outcome !== "skipped").length;
+    if (sweep.outcomes.length) {
+      console.log(`[skills-library] boot sweep: ${applied} skill(s) migrated or deduplicated, ${sweep.outcomes.length - applied} skipped`);
+    }
+  } catch (error) {
+    console.error(`[skills-library] boot sweep failed: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
 // A committed profile cleanup means both its config deletion and bot-reference
 // cleanup were intended to be durable. Reconcile stale secondary references
 // before Electron can ACK and remove the journal: a crash between those writes
@@ -3595,7 +3705,7 @@ const wireTask = (task: TaskRecord): WireTask => {
 };
 
 const wireBot = (bot: BotRecord): WireBot => {
-  const { resumeCursors: _resumeCursors, tasks, approvalGrant, lastProfileRequestId: _lastProfileRequestId, lastTighteningRequestId: _lastTighteningRequestId, lastTeamSetupReceipt: _lastTeamSetupReceipt, packageBase: _packageBase, ...rest } = bot;
+  const { resumeCursors: _resumeCursors, tasks, approvalGrant, lastProfileRequestId: _lastProfileRequestId, lastTighteningRequestId: _lastTighteningRequestId, lastTeamSetupReceipt: _lastTeamSetupReceipt, packageBase: _packageBase, assignedSkills: _assignedSkills, ...rest } = bot;
   // An elevated selection is inert until the desktop confirms its exact
   // private reply. Every ordinary client sees the effective Ask state during
   // that two-phase window, never a grant that may still roll back.
@@ -3606,10 +3716,18 @@ const wireBot = (bot: BotRecord): WireBot => {
     avatarUrl: visible.avatarUrl ?? null, ...(tasks ? { tasks: tasks.map(wireTask) } : {}) };
 };
 
+function toolScopeForTurn(botId: string) {
+  const bot = store.bot(botId);
+  if (!bot) throw Object.assign(new Error("no such bot"), { status: 404 });
+  const parsed = parseToolScope(bot.toolScope);
+  if (!parsed.ok) throw Object.assign(new Error("This bot's tool selection is invalid. Open Access settings and save a valid selection before starting a turn."), { status: 409, code: "tool_scope" });
+  return parsed.scope;
+}
+
 /** The correlated private response carries the requested value so Electron
  * can validate it before sending the confirmation that makes it effective. */
 const wireTrustedApprovalBot = (bot: NonNullable<ReturnType<typeof store.bot>>) => {
-  const { resumeCursors: _resumeCursors, tasks, approvalGrant: _approvalGrant, lastProfileRequestId: _lastProfileRequestId, lastTighteningRequestId: _lastTighteningRequestId, lastTeamSetupReceipt: _lastTeamSetupReceipt, packageBase: _packageBase, ...rest } = bot;
+  const { resumeCursors: _resumeCursors, tasks, approvalGrant: _approvalGrant, lastProfileRequestId: _lastProfileRequestId, lastTighteningRequestId: _lastTighteningRequestId, lastTeamSetupReceipt: _lastTeamSetupReceipt, packageBase: _packageBase, assignedSkills: _assignedSkills, ...rest } = bot;
   return { ...rest, approvalMode: approvalModeFor(rest), avatarUrl: rest.avatarUrl ?? null, ...(tasks ? { tasks: tasks.map(wireTask) } : {}) };
 };
 
@@ -3684,7 +3802,7 @@ function previewSystemPrompt(bot: BotRecord) {
     { id: "profile", label: "Profile changes", text: agentsMounted ? PROFILE_PROMPT : "" },
     { id: "section-context", label: "Section context", text: sectionContextSystemPrompt(bot.section) },
     { id: "memory", label: "Memory", text: memorySystemPrompt(bot.id, { managedWrites: agentsMounted, fileTools: Boolean(privateWorkspace), enabled: bot.memoryEnabled !== false }) },
-    { id: "skills", label: "Skills index", text: privateWorkspace ? skillsSystemPrompt(bot.id) : "" },
+    { id: "skills", label: "Skills index", text: privateWorkspace ? skillsSystemPrompt(bot.id, skillsLibraryEnabled(cfg) ? bot.assignedSkills : undefined) : "" },
   ]);
   const totalBytes = built.sections.reduce((n, s) => n + s.bytes, 0);
   return {
@@ -3755,7 +3873,7 @@ async function botOverview(bot: BotRecord): Promise<BotOverview> {
     webhooks: webhooks.list()
       .filter((webhook) => webhook.botId === bot.id)
       .map((webhook) => ({ name: webhook.name, enabled: webhook.enabled })),
-    skills: listSkills(bot.id).map((skill) => ({
+    skills: listBotSkills(bot).map((skill) => ({
       name: skill.name,
       description: skill.description,
       enabled: skill.enabled,
@@ -4546,6 +4664,7 @@ const channelTaskBlocked = (group: GroupRecord) =>
       (message) =>
         message.kind === "options" &&
         message.card?.requestId &&
+        (!isPersistentQuestionCard(message.card) || runningTurnEngines.has(task.threadId)) &&
         !message.card.answered &&
         !message.card.dismissed && !message.card.expired,
     ),
@@ -5086,6 +5205,7 @@ function cancelGroupTurnOperations(
     detail: "Stopped by you.",
   },
 ) {
+  pendingComputerResumes.delete(threadId);
   cancelTeamSetupResumesForThread(threadId);
   roomHandoffs.cancelRoom(groupId, threadId);
   for (const operation of groupTurnOperations.get(groupId) ?? []) {
@@ -5595,7 +5715,7 @@ async function answerRequest(
   // An answered question keeps its words. `request.resolved` only records
   // the behavior, so without this the card reads "answer" forever and the
   // person can no longer see what they told the bot.
-  if (outcome !== "unavailable" && behavior === "answer" && message && cardMessage) {
+  if (outcome === "answered" && behavior === "answer" && message && cardMessage) {
     const settled = store.messagesFor(threadId).find((m) => m.id === cardMessage.id)?.card;
     if (settled) {
       store.patchMessage(threadId, cardMessage.id, { card: { ...settled, answeredText: message } });
@@ -5627,11 +5747,12 @@ async function answerRequest(
     const existing = messageId
       ? thread.find((m) => m.id === messageId)
       : thread.find((m) => m.card?.requestId === requestId);
-    if (existing?.card && !existing.card.answered) {
+    const persistentQuestion = isPersistentQuestionCard(existing?.card);
+    if (existing?.card && !existing.card.answered && !persistentQuestion) {
       store.patchMessage(threadId, existing.id, { card: { ...existing.card, answered: "unavailable", dismissed: true } });
     }
     if (messageId) askMessageByRequest.delete(`${threadId}:${requestId}`);
-    store.appendMessage(threadId, {
+    if (!persistentQuestion) store.appendMessage(threadId, {
       role: "bot",
       kind: "activity",
       tool: { name: "Couldn't deliver that answer — the request is no longer open, so the action was not run", ok: false },
@@ -5653,6 +5774,12 @@ function closeOpenApprovals(threadId: string): void {
     const card = message.card;
     if (!card?.requestId || card.answered || card.dismissed) continue;
     if (card.routineRequest || card.skillRequest) continue;
+    if (isPersistentQuestionCard(card)) {
+      // Keep the durable card; its in-flight adapter mapping cannot survive
+      // turn cleanup, and the response route can resume it from the transcript.
+      askMessageByRequest.delete(`${threadId}:${card.requestId}`);
+      continue;
+    }
     store.patchMessage(threadId, message.id, { card: { ...card, answered: "unavailable", dismissed: true } });
     askMessageByRequest.delete(`${threadId}:${card.requestId}`);
   }
@@ -5661,6 +5788,7 @@ function closeOpenApprovals(threadId: string): void {
 function requestBehavior(value: unknown): "allow" | "deny" | "answer" | null {
   return value === "allow" || value === "deny" || value === "answer" ? value : null;
 }
+
 // the last settled assistant text per thread, so a "finished" notification
 // can carry what the bot actually said
 const lastReply = new Map<string, string>();
@@ -5721,6 +5849,9 @@ const ASK_BOT_TIMEOUT_MS = Math.max(5_000, Number(process.env.OMB_ASK_BOT_TIMEOU
 // free up and reassigns, and a chat round moves on with a chip that says so —
 // the wait ends as data, not as a dead room. Tests shrink it.
 const GROUP_GOAL_WAIT_MAX_MS = Math.max(1_000, Number(process.env.OMB_GOAL_WAIT_MAX_MS) || 30 * 60_000);
+// ADR-2 (#1651): the computer wait has its own ceiling, decoupled from the
+// room cap above, and the deadline parks the turn instead of failing it.
+const COMPUTER_WAIT_MAX_MS = Math.max(1_000, Number(process.env.OMB_COMPUTER_WAIT_MAX_MS) || 30 * 60_000);
 // Reassigning around a busy teammate is bounded too: after this many
 // exhausted waits in one run the team is blocked on availability, not stuck.
 const GROUP_GOAL_MAX_WAIT_EXHAUSTIONS = 3;
@@ -5807,6 +5938,7 @@ const watchdog = new TurnWatchdog({
         // connector and credential continuations.
         drainQueuedSends();
         drainConnectorResumes();
+        drainComputerResumes();
         drainSecretResumes();
         drainTeamSetupResumes();
       }
@@ -7174,7 +7306,20 @@ bus.subscribe((event: RuntimeEvent) => {
           // they cannot keep a quiet seat held.
           if (touches && surface === "computer") {
             const computer = turnComputerResources.get(event.threadId);
-            if (computer) turnResources.activity(computer.resource, computer.owner);
+            if (computer) {
+              // A quiet window cannot expire while this call executes.
+              turnResources.endComputerCall(computer.resource, computer.owner);
+              turnResources.activity(computer.resource, computer.owner);
+            } else {
+              // The call never forwarded onto a bound desktop, or the lazy
+              // bind never landed: drop its pending start so it cannot
+              // fence a claim taken later (#1653).
+              const pending = pendingComputerCallStarts.get(event.threadId);
+              if (pending) {
+                if (pending.count > 1) pendingComputerCallStarts.set(event.threadId, { ...pending, count: pending.count - 1 });
+                else pendingComputerCallStarts.delete(event.threadId);
+              }
+            }
             // Real cloud-screen work refreshes the #1655 idle stop for
             // that seat; the poller's own frames never arrive here, so
             // preview traffic cannot keep a paid machine awake.
@@ -7203,6 +7348,26 @@ bus.subscribe((event: RuntimeEvent) => {
           turnId: liveTurnId,
         });
         if (event.itemId) toolMessageByItem.set(`${event.threadId}:${event.itemId}`, message.id);
+        // A screen-touching computer tool opening is an in-flight call on
+        // that turn's claim (#1653): the seat cannot be idle-released out
+        // from under I/O the desktop is still executing. Its completion —
+        // or the turn settling — drops the fence.
+        if (screenTouchingTool(name) && screenSurfaceForTool(name) === "computer") {
+          const computer = turnComputerResources.get(event.threadId);
+          if (computer) {
+            turnResources.beginComputerCall(computer.resource, computer.owner);
+          } else {
+            // A lazy attach (#1361) may not have seated the claim yet: the
+            // gate finishes the bind before the call forwards, so hold the
+            // start here and let bindTurnComputer fence the fresh claim.
+            const generation = activeInternalGenerationByThread.get(event.threadId);
+            if (generation) {
+              const pending = pendingComputerCallStarts.get(event.threadId);
+              pendingComputerCallStarts.set(event.threadId,
+                pending?.generation === generation ? { generation, count: pending.count + 1 } : { generation, count: 1 });
+            }
+          }
+        }
       }
       break;
     case "request.opened": {
@@ -7326,6 +7491,7 @@ bus.subscribe((event: RuntimeEvent) => {
           subtitle: event.summary,
           options: event.choices?.length ? event.choices : permission ? ["Allow", "Deny"] : [],
           requestId: event.requestId,
+          requestType: permission ? "permission" : "question",
           tool: permission ? event.tool : undefined,
           questionRequest: questions
             ? { version: 1, questions, ...(event.origin === "output" ? { origin: "output" as const } : {}) }
@@ -7391,9 +7557,15 @@ bus.subscribe((event: RuntimeEvent) => {
       if (messageId) {
         const existing = store.messagesFor(event.threadId).find((m) => m.id === messageId);
         if (existing?.card && !existing.card.answered) {
-          store.patchMessage(event.threadId, messageId, {
-            card: { ...existing.card, answered: event.behavior, dismissed: event.source !== "user" },
-          });
+          if (shouldSettleRequestCard(existing.card, event.source)) {
+            store.patchMessage(event.threadId, messageId, {
+              card: {
+                ...existing.card,
+                answered: event.behavior,
+                dismissed: isPersistentQuestionCard(existing.card) ? false : event.source !== "user",
+              },
+            });
+          }
         }
         if (event.requestId) askMessageByRequest.delete(`${event.threadId}:${event.requestId}`);
       }
@@ -7521,9 +7693,13 @@ bus.subscribe((event: RuntimeEvent) => {
       // interrupted the turn; Claude settles that interrupt as
       // exit_before_result, not "interrupted", so this generation's marker
       // keeps the same failure from reporting a second incident.
+      // A turn parked at the computer ceiling (#1651) settles itself the
+      // same way: interrupted for a resume, not broken.
       const lazyClaimAlreadyReported = event.stopReason === "exit_before_result" &&
         turnResourceOwners.get(event.threadId)?.lazyClaimFailureReported === true;
-      if (!event.ok && event.stopReason !== "interrupted" && !lazyClaimAlreadyReported && !routines?.runForThread(event.threadId)) {
+      const computerParked = event.stopReason === "exit_before_result" &&
+        turnResourceOwners.get(event.threadId)?.computerParkedOn !== undefined;
+      if (!event.ok && event.stopReason !== "interrupted" && !lazyClaimAlreadyReported && !computerParked && !routines?.runForThread(event.threadId)) {
         const broken = bot ?? (speaker ? store.bot(speaker.botId) : undefined);
         if (broken) reportIncident({ kind: "failed", bot: broken, threadId: event.threadId, detail: event.stopReason?.trim() || "the run ended without a result" });
       }
@@ -7551,7 +7727,7 @@ bus.subscribe((event: RuntimeEvent) => {
           releaseTurnResources(resourceOwner);
           if (!isCurrent()) return;
           if (store.taskByThread(bot.id, event.threadId)?.activity !== "dead") {
-            store.setTaskActivity(bot.id, event.threadId, "idle");
+            store.setTaskActivity(bot.id, event.threadId, resourceOwner?.computerParkedOn !== undefined ? "parked.computer" : "idle");
           }
           directTurnBots.delete(event.threadId);
           if (continueComputerSelection(event.threadId, generation, event.ok)) return;
@@ -7561,6 +7737,7 @@ bus.subscribe((event: RuntimeEvent) => {
             retryDelegationsWaitingOn(bot.id);
             drainQueuedSends();
             drainConnectorResumes();
+            drainComputerResumes();
             drainSecretResumes();
             drainTeamSetupResumes();
             drainDelegationWakes();
@@ -7753,6 +7930,8 @@ const delegationWatch = new Map<string, {
   routineRunId?: string;
   /** when the delegated turn was dispatched — elapsed time for status checks */
   startedAtMs?: number;
+  /** Cross-bot send: leave the terminal state in the recipient thread. */
+  oneWay?: boolean;
 }>();
 
 // Peer wake: when a delegated reply lands, resume the source bot so it can
@@ -8081,7 +8260,7 @@ function finalizeDelegationWatch(
   const source = watched.sourceBotId
     ? store.bot(watched.sourceBotId)
     : (watched.sourceThreadId ? store.botByThread(watched.sourceThreadId) : undefined);
-  if (source && target && !canReachPeer(source, target)) {
+  if (!watched.oneWay && source && target && !canReachPeer(source, target)) {
     ok = false;
     reply = "";
     failureName = "Result withheld: team or peer access changed while the teammate was working";
@@ -8098,6 +8277,16 @@ function finalizeDelegationWatch(
       status: ok ? "done" : "failed",
       result: ok ? reply : failureName,
     });
+  }
+  if (watched.oneWay) {
+    if (!ok && store.taskByThread(watched.toBotId, threadId)) {
+      store.appendMessage(threadId, {
+        role: "bot",
+        kind: "activity",
+        tool: { name: `Send failed — ${failureName}`, ok: false, ...(watched.taskId ? { handoffId: watched.taskId } : {}) },
+      });
+    }
+    return true;
   }
   let channel: GroupRecord | undefined = watched.channelId ? store.group(watched.channelId) : undefined;
   let terminalThreadId: string | undefined = watched.sourceThreadId;
@@ -8229,7 +8418,7 @@ bus.subscribe((event: RuntimeEvent) => {
 /** How a drained delegation becomes a real turn on the target. Shared by
  * the settle-time drain and the boot-time drain of what a previous process
  * left queued. */
-const runDelegatedTurn: Parameters<typeof drainDelegations>[3] = (toBotId, rawText, commsDepth, sourceThreadId, channel, taskId, sourceBotId, openedThreadId) => {
+const runDelegatedTurn: Parameters<typeof drainDelegations>[3] = (toBotId, rawText, commsDepth, sourceThreadId, channel, taskId, sourceBotId, openedThreadId, oneWay) => {
     // startTurn REJECTS on an ordinary condition — busy target, deleted bot,
     // unavailable provider. Unhandled, that rejection is fatal to the
     // harness (Node's default), which in the packaged app kills the server
@@ -8250,7 +8439,7 @@ const runDelegatedTurn: Parameters<typeof drainDelegations>[3] = (toBotId, rawTe
       ? { botId: opener.id, name: opener.name, unattended: unattended || undefined }
       : undefined;
     const text = openedThreadId && opener
-      ? withPeerProvenance(rawText, { botName: opener.name, delivery: "start_thread", unattended })
+      ? withPeerProvenance(rawText, { botName: opener.name, delivery: oneWay ? "send_to_bot" : "start_thread", unattended })
       : rawText;
     if (targetThreadId) {
       delegationWatch.set(targetThreadId, {
@@ -8262,6 +8451,7 @@ const runDelegatedTurn: Parameters<typeof drainDelegations>[3] = (toBotId, rawTe
         sourceBotId,
         routineRunId: activeRoutineRunForThread(sourceThreadId)?.id,
         startedAtMs: Date.now(),
+        ...(oneWay ? { oneWay: true } : {}),
       });
     }
     let failureReported = false;
@@ -8350,7 +8540,7 @@ bus.subscribe((event: RuntimeEvent) => {
   // firing it later: the user who hit Stop does not expect the delegations
   // that turn queued to run anyway, minutes later, on an unrelated turn.
   if (!event.ok) discardDelegations(commsBus, event.threadId);
-  else drainThreadDelegations(event.threadId);
+  drainThreadDelegations(event.threadId);
   // A settling bot frees itself as a delegation TARGET too: handoffs that
   // found it busy earlier were kept queued — waiting until it's free or the
   // 24-hour expiry, not counting retries — on their own source threads, and
@@ -8493,6 +8683,88 @@ async function startOrQueueDirectMessage(botId: string, threadId: string, text: 
   }
   const message = await startTurn(botId, text, { threadId, replyTo, sendId, sender, trigger });
   return { ok: true as const, threadId, message };
+}
+
+/** A provider can finish its run before the owner answers. Persist that answer
+ * as a normal reply and run/queue it against the original conversation. */
+async function deliverLateQuestionAnswer(
+  auth: RequestAuth,
+  threadId: string,
+  requestId: string,
+  answer: string,
+  cardMessage: Message,
+  owner: BotRecord,
+): Promise<{ queued: boolean }> {
+  const group = store.groupByThread(threadId);
+  const roomTarget = group
+    ? group.dm
+      ? group.threadId === threadId
+      : Boolean(store.groupTaskByThread(group.id, threadId))
+    : false;
+  if (group && (!roomTarget || !group.memberIds.includes(owner.id))) {
+    throw Object.assign(new Error("the bot that asked this question is no longer in this conversation"), { status: 409 });
+  }
+  if (!group && !store.taskByThread(owner.id, threadId)) {
+    throw Object.assign(new Error("the question's conversation no longer exists"), { status: 409 });
+  }
+
+  const text = group ? `@${owner.name}: ${answer}` : answer;
+  const sendId = `late-question-${createHash("sha256").update(`${threadId}:${requestId}`).digest("hex").slice(0, 32)}`;
+  const key = group
+    ? `group:${group.id}:${threadId}:${sendId}`
+    : `bot:${owner.id}:${threadId}:${sendId}`;
+  const receipt = await sendSequencer.run(key, sendFingerprint(text, cardMessage.id, group ? "chat" : undefined), async () => {
+    const accepted = acceptedSendMatch(store.messagesFor(threadId), sendId, text, cardMessage.id, group ? "chat" : undefined);
+    if (accepted.kind === "conflict") throw Object.assign(new Error("this question already has a different recorded answer"), { status: 409 });
+    if (accepted.kind === "match") return { queued: false };
+
+    const queuedDirect = group ? null : queuedSteeredMessage(owner.id, threadId, sendId);
+    if (queuedDirect) {
+      if (queuedDirect.text !== text || queuedDirect.replyToId !== cardMessage.id) {
+        throw Object.assign(new Error("this question already has a different queued answer"), { status: 409 });
+      }
+      return { queued: true };
+    }
+    const queuedRoom = group ? queuedChannelMessage(group.id, threadId, sendId) : null;
+    if (queuedRoom) {
+      if (queuedRoom.text !== text || queuedRoom.replyToId !== cardMessage.id || queuedRoom.mode !== "chat") {
+        throw Object.assign(new Error("this question already has a different queued answer"), { status: 409 });
+      }
+      return { queued: true };
+    }
+
+    const latestCard = store.messagesFor(threadId).find((message) => message.id === cardMessage.id)?.card;
+    if (!latestCard || latestCard.answered || latestCard.dismissed) {
+      throw Object.assign(new Error("this question has already been answered"), { status: 409 });
+    }
+    assertWithinBudget(cfg, DATA_DIR);
+    const sender = messageSender(auth);
+    const trigger = usageTriggerFor(auth);
+    if (group) {
+      const current = store.group(group.id);
+      if (!current || !roomTarget) throw Object.assign(new Error("the room switched tasks before it could receive the answer"), { status: 409 });
+      if (groupIsWorking(current)) {
+        const queued = queueChannelMessage(current.id, threadId, text, {
+          replyToId: cardMessage.id,
+          sendId,
+          mode: "chat",
+          sender,
+          trigger,
+        });
+        return { queued: true, queueId: queued.id };
+      }
+      startGroupTurn(current.id, text, cardMessage, sendId, "chat", undefined, { threadId, sender, trigger });
+      return { queued: false };
+    }
+    const direct = await startOrQueueDirectMessage(owner.id, threadId, text, cardMessage, sendId, sender, trigger);
+    return { queued: "queued" in direct && Boolean(direct.queued) };
+  });
+
+  const latest = store.messagesFor(threadId).find((message) => message.id === cardMessage.id)?.card;
+  if (latest && !latest.answered && !latest.dismissed) {
+    store.patchMessage(threadId, cardMessage.id, { card: { ...latest, answered: "answer", answeredText: answer, dismissed: false } });
+  }
+  return receipt;
 }
 
 /** How many start_thread calls one turn may make. Same spirit as the
@@ -8858,6 +9130,7 @@ async function startTurn(
   }
   const policyRefusal = policyModelRefusal(instance);
   if (policyRefusal) throw Object.assign(new Error(policyRefusal), { status: 409, code: "managed_policy" });
+  const toolScope = toolScopeForTurn(bot.id);
   // On a Cloud home a guest's turn never gets a shell or reads outside its
   // own folder (docs/cloud-pro.md): an engine that cannot run it that way is
   // refused, in one plain line, before anything is recorded.
@@ -9042,6 +9315,7 @@ async function startTurn(
         retryDelegationsWaitingOn(bot.id);
         drainQueuedSends();
         drainConnectorResumes();
+        drainComputerResumes();
         drainSecretResumes();
         drainTeamSetupResumes();
         drainDelegationWakes();
@@ -9410,6 +9684,22 @@ async function startTurn(
       // the dispatch-failure rules (person-started turns only).
       const surfaceLazyClaimRejection = (label: string) => (failure: string) => {
         if (activeInternalGenerationByThread.get(threadId) !== resourceOwner.generation || !threadBusy(bot.id, threadId)) return;
+        // The wait ceiling parked this turn (#1651): register the resume and
+        // settle the live turn. No error entry, no incident — the parked chip
+        // the wait appended is the whole story. The slot still fails, so the
+        // gate keeps refusing screen calls for the rest of this generation
+        // while the interrupt lands.
+        if (resourceOwner.computerParkedOn) {
+          registerComputerResume({
+            botId: bot.id,
+            threadId,
+            resource: resourceOwner.computerParkedOn,
+            generation: resourceOwner.generation,
+            afterMessageId: store.activePath(threadId).findLast((entry) => entry.role === "user")?.id,
+          });
+          void interruptDirectThread(bot.id, threadId, { preserveComputerResume: true }).catch(() => {});
+          return;
+        }
         const message = `computer unavailable — ${label} could not be claimed for this turn (${failure})`;
         store.appendMessage(threadId, {
           role: "bot",
@@ -9517,7 +9807,10 @@ async function startTurn(
           });
           return true;
         } catch (error) {
-          if (strict) throw error;
+          // A wait ceiling settled this turn as parked, not as an unavailable
+          // Auto destination. Let dispatch register its resume instead of
+          // continuing the provider without the requested computer.
+          if (strict || error instanceof ComputerWaitParked) throw error;
           if (directTurnGenerationByThread.get(threadId) === dispatchClaimId) releaseLocalVmThread(threadId);
           return false;
         }
@@ -9856,7 +10149,9 @@ async function startTurn(
         // never redoes — or forgets — what another one already did
         { id: "recent", label: "Recent work", text: recentWorkPrompt(recentWork(recentWorkSources(bot), bot, { userName: cfg.profile?.name?.trim() || "User", currentThreadId: threadId, ...recentWorkFilter() })) },
         { id: "memory", label: "Memory", text: memorySystemPrompt(bot.id, { managedWrites: Boolean(integrations.agents), fileTools: worksInWorkspace, enabled: bot.memoryEnabled !== false }) },
-        { id: "skills", label: "Skills index", text: privateWorkspace ? skillsSystemPrompt(bot.id) : "" },
+        // liveBot was captured before awaited setup work; an assignment PUT
+        // in that window must still reach this turn's prompt.
+        { id: "skills", label: "Skills index", text: privateWorkspace ? skillsSystemPrompt(bot.id, skillsLibraryEnabled(cfg) ? (store.bot(bot.id)?.assignedSkills ?? bot.assignedSkills) : undefined) : "" },
         { id: "skill-instructions", label: "Skill instructions", text: skillInstructions },
         { id: "playbooks", label: "Playbooks", text: packagePlaybooks },
         { id: "webhook", label: "Webhook provenance", text: opts?.automationSource === "webhook" ? WEBHOOK_PROMPT : "" },
@@ -9899,6 +10194,7 @@ async function startTurn(
         refreshSystemPrompt: true,
         images: turnImages,
         approvalMode: approvalModeForTurn(bot, commsDepth > 0, threadId),
+        toolScope,
         ...(guestConfined ? { guestConfined: true, confinedWhy: confinedWhy(threadId) } : {}),
         model,
         effort,
@@ -9973,6 +10269,7 @@ async function startTurn(
         retryDelegationsWaitingOn(bot.id);
         drainQueuedSends();
         drainConnectorResumes();
+        drainComputerResumes();
         drainSecretResumes();
         drainTeamSetupResumes();
         drainDelegationWakes();
@@ -10015,6 +10312,7 @@ async function startTurn(
         if (ownsLatestGeneration) {
           drainQueuedSends();
           drainConnectorResumes();
+          drainComputerResumes();
           drainSecretResumes();
           drainTeamSetupResumes();
           drainDelegationWakes();
@@ -10023,6 +10321,31 @@ async function startTurn(
       }
       if (!ownsLatestGeneration) {
         settleDirectFollowup(dispatchClaimId);
+        return;
+      }
+      if (e instanceof ComputerWaitParked) {
+        settleDirectFollowup(dispatchClaimId, { ok: false, text: e.message });
+        registerComputerResume({
+          botId: bot.id,
+          threadId,
+          resource: e.resource,
+          generation: e.generation,
+          afterMessageId: store.activePath(threadId).findLast((entry) => entry.role === "user")?.id,
+        });
+        // Settled as parked, not failed (#1651): the chip the wait appended
+        // is the whole transcript story, and the registered resume owns what
+        // happens next on this thread.
+        if (store.taskByThread(bot.id, threadId)?.activity !== "dead") {
+          store.setTaskActivity(bot.id, threadId, "parked.computer");
+        }
+        directTurnBots.delete(threadId);
+        retryDelegationsWaitingOn(bot.id);
+        drainQueuedSends();
+        drainConnectorResumes();
+        drainComputerResumes();
+        drainSecretResumes();
+        drainTeamSetupResumes();
+        drainDelegationWakes();
         return;
       }
       let message = e instanceof Error ? e.message : String(e);
@@ -10068,7 +10391,7 @@ async function startTurn(
       settleDirectFollowup(dispatchClaimId, { ok: false, text: message });
       // The wait already wrote its failure resolution; keep all dispatch
       // failure bookkeeping below without adding the same error twice.
-      if (!(e instanceof ComputerWaitGaveUp)) store.appendMessage(threadId, {
+      store.appendMessage(threadId, {
         role: "bot",
         kind: "activity",
         turnSucceeded: false,
@@ -10098,6 +10421,7 @@ async function startTurn(
       // drain would strand anything queued behind this turn
       drainQueuedSends();
       drainConnectorResumes();
+      drainComputerResumes();
       drainSecretResumes();
       drainTeamSetupResumes();
       drainDelegationWakes();
@@ -10885,8 +11209,23 @@ const tighteningRequests = new TighteningRequestService({
   // The card judges the effective mounts, so the snapshot resolves the same
   // way the engine does: through the config-aware custom-server filter.
   mountedMcpServers: (bot) => Object.keys(engineMcpServers(bot)),
-  enabledSkills: (botId) => listSkills(botId).filter((skill) => skill.enabled).map((skill) => skill.name),
+  enabledSkills: (botId) => {
+    const record = store.bot(botId);
+    return (record ? listBotSkills(record) : listSkills(botId)).filter((skill) => skill.enabled).map((skill) => skill.name);
+  },
   disableSkill: (botId, name) => {
+    const record = store.bot(botId);
+    // Private skills win collisions, including disabled/private copies.
+    // Disabling one must not reveal a same-named shared skill instead.
+    if (skillsLibraryEnabled(cfg) && !listSkills(botId).some((skill) => skill.name === name)
+        && record?.assignedSkills?.includes(name)) {
+      try {
+        const saved = store.patchBot(botId, { assignedSkills: record.assignedSkills.filter((assigned) => assigned !== name) });
+        return saved ? { ok: true } : { ok: false, error: "that bot no longer exists" };
+      } catch (error) {
+        return { ok: false, error: error instanceof Error ? error.message : String(error) };
+      }
+    }
     const disabled = setSkillEnabled(botId, name, false);
     return typeof disabled === "object" && "error" in disabled ? { ok: false, error: disabled.error } : { ok: true };
   },
@@ -11320,6 +11659,7 @@ type GroupMemberTurnOutcome =
   | "timed_out"
   | "cancelled"
   | "busy"
+  | "parked"
   | "unavailable";
 type GroupTurnOrchestration = {
   roomHandoffId?: string;
@@ -11672,6 +12012,7 @@ async function runGroupMemberTurn(
   // one bot can never own two provider processes.
   const readyBot = store.bot(bot.id);
   if (!readyBot) return false;
+  toolScopeForTurn(readyBot.id);
   const readyGroup = store.group(group.id);
   const stillOwnsThread = readyGroup?.dm
     ? readyGroup.threadId === threadId
@@ -12049,7 +12390,9 @@ async function runGroupMemberTurn(
     // mounted, exactly as the 1:1 path decides it: memory_update is on the
     // agents server, so a room turn with it must be told to use it too.
     { id: "memory", label: "Memory", text: roomMemory ? `\n${roomMemory.trim()}` : "" },
-    { id: "skills", label: "Skills index", text: workspace ? skillsSystemPrompt(bot.id) : "" },
+    // readyBot was captured before awaited setup work; an assignment PUT in
+    // that window must still reach this turn's prompt.
+    { id: "skills", label: "Skills index", text: workspace ? skillsSystemPrompt(bot.id, skillsLibraryEnabled(cfg) ? (store.bot(bot.id)?.assignedSkills ?? bot.assignedSkills) : undefined) : "" },
     { id: "skill-instructions", label: "Skill instructions", text: renderSkillInstructions(selectedSkills, { includeRoot: Boolean(workspace) }) },
     { id: "playbooks", label: "Playbooks", text: installedPlaybookInstructions(text, bot.playbooks) },
   ]);
@@ -12167,6 +12510,7 @@ async function runGroupMemberTurn(
         refreshSystemPrompt: true,
         images: turnImages,
         approvalMode: roomTurnApprovalMode(readyBot, threadId, orchestration),
+        toolScope: toolScopeForTurn(readyBot.id),
         ...(roomGuestConfined ? { guestConfined: true, confinedWhy: confinedWhy(threadId) } : {}),
         system: roomSystem.text,
         systemStable: roomSystem.stable,
@@ -12247,6 +12591,7 @@ async function runGroupMemberTurn(
     watchdog.settle(threadId);
     drainQueuedSends();
     drainConnectorResumes();
+    drainComputerResumes();
     drainSecretResumes();
     drainTeamSetupResumes();
     return false;
@@ -12276,6 +12621,7 @@ async function runGroupMemberTurn(
         retryDelegationsWaitingOn(bot.id);
         drainQueuedSends();
         drainConnectorResumes();
+        drainComputerResumes();
         drainSecretResumes();
         drainTeamSetupResumes();
       }
@@ -12302,6 +12648,7 @@ async function runGroupMemberTurn(
     // queued while this bot briefly owned the room must be retried now.
     drainQueuedSends();
     drainConnectorResumes();
+    drainComputerResumes();
     drainSecretResumes();
     drainTeamSetupResumes();
   }
@@ -12380,9 +12727,30 @@ async function runGroupMemberTurn(
     if (error instanceof DirectTurnSetupCancelled) return false;
     const isSpendCap = typeof error === "object" && error !== null && (error as { code?: string }).code === "spend_cap";
     const isVariantError = typeof error === "object" && error !== null && (error as { code?: string }).code === "unsupported_model_variant";
-    if (!roomSpeaker && !isSpendCap && !isVariantError) throw error;
+    const isToolScopeError = typeof error === "object" && error !== null && (error as { code?: string }).code === "tool_scope";
+    if (error instanceof ComputerWaitParked) {
+      registerComputerResume({
+        botId: bot.id,
+        threadId,
+        resource: error.resource,
+        generation: error.generation,
+        afterMessageId: store.activePath(threadId).findLast((entry) => entry.role === "user")?.id,
+      });
+      // The room settles with the parked chip the wait appended (#1651);
+      // the registered resume re-runs the speaker turn through the group
+      // queue once the seat frees. "parked" is its own outcome, not "busy":
+      // the member never ran, an in-step retry would only wait the ceiling
+      // out again and burn goal turns, and the goal loop routes around the
+      // member while the registered resume owns the re-run.
+      if (orchestration) {
+        orchestration.result.outcome = "parked";
+        orchestration.result.stopReason = `${bot.name} parked waiting for the computer`;
+      }
+      return false;
+    }
+    if (!roomSpeaker && !isSpendCap && !isVariantError && !isToolScopeError) throw error;
     const message = error instanceof Error ? error.message : "Local VM setup failed";
-    if (!(error instanceof ComputerWaitGaveUp)) store.appendMessage(threadId, {
+    store.appendMessage(threadId, {
       role: "bot", kind: "activity",
       from: { botId: bot.id, name: bot.name, color: bot.color },
       tool: { name: `error: ${message}`, ok: false },
@@ -12395,7 +12763,7 @@ async function runGroupMemberTurn(
       orchestration.result.outcome = isSpendCap ? "spend_capped" : "dispatch_failed";
       if (isSpendCap) orchestration.result.stopReason = message;
     }
-    return false;
+    return isToolScopeError;
   } finally {
     // Covers connector/setup failures, cancellation before dispatch, and all
     // other early returns that never produce a provider terminal event.
@@ -12413,6 +12781,7 @@ async function runGroupMemberTurn(
       }
       drainQueuedSends();
       drainConnectorResumes();
+      drainComputerResumes();
       drainSecretResumes();
       drainTeamSetupResumes();
     }
@@ -12492,6 +12861,12 @@ async function runGroupGoalStep(args: {
           },
         },
       );
+      // Busy here is a lost claim race — a 1:1 re-claiming the bot between
+      // the wait settling and this turn starting — so wait and retry
+      // in-step. A parked member is deliberately absent from both this
+      // retry and the transient one below: the computer seat is still held,
+      // an immediate retry would wait the ceiling out again while the
+      // registered resume already owns re-running the member.
       if (result.outcome === "busy") continue;
       // One retry for a transient provider failure: a 13-turn goal must not
       // die on a single blip at turn 11. The retry claims the bot again and
@@ -12612,6 +12987,18 @@ async function runGroupGoalOperation(args: {
       );
       return;
     }
+    if (coordinatorResult.outcome === "parked") {
+      // The lead parked at the computer wait ceiling: like lead-busy, the
+      // run cannot route around them, but the parked lead turn itself
+      // resumes through the registered entry once the seat frees.
+      finishGroupGoalRun(
+        args.groupId,
+        args.operation,
+        "blocked",
+        `${coordinatorResult.stopReason ?? `${args.coordinator.name} parked waiting for the computer`} — send the goal again when the computer is free.`,
+      );
+      return;
+    }
     if (!coordinatorResult.ran || coordinatorResult.outcome !== "settled") {
       const reason = coordinatorResult.stopReason?.trim().slice(0, 120);
       finishGroupGoalRun(
@@ -12695,9 +13082,10 @@ async function runGroupGoalOperation(args: {
       );
       return;
     }
-    if (workerResult.outcome === "busy") {
-      // bounded: a team that keeps landing on busy teammates is blocked, not
-      // looping — three exhausted waits per run, then stop and say so
+    if (workerResult.outcome === "busy" || workerResult.outcome === "parked") {
+      // bounded: a team that keeps landing on busy or computer-parked
+      // teammates is blocked, not looping — three exhausted waits per run,
+      // then stop and say so
       waitExhaustions += 1;
       if (waitExhaustions >= GROUP_GOAL_MAX_WAIT_EXHAUSTIONS) {
         finishGroupGoalRun(
@@ -13708,6 +14096,123 @@ function drainConnectorResumes() {
   }
 }
 
+/** A turn parked at the computer wait ceiling (#1651): settled, with this
+ * entry registered until the seat it queued on frees. Mirrors the connector
+ * and secret resume tables. */
+type ComputerResumeEntry = {
+  botId: string;
+  threadId: string;
+  /** The seat the turn parked on; the drain fires only when it frees. */
+  resource: string;
+  /** The parked turn's generation. A drain that sees the thread busy under
+   * THIS generation is inside the turn's own settle window (the lazy-claim
+   * park registers before its interrupt lands) and must keep the entry; a
+   * different generation means a newer turn superseded the parked work. */
+  generation: string;
+  /** The newest user message when the turn parked. A later ask replaces the
+   * parked work instead of racing it, so the drain drops a superseded entry. */
+  afterMessageId?: string;
+};
+const pendingComputerResumes = new Map<string, ComputerResumeEntry>();
+
+function registerComputerResume(entry: ComputerResumeEntry): void {
+  // One per thread: the newest park replaces an older one.
+  pendingComputerResumes.set(entry.threadId, entry);
+  // The seat may already be free (it freed before this park registered):
+  // an idle install would otherwise never drain. #1651.
+  queueMicrotask(drainComputerResumes);
+}
+
+function markComputerResumeFailed(entry: ComputerResumeEntry, message: string): void {
+  const owner = connectorThread(entry.botId, entry.threadId);
+  if (!owner) return;
+  store.appendMessage(entry.threadId, {
+    role: "bot", kind: "activity",
+    ...(owner.group ? { from: { botId: owner.bot.id, name: owner.bot.name, color: owner.bot.color } } : {}),
+    tool: { name: `Parked turn could not continue: ${message.slice(0, 160)}`, ok: false },
+  });
+}
+
+function dispatchComputerResume(entry: ComputerResumeEntry): void {
+  const owner = connectorThread(entry.botId, entry.threadId);
+  if (!owner) return;
+  const prompt = "OpenMausBot computer update: the computer this conversation waited for is free again. Continue the task that parked waiting for it.";
+  if (owner.group) {
+    const groupId = owner.group.id;
+    const operation = beginGroupTurnOperation(groupId, entry.threadId, [entry.botId]);
+    const previous = groupQueues.get(groupId) ?? Promise.resolve();
+    const next = previous.then(async () => {
+      if (operation.cancelled) return;
+      const current = connectorThread(entry.botId, entry.threadId);
+      if (!current?.group) return;
+      if (current.bot.busy) {
+        pendingComputerResumes.set(entry.threadId, entry);
+        return;
+      }
+      await runGroupMemberTurn(
+        current.group.id,
+        entry.threadId,
+        entry.botId,
+        0,
+        new Set(),
+        prompt,
+        (message) => markComputerResumeFailed(entry, message),
+        () => operation.cancelled,
+        () => groupProviderHandshakeStarted(operation),
+        () => groupProviderHandshakeSettled(operation),
+      );
+    });
+    const tracked = next.finally(() => finishGroupTurnOperation(groupId, operation));
+    groupQueues.set(
+      groupId,
+      tracked.catch((error) => {
+        markComputerResumeFailed(entry, error instanceof Error ? error.message : String(error));
+      }),
+    );
+    return;
+  }
+  void startTurn(entry.botId, prompt, {
+    threadId: entry.threadId,
+    cardContinuation: true,
+    onDispatchError: (message) => markComputerResumeFailed(entry, message),
+  }).catch((error) => {
+    const message = error instanceof Error ? error.message : String(error);
+    if (isTurnAdmissionBlocked(error)) pendingComputerResumes.set(entry.threadId, entry);
+    else markComputerResumeFailed(entry, message);
+  });
+}
+
+function drainComputerResumes(): void {
+  for (const [key, entry] of pendingComputerResumes) {
+    if (!connectorThread(entry.botId, entry.threadId)) {
+      pendingComputerResumes.delete(key);
+      continue;
+    }
+    // A newer ask replaced the parked work: the resume is stale, not blocked.
+    const latestUser = store.activePath(entry.threadId).findLast((message) => message.role === "user")?.id;
+    if (entry.afterMessageId !== undefined && latestUser !== entry.afterMessageId) {
+      pendingComputerResumes.delete(key);
+      continue;
+    }
+    // A newer generation owns the thread — a new turn superseded the parked
+    // one — so the parked resume is stale too. The parked turn's OWN
+    // generation is still current while it settles: the lazy-claim park
+    // registers its resume before the interrupt lands, and a drain in that
+    // window must keep the entry (#1651), not read busy as superseded.
+    const activeGeneration = activeInternalGenerationByThread.get(entry.threadId);
+    if (activeGeneration !== undefined && activeGeneration !== entry.generation) {
+      pendingComputerResumes.delete(key);
+      continue;
+    }
+    // Busy under the parked generation: the turn is still settling. Keep the
+    // entry; the next drain (its completion, the next release) dispatches.
+    if (threadBusy(entry.botId, entry.threadId)) continue;
+    if (!turnResources.free(entry.resource)) continue;
+    pendingComputerResumes.delete(key);
+    dispatchComputerResume(entry);
+  }
+}
+
 type SecretResumeEntry = {
   botId: string;
   threadId: string;
@@ -13971,6 +14476,7 @@ bus.subscribe((event: RuntimeEvent) => {
   if (shouldIgnoreProviderEvent(event)) return;
   if (event.type === "turn.completed") {
     drainConnectorResumes();
+    drainComputerResumes();
     drainSecretResumes();
     drainTeamSetupResumes();
   }
@@ -14212,6 +14718,7 @@ function configStatus() {
     },
     features: {
       skillAuthoring: skillAuthoringEnabled(cfg),
+      skillsLibrary: skillsLibraryEnabled(cfg),
       showToolCalls: showToolCallsEnabled(cfg),
       routinesInConversation: routinesInConversationEnabled(cfg),
       browser: builtInBrowserEnabled(cfg),
@@ -14489,6 +14996,7 @@ async function reloadProviders() {
   // queued behind them drains now — onto the freshly loaded fleet
   drainQueuedSends();
   drainConnectorResumes();
+  drainComputerResumes();
   drainSecretResumes();
   drainTeamSetupResumes();
 }
@@ -15980,7 +16488,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
           return json(res, 403, { error: "source conversation does not belong to sender" });
         }
         return json(res, 200, {
-          skills: listSkills(from.id),
+          skills: listBotSkills(from),
           staged: listStagedSkillWrites(from.id).map(stagedSkillListing),
         });
       }
@@ -16899,11 +17407,15 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         const toBotId = typeof body.toBotId === "string" && body.toBotId.trim() ? body.toBotId.trim() : from.id;
         const target = store.bot(toBotId);
         if (!target) return json(res, 404, { error: "no such bot" });
+        const oneWay = body.oneWay === true;
+        if (oneWay && target.id === from.id) {
+          return json(res, 409, { error: "send_to_bot is cross-bot only; use start_thread to send independent work to yourself" });
+        }
         if (internalCapability.roomCoordination) {
-          if (target.id !== from.id) {
+          if (target.id !== from.id && !oneWay) {
             return json(res, 409, { error: "Use coordinate_bots for teamwork; it queues actual teammates and resumes you automatically." });
           }
-          if (!internalCapability.ownThreadCreation) {
+          if (target.id === from.id && !internalCapability.ownThreadCreation) {
             return json(res, 409, { error: "Only a direct user request can open separate self-owned threads. Finish this assigned work here; use coordinate_bots for teammates." });
           }
         }
@@ -16956,7 +17468,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         // classic handoff has applies unchanged, here at queue time and
         // again in the drain at dispatch time.
         const depth = internalCapability.depth;
-        if (depth >= MAX_COMMS_DEPTH) {
+        if (!oneWay && depth >= MAX_COMMS_DEPTH) {
           return json(res, 200, { error: "thread chains are limited to one hop — open the thread on yourself, or do this one here" });
         }
         if (!canAccessTeam(from, target.section) || target.hidden) {
@@ -16970,10 +17482,13 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         // The work is still for the person whose request the opener is on.
         threadStarters.set(task.threadId, openerFrom(fromThreadId));
         if (delegatedFullAccess(from, fromThreadId, target)) grantDelegatedFullAccess(from, target, task.threadId);
+        const sourceUrl = threadRefUrl({ botId: owner.group?.id ?? from.id, threadId: fromThreadId });
         const queued = queueDelegation(
           commsBus,
           from,
-          { toBotId: target.id, message, depth, targetThreadId: task.threadId },
+          { toBotId: target.id, message: oneWay
+            ? `${message}\n\n[Source conversation](${sourceUrl}). This link grants no additional access and contains no copied transcript.`
+            : message, depth, targetThreadId: task.threadId, oneWay },
           MAX_COMMS_DEPTH,
           fromThreadId,
         );
@@ -18718,6 +19233,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
           (message) =>
             message.kind === "options" &&
             message.card?.requestId &&
+            (!isPersistentQuestionCard(message.card) || runningTurnEngines.has(task.threadId)) &&
             !message.card.answered &&
             !message.card.dismissed && !message.card.expired,
         ) ? [task.threadId] : [],
@@ -19425,10 +19941,11 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       const created = body.visibility === undefined ? null : parseVisibility(body.visibility);
       if (created && !created.ok) return json(res, 400, { error: created.error });
       const bot = store.createBot({ ...profile.patch, soul: settings.soul, section, modelSelection: selection,
+        toolScope: settings.toolScope ?? undefined,
         ...(created?.ok ? { visibility: created.visibility } : {}) });
       const createdRoutines: Array<{ id: string; enabled: boolean }> = [];
       try {
-        const { chiefOfStaff: _chief, managedSections: _managed, ...ordinary } = settings;
+        const { chiefOfStaff: _chief, managedSections: _managed, toolScope: _toolScope, ...ordinary } = settings;
         store.patchBot(bot.id, {
           // Store creation completes workspace defaults (including effort).
           // Applying the rest of the template must not undo that selection.
@@ -19826,6 +20343,11 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       // Per-bot selection of app-wide MCP servers. Omitted keeps the current
       // selection; null restores all enabled servers; [] explicitly mounts none.
       let requestedMcpServers = existingBot?.mcpServers;
+      if (Object.hasOwn(body, "toolScope")) {
+        const parsed = parseToolScope(body.toolScope === null ? undefined : body.toolScope);
+        if (!parsed.ok) return json(res, 400, { error: parsed.error });
+        patch.toolScope = parsed.scope;
+      }
       if (body.mcpServers !== undefined) {
         if (auth.kind === "session" && !sessions.isLive(auth.session.id)) {
           return json(res, 401, { error: "unauthorized: this session has expired or was revoked" });
@@ -20092,6 +20614,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
           (requestedMcpServers === undefined || requestedMcpServers.some((name) => !existingBot.mcpServers!.includes(name)))) {
         loosened.push("mcpServers");
       }
+      if (Object.hasOwn(body, "toolScope") && toolScopeWidens(existingBot?.toolScope, patch.toolScope)) loosened.push("toolScope");
       const browserOrigin = typeof req.headers.origin === "string" && req.headers.origin.trim() !== "";
       if (loosened.length && auth.kind === "loopback" && !DESKTOP_MANAGED && !browserOrigin) {
         if (store.bots.some((candidate) => candidate.busy)) {
@@ -20126,6 +20649,18 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
           body.memoryEnabled !== (freshBrowserBot.memoryEnabled !== false) &&
           (freshBrowserBot.busy || activeGroupTurnForBot(freshBrowserBot.id))) {
         return json(res, 409, { error: "stop this bot's turn before changing its memory setting" });
+      }
+      if (Object.hasOwn(body, "toolScope")) {
+        if (auth.kind === "session" && !sessions.isLive(auth.session.id)) {
+          return json(res, 401, { error: "unauthorized: this session has expired or was revoked" });
+        }
+        if (toolScopeWidens(freshBrowserBot?.toolScope, patch.toolScope) && auth.kind === "loopback" && !DESKTOP_MANAGED && !browserOrigin && store.bots.some((candidate) => candidate.busy)) {
+          return json(res, 409, { error: "A bot is working right now, so this change has to come from the desktop app or a paired device. Try again once every bot is idle." });
+        }
+        if (freshBrowserBot && JSON.stringify(freshBrowserBot.toolScope) !== JSON.stringify(patch.toolScope)
+          && (freshBrowserBot.busy || activeGroupTurnForBot(freshBrowserBot.id))) {
+          return json(res, 409, { error: "Stop this bot's turns before changing its tool selection." });
+        }
       }
       // Custom servers are process configuration: a running turn cannot
       // unmount them. Recheck after any awaited runtime revocation above.
@@ -20264,8 +20799,19 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
     m = path.match(/^\/api\/bots\/([\w-]+)\/skills$/);
     if (m && method === "GET") {
       if (!store.bot(m[1])) return json(res, 404, { error: "no such bot" });
+      if (skillsLibraryEnabled(cfg)) {
+        const { skills, library } = listBotSkillsWithOrigin(m[1]!, store.bot(m[1])!.assignedSkills);
+        return json(res, 200, {
+          skills,
+          library,
+          // the authoritative assignment list: merged rows hide
+          // assignments a same-name private skill shadows
+          assignedSkills: store.bot(m[1])!.assignedSkills,
+          staged: listStagedSkillWrites(m[1]).map(stagedSkillListing),
+        });
+      }
       return json(res, 200, {
-        skills: listSkills(m[1]),
+        skills: listBotSkills(store.bot(m[1])!),
         staged: listStagedSkillWrites(m[1]).map(stagedSkillListing),
       });
     }
@@ -20283,7 +20829,8 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
     }
     m = path.match(/^\/api\/bots\/([\w-]+)\/skills\/([a-z0-9-]+)$/);
     if (m && method === "GET") {
-      const text = readSkillFile(m[1]!, m[2]!);
+      const bot = store.bot(m[1]);
+      const text = bot ? readBotSkillFile(bot, m[2]!) : null;
       if (text === null) return json(res, 404, { error: "no such skill" });
       return json(res, 200, { text });
     }
@@ -20298,6 +20845,82 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       const result = removeSkill(m[1]!, m[2]!);
       if ("error" in result) return json(res, 404, { error: result.error });
       return json(res, 200, { ok: true });
+    }
+
+    // ── skills library (features.skillsLibrary): local browse surface ────
+    // Everything here is local: the library on disk, assignments on bot
+    // records, imports from pasted SKILL.md text. No registry, no network.
+    m = path.match(/^\/api\/skills-library$/);
+    if (m && method === "GET") {
+      if (!skillsLibraryEnabled(cfg)) return json(res, 404, { error: "skills library is not enabled" });
+      const index = readSkillLibraryIndex();
+      const skills: SkillsLibrarySkillWire[] = listLibrarySkills()
+        .map((listing): SkillsLibrarySkillWire => ({
+          name: listing.name,
+          description: listing.description,
+          source: listing.source,
+          enabled: listing.enabled,
+          tags: listing.tags ?? [],
+          version: index[listing.name]?.package?.release ?? null,
+          importedAt: listing.importedAt,
+          ...(listing.license ? { license: listing.license } : {}),
+          ...(listing.compatibility ? { compatibility: listing.compatibility } : {}),
+          warnings: listing.warnings,
+          assignedBots: store.bots
+            .filter((bot) => bot.assignedSkills?.includes(listing.name))
+            .map((bot) => ({ id: bot.id, name: bot.name })),
+        }))
+        .sort((a, b) => a.name.localeCompare(b.name));
+      return json(res, 200, { skills });
+    }
+    if (m && method === "POST") {
+      if (!skillsLibraryEnabled(cfg)) return json(res, 404, { error: "skills library is not enabled" });
+      const parsed = z.object({ text: z.string().min(1) }).safeParse(await readBody(req));
+      if (!parsed.success) return json(res, 400, { error: "text must be the SKILL.md contents to import" });
+      const skill = parseSkillMd(parsed.data.text);
+      if ("error" in skill) return json(res, 400, { error: skill.error });
+      // Imports land disabled with their scan warnings attached: enabling is
+      // a separate, explicit review step on the row.
+      const installed = installLibrarySkill({
+        name: skill.name,
+        instructions: parsed.data.text,
+        source: "local-import",
+        license: skill.license,
+        compatibility: skill.compatibility,
+        tags: skill.tags,
+        warnings: scanSkillText(parsed.data.text),
+        reviewState: "disabled",
+      });
+      if ("error" in installed) return json(res, 422, { error: installed.error });
+      return json(res, 201, { skill: installed });
+    }
+    m = path.match(/^\/api\/skills-library\/([a-z0-9-]+)$/);
+    if (m && method === "GET") {
+      if (!skillsLibraryEnabled(cfg)) return json(res, 404, { error: "skills library is not enabled" });
+      const text = readLibrarySkillFile(m[1]!);
+      if (text === null) return json(res, 404, { error: "no such skill" });
+      return json(res, 200, { text });
+    }
+    if (m && method === "PATCH") {
+      if (!skillsLibraryEnabled(cfg)) return json(res, 404, { error: "skills library is not enabled" });
+      const parsed = z.object({ enabled: z.boolean() }).safeParse(await readBody(req));
+      if (!parsed.success) return json(res, 400, { error: "enabled must be true or false" });
+      const result = setLibrarySkillReviewState(m[1]!, parsed.data.enabled ? "approved" : "disabled");
+      if ("error" in result) return json(res, 404, { error: result.error });
+      return json(res, 200, { skill: result });
+    }
+    m = path.match(/^\/api\/bots\/([\w-]+)\/skills-library$/);
+    if (m && method === "PUT") {
+      if (!skillsLibraryEnabled(cfg)) return json(res, 404, { error: "skills library is not enabled" });
+      if (!store.bot(m[1])) return json(res, 404, { error: "no such bot" });
+      const parsed = z.object({ skills: z.array(z.string().min(1).max(64)).max(200) }).safeParse(await readBody(req));
+      if (!parsed.success) return json(res, 400, { error: "skills must be a list of skill names" });
+      const index = readSkillLibraryIndex();
+      const names = [...new Set(parsed.data.skills)];
+      const unknown = names.filter((name) => !index[name]);
+      if (unknown.length) return json(res, 422, { error: "not in the library: " + unknown.join(", ") });
+      store.patchBot(m[1]!, { assignedSkills: names });
+      return json(res, 200, { assignedSkills: names });
     }
 
     // ── section context: a user-owned team brief ────────────────────────
@@ -21018,7 +21641,28 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
           resolvePeerComms(approvalBus, String(body.requestId), behavior)) {
           return json(res, 200, { ok: true, outcome: behavior === "allow" ? "allowed-once" : "rejected" });
         }
-        const outcome = await answerRequest(bot.threadId, bot.modelSelection.instanceId, String(body.requestId), behavior, body.message, { id: bot.id, name: bot.name }, body.always === true, body.rememberCommand === true);
+        const requestId = String(body.requestId);
+        const pending = store.messagesFor(bot.threadId).find((message) => message.card?.requestId === requestId);
+        if (isPersistentQuestionCard(pending?.card) && (body.dismiss === true || body.message === QUESTION_DISMISS_MESSAGE)) {
+          if (!pending?.card) return json(res, 404, { error: "this question is no longer available" });
+          if (pending.card.answered !== "answer" || pending.card.dismissed) {
+            return json(res, 409, { error: "answer this question before dismissing it" });
+          }
+          store.patchMessage(bot.threadId, pending.id, { card: { ...pending.card, dismissed: true } });
+          return json(res, 200, { ok: true, dismissed: true });
+        }
+        const outcome = await answerRequest(bot.threadId, bot.modelSelection.instanceId, requestId, behavior, body.message, { id: bot.id, name: bot.name }, body.always === true, body.rememberCommand === true);
+        if (outcome === "unavailable" && isPersistentQuestionCard(pending?.card) && behavior === "answer") {
+          if (!pending) return json(res, 404, { error: "this question is no longer available" });
+          const answer = typeof body.message === "string" ? body.message.trim() : "";
+          if (!answer) return json(res, 400, { error: "a question answer is required" });
+          try {
+            const reply = await deliverLateQuestionAnswer(auth, bot.threadId, requestId, answer, pending, bot);
+            return json(res, 200, { ok: true, outcome: "answered", late: true, ...(reply.queued ? { queued: true } : {}) });
+          } catch (error) {
+            return json(res, 409, { error: error instanceof Error ? error.message : "the late answer could not be queued" });
+          }
+        }
         return json(res, 200, { ok: true, outcome });
       });
     }
@@ -21140,13 +21784,40 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         // answerRequest closes an unreachable card, and a pending approval owns
         // the composer, so a dead end here locks the room for good.
         const pending = store.messagesFor(threadId).find((message) => message.card?.requestId === requestId);
+        if (isPersistentQuestionCard(pending?.card) && (body.dismiss === true || body.message === QUESTION_DISMISS_MESSAGE)) {
+          if (!pending?.card) return json(res, 404, { error: "this question is no longer available" });
+          if (pending.card.answered !== "answer" || pending.card.dismissed) {
+            return json(res, 409, { error: "answer this question before dismissing it" });
+          }
+          store.patchMessage(threadId, pending.id, { card: { ...pending.card, dismissed: true } });
+          return json(res, 200, { ok: true, dismissed: true });
+        }
+        const persistentQuestion = isPersistentQuestionCard(pending?.card);
         const owner = group
-          ? (group.busyBotId ? store.bot(group.busyBotId) : undefined) ??
-            (pending?.from ? store.bot(pending.from.botId) : undefined)
+          ? persistentQuestion
+            ? (pending?.from ? store.bot(pending.from.botId) : undefined)
+            : (group.busyBotId ? store.bot(group.busyBotId) : undefined) ??
+              (pending?.from ? store.bot(pending.from.botId) : undefined)
           : store.botByThread(threadId);
+        // A surviving question belongs to its original asker, never a later speaker.
+        if (group && persistentQuestion && !owner) {
+          return json(res, 409, { error: "the bot that asked this question is no longer available" });
+        }
         if (!owner && !pending) return json(res, 404, { error: "nothing is waiting on an answer in this conversation" });
         const requestOwner = owner ? botForThread(owner.id, threadId) : null;
         const outcome = await answerRequest(threadId, requestOwner?.modelSelection.instanceId ?? "", requestId, behavior, body.message, owner ? { id: owner.id, name: owner.name } : undefined, body.always === true, body.rememberCommand === true);
+        if (outcome === "unavailable" && isPersistentQuestionCard(pending?.card) && behavior === "answer") {
+          if (!pending?.card) return json(res, 404, { error: "this question is no longer available" });
+          const answer = typeof body.message === "string" ? body.message.trim() : "";
+          if (!answer) return json(res, 400, { error: "a question answer is required" });
+          if (!owner) return json(res, 409, { error: "the bot that asked this question is no longer available" });
+          try {
+            const reply = await deliverLateQuestionAnswer(auth, threadId, requestId, answer, pending, owner);
+            return json(res, 200, { ok: true, outcome: "answered", late: true, ...(reply.queued ? { queued: true } : {}) });
+          } catch (error) {
+            return json(res, 409, { error: error instanceof Error ? error.message : "the late answer could not be queued" });
+          }
+        }
         return json(res, 200, { ok: true, outcome });
       });
     }
@@ -22040,6 +22711,17 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         budget: spendState(cfg, DATA_DIR),
         billing: prices ? { currency: cfg.billing?.currency ?? "USD" } : null,
       });
+    }
+
+    // Subscription windows (5-hour and weekly), not the token ledger above.
+    // Same admin gate as /api/usage: this route is unlisted, so it stays admin.
+    if (method === "GET" && path === "/api/plan-usage") {
+      res.setHeader("cache-control", "no-store");
+      const report = await loadPlanUsage({
+        accounts: planAccountsFromInstances(instanceConfigs(cfg)),
+        refresh: url.searchParams.get("refresh") === "1",
+      });
+      return json(res, 200, report);
     }
 
     // ── provider key check: does a pasted or saved key open the provider's door ──
@@ -23120,6 +23802,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
             drainQueuedSends();
             drainDelegationWakes();
             drainConnectorResumes();
+            drainComputerResumes();
             drainSecretResumes();
             drainTeamSetupResumes();
           }

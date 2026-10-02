@@ -60,6 +60,39 @@ describe("mention highlighting", () => {
 });
 
 describe("math rendering", () => {
+  it.each([
+    "\\(x% comment\r\n+y\\)\n\nAfter",
+    "> Before \\(x% comment\n> +y\\)\n\nAfter",
+    "> > Before \\(x% comment\n> > +y\\)\n\nAfter",
+    "> - Before \\(x% comment\n>   +y\\)\n\nAfter",
+    "\\(x\n+y\\)\n\nAfter",
+    "\\(\nx\n+y\\)\n\nAfter",
+    "\\(\r\nx+y\\)\n\nAfter",
+    "\\( \t\n \r\nx\n+y\\)\n\nAfter",
+  ])("retains multiline inline TeX and following prose: %s", (text) => {
+    const html = renderToStaticMarkup(createElement(ChatMarkdown, { text }));
+    expect(html.match(/class="katex"/g)).toHaveLength(1);
+    expect(html).not.toContain("katex-display");
+    expect(html).not.toContain("katex-error");
+    expect(html).toContain("<mi>x</mi><mo>+</mo><mi>y</mi>");
+    expect(html).toContain('<p dir="ltr">After</p>');
+  });
+
+  it("keeps the earlier currency fix's exact prices plain and multiline image offsets scoped", () => {
+    const prices = "Jan −$3,000 · Feb −$2,000 · Avg ≈ $2,200 and $5 vs $10";
+    const html = renderToStaticMarkup(createElement(ChatMarkdown, { text: prices }));
+    expect(html).not.toContain('class="katex"');
+    expect(html).toContain(prices);
+    const text = "$5 before \\(\r\nx+y\\)\n\n![diagram](/workspace/diagram.png)";
+    const preview = vi.spyOn(AttachmentPreview, "MarkdownImagePreview");
+    try {
+      renderToStaticMarkup(createElement(ChatMarkdown, { text, message: { threadId: "thread-1", messageId: "message-1" } }));
+      expect(preview.mock.calls[0][0].sourceOffset).toBe(text.indexOf("!["));
+    } finally {
+      preview.mockRestore();
+    }
+  });
+
   it("renders inline, display, and TeX-style delimiters with KaTeX", () => {
     const html = renderToStaticMarkup(createElement(ChatMarkdown, {
       text: "Inline $s'(t)=2t$.\n\n$$\\int_0^3 2t\\,dt=9$$\n\n\\(x^2\\)\n\n\\[y^2\\]",
