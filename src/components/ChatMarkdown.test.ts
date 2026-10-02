@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { createElement } from "react";
 import * as React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
@@ -145,6 +146,17 @@ describe("math rendering", () => {
     const html = renderToStaticMarkup(createElement(ChatMarkdown, { text: "$R$ 120 and US$5." }));
     expect(html.match(/class="katex"/g)).toHaveLength(1);
     expect(html).toContain("120 and US$5.");
+  });
+
+  it("contains long inline formulas in a horizontal scroll container", () => {
+    const html = renderToStaticMarkup(createElement(ChatMarkdown, {
+      text: `Inline $${"abcdefghijklmnopqrstuvwxyz".repeat(3)}$.`,
+    }));
+    expect(html.match(/class="katex"/g)).toHaveLength(1);
+    const css = readFileSync(new URL("../styles.css", import.meta.url), "utf8");
+    const rule = css.match(/\.chat-md :not\(\.katex-display\) > \.katex \{([^}]*)\}/)?.[1];
+    expect(rule).toContain("max-width: 100%");
+    expect(rule).toContain("overflow-x: auto");
   });
 
   it("does not pair dollars across paragraphs", () => {

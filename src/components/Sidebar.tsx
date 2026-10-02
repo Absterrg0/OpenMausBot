@@ -2209,7 +2209,7 @@ export function Sidebar({ open, onClose, collapseToIcons = false }: {
           onUnpin={() => setAttentionPinned(false)}
           onJump={(entry) => dispatch(attentionJumpAction(entry))}
           collapsed={sectionCollapsed(ATTENTION_SECTION_ID)}
-          onToggle={() => toggleSection(ATTENTION_SECTION_ID)}
+          onToggle={layoutInteractive ? () => toggleSection(ATTENTION_SECTION_ID) : undefined}
         />
       )}
 
@@ -2221,7 +2221,7 @@ export function Sidebar({ open, onClose, collapseToIcons = false }: {
           onJump={(entry) => dispatch(attentionJumpAction(entry))}
           onUnpin={(entry) => dispatch(attentionUnpinAction(entry))}
           collapsed={sectionCollapsed(PINNED_THREADS_SECTION_ID)}
-          onToggle={() => toggleSection(PINNED_THREADS_SECTION_ID)}
+          onToggle={layoutInteractive ? () => toggleSection(PINNED_THREADS_SECTION_ID) : undefined}
         />
       )}
 

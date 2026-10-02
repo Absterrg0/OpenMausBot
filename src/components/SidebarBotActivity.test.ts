@@ -168,6 +168,16 @@ describe("cross-bot pinned threads", () => {
     expect(entry.task.queued).toBe(true);
   });
 
+  it("keeps pinned task status independent of the bot's aggregate activity", () => {
+    const alpha = bot("a", "Alpha", "a0", [
+      task("a0", "Idle pin", { pinned: true, busy: false, activity: "idle" }),
+      task("a1", "Working pin", { pinned: true, busy: true, activity: "working" }),
+    ], { busy: true, activity: "waiting-on-you" });
+    const entries = crossBotPinnedThreads([alpha], [], {});
+    expect(attentionRowStatus(entries[0].task).active).toBe(false);
+    expect(attentionRowStatus(entries[1].task).label).toBe(t("chat.activity.working"));
+  });
+
   it("derives a pinned room's live status without attributing it to an idle sibling", () => {
     const alpha = bot("a", "Alpha", "a0", [], { activity: "waiting-on-you" });
     const room = group("g", "Crew", "g0", { busyBotId: "a", unread: true, tasks: [

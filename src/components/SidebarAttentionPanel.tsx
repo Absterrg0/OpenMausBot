@@ -12,7 +12,7 @@ export function SidebarAttentionPanel({ entries, density, onUnpin, onJump, colla
   onUnpin: () => void;
   onJump: (entry: AttentionThread) => void;
   collapsed: boolean;
-  onToggle: () => void;
+  onToggle?: () => void;
 }) {
   const compact = density === "compact";
   const Chevron = collapsed ? ChevronRight : ChevronDown;
@@ -26,6 +26,7 @@ export function SidebarAttentionPanel({ entries, density, onUnpin, onJump, colla
         <button
           type="button"
           onClick={onToggle}
+          disabled={!onToggle}
           aria-expanded={!collapsed}
           aria-label={t(collapsed ? "sidebar.section.expand" : "sidebar.section.collapse", { name: t("attention.title") })}
           className="flex size-5 shrink-0 items-center justify-center rounded text-ink-secondary hover:bg-raised hover:text-ink"

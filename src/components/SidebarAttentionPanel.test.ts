@@ -104,4 +104,12 @@ describe("pinned attention panel", () => {
     findElement(tree(), "aria-label", label)!.props.onClick!({} as MouseEvent);
     expect(onToggle).toHaveBeenCalledOnce();
   });
+
+  it("disables collapse when search prevents layout changes", () => {
+    const markup = renderToStaticMarkup(createElement(SidebarAttentionPanel, {
+      entries: [entry], density: "comfortable", onUnpin: vi.fn(), onJump: vi.fn(), collapsed: false,
+    }));
+    expect(markup).toMatch(/<button[^>]+disabled=""[^>]+aria-expanded="true"/);
+    expect(markup).toContain("Review permission");
+  });
 });

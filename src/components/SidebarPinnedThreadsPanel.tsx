@@ -15,7 +15,7 @@ export function SidebarPinnedThreadsPanel({ entries, density, now, onJump, onUnp
   onJump: (entry: AttentionThread) => void;
   onUnpin: (entry: AttentionThread) => void;
   collapsed: boolean;
-  onToggle: () => void;
+  onToggle?: () => void;
 }) {
   if (entries.length === 0) return null;
   const compact = density === "compact";
@@ -30,6 +30,7 @@ export function SidebarPinnedThreadsPanel({ entries, density, now, onJump, onUnp
         <button
           type="button"
           onClick={onToggle}
+          disabled={!onToggle}
           aria-expanded={!collapsed}
           aria-label={t(collapsed ? "sidebar.section.expand" : "sidebar.section.collapse", { name: t("sidebar.pinnedThreads.title") })}
           className="flex size-5 shrink-0 items-center justify-center rounded text-ink-secondary hover:bg-raised hover:text-ink"

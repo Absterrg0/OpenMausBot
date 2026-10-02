@@ -89,6 +89,14 @@ describe("pinned threads panel", () => {
     expect(onToggle).toHaveBeenCalledOnce();
   });
 
+  it("disables collapse when search prevents layout changes", () => {
+    const markup = renderToStaticMarkup(createElement(SidebarPinnedThreadsPanel, {
+      entries: [entry], density: "comfortable", now: 1, onUnpin: vi.fn(), onJump: vi.fn(), collapsed: false,
+    }));
+    expect(markup).toMatch(/<button[^>]+disabled=""[^>]+aria-expanded="true"/);
+    expect(markup).toContain("Quarterly plan");
+  });
+
 });
 
 describe("pinned thread rows", () => {
