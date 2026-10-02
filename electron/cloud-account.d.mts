@@ -34,6 +34,8 @@ export interface CloudAccountBridge {
   openDashboard(): Promise<CloudAccountState>;
   /** Lists the Cloud machine under Servers and opens it in this window. */
   connectHome(): Promise<CloudAccountState>;
+  /** The same, opening the Cloud's Settings on its phone pairing. */
+  connectHomeForPhone(): Promise<CloudAccountState>;
   onState(callback: (state: CloudAccountState) => void): () => void;
   /** "Let my Cloud use this Mac" (docs/cloud-pro.md). */
   lending?: import("./computer-sharing.mjs").CloudLendingBridge;

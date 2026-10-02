@@ -119,8 +119,11 @@ export function withCloudHome(state, machine, makeId) {
 
 /** Where "Connect to my Cloud" opens: the machine's own pairing page with the
  * one-time code in the hash (never a query), or the machine itself when this
- * app is already signed in there. */
-export function cloudHomeConnectUrl(target, now) {
+ * app is already signed in there. `open` "phone" ("Use your Cloud on your
+ * phone") adds the one fixed request `?desktop-settings=phone`: the Cloud
+ * opens Settings on its phone pairing, and the pair page carries it on. */
+export function cloudHomeConnectUrl(target, now, open = null) {
+  const query = open === "phone" ? "?desktop-settings=phone" : "";
   return target.grant && target.grant.origin === target.origin && target.grant.expiresAt > now
-    ? `${target.origin}/pair#code=${target.grant.code}` : target.origin;
+    ? `${target.origin}/pair${query}#code=${target.grant.code}` : query ? `${target.origin}/${query}` : target.origin;
 }

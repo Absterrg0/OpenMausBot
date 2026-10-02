@@ -58,6 +58,30 @@ function cloudHomeCard({ machine, busy, failed, onConnect, lending }: { machine:
   </Card>;
 }
 
+/** A paid plan's Cloud on the phone: the phone app paired with the Cloud
+ * rather than this computer keeps working when this computer is off. One
+ * click opens the Cloud in this window on its phone pairing; when the Cloud
+ * cannot be opened (not Ready yet, or opening failed), the two steps
+ * instead. A render helper (no hooks), part of the view. */
+function cloudPhoneCard({ ready, busy, failed, onUse }: { ready: boolean; busy: boolean; failed: boolean; onUse: () => void }) {
+  return <Card title={t("cloudPhone.title")} subtitle={t("cloudPhone.subtitle")}>
+    <div data-cloud-phone={ready ? "open" : "steps"} className="flex flex-col items-start gap-3">
+      {ready && <>
+        <button type="button" disabled={busy} className="ui-button" onClick={onUse}>{t("cloudPhone.action")}</button>
+        <p className="text-[12px] text-ink-secondary">{t("cloudPhone.help")}</p>
+      </>}
+      {failed && <p role="alert" className="text-[13px] text-danger">{t("cloudPhone.failed")}</p>}
+      {(!ready || failed) && <>
+        <p className="text-[13px] text-ink-secondary">{t(ready ? "cloudPhone.stepsIntro" : "cloudPhone.notReady")}</p>
+        <ol className="list-decimal ps-5 text-[13px] leading-relaxed text-ink-secondary">
+          <li>{t("cloudPhone.step1")}</li>
+          <li>{t("cloudPhone.step2")}</li>
+        </ol>
+      </>}
+    </div>
+  </Card>;
+}
+
 /** What this view does by itself when the Cloud page's "Open in the app"
  * (openmausbot://cloud) opened it. `arrived`: the first snapshot since that
  * link. Only then does signed out mean "sign me in"; a later sign-out is the
@@ -95,8 +119,9 @@ function dashboardLabel(account: CloudAccountState, view: CloudPlanView): string
 /** On the person's own Cloud, open in this app's window: the plan, read only,
  * Manage in the browser, and back to this computer. When this app cannot
  * vouch for this Cloud (its state is refused), it says where the plan is
- * managed and offers nothing that would fail. */
-export function CloudPlanOnCloud({ bridge }: { bridge: CloudPlanBridge }) {
+ * managed and offers nothing that would fail. `onConnectPhone`: Use your
+ * Cloud on your phone, already here, opens this Cloud's phone pairing. */
+export function CloudPlanOnCloud({ bridge, onConnectPhone }: { bridge: CloudPlanBridge; onConnectPhone?: () => void }) {
   const [plan, setPlan] = useState<CloudPlanSnapshot | null>(null), [failed, setFailed] = useState(false), [refused, setRefused] = useState(false);
   useEffect(() => {
     let active = true;
@@ -120,6 +145,7 @@ export function CloudPlanOnCloud({ bridge }: { bridge: CloudPlanBridge }) {
       <div className="flex flex-wrap gap-2">
         <button type="button" className="ui-button" onClick={() => act(() => bridge.manage())}>{t("cloudAccount.manageInBrowser")}</button>
         <button type="button" className="ui-button" onClick={() => act(() => bridge.useThisComputer())}>{t("cloudAccount.useThisComputer")}</button>
+        {plan && onConnectPhone && <button type="button" className="ui-button" onClick={onConnectPhone}>{t("cloudPhone.action")}</button>}
       </div>
       {failed && <p role="alert" className="text-[13px] text-danger">{t("cloudAccount.actionFailed")}</p>}
     </div>
@@ -127,12 +153,14 @@ export function CloudPlanOnCloud({ bridge }: { bridge: CloudPlanBridge }) {
 }
 
 /** The public native snapshot carries no credential and cannot activate a plan.
- * `linkRequest` is non-zero only while openmausbot://cloud has this open. */
-export function CloudAccountSettings({ linkRequest = 0, cloudHome = false }: { linkRequest?: number; cloudHome?: boolean } = {}) {
+ * `linkRequest` is non-zero only while openmausbot://cloud has this open.
+ * `onConnectPhone` opens Settings on this window's phone pairing (on the
+ * Cloud itself). */
+export function CloudAccountSettings({ linkRequest = 0, cloudHome = false, onConnectPhone }: { linkRequest?: number; cloudHome?: boolean; onConnectPhone?: () => void } = {}) {
   const bridge = window.ogb?.remoteClient?.active ? undefined : window.ogb?.cloudAccount;
   const [account, setAccount] = useState<CloudAccountState | null>(null);
   const [busy, setBusy] = useState(false), [error, setError] = useState(false), [confirm, setConfirm] = useState(false);
-  const [homeFailed, setHomeFailed] = useState(false);
+  const [homeFailed, setHomeFailed] = useState(false), [phoneFailed, setPhoneFailed] = useState(false);
   const generation = useRef(0), revision = useRef(0), pending = useRef(false);
   const link = useRef({ request: 0, arrived: false, connected: false });
   useEffect(() => {
@@ -163,6 +191,14 @@ export function CloudAccountSettings({ linkRequest = 0, cloudHome = false }: { l
       try { return await bridge.connectHome(); } catch { setHomeFailed(true); return bridge.state(); }
     });
   };
+  // The same switch, landing on the Cloud's phone pairing; what failed says the steps.
+  const openOnPhone = () => {
+    if (!bridge) return;
+    setPhoneFailed(false);
+    void perform(async () => {
+      try { return await bridge.connectHomeForPhone(); } catch { setPhoneFailed(true); return bridge.state(); }
+    });
+  };
   // A normal visit (linkRequest 0) never signs in or connects by itself.
   useEffect(() => {
     if (!linkRequest) link.current.request = 0;
@@ -179,7 +215,7 @@ export function CloudAccountSettings({ linkRequest = 0, cloudHome = false }: { l
     // Only on an OMB Cloud home: any other server open in this window (a VPS,
     // a hosted workspace, someone else's) has no plan of this person's to show.
     const plan = window.ogb?.remoteClient?.active || !cloudHome ? undefined : window.ogb?.cloudPlan;
-    return plan ? <CloudPlanOnCloud bridge={plan} /> : <p className="text-[13px] text-ink-secondary">{t("cloudAccount.desktopOnly")}</p>;
+    return plan ? <CloudPlanOnCloud bridge={plan} onConnectPhone={onConnectPhone} /> : <p className="text-[13px] text-ink-secondary">{t("cloudAccount.desktopOnly")}</p>;
   }
   const view = cloudPlanView(account);
   const signed = account && ["connected", "unavailable", "reauth-required"].includes(account.status);
@@ -233,6 +269,7 @@ export function CloudAccountSettings({ linkRequest = 0, cloudHome = false }: { l
       {!account && <button type="button" disabled={busy} className="ui-button mt-3" onClick={() => void perform(() => bridge.state())}>{t("organization.refresh")}</button>}
     </Card>
     {machine && cloudHomeCard({ machine, busy, failed: homeFailed, onConnect: connectHome, lending: bridge.lending })}
+    {signed && view.kind === "paid" && cloudPhoneCard({ ready: machine?.status === "ready", busy, failed: phoneFailed, onUse: openOnPhone })}
     {machine?.status === "ready" && <CloudMoveSettings />}
   </>;
 }

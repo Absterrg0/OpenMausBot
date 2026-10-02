@@ -302,6 +302,7 @@ const bridge = {
     signOut: () => ipcRenderer.invoke("cloud-account:signOut"),
     openDashboard: () => ipcRenderer.invoke("cloud-account:openDashboard"),
     connectHome: () => ipcRenderer.invoke("cloud-account:connectHome"),
+    connectHomeForPhone: () => ipcRenderer.invoke("cloud-account:connectHomeForPhone"),
     onState: cb => {
       const handler = (_event, state) => cb(state);
       ipcRenderer.on("cloud-account:state-changed", handler);

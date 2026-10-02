@@ -957,6 +957,10 @@ export interface AppState {
    * openmausbot://cloud link; each link counts up. Any other
    * toggleAppSettings (another section, the same one by hand, closing) sets 0. */
   appSettingsCloudLink: number;
+  /** Counts up each time Settings opens on the phone pairing ("Connect your
+   * phone"): Remote access scrolls to the pairing that fits this window and
+   * focuses the button that shows the code. Any other toggleAppSettings sets 0. */
+  appSettingsPhonePairing: number;
   shortcutsOpen: boolean;
   /** the first-run welcome tour, also replayable from Settings → General */
   welcomeOpen: boolean;
@@ -1240,7 +1244,7 @@ export type Action =
   | { type: "toggleInspector"; open?: boolean }
   | { type: "focusMessage"; threadId: string; messageId: string; matchText?: string }
   | { type: "focusMessageConsumed"; nonce: number }
-  | { type: "toggleAppSettings"; open?: boolean; section?: AppSettingsSection; cloudLink?: boolean }
+  | { type: "toggleAppSettings"; open?: boolean; section?: AppSettingsSection; cloudLink?: boolean; phonePairing?: boolean }
   | { type: "toggleShortcuts"; open?: boolean }
   | { type: "toggleWelcome"; open?: boolean }
   | { type: "toggleTour"; open?: boolean }
@@ -2091,6 +2095,7 @@ export function reducer(state: AppState, action: Action): AppState {
         appSettingsOpen: open,
         appSettingsSection: action.section ?? state.appSettingsSection,
         appSettingsCloudLink: action.cloudLink && open ? state.appSettingsCloudLink + 1 : 0,
+        appSettingsPhonePairing: action.phonePairing && open ? state.appSettingsPhonePairing + 1 : 0,
         settingsOpen: open ? false : state.settingsOpen,
         computerOpen: open ? false : state.computerOpen,
         inspectorOpen: open ? false : state.inspectorOpen,
@@ -2432,6 +2437,7 @@ export const initialState: AppState = {
   appSettingsOpen: false,
   appSettingsSection: "general",
   appSettingsCloudLink: 0,
+  appSettingsPhonePairing: 0,
   shortcutsOpen: false,
   welcomeOpen: false,
   tourOpen: false,

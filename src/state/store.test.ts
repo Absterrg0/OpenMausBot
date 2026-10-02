@@ -385,6 +385,19 @@ describe("Settings opened by the Cloud link", () => {
   });
 });
 
+describe("Settings opened on the phone pairing", () => {
+  it("counts each request, and clears on any other Settings navigation", () => {
+    expect(initialState.appSettingsPhonePairing).toBe(0);
+    const phone = { type: "toggleAppSettings", open: true, section: "companion", phonePairing: true } as const;
+    const opened = reducer(initialState, phone);
+    expect(opened).toMatchObject({ appSettingsOpen: true, appSettingsSection: "companion", appSettingsPhonePairing: 1 });
+    expect(reducer(opened, phone).appSettingsPhonePairing).toBe(2);
+    expect(reducer(opened, { type: "toggleAppSettings", open: true, section: "companion" }).appSettingsPhonePairing).toBe(0);
+    expect(reducer(opened, { type: "toggleAppSettings", open: false }).appSettingsPhonePairing).toBe(0);
+    expect(reducer(initialState, { ...phone, open: false }).appSettingsPhonePairing).toBe(0);
+  });
+});
+
 describe("connector grants persistence", () => {
   const announcement = () => ({
     id: "bot-1",

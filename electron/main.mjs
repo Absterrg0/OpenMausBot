@@ -2043,8 +2043,10 @@ function rememberCloudHome(state) {
  * Already signed in there, it simply switches. Otherwise the Admin opens a
  * single-use pairing window on the machine, and the machine's pairing page
  * signs this app in (the same link flow as Connect to a server). The person
- * chose this in Settings, so there is no second confirmation. */
-async function connectCloudHome() {
+ * chose this in Settings, so there is no second confirmation. `open`
+ * "phone" is "Use your Cloud on your phone": it lands on the Cloud's own
+ * phone pairing (cloud-home.mjs cloudHomeConnectUrl). */
+async function connectCloudHome(open = null) {
   const client = ensureCloudAccount();
   const target = client.homeTarget();
   if (!target) throw new Error("Your Cloud is not ready to connect yet.");
@@ -2054,7 +2056,7 @@ async function connectCloudHome() {
   if (!entry) throw new Error("Your Cloud could not be added to Servers.");
   next = withActive(next, entry.id);
   persistEnvironments(next);
-  navigateMainWindow(cloudHomeConnectUrl({ origin: target.origin, grant }, Date.now()));
+  navigateMainWindow(cloudHomeConnectUrl({ origin: target.origin, grant }, Date.now(), open));
   return client.state();
 }
 
@@ -2763,6 +2765,9 @@ for (const method of ["state", "begin", "signInAgain", "reopen", "cancel", "refr
 // The machine and its code come from the verified session in main, never
 // from the renderer: this handler takes no arguments.
 ipcMain.handle("cloud-account:connectHome", localWorkspaceOnly("cloud-account:connectHome", () => connectCloudHome()));
+// The same, landing on the Cloud's phone pairing. The page names nothing:
+// "phone" is fixed here, and the Cloud still waits for a click to make a code.
+ipcMain.handle("cloud-account:connectHomeForPhone", localWorkspaceOnly("cloud-account:connectHomeForPhone", () => connectCloudHome("phone")));
 ipcMain.handle("organization:settings-opened", localWorkspaceOnly("organization:settings-opened", () => organizationEntry.settingsOpened()));
 ipcMain.handle("organization:state", localWorkspaceOnly("organization:state", () => ensureManagedDesktop().state()));
 ipcMain.handle("organization:begin", localWorkspaceOnly("organization:begin", (_event, input) => ensureManagedDesktop().begin(input)));

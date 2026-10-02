@@ -58,6 +58,10 @@ test("connecting uses the pairing page with the code in the hash, or the machine
   assert.equal(cloudHomeConnectUrl({ origin, grant: { origin, code, expiresAt: NOW } }, NOW), origin);
   assert.equal(cloudHomeConnectUrl({ origin, grant: { origin: "https://other.fly.dev", code, expiresAt: NOW + 1 } }, NOW), origin);
   assert.equal(cloudHomeConnectUrl({ origin, grant: null }, NOW), origin);
+  // Use your Cloud on your phone: the one fixed request, before the hash, which keeps the code.
+  assert.equal(cloudHomeConnectUrl({ origin, grant: { origin, code, expiresAt: NOW + 1 } }, NOW, "phone"), `${origin}/pair?desktop-settings=phone#code=${code}`);
+  assert.equal(cloudHomeConnectUrl({ origin, grant: null }, NOW, "phone"), `${origin}/?desktop-settings=phone`);
+  assert.equal(cloudHomeConnectUrl({ origin, grant: null }, NOW, "evil"), origin);
   // The link the existing Connect-to-a-server flow accepts.
   assert.deepEqual(environments.parseHostedWorkspaceLink(`${origin}/pair#code=${code}`), { origin, code, url: `${origin}/pair#code=${code}` });
 });
@@ -193,10 +197,18 @@ test("main lists the machine from verified states only, and connects without a d
   await context.connectCloudHome();
   assert.deepEqual(navigated.at(-1), origin);
   assert.equal(minted, 1);
+  // Use your Cloud on your phone lands on its phone pairing, signed in or not.
+  await context.connectCloudHome("phone");
+  assert.deepEqual(navigated.at(-1), `${origin}/?desktop-settings=phone`);
+  signedIn = false;
+  await context.connectCloudHome("phone");
+  assert.deepEqual(navigated.at(-1), `${origin}/pair?desktop-settings=phone#code=${code}`);
+  assert.equal(minted, 2);
+  signedIn = true;
   assert.deepEqual(dialogs, []);
   client = { homeTarget: () => null, pairHome: async () => { minted++; }, state: () => ({ status: "connected" }) };
   await assert.rejects(context.connectCloudHome(), /not ready/);
-  assert.equal(minted, 1);
+  assert.equal(minted, 2);
 });
 
 test("setup progress, a failed setup's next try and the disk are read when the Admin sends them, and never cost the machine", () => {

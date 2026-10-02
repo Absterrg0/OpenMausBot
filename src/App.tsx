@@ -40,6 +40,7 @@ import { setLocale } from "@/lib/i18n";
 import { shouldOpenKeyboardShortcuts } from "@/lib/keyboard-shortcuts";
 import { effectiveLanguage, useLanguageChoice } from "@/lib/language-preference";
 import { botShowsUnread } from "@/lib/bot-unread";
+import { phonePairingSettingsAction, takePhonePairingRequest } from "@/lib/phone-pairing";
 
 function Shell({ viewer }: { viewer: WelcomeViewer | null }) {
   const { state, dispatch } = useStore();
@@ -73,6 +74,15 @@ function Shell({ viewer }: { viewer: WelcomeViewer | null }) {
       else open();
     }
     return window.ogb.environments.onOpenSettings?.(open);
+  }, [dispatch]);
+  // "Use your Cloud on your phone" opens the Cloud in this window at
+  // /?desktop-settings=phone: its own phone pairing, in any window, on any
+  // server. It only opens Settings there; no code is made until a click.
+  useEffect(() => {
+    const rest = takePhonePairingRequest(window.location.href);
+    if (rest === null) return;
+    window.history.replaceState(null, "", rest);
+    dispatch(phonePairingSettingsAction());
   }, [dispatch]);
   // Mobile-only drawer state. Above md, none of these properties are emitted
   // at all — Sidebar scopes every mobile class with max-md: rather than

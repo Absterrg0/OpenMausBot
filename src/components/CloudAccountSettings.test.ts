@@ -12,7 +12,7 @@ vi.mock("react", async original => ({ ...await original<typeof import("react")>(
 import { CloudAccountSettings, CloudPlanOnCloud, cloudLinkAction, cloudPlanLabel } from "./CloudAccountSettings";
 type Node = ReactElement<{ children?: ReactNode; onClick?: () => void }>;
 function nodes(value: ReactNode): Node[] { if (!isValidElement(value)) return []; const node = value as Node; return [node, ...Children.toArray(node.props.children).flatMap(nodes)]; }
-function render(props?: { linkRequest?: number; cloudHome?: boolean }) { f.index = 0; f.effects = []; let tree: ReactNode; function Capture() { tree = CloudAccountSettings(props); return tree; }
+function render(props?: { linkRequest?: number; cloudHome?: boolean; onConnectPhone?: () => void }) { f.index = 0; f.effects = []; let tree: ReactNode; function Capture() { tree = CloudAccountSettings(props); return tree; }
   const html = renderToStaticMarkup(createElement(Capture)); return { html, nodes: nodes(tree) }; }
 const flush = async () => { for (let i = 0; i < 20; i++) await Promise.resolve(); };
 const click = (label: string) => { const button = render().nodes.find(node => node.type === "button" && node.props.children === label); expect(button).toBeTruthy(); button!.props.onClick!(); };
@@ -24,7 +24,7 @@ beforeEach(() => {
     signInAgain: vi.fn().mockResolvedValue({ status: "connecting" }),
     reopen: vi.fn().mockResolvedValue({ status: "connecting" }), cancel: vi.fn().mockResolvedValue({ status: "signed-out" }),
     refresh: vi.fn().mockResolvedValue(free), signOut: vi.fn().mockResolvedValue({ status: "signed-out" }), openDashboard: vi.fn().mockResolvedValue(free),
-    connectHome: vi.fn().mockResolvedValue(free), onState: vi.fn(callback => { push = callback; return () => {}; }) };
+    connectHome: vi.fn().mockResolvedValue(free), connectHomeForPhone: vi.fn().mockResolvedValue(free), onState: vi.fn(callback => { push = callback; return () => {}; }) };
   vi.stubGlobal("window", { ogb: { cloudAccount: bridge } }); vi.stubGlobal("fetch", vi.fn()); setLocale("en");
 });
 afterEach(() => { vi.unstubAllGlobals(); setLocale("en"); });
@@ -300,4 +300,64 @@ it("decides from the first snapshot after the link, and connects to a Ready Clou
     { ...pro, machine: { status: "provisioning" } }, { status: "unavailable", machine: { status: "ready", origin } }] as CloudAccountState[]) {
     expect(cloudLinkAction(state, arrived)).toBeNull();
   }
+});
+
+// "Use your Cloud on your phone": a paid plan's phone app on the Cloud.
+const PHONE = "Use your Cloud on your phone";
+const STEPS = ["Server menu → My Cloud", "choose Connect your phone"];
+it("a paid plan with a Ready Cloud opens it on its phone pairing with one click, sending nothing from the page", async () => {
+  await ready(readyCloud);
+  const html = render().html;
+  expect(html).toContain('data-cloud-phone="open"'); none(html, STEPS);
+  click(PHONE); await flush();
+  expect(bridge.connectHomeForPhone).toHaveBeenCalledExactlyOnceWith();
+  expect(bridge.connectHome).not.toHaveBeenCalled();
+});
+it("before the Cloud is Ready, explains the two steps instead of offering a switch that cannot work", async () => {
+  for (const machine of [{ status: "provisioning" }, { status: "stopped", origin }, { status: "payment-problem", origin }, { status: "failed", origin }] as const) {
+    f.values = []; await ready({ ...pro, machine });
+    const html = render().html;
+    expect(html).toContain('data-cloud-phone="steps"'); all(html, ["is not ready yet", ...STEPS]);
+    expect(button(PHONE)).toBeUndefined();
+  }
+  // a paid plan whose Cloud the Admin has not listed yet is being set up
+  f.values = []; await ready(pro);
+  expect(render().html).toContain('data-cloud-phone="steps"');
+});
+it("a switch that failed says so, with the two steps, and can be tried again", async () => {
+  vi.mocked(bridge.connectHomeForPhone).mockRejectedValueOnce(new Error("offline"));
+  vi.mocked(bridge.state).mockResolvedValue(readyCloud);
+  await ready(readyCloud);
+  click(PHONE); await flush();
+  const html = render().html;
+  all(html, ["Could not open your Cloud.", "You can also do it in two steps", ...STEPS]);
+  expect(html).not.toContain("Could not complete this Cloud action");
+  click(PHONE); await flush();
+  expect(bridge.connectHomeForPhone).toHaveBeenCalledTimes(2);
+  expect(render().html).not.toContain("Could not open your Cloud.");
+});
+it("is not offered without a paid plan", async () => {
+  await ready(free); expect(render().html).not.toContain(PHONE);
+  push({ ...pro, entitlement: { plan: "pro", status: "inactive", expiresAt: null, version: 4 }, machine: { status: "stopped", origin } });
+  expect(render().html).not.toContain(PHONE);
+  push({ status: "signed-out" }); expect(render().html).not.toContain(PHONE);
+});
+it("on the Cloud itself, opens this Cloud's phone pairing directly; never where this app cannot vouch for it", async () => {
+  const plan = { state: vi.fn().mockResolvedValue({ status: "paid", tier: "pro" }), manage: vi.fn(), useThisComputer: vi.fn() };
+  const onConnectPhone = vi.fn();
+  const view = (props: { onConnectPhone?: () => void }) => { f.index = 0; f.effects = []; let tree: ReactNode; function Capture() { tree = CloudPlanOnCloud({ bridge: plan, ...props }); return tree; }
+    return { html: renderToStaticMarkup(createElement(Capture)), nodes: nodes(tree) }; };
+  // nothing to offer before this app has vouched for this Cloud
+  expect(view({ onConnectPhone }).html).not.toContain(PHONE);
+  f.effects[0](); await flush();
+  view({ onConnectPhone }).nodes.find(node => node.type === "button" && node.props.children === PHONE)!.props.onClick!();
+  expect(onConnectPhone).toHaveBeenCalledOnce();
+  expect(plan.manage).not.toHaveBeenCalled();
+  // CloudAccountSettings hands it on, on the person's own Cloud
+  vi.stubGlobal("window", { ogb: { cloudPlan: plan } });
+  const [card] = render({ cloudHome: true, onConnectPhone }).nodes as unknown as Array<ReactElement<{ onConnectPhone?: () => void }>>;
+  expect(card!.type).toBe(CloudPlanOnCloud); expect(card!.props.onConnectPhone).toBe(onConnectPhone);
+  expect(view({}).html).not.toContain(PHONE);
+  plan.state.mockRejectedValueOnce(new Error("cloud-plan:state is only available in this app's window")); f.values = []; view({ onConnectPhone }); f.effects[0](); await flush();
+  expect(view({ onConnectPhone }).nodes.some(node => node.type === "button")).toBe(false);
 });

@@ -21,6 +21,7 @@ import { ServerPairingCard } from "./ServerPairingCard";
 import { PeopleSection } from "./PeopleSection";
 import { ActivitySection } from "./ActivitySection";
 import { useOwnerOrAdmin } from "@/lib/use-owner-or-admin";
+import { currentPhonePairingTarget, phonePairingSettingsAction } from "@/lib/phone-pairing";
 import { CustomDomainSettings } from "./CustomDomainSettings";
 import { BrowserProfilesManager } from "./BrowserProfilesManager";
 import { RemoteComputerSection } from "./RemoteComputerSection";
@@ -896,7 +897,8 @@ export function SettingsModal() {
         return window.ogb?.organization && !remoteActive ? <OrganizationSettings /> : null;
       case "cloudAccount":
         return (window.ogb?.cloudAccount || (window.ogb?.cloudPlan && state.config?.cloudHome === true)) && !remoteActive
-          ? <CloudAccountSettings linkRequest={state.appSettingsCloudLink} cloudHome={state.config?.cloudHome === true} />
+          ? <CloudAccountSettings linkRequest={state.appSettingsCloudLink} cloudHome={state.config?.cloudHome === true}
+            onConnectPhone={() => dispatch(phonePairingSettingsAction())} />
           : null;
       case "general":
         return (
@@ -1002,7 +1004,11 @@ export function SettingsModal() {
         return <EnginesSettings />;
       case "backups":
         return <><WorkspaceBackupSettings /><CompanyBackupSettings /></>;
-      case "companion":
+      case "companion": {
+        // "Connect your phone" lands on the one pairing that fits this window:
+        // this computer's phone flow, or this server's (or Cloud's) pairing code.
+        const phoneFocus = state.appSettingsPhonePairing;
+        const computerPairs = currentPhonePairingTarget(state.config?.cloudHome === true) === "computer";
         return (
           <>
             <RemoteComputerSection />
@@ -1013,10 +1019,11 @@ export function SettingsModal() {
                 a remote client of a hosted workspace: its requests carry that server's session, and
                 Settings there is the only place that server's phones can be paired from (MOCA-84).
                 The server decides who may act — an owner or an admin session — not this gate. */}
-            <ServerPairingCard cloudHome={state.config?.cloudHome === true} />
-            {!remoteActive && <CompanionSection profileEmail={state.config?.profile?.email} />}
+            <ServerPairingCard cloudHome={state.config?.cloudHome === true} focusRequest={computerPairs ? 0 : phoneFocus} />
+            {!remoteActive && <CompanionSection profileEmail={state.config?.profile?.email} focusRequest={computerPairs ? phoneFocus : 0} />}
           </>
         );
+      }
       case "computer":
         // Advanced: the built-in browser switch heads the Local VM page.
         // Simple stacks it as its own block after Local VM instead.

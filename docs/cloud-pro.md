@@ -52,6 +52,38 @@ session; that is how the web UI knows to open the engine sign-in instead of
 the welcome flow, which describes the person's own computer (it can still be
 replayed from Settings).
 
+### Use your Cloud on your phone
+
+1. Get the phone app: the menu under your name → **Get the phone app** (App
+   Store for iPhone, APK for Android).
+2. The same menu → **Connect your phone · to your Cloud (always on)**, or
+   **Settings → OMB Cloud → Use your Cloud on your phone**. The Cloud opens in
+   the app window at its phone pairing.
+3. **Create pairing code**, and scan the QR code with the phone app.
+
+How it fits together (`src/lib/phone-pairing.ts`):
+
+- **Connect your phone** opens Settings → Remote access at the pairing that
+  fits the window, with focus on the button that shows the code: this
+  computer's phone flow in the desktop app on its own computer, the Cloud's
+  own pairing code (`ServerPairingCard`) on a Cloud home, and any other
+  server's pairing code only for a session that may make one (the owner on
+  that machine or an admin session, where pairing codes are on).
+- On this computer, when the verified snapshot shows a paid plan (any tier)
+  and a Ready Cloud, the menu has two **Connect your phone** lines: *to your
+  Cloud (always on)* first, which does what **Use your Cloud on your phone**
+  does, then *to this computer*. A paid plan whose Cloud is not Ready keeps
+  the single *to this computer* line, with a note that the Cloud will show
+  there. A failed switch opens Settings → OMB Cloud.
+- **Use your Cloud on your phone** shows for a paid plan. With a Ready Cloud it
+  calls `cloud-account:connectHomeForPhone`, which takes no arguments and
+  connects as **Connect to my Cloud** does, adding the one fixed request
+  `?desktop-settings=phone` (on `/pair` too, which carries it on once paired).
+  The Cloud's page opens Settings on its phone pairing. It never makes a code
+  by itself. Before the Cloud is Ready, or if opening it failed, the card
+  lists the two steps instead. On the Cloud itself, Settings → OMB Cloud
+  offers the same button and opens the pairing directly.
+
 ### Only your own devices
 
 A Cloud home is personal (`server/cloud-owner.ts`): only the owner's own

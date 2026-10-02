@@ -13,6 +13,7 @@ import {
   type EnvironmentDescriptor,
   type SessionState,
 } from "../lib/session";
+import { pairedDestination } from "../lib/phone-pairing";
 
 const input = "mt-1 w-full rounded-md border border-hairline/40 bg-inset px-3 py-2 text-[14px] text-ink outline-none focus:border-accent-border";
 const button = "mt-5 w-full rounded-md bg-accent px-4 py-2 text-[14px] font-medium text-accent-ink disabled:opacity-50";
@@ -58,7 +59,7 @@ export function PairPage({ initialCode, initialEmail = null, reason }: { initial
     let active = true;
     void pairWithCode({ code: initialCode, label, attemptId }).then((result) => {
       if (!active) return;
-      if (result.ok) { location.replace("/"); return; }
+      if (result.ok) { location.replace(pairedDestination(location.search)); return; }
       setOpening(false);
       setError(result.error);
     });
@@ -92,7 +93,7 @@ export function PairPage({ initialCode, initialEmail = null, reason }: { initial
     const result = await pairWithCode({ code, label, attemptId });
     setBusy(false);
     if (result.ok) {
-      location.replace("/");
+      location.replace(pairedDestination(location.search));
       return;
     }
     setError(result.error);
@@ -109,7 +110,7 @@ export function PairPage({ initialCode, initialEmail = null, reason }: { initial
       return;
     }
     if (sent) {
-      location.replace("/");
+      location.replace(pairedDestination(location.search));
       return;
     }
     setSent(true);
