@@ -126,7 +126,9 @@ describe("process probe", () => {
     await new Promise<void>((resolve) => socket.once("connect", () => resolve()));
     try {
       const sample = await sampleProcessTree(process.pid);
-      expect(sample.cpuMs).toBeGreaterThan(0);
+      // Linux ps reports whole CPU seconds: a healthy young worker can read 0.
+      expect(sample.cpuMs).not.toBeNull();
+      expect(sample.cpuMs!).toBeGreaterThanOrEqual(0);
       // lsof may be missing on a minimal Linux box: unknown, never zero
       if (sample.connections !== null) expect(sample.connections).toBeGreaterThanOrEqual(1);
     } finally {

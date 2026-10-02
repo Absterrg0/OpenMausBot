@@ -26,6 +26,7 @@ import { CursorAgentDriver } from "./cursor.ts";
 import { QwenAgentDriver } from "./qwen.ts";
 import { removeTempDir } from "../../testing/cleanup.ts";
 import * as procs from "../../procs.ts";
+import * as quietStatus from "./quiet-status.ts";
 
 const FAKE_CLI = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "testing", "fake-acp-cli.ts");
 
@@ -1291,6 +1292,9 @@ describe("ACP turns (fake CLI)", () => {
 
   // A quiet agent is not a black box: the person is told what it is doing.
   it("tells the person what a quiet agent is doing, then finishes the turn", async () => {
+    // Test the driver's notices, not how fast this OS starts ps/PowerShell.
+    // The process probe has its own checks in quiet-status.test.ts.
+    vi.spyOn(quietStatus, "sampleProcessTree").mockResolvedValue({ cpuMs: 0, connections: 1 });
     process.env.OMB_ACP_QUIET_NOTICE_MS = "150";
     process.env.OMB_ACP_QUIET_TICK_MS = "50";
     process.env.FAKE_ACP_QUIET_MS = "700";
@@ -1304,6 +1308,7 @@ describe("ACP turns (fake CLI)", () => {
   });
 
   it("reads Qwen's debug log: a logged rate-limit retry is reported and keeps the turn alive", async () => {
+    vi.spyOn(quietStatus, "sampleProcessTree").mockResolvedValue({ cpuMs: 0, connections: 1 });
     process.env.QWEN_HOME = scratch;
     process.env.OPENMAUS_ACP_PROMPT_IDLE_TIMEOUT_MS = "400";
     process.env.OMB_ACP_QUIET_NOTICE_MS = "150";
