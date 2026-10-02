@@ -127,6 +127,7 @@ describe("control-omb ui drives the real renderer", () => {
     await ui("type", info.ui, "--name", "Message Pepper", "--text", "Find the striped zebra");
     await ui("press", info.ui, "--keys", "Enter");
     await ui("wait-settle", info.ui, "--timeout", "60");
+    await ui("click", info.ui, "--name", "More");
     await ui("click", info.ui, "--name", "Find in conversation");
     await ui("type", info.ui, "--name", "Find in this conversation", "--text", "zebra");
     const highlighted = async () => (await ui("eval", info.ui, "--js", "[...CSS.highlights.get('search-result-text') ?? []][0]?.toString() ?? null")).result;
@@ -151,7 +152,7 @@ describe("control-omb ui drives the real renderer", () => {
     await ui("press", info.ui, "--keys", "Backspace");
     await ui("type", info.ui, "--name", "Find in this conversation", "--text", "fake claude");
     await expect.poll(highlighted, { timeout: 10_000 }).toBe("fake claude");
-    await ui("click", info.ui, "--name", "Find in conversation");
+    await ui("press", info.ui, "--keys", "Escape");
     await ui("type", info.ui, "--name", "Search bots and messages", "--text", "zebra");
     await expect.poll(async () => (await ui("eval", info.ui, "--js", "[...document.querySelectorAll('mark')].some(mark => mark.textContent === 'zebra')")).result, { timeout: 10_000 }).toBe(true);
     await ui("eval", info.ui, "--js", "[...document.querySelectorAll('mark')].find(mark => mark.textContent === 'zebra').closest('button').click(); true");
