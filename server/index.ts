@@ -4664,6 +4664,7 @@ const channelTaskBlocked = (group: GroupRecord) =>
       (message) =>
         message.kind === "options" &&
         message.card?.requestId &&
+        (!isPersistentQuestionCard(message.card) || runningTurnEngines.has(task.threadId)) &&
         !message.card.answered &&
         !message.card.dismissed && !message.card.expired,
     ),
@@ -19232,6 +19233,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
           (message) =>
             message.kind === "options" &&
             message.card?.requestId &&
+            (!isPersistentQuestionCard(message.card) || runningTurnEngines.has(task.threadId)) &&
             !message.card.answered &&
             !message.card.dismissed && !message.card.expired,
         ) ? [task.threadId] : [],
