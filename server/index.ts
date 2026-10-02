@@ -21503,11 +21503,17 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
           store.patchMessage(threadId, pending.id, { card: { ...pending.card, dismissed: true } });
           return json(res, 200, { ok: true, dismissed: true });
         }
+        const persistentQuestion = isPersistentQuestionCard(pending?.card);
         const owner = group
-          ? (isPersistentQuestionCard(pending?.card) && pending?.from ? store.bot(pending.from.botId) : undefined) ??
-            (group.busyBotId ? store.bot(group.busyBotId) : undefined) ??
-            (pending?.from ? store.bot(pending.from.botId) : undefined)
+          ? persistentQuestion
+            ? (pending?.from ? store.bot(pending.from.botId) : undefined)
+            : (group.busyBotId ? store.bot(group.busyBotId) : undefined) ??
+              (pending?.from ? store.bot(pending.from.botId) : undefined)
           : store.botByThread(threadId);
+        // A surviving question belongs to its original asker, never a later speaker.
+        if (group && persistentQuestion && !owner) {
+          return json(res, 409, { error: "the bot that asked this question is no longer available" });
+        }
         if (!owner && !pending) return json(res, 404, { error: "nothing is waiting on an answer in this conversation" });
         const requestOwner = owner ? botForThread(owner.id, threadId) : null;
         const outcome = await answerRequest(threadId, requestOwner?.modelSelection.instanceId ?? "", requestId, behavior, body.message, owner ? { id: owner.id, name: owner.name } : undefined, body.always === true, body.rememberCommand === true);
