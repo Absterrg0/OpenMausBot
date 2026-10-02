@@ -1,5 +1,5 @@
 import { describe, expect, it, beforeEach } from "vitest";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -22,6 +22,24 @@ beforeEach(() => {
 });
 
 describe("skills library migration", () => {
+  it("keeps multi-file skills private so scripts and references remain usable", () => {
+    const name = "auxiliary-files";
+    skills.installSkill(botA, "private:test", [{ path: "SKILL.md", content: SKILL(name, "Run scripts/probe.js and read references/notes.md.") }]);
+    // Imports intentionally skip supporting files in v1, but an existing
+    // workspace can acquire auxiliary files through its owner's file tools.
+    const directory = join(workspaceDir(botA), "skills", name);
+    mkdirSync(join(directory, "scripts"));
+    mkdirSync(join(directory, "references"));
+    writeFileSync(join(directory, "scripts", "probe.js"), "console.log('fixture');");
+    writeFileSync(join(directory, "references", "notes.md"), "Fixture reference.");
+    skills.setSkillEnabled(botA, name, true);
+    const report = migration.migrateBotSkillsToLibrary(botA);
+    expect(report.outcomes).toEqual([expect.objectContaining({ outcome: "skipped", detail: expect.stringContaining("auxiliary") })]);
+    expect(readFileSync(join(workspaceDir(botA), "skills", name, "scripts", "probe.js"), "utf8")).toContain("fixture");
+    expect(skills.listSkills(botA).find((skill) => skill.name === name)?.enabled).toBe(true);
+    expect(library.readSkillLibraryIndex()[name]).toBeUndefined();
+  });
+
   it("deduplicates identical per-bot copies by sha256 and assigns both bots", () => {
     const content = SKILL("shared-review", "Identical bytes.");
     for (const bot of [botA, botB]) {

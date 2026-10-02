@@ -69,6 +69,18 @@ export function migrateBotSkillsToLibrary(botId: string, root: string = skillsLi
       outcomes.push({ botId, name: copy.name, outcome: "skipped", detail: "stored SKILL.md is missing or changed after review" });
       continue;
     }
+    // The shared library currently stores SKILL.md only. Moving a package
+    // with scripts/references/assets would make its relative paths vanish
+    // from the bot's usable directory, so keep that working private copy.
+    try {
+      if (readdirSync(copy.directory).some((name) => name !== "SKILL.md")) {
+        outcomes.push({ botId, name: copy.name, outcome: "skipped", detail: "skill has auxiliary files — keeping its complete private directory" });
+        continue;
+      }
+    } catch {
+      outcomes.push({ botId, name: copy.name, outcome: "skipped", detail: "could not inspect the private skill directory" });
+      continue;
+    }
     let instructions: string;
     try {
       instructions = readFileSync(join(copy.directory, "SKILL.md"), "utf8");
