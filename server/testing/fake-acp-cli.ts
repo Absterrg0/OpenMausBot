@@ -48,6 +48,12 @@
 //                   | stall-after-tool (finish a tool call, then go fully
 //                     silent forever: the guard must still fire once no tool
 //                     is running)
+//                   | quiet-then-answer (send nothing for FAKE_ACP_QUIET_MS,
+//                     default 600, then answer — a slow model or a rate-limit
+//                     wait. With QWEN_HOME set, appends FAKE_ACP_QWEN_LOG
+//                     (a JSON array of lines) to Qwen's debug log for this
+//                     session, one line every FAKE_ACP_LOG_EVERY_MS (default
+//                     100), repeating the last, as Qwen does while it retries)
 //                   | lend-question (call list_shared_computers through the
 //                     injected agents MCP, ask a question card, call it again
 //                     once the card is answered, and reply
@@ -116,7 +122,7 @@
 //
 // Keep this file dependency-free — it runs as a bare `node` subprocess.
 import { spawn } from "node:child_process";
-import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 
 const mode = process.env.FAKE_ACP_MODE ?? "happy";
 
@@ -806,6 +812,24 @@ function handle(msg: any) {
             : { stopReason: "end_turn", _meta: { inputTokens: 10, outputTokens: 5 } },
         );
       };
+      if (mode === "quiet-then-answer") {
+        const lines: string[] = process.env.FAKE_ACP_QWEN_LOG ? JSON.parse(process.env.FAKE_ACP_QWEN_LOG) : [];
+        let logTimer: ReturnType<typeof setInterval> | null = null;
+        if (lines.length && process.env.QWEN_HOME && liveSession) {
+          const dir = `${process.env.QWEN_HOME}/debug`;
+          mkdirSync(dir, { recursive: true });
+          let i = 0;
+          logTimer = setInterval(() => {
+            appendFileSync(`${dir}/${liveSession}.txt`, `${new Date().toISOString()} ${lines[Math.min(i++, lines.length - 1)]}\n`);
+          }, Number(process.env.FAKE_ACP_LOG_EVERY_MS ?? 100));
+        }
+        setTimeout(() => {
+          if (logTimer) clearInterval(logTimer);
+          out({ jsonrpc: "2.0", method: "session/update", params: { update: { sessionUpdate: "agent_message_chunk", content: { text: "done" } } } });
+          complete();
+        }, Number(process.env.FAKE_ACP_QUIET_MS ?? 600));
+        return;
+      }
       if (mode === "slow-tool" || mode === "stall-after-tool") {
         const tool = (update: Record<string, unknown>) =>
           out({ jsonrpc: "2.0", method: "session/update", params: { update: { toolCallId: "tc-slow", ...update } } });

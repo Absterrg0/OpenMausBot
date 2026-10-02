@@ -35,6 +35,10 @@ import { decodeInjectId } from "../local-inject.ts";
 import { promptHalves, readPromptSplitReceipt, splitSessionPrompt, writePromptSplitReceipt } from "../prompt-split.ts";
 import type { PromptSplitReceipt } from "../prompt-split.ts";
 import { describeSpawnFailure, execCli, killCliTree, spawnCli } from "../../procs.ts";
+import {
+  classifyQuiet, describeQuiet, lastSeenPhrase, LogTail, quietKey, sampleProcessTree,
+  type LogSignal, type ProcessSample, type QuietState,
+} from "./quiet-status.ts";
 
 /**
  * A `host::model` pick talks to a loopback server with its own key.
@@ -143,6 +147,8 @@ interface AcpTurn {
    * prompt's silence watchdog waits for these as it does for asks. */
   runningTools: Set<string>;
   interruptTimer: ReturnType<typeof setTimeout> | null;
+  /** ends the quiet-status watch started with the prompt */
+  stopQuietWatch: (() => void) | null;
   flushAssistantText: () => void;
   /** fold a session config snapshot into sessionConfigResult + the picker */
   receiveModelVariants: (result: any) => void;
@@ -162,8 +168,12 @@ interface AcpConnection {
     timeoutMs?: number,
     receive?: (result: any) => void,
     idleMs?: number,
-    idleMessage?: string,
+    idleMessage?: string | (() => string),
   ): Promise<any>;
+  /** when the child last wrote a line */
+  readonly lastInboundAt: number;
+  /** restart every idle deadline: proof of life from outside the wire */
+  touch(): void;
   failAll(error: Error): void;
   /** stop dispatching child output — pending RPCs reject, nothing parses */
   close(): void;
@@ -177,6 +187,8 @@ interface AcpSession {
   child: ReturnType<typeof spawnCli>;
   acp: AcpConnection;
   launch: { command: string; args?: string[] };
+  /** the environment the child was spawned with */
+  env: Record<string, string | undefined>;
   cwd: string;
   /** the spawn contract — a different one means a fresh process */
   contractKey: string;
@@ -307,6 +319,14 @@ export interface AcpSupport {
   clientFileSystem?: boolean;
   /** Do not retain stderr from providers that may place OAuth material there. */
   redactStderr?: boolean;
+  /** The agent's own debug log for a native session, read while a prompt is
+   * quiet: any new line proves the process alive, and `parse` picks out what
+   * is worth telling the person (a retry, a compression). Return null when
+   * this process keeps no log. */
+  statusLog?: {
+    path(env: Record<string, string | undefined>, sessionId: string): string | null;
+    parse(line: string): LogSignal | null;
+  };
   /** Bound provider-native tool payloads before writing diagnostic logs. */
   sanitizeToolPayload?: boolean;
   /** Mutate the child env after the turn model is known. Catalog refresh and
@@ -378,12 +398,23 @@ const ACP_PROMPT_RE_ANCHOR_TURNS = 8;
 // streams thought chunks, then goes silent forever and never resolves). 0
 // disables the guard, restoring the pre-fix "hang until the user cancels"
 // behavior.
+//
+// Healthy agents go silent for minutes too. Qwen Code 0.24 sends nothing
+// over ACP while it compresses history, while it backs off a rate limit
+// (60 s up to 5 min per wait), or while one model request runs (its SDK
+// waits up to 600 s). The old 180 s default killed those turns mid-work,
+// and the retry redid it all. A false trip costs the whole turn; a real
+// wedge only costs waiting, and the user can press Stop - so the default
+// sits above the longest normal silence.
+export const DEFAULT_ACP_PROMPT_IDLE_MS = 15 * 60_000;
 const promptIdleTimeoutMs = (): number => {
   const raw = process.env.OPENMAUS_ACP_PROMPT_IDLE_TIMEOUT_MS;
-  if (raw === undefined) return 180_000;
+  if (raw === undefined) return DEFAULT_ACP_PROMPT_IDLE_MS;
   const ms = Number(raw);
   return Number.isFinite(ms) && ms > 0 ? ms : 0;
 };
+const formatQuietLimit = (ms: number): string =>
+  ms >= 120_000 && ms % 60_000 === 0 ? `${ms / 60_000} min` : `${Math.round(ms / 1000)} s`;
 /** Keep a turn's set of running tool calls in step with the agent's
  * `tool_call` / `tool_call_update` notifications: a call is running from
  * the first update that is not terminal until one that is. A `tool_call`
@@ -790,6 +821,92 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
         return servers;
       };
 
+      /** While a prompt runs, notice when the agent goes quiet and tell the
+       *  person what it is doing: retrying, compressing, waiting on its
+       *  model, busy, or showing no sign of life (see quiet-status.ts). A
+       *  notice is sent only when that answer changes. New lines in the
+       *  agent's own log also restart the prompt's idle deadline, so a
+       *  turn that is visibly retrying is never stopped as stuck. */
+      const startQuietWatch = (threadId: string, session: AcpSession, current: AcpTurn) => {
+        const noticeAfterMs = envOr("OMB_ACP_QUIET_NOTICE_MS", 60_000);
+        const tickMs = envOr("OMB_ACP_QUIET_TICK_MS", 15_000);
+        const logPath = support.statusLog && session.sessionId
+          ? support.statusLog.path(session.env, session.sessionId)
+          : null;
+        const tail = logPath ? new LogTail(logPath) : null;
+        tail?.read(); // skip what this log held before the prompt
+        let logged: { signal: LogSignal; at: number } | null = null;
+        let context: { tokens: number; threshold: number } | null = null;
+        let previous: ProcessSample | null = null;
+        let previousAt = 0;
+        let shownKey: string | null = null;
+        let noSignsSince: number | null = null;
+        let notices = 0;
+        let probing = false;
+        let state: QuietState | null = null;
+        const tick = async () => {
+          if (probing || current.state.settled || session.current !== current) return;
+          const now = Date.now();
+          for (const line of tail?.read() ?? []) {
+            session.acp.touch();
+            const signal = support.statusLog!.parse(line);
+            if (signal?.kind === "context") context = { tokens: signal.tokens, threshold: signal.threshold };
+            else if (signal) logged = { signal, at: now };
+          }
+          const quietMs = now - session.acp.lastInboundAt;
+          // A running tool or an open question is already on screen.
+          if (quietMs < noticeAfterMs || current.asks.size || current.runningTools.size) {
+            if (quietMs < noticeAfterMs) logged = null;
+            previous = null;
+            shownKey = null;
+            noSignsSince = null;
+            state = null;
+            return;
+          }
+          // A retry stays the answer until well past its wait (Qwen's SDK
+          // retries on its own for about a minute before the next logged
+          // attempt); after that the probe takes over.
+          if (logged?.signal.kind === "retry"
+              && now - logged.at > (logged.signal.delayMs ?? 60_000) + 120_000) logged = null;
+          probing = true;
+          const sample = session.child.pid ? await sampleProcessTree(session.child.pid) : { cpuMs: null, connections: null };
+          probing = false;
+          if (current.state.settled || session.current !== current) return;
+          let next = classifyQuiet({
+            logged: logged?.signal ?? null, context, sample, previous, sinceMs: previous ? now - previousAt : 0,
+          });
+          const first = previous === null;
+          previous = sample;
+          previousAt = now;
+          // CPU use needs two samples; the first only sets the baseline
+          // (unless the log already said what is going on).
+          if (first && next.kind === "unknown") return;
+          // An SDK sleeping between its own retries holds no socket and
+          // burns no CPU (seen with Qwen against a 429ing endpoint), so
+          // "no sign of life" is called only once that has lasted minutes.
+          if (next.kind === "no-signs") {
+            noSignsSince ??= now;
+            if (now - noSignsSince < envOr("OMB_ACP_STUCK_AFTER_MS", 180_000)) next = { kind: "between-requests" };
+          } else {
+            noSignsSince = null;
+          }
+          state = next;
+          const key = quietKey(next);
+          if (key === shownKey || notices >= 12) return;
+          shownKey = key;
+          notices += 1;
+          emit({
+            ...base(threadId, current.turnId),
+            type: "runtime.notice",
+            message: describeQuiet(support.displayName, next, quietMs, promptIdleTimeoutMs()),
+          });
+        };
+        const timer = setInterval(() => { void tick(); }, tickMs);
+        timer.unref?.();
+        current.stopQuietWatch = () => clearInterval(timer);
+        return { lastState: () => state };
+      };
+
       /** The one completion path for a turn: the prompt result, a crashed
        *  child, an unanswered cancel, or an rpc error the turn body throws.
        *  The child is NOT killed here — a clean settle leaves it pooled for
@@ -799,6 +916,7 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
         if (!current || current.state.settled) return;
         current.state.settled = true;
         current.acknowledge();
+        current.stopQuietWatch?.();
         if (current.interruptTimer) clearTimeout(current.interruptTimer);
         for (const finish of current.asks.values()) finish("cancel", "system");
         session.acp.failAll(new Error("turn settled"));
@@ -883,7 +1001,7 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
           timeoutMs?: number,
           receive?: (result: any) => void,
           idleMs?: number,
-          idleMessage?: string,
+          idleMessage?: string | (() => string),
         ) =>
           new Promise<any>((resolve, reject) => {
             const id = nextId++;
@@ -908,7 +1026,7 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
                 // is not an unresponsive agent.
                 if (session.current?.asks.size || session.current?.runningTools.size) { armIdle(); return; }
                 rpcPending.delete(id);
-                const error = new Error(idleMessage ?? `${method} stopped responding`);
+                const error = new Error((typeof idleMessage === "function" ? idleMessage() : idleMessage) ?? `${method} stopped responding`);
                 Object.assign(error, { acpPromptStall: true });
                 reject(error);
               }, idleMs);
@@ -927,9 +1045,12 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
             });
             send({ jsonrpc: "2.0", id, method, params });
           });
+        let lastInboundAt = Date.now();
         const acp: AcpConnection = {
           send,
           request,
+          get lastInboundAt() { return lastInboundAt; },
+          touch: () => { for (const p of rpcPending.values()) p.armIdle(); },
           failAll: (error: Error) => {
             for (const p of rpcPending.values()) {
               if (p.timer) clearTimeout(p.timer);
@@ -1234,6 +1355,7 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
           child,
           acp,
           launch,
+          env,
           cwd,
           contractKey,
           sessionKey: null,
@@ -1267,6 +1389,7 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
             appendNative(threadId, { dir: "in", source: SOURCE, msg: nativeLogMessage(msg) });
             // Inbound traffic proves the child is alive and making progress,
             // so every idle deadline restarts; only total silence trips it.
+            lastInboundAt = Date.now();
             for (const p of rpcPending.values()) p.armIdle();
             if (msg.id !== undefined && (msg.result !== undefined || msg.error !== undefined)) {
               const pend = rpcPending.get(msg.id);
@@ -1464,7 +1587,7 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
           timeoutMs?: number,
           receive?: (result: any) => void,
           idleMs?: number,
-          idleMessage?: string,
+          idleMessage?: string | (() => string),
         ): Promise<any> =>
           session.acp.request(method, params, timeoutMs, receive, idleMs, idleMessage);
 
@@ -1535,6 +1658,7 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
           asks,
           runningTools: new Set(),
           interruptTimer: null,
+          stopQuietWatch: null,
           flushAssistantText,
           receiveModelVariants,
         };
@@ -1868,14 +1992,19 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
             state.promptSent = true;
             acknowledge();
             const promptIdleMs = promptIdleTimeoutMs();
+            const quiet = startQuietWatch(threadId, session, current);
             const result = await request(
               "session/prompt",
               { sessionId, prompt: [{ type: "text", text }, ...imageBlocks] },
               undefined,
               undefined,
               promptIdleMs,
-              `${DRIVER_KIND} sent nothing for ${Math.round(promptIdleMs / 1000)} s with no tool running, so the turn was stopped as stuck. ` +
-                "Send the message again to retry. On a self-hosted server, OPENMAUS_ACP_PROMPT_IDLE_TIMEOUT_MS sets this limit (0 turns it off).",
+              () => {
+                const last = quiet.lastState();
+                return `${DRIVER_KIND} sent nothing for ${formatQuietLimit(promptIdleMs)} with no tool running, so the turn was stopped as stuck` +
+                  `${last ? ` (last seen: ${lastSeenPhrase(last)})` : ""}. ` +
+                  "Send the message again to retry. On a self-hosted server, OPENMAUS_ACP_PROMPT_IDLE_TIMEOUT_MS sets this limit (0 turns it off).";
+              },
               );
             if (pendingSplitReceipt) {
               // session/prompt resolving is the acceptance boundary: a
