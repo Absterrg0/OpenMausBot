@@ -93,7 +93,7 @@ it("honours workspace dismissal after browser storage is cleared and a tour is r
   expect(withTourReset(f.state.config.onboarding)).toContain(PRO_DISMISSED);
   expect(render()).toBe("");
 });
-it.each(["appSettingsOpen", "settingsOpen", "newBotOpen", "pluginsOpen", "shortcutsOpen", "welcomeOpen", "tourOpen"])("does not interrupt %s", key => {
+it.each(["appSettingsOpen", "settingsOpen", "newBotOpen", "pluginsOpen", "triggersOpen", "shortcutsOpen", "welcomeOpen", "tourOpen"])("does not interrupt %s", key => {
   f.state[key] = true; expect(render()).toBe("");
 });
 it("waits for onboarding, connection and busy background threads", () => {
