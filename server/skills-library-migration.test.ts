@@ -141,6 +141,21 @@ describe("skills library migration", () => {
 });
 
 describe("skills library boot sweep", () => {
+  it("recovers a newly migrated assignment after the bot save fails and boot retries", () => {
+    const name = "restart-save-failure";
+    skills.installSkill(botA, "private:test", [{ path: "SKILL.md", content: SKILL(name) }]);
+    skills.setSkillEnabled(botA, name, true);
+    const bots = [{ id: botA, assignedSkills: undefined as string[] | undefined }];
+    expect(() => migration.runSkillsLibraryBootSweep({
+      bots,
+      patch: () => { throw new Error("fixture bot save failed"); },
+    })).toThrow("fixture bot save failed");
+    const recovered: string[][] = [];
+    migration.runSkillsLibraryBootSweep({ bots, patch: (_id, names) => recovered.push(names) });
+    expect(recovered).toEqual([[name]]);
+    expect(migration.readPendingAssignments()).toEqual({});
+  });
+
   it("applies script-recorded pending assignments through the patch callback and clears the file", () => {
     skills.installSkill(botA, "private:test", [{ path: "SKILL.md", content: SKILL("pending-skill") }]);
     skills.setSkillEnabled(botA, "pending-skill", true);
