@@ -149,6 +149,51 @@ final class RFBTests: XCTestCase {
         XCTAssertEqual(client.framebuffer.enumerated().filter { $0.offset % 4 == 0 }.map(\.element), [1, 1, 2])
     }
 
+    func testRefusesRawRectanglesOutsideTheDesktopBeforeWaitingForPixels() throws {
+        for (x, y, w, h) in [(0, 0, 65_535, 65_535), (3, 0, 2, 1), (0, 2, 1, 2)] {
+            let client = try connected(width: 4, height: 3)
+            let header = Data([0, 0] + u16(1) + u16(x) + u16(y) + u16(w) + u16(h) + s32(0))
+            XCTAssertThrowsError(try client.receive(header)) { error in
+                XCTAssertEqual(error as? RFBError, .malformed("rectangle bounds"))
+            }
+        }
+    }
+
+    func testAcceptsRawPixelsAfterAResizeInTheSameUpdate() throws {
+        let client = try connected(width: 2, height: 1)
+        let resize = u16(0) + u16(0) + u16(3) + u16(2) + s32(-223)
+        let pixels = [UInt8](repeating: 7, count: 3 * 2 * 4)
+        let raw = u16(0) + u16(0) + u16(3) + u16(2) + s32(0) + pixels
+        XCTAssertEqual(try client.receive(Data([0, 0] + u16(2) + resize + raw)), [.updated(resized: true)])
+        XCTAssertEqual(client.framebuffer, pixels)
+    }
+
+    func testAcceptsMultipleRawRectanglesBeyondTheCurrentFramebufferBudget() throws {
+        let width = 1280, height = 800
+        let client = try connected(width: width, height: height)
+        let frameBytes = width * height * 4
+        var update = Data([0, 0] + u16(2))
+        for value: UInt8 in [7, 9] {
+            update.append(contentsOf: u16(0) + u16(0) + u16(width) + u16(height) + s32(0))
+            update.append(Data(repeating: value, count: frameBytes))
+        }
+        XCTAssertGreaterThan(update.count, frameBytes + (1 << 20))
+        XCTAssertLessThan(update.count, RFBClient.maxPendingBytes)
+        let split = 4 + 12 + frameBytes
+        XCTAssertEqual(try client.receive(Data(update.prefix(split))), [])
+        XCTAssertEqual(client.framebuffer.first, 0, "the first rectangle waits for the complete update")
+        XCTAssertEqual(try client.receive(Data(update.dropFirst(split))), [.updated(resized: false)])
+        XCTAssertEqual(client.framebuffer, [UInt8](repeating: 9, count: frameBytes))
+    }
+
+    func testBoundsPendingBytesAcrossMessagesBeforeAppending() throws {
+        let client = RFBClient(password: nil)
+        try client.receive(Data("R".utf8))
+        XCTAssertThrowsError(try client.receive(Data(repeating: 0, count: RFBClient.maxPendingBytes))) { error in
+            XCTAssertEqual(error as? RFBError, .malformed("incoming buffer"))
+        }
+    }
+
     func testRefusesAnEncodingItDidNotAskFor() throws {
         let client = try connected()
         XCTAssertThrowsError(try client.receive(Data([0, 0] + u16(1) + u16(0) + u16(0) + u16(1) + u16(1) + s32(7)))) { error in

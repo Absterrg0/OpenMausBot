@@ -105,6 +105,12 @@ public final class RFBClient {
     /// Larger than any desktop a Local VM runs, and small enough that a
     /// misbehaving server cannot make the phone allocate gigabytes.
     static let maxDimension = 8192
+    /// Fixed budget: one maximum supported framebuffer plus 1 MiB overhead,
+    /// not the current frame size. Ordinary multi-rectangle updates fit.
+    /// ponytail: whole updates are buffered; even valid extreme overlapping
+    /// updates above this budget are refused. Consume rectangles incrementally
+    /// if those updates need support.
+    static let maxPendingBytes = maxDimension * maxDimension * 4 + (1 << 20)
 
     private let password: String?
     private var phase = Phase.version
@@ -134,6 +140,9 @@ public final class RFBClient {
     /// when the session cannot continue.
     @discardableResult
     public func receive(_ data: Data) throws -> [RFBEvent] {
+        guard data.count <= Self.maxPendingBytes - pending.count else {
+            throw RFBError.malformed("incoming buffer")
+        }
         pending.append(data)
         var events: [RFBEvent] = []
         while let event = try step() {
@@ -331,6 +340,7 @@ public final class RFBClient {
         guard pending.count >= 4 else { return nil }
         let count = Int(pending.readUInt16(at: 2))
         var offset = 4
+        var pictureWidth = width, pictureHeight = height
         var rects: [(x: Int, y: Int, w: Int, h: Int, encoding: Int32, data: Int)] = []
         for _ in 0 ..< count {
             guard pending.count >= offset + 12 else { return nil }
@@ -339,8 +349,14 @@ public final class RFBClient {
             let w = Int(pending.readUInt16(at: offset + 4))
             let h = Int(pending.readUInt16(at: offset + 6))
             let encoding = Int32(bitPattern: pending.readUInt32(at: offset + 8))
-            if encoding == Self.encodingDesktopSize, w > Self.maxDimension || h > Self.maxDimension {
-                throw RFBError.malformed("desktop size")
+            if encoding == Self.encodingDesktopSize {
+                guard w > 0, h > 0, w <= Self.maxDimension, h <= Self.maxDimension else {
+                    throw RFBError.malformed("desktop size")
+                }
+                pictureWidth = w
+                pictureHeight = h
+            } else if encoding == Self.encodingRaw, x + w > pictureWidth || y + h > pictureHeight {
+                throw RFBError.malformed("rectangle bounds")
             }
             let body = try rectangleLength(width: w, height: h, encoding: encoding)
             guard pending.count >= offset + 12 + body else { return nil }

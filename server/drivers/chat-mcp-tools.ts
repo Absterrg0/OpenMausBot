@@ -238,6 +238,22 @@ function boundedText(value: string): string {
   return `${bytes.subarray(0, end).toString()}\n[MCP result truncated at 50KB; request less output.]`;
 }
 
+/** Optional fields a tool documents as "omit to use the default", where a
+ * blank string is an error instead. Smaller models fill optional fields with
+ * "" rather than leaving them out; dropping the blank restores the documented
+ * call. agent_browser_read: "Omit url to read the active tab." */
+const BUILT_IN_BROWSER_BLANK_MEANS_OMITTED: Record<string, readonly string[]> = {
+  agent_browser_read: ["url"],
+};
+
+function omitBlankDefaults(builtInBrowser: boolean, tool: string, args: unknown) {
+  if (!builtInBrowser || !object(args)) return;
+  for (const field of BUILT_IN_BROWSER_BLANK_MEANS_OMITTED[tool] ?? []) {
+    const value = args[field];
+    if (typeof value === "string" && !value.trim()) delete args[field];
+  }
+}
+
 export async function mountChatTools(integrations: SendTurnInput["integrations"], signal: AbortSignal, computerUse = false): Promise<ChatToolSession> {
   const servers: Array<[string, Server | BoatDescriptor]> = [];
   if (computerUse && integrations?.computer) servers.push(["computer", integrations.computer]);
@@ -266,7 +282,7 @@ export async function mountChatTools(integrations: SendTurnInput["integrations"]
   const cancel = () => { void close().catch(() => {}); };
   signal.addEventListener("abort", cancel, { once: true });
   const definitions: ChatToolDefinition[] = [];
-  const registered = new Map<string, { client: ChatMcpClient | ChatBoatClient; name: string; schema: ValidateFunction }>();
+  const registered = new Map<string, { client: ChatMcpClient | ChatBoatClient; builtInBrowser: boolean; name: string; schema: ValidateFunction }>();
   try {
     if (signal.aborted) throw aborted();
     // Start independent servers concurrently; consume results in config order
@@ -277,11 +293,11 @@ export async function mountChatTools(integrations: SendTurnInput["integrations"]
       // image delivery, including custom servers. Text stays bounded below.
       const client = "boxId" in descriptor ? new ChatBoatClient(descriptor) : new ChatMcpClient(descriptor, computerUse);
       clients.push(client);
-      return { name, client, tools: await client.tools(signal) };
+      return { name, client, builtInBrowser: descriptor === integrations?.browser, tools: await client.tools(signal) };
     }));
     for (const mount of mounts) {
       if (mount.status === "rejected") throw mount.reason;
-      const { name: server, client, tools } = mount.value;
+      const { name: server, client, builtInBrowser, tools } = mount.value;
       const originalNames = new Set<string>();
       for (const tool of tools) {
         if (!object(tool) || typeof tool.name !== "string" || !tool.name.trim() || originalNames.has(tool.name)) throw new Error("MCP server advertised an invalid or duplicate tool name");
@@ -302,7 +318,7 @@ export async function mountChatTools(integrations: SendTurnInput["integrations"]
         const base = `${server}_${tool.name}`.toLowerCase().replace(/[^a-z0-9_]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 64) || "mcp_tool";
         let name = base;
         for (let index = 2; registered.has(name); index += 1) { const suffix = `_${index}`; name = base.slice(0, 64 - suffix.length) + suffix; }
-        registered.set(name, { client, name: tool.name, schema });
+        registered.set(name, { client, builtInBrowser, name: tool.name, schema });
         definitions.push({ type: "function", function: { name, description, parameters } });
         if (Buffer.byteLength(JSON.stringify(definitions)) > CATALOG_BYTES) throw new Error("MCP tool catalog exceeds the 1MB limit");
       }
@@ -313,6 +329,7 @@ export async function mountChatTools(integrations: SendTurnInput["integrations"]
     if (closed || signal.aborted) throw new ChatToolSessionError("MCP session closed");
     const tool = registered.get(name);
     if (!tool) throw new Error("The requested tool was not advertised for this turn");
+    omitBlankDefaults(tool.builtInBrowser, tool.name, args);
     if (!object(args) || !tool.schema(args)) throw new Error("Tool arguments do not match the advertised input schema; use its required fields and types");
   };
   return {

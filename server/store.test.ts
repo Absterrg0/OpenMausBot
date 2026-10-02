@@ -27,6 +27,73 @@ describe("Store", () => {
     rmSync(DATA_DIR, { recursive: true, force: true });
   });
 
+  // MOCA-264: a deleted bot stayed in its rooms for good — counted on the
+  // Save button, refused by the roster check on every save, and still the
+  // room's lead.
+  it("takes a deleted bot out of every room it was in and passes its lead role on", () => {
+    const store = new Store(selection);
+    const [ada, ben, cleo] = [store.createBot({}), store.createBot({}), store.createBot({})];
+    const room = store.createGroup("Launch team", [ada.id, ben.id, cleo.id], false);
+    store.patchGroup(room.id, { defaultResponder: { kind: "member", botId: ben.id }, busyBotId: ben.id });
+    const pair = store.createGroup("Ada & Ben", [ada.id, ben.id], true);
+    const changes: unknown[] = [];
+    store.onChange((change) => changes.push(change));
+
+    expect(store.deleteBot(ben.id)).toBe(true);
+    expect(store.group(room.id)).toMatchObject({ memberIds: [ada.id, cleo.id], defaultResponder: { kind: "member", botId: ada.id } });
+    expect(store.group(room.id)?.turnStartedAt).toBeUndefined();
+    expect(store.group(pair.id)?.memberIds).toEqual([ada.id, ben.id]);
+    expect(changes).toContainEqual({ type: "group", groupId: room.id });
+    expect(new Store(selection).group(room.id)?.memberIds).toEqual([ada.id, cleo.id]);
+  });
+
+  it("finishes bot erasure if the room registry cannot persist, then repairs it on restart", () => {
+    const store = new Store(selection);
+    const [ada, ben] = [store.createBot({}), store.createBot({})];
+    const room = store.createGroup("Launch team", [ada.id, ben.id], false);
+    const internals = store as unknown as { saveGroups: () => void };
+    vi.spyOn(internals, "saveGroups").mockImplementationOnce(() => { throw new Error("fixture write failure"); });
+
+    expect(store.deleteBot(ben.id)).toBe(true);
+    expect(store.bot(ben.id)).toBeNull();
+    expect(store.messagesFor(ben.threadId)).toEqual([]);
+    expect(existsSync(soulFile(ben.id))).toBe(false);
+    expect(JSON.parse(readFileSync(join(DATA_DIR, "groups.json"), "utf8"))[0].memberIds).toContain(ben.id);
+    expect(new Store(selection).group(room.id)?.memberIds).toEqual([ada.id]);
+  });
+
+  it("repairs rooms that still list a deleted bot when it starts", () => {
+    const store = new Store(selection);
+    const [ada, cleo] = [store.createBot({}), store.createBot({})];
+    const room = store.createGroup("Launch team", [ada.id, cleo.id], false);
+    const groupsFile = join(DATA_DIR, "groups.json");
+    const saved = JSON.parse(readFileSync(groupsFile, "utf8"));
+    const ghost = "8a2acb50-6276-4ce2-926a-9e112b848acc";
+    Object.assign(saved.find((g: { id: string }) => g.id === room.id), {
+      memberIds: [ghost, ada.id, cleo.id],
+      defaultResponder: { kind: "member", botId: ghost },
+    });
+    writeFileSync(groupsFile, JSON.stringify(saved));
+
+    const restarted = new Store(selection);
+    expect(restarted.group(room.id)).toMatchObject({ memberIds: [ada.id, cleo.id], defaultResponder: { kind: "member", botId: ada.id } });
+    const persisted = JSON.parse(readFileSync(groupsFile, "utf8")).find((g: { id: string }) => g.id === room.id);
+    expect(persisted.memberIds).toEqual([ada.id, cleo.id]);
+  });
+
+  it("never empties rooms when the bot list cannot be read", () => {
+    const store = new Store(selection);
+    const [ada, cleo] = [store.createBot({}), store.createBot({})];
+    const room = store.createGroup("Launch team", [ada.id, cleo.id], false);
+    const groupsFile = join(DATA_DIR, "groups.json");
+    const before = readFileSync(groupsFile, "utf8");
+    writeFileSync(join(DATA_DIR, "bots.json"), "{ not json");
+
+    expect(new Store(selection).group(room.id)?.memberIds).toEqual([ada.id, cleo.id]);
+    expect(JSON.parse(readFileSync(groupsFile, "utf8")).find((g: { id: string }) => g.id === room.id).memberIds)
+      .toEqual(JSON.parse(before).find((g: { id: string }) => g.id === room.id).memberIds);
+  });
+
   it("renames populated teams without changing members, conversations, grants or computer identity", () => {
     const store = new Store(selection);
     const chief = store.createBot({ section: "Delivery" });

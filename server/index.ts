@@ -129,7 +129,7 @@ import {
   containerComputerStatus,
   containerExec,
   containerRuntimeStatus,
-  localVmRecreatableOnDemand,
+  localVmWakeAction,
   localVmWorkspaceExists,
   perBotLocalVmTarget,
   poolLocalVmTarget,
@@ -418,6 +418,7 @@ import {
   localVmInventoryEntry,
   shouldArmLocalVmIdle,
 } from "./local-vm-inventory.ts";
+import { localVmStopReason, recordLocalVmIdleStop } from "./local-vm-stop-reason.ts";
 import { LocalVmIdleTimer } from "./local-vm-idle.ts";
 import { LocalVmLease, LocalVmLeasePool } from "./local-vm-lease.ts";
 import { LocalVmSeatPool, type LocalVmSeatHolder } from "./local-vm-seat-pool.ts";
@@ -6890,11 +6891,11 @@ function localVmIdleFor(target: LocalVmTarget): LocalVmIdleTimer {
       localVmLifecycleBusy.add(target.key);
       try {
         const status = await containerComputerStatus(undefined, undefined, target);
-        // The desktop leaves a stale X lock after stop, so idle cleanup
-        // removes only the disposable container. Its target-specific durable
-        // workspace and the shared prepared image remain.
-        if (status.container === "running") {
-          await containerComputerAction("remove", undefined, undefined, target);
+        // The pinned VNC startup clears stale X locks. Keep the container's
+        // home and installed software so inactivity is a reversible stop.
+        if (status.container === "running" && status.managed) {
+          const stopped = await containerComputerAction("stop", undefined, undefined, target);
+          recordLocalVmIdleStop(target.key, stopped.stopped_at);
         }
       } finally {
         localVmLifecycleBusy.delete(target.key);
@@ -6934,7 +6935,7 @@ function releaseLocalVmThread(threadId: string): void {
 // Browser, This computer, Auto, or Off does not delete its old Local VM.
 void (async () => {
   if (localVmMode(cfg) === "pool") {
-    // Same restore rule as per-bot: idle cleanup removes the container, not
+    // Same restore rule as per-bot: idle shutdown preserves the container and
     // its provisioned workspace, so every surviving seat stays Auto-eligible.
     const seats = localVmMaxInstances(cfg);
     for (let seat = 0; seat < seats; seat += 1) {
@@ -14044,6 +14045,7 @@ async function localVmPayload(target: LocalVmTarget, auth: RequestAuth) {
   const status = await containerComputerStatus(undefined, undefined, target);
   return {
     ...localVmViewerStatus(status, auth),
+    stop_reason: localVmStopReason(target.key, status),
     commands: setupCommands(status.runtime, process.platform, target),
     idle_timeout_ms: localVmIdleMs(),
     mode: localVmMode(cfg),
@@ -14051,28 +14053,8 @@ async function localVmPayload(target: LocalVmTarget, auth: RequestAuth) {
   };
 }
 
-/** The Local VM a turn is about to use, recreated if the idle timer took it.
- *
- * `LocalVmIdleTimer` REMOVES an unused Local VM rather than pausing it. The
- * turn then failed with "Create the Local VM (App Settings → Local VM)" —
- * which reads like a fault the person must repair by hand, for a container the
- * app itself deleted eight hours earlier. Someone who steps away overnight
- * comes back to an error on their first message.
- *
- * The cloud branch below already does the opposite: an absent boat is
- * provisioned on first use behind a `provisioning` broadcast. This gives the
- * Local VM the same lifecycle for the same reason.
- *
- * Only `missing` is recovered, and only when a fresh `run` is all it takes.
- * Every other problem still surfaces: no runtime installed, no image pulled,
- * `create_supported` false, or an existing container that is stale, unmanaged
- * or unsafe. Those need a decision — install podman, download 1.4 GB, replace
- * a container someone else made — and a stopped container is deliberately not
- * resumed here, because `localVmProblem` says this desktop image cannot safely
- * resume and asks for a recreate rather than a start. Per-bot mode keeps its
- * instance cap; creating past it would quietly do what the lifecycle route
- * refuses.
- */
+/** Wake an idle desktop, or recreate a missing one from an already prepared
+ * image. Incompatible or unsafe containers still require an explicit decision. */
 async function readyLocalVmForTurn(botId: string, target: LocalVmTarget, isCurrent = () => true) {
   localVmLifecycleBusy.add(target.key);
   // Fence this target, and the cross-target capacity decision for creates,
@@ -14090,20 +14072,21 @@ async function readyLocalVmForTurn(botId: string, target: LocalVmTarget, isCurre
     status = await containerComputerStatus(undefined, undefined, target);
     noteLocalVmSeen(target, status);
     if (!isCurrent()) return status;
-    if (status.ready || !localVmRecreatableOnDemand(status)) return status;
+    const action = localVmWakeAction(status);
+    if (status.ready || !action || !status.runtime) return status;
     // Another creation is already mid-flight and its container is not yet
     // visible to a count, so the safe answer is the inspected status —
     // exactly what the over-cap path below returns.
-    if (!pooled && !ownsProvision) return status;
+    if (action === "run" && !pooled && !ownsProvision) return status;
 
-    if (target.key.startsWith("bot:")) {
+    if (action === "run" && target.key.startsWith("bot:")) {
       const count = await existingPerBotLocalVmCount(status.runtime);
       if (!isCurrent() || count >= localVmMaxInstances(cfg)) return status;
     }
 
     broadcast({ kind: "computer", botId, state: "provisioning" });
     try {
-      status = await containerComputerAction("run", undefined, undefined, target);
+      status = await containerComputerAction(action, undefined, undefined, target);
     } catch {
       // Keep the inspected status: its `problem` names the real obstacle,
       // which is more use to the person than "podman run exited non-zero".
@@ -14171,6 +14154,7 @@ function configStatus() {
   return {
     xai: { configured: Boolean(cfg.xai?.key) },
     mistral: { configured: Boolean(cfg.mistral?.key) },
+    cerebras: { configured: Boolean(cfg.cerebras?.key) },
     anthropic: { configured: Boolean(cfg.anthropic?.key), everyClaudeBot: cfg.anthropic?.everyClaudeBot !== false },
     openai: { configured: Boolean(cfg.openai?.key) },
     openrouter: { configured: Boolean(cfg.openrouter?.key) },
@@ -21772,7 +21756,10 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       else localVmLifecycleBusy.add(SHARED_LOCAL_VM_TARGET.key);
       try {
         const status = await containerComputerAction(action, undefined, undefined, SHARED_LOCAL_VM_TARGET);
-        if (action === "run" || action === "start") localVmIdleFor(SHARED_LOCAL_VM_TARGET).touch();
+        if (action === "run" || action === "start") {
+          localVmSeen.add(SHARED_LOCAL_VM_TARGET.key);
+          localVmIdleFor(SHARED_LOCAL_VM_TARGET).touch();
+        }
         if (action === "stop" || action === "remove") localVmIdleFor(SHARED_LOCAL_VM_TARGET).cancel();
         return json(res, 200, {
           ...localVmViewerStatus(status, auth),
@@ -21800,7 +21787,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       if (!bot) return json(res, 404, { error: "no such bot" });
       return json(res, 200, await localVmPayload(localVmTargetForStatus(bot.id, bot.threadId), auth));
     }
-    m = path.match(/^\/api\/bots\/([\w-]+)\/local-computer\/(run|stop|remove)$/);
+    m = path.match(/^\/api\/bots\/([\w-]+)\/local-computer\/(run|start|stop|remove)$/);
     if (m && method === "POST") {
       if (!String(req.headers["content-type"] ?? "").toLowerCase().startsWith("application/json")) {
         return json(res, 415, { error: "content-type must be application/json" });
@@ -21810,7 +21797,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       if (boatLifecycleBusyBots.has(bot.id)) {
         return json(res, 409, { error: "this bot's computer is being changed or deleted — wait for it to finish" });
       }
-      const action = z.enum(["run", "stop", "remove"]).parse(m[2]);
+      const action = z.enum(["run", "start", "stop", "remove"]).parse(m[2]);
       const target = localVmTargetForBot(bot.id);
       if (target.key === SHARED_LOCAL_VM_TARGET.key) {
         return json(res, 409, { error: "Shared mode manages this desktop in App Settings → Computers" });
@@ -21846,7 +21833,10 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
           }
         }
         const status = await containerComputerAction(action, undefined, undefined, target);
-        if (action === "run") localVmIdleFor(target).touch();
+        if (action === "run" || action === "start") {
+          localVmSeen.add(target.key);
+          localVmIdleFor(target).touch();
+        }
         if (action === "stop" || action === "remove") localVmIdleFor(target).cancel();
         return json(res, 200, {
           ...localVmViewerStatus(status, auth),
@@ -21900,10 +21890,10 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       if (threadId && await computerPreviewSurface(bot, threadId) !== "vm") {
         return json(res, 409, { error: "This conversation is not using the Local VM" });
       }
-      // A bot's human-control hold does not reserve a pool seat. Until a
-      // viewer can own that seat, another bot could drive the same desktop.
-      if (localVmMode(cfg) === "pool") {
-        return json(res, 409, { error: "Phone control is not available for pooled Local VMs. Use shared or per-bot mode in Settings → Computers." });
+      // A bot's human-control hold does not reserve a shared desktop or pool
+      // seat. Another bot could drive it while the phone is holding this bot.
+      if (localVmMode(cfg) !== "per-bot") {
+        return json(res, 409, { error: "Phone control requires a per-bot Local VM. Select per-bot mode in Settings → Computers." });
       }
       const lease = controlLeaseIdSchema.safeParse(url.searchParams.get("controlLeaseId") ?? undefined);
       if (!lease.success) return json(res, 400, { error: "controlLeaseId is required" });
@@ -22062,7 +22052,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         return json(res, 400, { error: `provider must be one of ${PROVIDER_KEY_KINDS.join(", ")}` });
       }
       const kind = provider as ProviderKeyKind;
-      const saved = { anthropic: cfg.anthropic, openai: cfg.openai, openrouter: cfg.openrouter, openaiCompat: cfg.openaiCompat, mistral: cfg.mistral, xai: cfg.xai }[kind];
+      const saved = { anthropic: cfg.anthropic, openai: cfg.openai, openrouter: cfg.openrouter, openaiCompat: cfg.openaiCompat, mistral: cfg.mistral, cerebras: cfg.cerebras, xai: cfg.xai }[kind];
       if (body?.key !== undefined && typeof body.key !== "string") {
         return json(res, 400, { error: "key must be a string" });
       }
@@ -22374,8 +22364,8 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
           return json(res, 400, { error: "Account settings are currently available for Claude only." });
         }
         if (body.tools !== undefined) {
-          if (!["openai-compat", "grok", "minimax", "mistral"].includes(entry.driver)) {
-            return json(res, 400, { error: "The tools setting is available for OpenAI-compatible, Grok API, MiniMax API and Mistral API instances only." });
+          if (!["openai-compat", "grok", "minimax", "mistral", "cerebras"].includes(entry.driver)) {
+            return json(res, 400, { error: "The tools setting is available for OpenAI-compatible, Grok API, MiniMax API, Mistral API and Cerebras API instances only." });
           }
           entry.config = { ...entry.config as Record<string, unknown>, tools: body.tools };
         }
@@ -22627,7 +22617,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
     }
     if ((method === "PUT" || method === "PATCH") && path === "/api/config") {
       const body = await readBody(req);
-      if (hostedModels && ["instances", "anthropic", "openai", "openrouter", "openaiCompat", "xai", "mistral", "opencodeGo"].some(key => Object.hasOwn(body, key))) return json(res, 403, { error: HOSTED_PROVIDER_SETTINGS_ERROR });
+      if (hostedModels && ["instances", "anthropic", "openai", "openrouter", "openaiCompat", "xai", "mistral", "cerebras", "opencodeGo"].some(key => Object.hasOwn(body, key))) return json(res, 403, { error: HOSTED_PROVIDER_SETTINGS_ERROR });
       const patch = parseConfigPatch(body);
       // A Cloud home is personal: nobody is invited to sign in to it.
       if (CLOUD_HOME && (patch.signIn?.admins?.length || patch.signIn?.members?.length)) {

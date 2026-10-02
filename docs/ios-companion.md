@@ -297,8 +297,7 @@ Allowed in the first release:
   harness every few seconds whether that lease still holds
   (`action: "check"`, read-only) and closes the relay when it does not. The
   phone speaks RFB over the relay. Hand back closes the viewer and releases
-  the lease, and so does backgrounding the app. In shared Local VM mode the
-  hold pauses only this bot, as it does on the Mac.
+  the lease, and so does backgrounding the app.
 - A phone paired with the server directly (`openmausbot serve` behind
   Tailscale Serve or a tunnel, no sidecar) drives the Local VM the same way,
   but the join answers it with the server's own authenticated desktop proxy
@@ -308,9 +307,10 @@ Allowed in the first release:
   either lapses; hand back closes it at once. Computer access is the pairing's
   scope: Full access (`openmausbot pair`) may, chat-only (`--client`) is
   answered 403 and the app shows computer access as off.
-- Phone control supports shared and per-bot Local VMs. Pool mode is refused
-  on both connection paths until a viewer can reserve its seat against
-  other bots; a control hold on one bot alone cannot do that.
+- Phone control requires per-bot Local VMs. Shared and pool modes are refused
+  on both connection paths until a viewer can reserve its desktop against
+  other bots; a control hold on one bot alone cannot do that. Stills remain
+  available in every mode.
 - Send messages, interrupt bots, answer approvals/questions, and mark chats
   read.
 - Create a basic bot.
