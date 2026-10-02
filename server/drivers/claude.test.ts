@@ -1262,6 +1262,7 @@ describe("ClaudeDriver turns (fake CLI)", () => {
 
   it("compacts the CLI session at a window the harness picks", async () => {
     await create();
+    await instance.snapshot();
     const dump = join(scratch, "compact.json");
     process.env.FAKE_CLAUDE_DUMP = dump;
 
@@ -1488,14 +1489,13 @@ describe("ClaudeDriver turns (fake CLI)", () => {
     expect((await instance.snapshot()).warning).toBeUndefined();
   });
 
-  it("assumes a current CLI on a turn that runs before any snapshot", async () => {
-    // no CLI start-up of its own: the flags are the default, and the next
-    // snapshot corrects an older install
+  it.each(["2.1.100", "2.1.129", "2.1.267"])("omits unconfirmed --autocompact before a snapshot on Claude %s", async (version) => {
+    // Version alone is insufficient: even some newer builds reject the flag.
     const dump = join(scratch, "unsnapshotted.json");
-    await create(undefined, { FAKE_CLAUDE_DUMP: dump, FAKE_CLAUDE_VERSION: "2.1.100" });
+    await create(undefined, { FAKE_CLAUDE_DUMP: dump, FAKE_CLAUDE_VERSION: version });
     await instance.adapter.sendTurn({ threadId: "t-unsnapshotted", text: "hi" });
     await recorder.until((e) => e.type === "turn.completed");
-    expect(JSON.parse(readFileSync(dump, "utf8")).argv).toContain("--autocompact");
+    expect(JSON.parse(readFileSync(dump, "utf8")).argv).not.toContain("--autocompact");
   });
 
   it("maps a CLI version onto the flags it accepts", () => {

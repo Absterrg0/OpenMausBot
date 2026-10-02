@@ -1177,8 +1177,9 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
     // harness snapshots every instance whenever it describes them — app
     // load, the Engines page, and right after `claude update`, which is
     // exactly when the answer changes — so a turn normally finds it filled.
-    // Most turns before any snapshot assume a current CLI. A coordinated
-    // turn checks first because the snapshot-refresh flag is newer than the
+    // Most flags before any snapshot assume a current CLI; autocompact
+    // requires confirmed help support. A coordinated turn checks first
+    // because the snapshot-refresh flag is newer than the
     // other context controls and an unknown flag would reject that request.
     let cliVersion: ClaudeCliVersion | null = null;
     let cliVersionChecked = false;
@@ -1445,7 +1446,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
         if (claudeCliSupports(cliVersion, "--setting-sources")) args.push("--setting-sources", "project");
       }
       const compactWindow = autoCompactWindow(turnEnvironment);
-      if (compactWindow && (cliHasAutocompact ?? claudeCliSupports(cliVersion, "--autocompact"))) {
+      if (compactWindow && cliHasAutocompact === true) {
         args.push("--autocompact", compactWindow);
       }
       // An old pair conversation can still carry its first assignment in
