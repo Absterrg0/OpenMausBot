@@ -68,6 +68,7 @@ writeFileSync(mail, `import { createInterface } from "node:readline";
 import { appendFileSync } from "node:fs";
 createInterface({input:process.stdin}).on("line",line=>{
   const m=JSON.parse(line); if(m.id===undefined)return; let result={};
+  if(m.method==="initialize")result={protocolVersion:m.params.protocolVersion,capabilities:{tools:{}},serverInfo:{name:"mail-fixture",version:"1"}};
   if(m.method==="tools/list")result={tools:["read_notes","write_notes"].map(name=>({name,inputSchema:{type:"object",properties:{},additionalProperties:false}}))};
   if(m.method==="tools/call"){appendFileSync(process.env.RECEIPT,m.params.name+"\\n");result={content:[{type:"text",text:"mail fixture receipt"}]};}
   process.stdout.write(JSON.stringify({jsonrpc:"2.0",id:m.id,result})+"\\n");
@@ -85,15 +86,16 @@ instance.adapter.onEvent((event) => {
 const evidence: unknown[] = [];
 async function turn(kind: string, toolScope: { allow: string[] }, resumeCursor?: string) {
   scenario = kind; round = 0; const before = payloads.length; const eventStart = events.length;
-  await instance.adapter.sendTurn({ threadId: "scope-contract", text: "Complete only the selected disposable fixture tools.", cwd: home, model: "fixture/fixture", approvalMode: "ask", toolScope, resumeCursor,
+  const { turnId } = await instance.adapter.sendTurn({ threadId: "scope-contract", text: "Complete only the selected disposable fixture tools.", cwd: home, model: "fixture/fixture", approvalMode: "ask", toolScope, resumeCursor,
     integrations: { custom: { mail: { command: process.execPath, args: [mail], env: { RECEIPT: receipt } } } },
   });
   const deadline = Date.now() + 30_000;
-  while (!events.slice(eventStart).some((event) => event.type === "turn.completed") && Date.now() < deadline) await delay(50);
-  assert(events.slice(eventStart).some((event) => event.type === "turn.completed"), "Pi turn must settle");
+  while (!events.slice(eventStart).some((event) => event.type === "turn.completed" && event.turnId === turnId) && Date.now() < deadline) await delay(50);
+  const completed = events.slice(eventStart).find((event) => event.type === "turn.completed" && event.turnId === turnId);
+  assert(completed?.ok === true, "Pi turn must complete successfully");
   assert(payloads.length > before, JSON.stringify(events.slice(eventStart).filter((event) => event.type === "runtime.error")));
   const names = payloads[before]!.tools?.map((tool) => tool.function.name) ?? [];
-  evidence.push({ scenario: kind, names, schemaBytes: Buffer.byteLength(JSON.stringify(payloads[before]!.tools ?? [])), requests: payloads.length - before });
+  evidence.push({ scenario: kind, ok: completed.ok, names, schemaBytes: Buffer.byteLength(JSON.stringify(payloads[before]!.tools ?? [])), requests: payloads.length - before });
   return { names, cursor: events.slice(eventStart).find((event) => event.type === "session.started")?.sessionId as string | undefined };
 }
 try {

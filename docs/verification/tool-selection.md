@@ -58,6 +58,17 @@ tables, CLI overrides and ambiguous profiles. Codex's real gate subprocess
 regression exercises two servers on new/resumed threads, raw discovery and
 calls, blocked calls, independent custom approvals, and private env stripping.
 
+The October 1 review follow-up also exercised actual native shell commands
+through Codex **0.156.1** and **0.159.2**, using a loopback synthetic Responses
+provider and disposable homes on the same physical Mac. Ask, Custom and Full
+each passed on both new and resumed threads. The command's receipt confirmed
+that private gate settings and an existing excluded fixture variable were
+absent, while a configured harmless variable remained available. Scoped turns
+disable inherited shell snapshots because snapshots can restore variables
+after environment filtering. If that override cannot be confirmed, or the
+effective exclusion policy is malformed, no prompt is sent. These checks used
+no real Codex account or paid model.
+
 ## Real local-model check
 
 Load a tool-capable local model separately with an **8192-token context**, one

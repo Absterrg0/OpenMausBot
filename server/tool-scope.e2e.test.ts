@@ -56,17 +56,19 @@ it("validates, saves, clears and creates owner tool selections through the isola
   });
 }, 60_000);
 
-it("refuses a corrupt persisted selection after a real server restart before starting an engine", async () => {
+it.each(["direct", "preview", "room", "goal"] as const)("keeps a corrupt persisted selection fail-closed while reporting the %s result", async (surface) => {
   const fixture = await launchVerificationServer();
   let restarted: ReturnType<typeof spawn> | undefined;
   const log = openSync(fixture.info.logPath, "a", 0o600);
   try {
     const control = (args: string[]) => runControlOmb([...args, "--url", fixture.info.url]);
     const { bot } = await control(["new-bot", "--name", "Corrupt scope fixture"]) as any;
+    const { channel } = await control(["new-channel", "--name", "Corrupt scope room", "--members", bot.id]) as any;
     const stopped = once(fixture.child, "close"); fixture.child.kill(); await stopped;
     const file = join(fixture.info.dataDir, "bots.json");
     const bots = JSON.parse(readFileSync(file, "utf8"));
-    bots.find((row: { id: string }) => row.id === bot.id).toolScope = { allow: "all" };
+    const storedBot = bots.find((row: { id: string }) => row.id === bot.id);
+    storedBot.toolScope = { allow: "all" };
     writeFileSync(file, JSON.stringify(bots));
     restarted = spawn(process.execPath, ["--experimental-strip-types", fileURLToPath(new URL("./index.ts", import.meta.url))], {
       env: verificationServerEnvironment(process.env, fixture.info.dataDir, Number(new URL(fixture.info.url).port)),
@@ -78,10 +80,33 @@ it("refuses a corrupt persisted selection after a real server restart before sta
     }, { timeout: 15_000 }).toBe(true);
     const loaded = await fetch(`${fixture.info.url}/api/bots?messages=0`).then((response) => response.json()) as { bots: Array<{ id: string; toolScope?: unknown }> };
     expect(loaded.bots.find((row) => row.id === bot.id)?.toolScope).toEqual({ allow: "all" });
-    await control(["send", "--bot", bot.id, "--text", "Must not run."]);
-    await control(["wait", "--bot", bot.id, "--timeout", "30"]);
-    const messages = await control(["messages", "--bot", bot.id, "--limit", "10"]);
-    expect(JSON.stringify(messages)).toMatch(/tool selection is invalid/i);
+    if (surface === "preview") {
+      const preview = await fetch(`${fixture.info.url}/api/bots/${bot.id}/local-computer?threadId=${storedBot.threadId}`);
+      expect(preview.status).toBe(200);
+      expect(await preview.json()).not.toHaveProperty("error");
+      expect((await fetch(`${fixture.info.url}/api/bots/${bot.id}/local-computer?threadId=not-a-task`)).status).toBe(404);
+    } else if (surface === "direct") {
+      await control(["send", "--bot", bot.id, "--text", "Must not run."]);
+      await control(["wait", "--bot", bot.id, "--timeout", "30"]);
+      const messages = await control(["messages", "--bot", bot.id, "--limit", "10"]);
+      expect(JSON.stringify(messages)).toMatch(/tool selection is invalid/i);
+    } else {
+      if (surface === "goal") {
+        const sent = await fetch(`${fixture.info.url}/api/groups/${channel.id}/messages`, { method: "POST",
+          headers: { "content-type": "application/json" }, body: JSON.stringify({ text: "Must not run.", mode: "goal" }) });
+        expect(sent.status).toBe(202);
+      } else await control(["send-channel", "--channel", channel.id, "--text", "Must not run."]);
+      await control(["wait", "--channel", channel.id, "--timeout", "30"]);
+      const messages = await control(["messages", "--channel", channel.id, "--limit", "10"]);
+      expect(JSON.stringify(messages)).toMatch(/tool selection is invalid/i);
+      if (surface === "goal") {
+        const state = await fetch(`${fixture.info.url}/api/bots?messages=30`).then(response => response.json()) as {
+          groups: Array<{ id: string; messages: Array<{ kind: string; goalRun?: { status: string } }> }>;
+        };
+        const room = state.groups.find((group: { id: string }) => group.id === channel.id);
+        expect(room?.messages.find(message => message.kind === "goal.run")?.goalRun?.status).toBe("failed");
+      }
+    }
     expect(existsSync(fixture.fixtureDumpPath)).toBe(false);
   } finally {
     if (restarted && restarted.exitCode === null && restarted.signalCode === null) {

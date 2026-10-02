@@ -6752,7 +6752,6 @@ function computerPreviewBot(botId: string, url: URL): BotRecord | null {
   if (!threadId) return store.bot(botId);
   const bot = store.projectBotForTask(botId, threadId);
   if (!bot) throw Object.assign(new Error("no such task"), { status: 404 });
-  toolScopeForTurn(botId);
   return directTurnBots.get(threadId) ?? bot;
 }
 
@@ -12614,7 +12613,8 @@ async function runGroupMemberTurn(
     if (error instanceof DirectTurnSetupCancelled) return false;
     const isSpendCap = typeof error === "object" && error !== null && (error as { code?: string }).code === "spend_cap";
     const isVariantError = typeof error === "object" && error !== null && (error as { code?: string }).code === "unsupported_model_variant";
-    if (!roomSpeaker && !isSpendCap && !isVariantError) throw error;
+    const isToolScopeError = typeof error === "object" && error !== null && (error as { code?: string }).code === "tool_scope";
+    if (!roomSpeaker && !isSpendCap && !isVariantError && !isToolScopeError) throw error;
     const message = error instanceof Error ? error.message : "Local VM setup failed";
     if (!(error instanceof ComputerWaitGaveUp)) store.appendMessage(threadId, {
       role: "bot", kind: "activity",
@@ -12629,7 +12629,7 @@ async function runGroupMemberTurn(
       orchestration.result.outcome = isSpendCap ? "spend_capped" : "dispatch_failed";
       if (isSpendCap) orchestration.result.stopReason = message;
     }
-    return false;
+    return isToolScopeError;
   } finally {
     // Covers connector/setup failures, cancellation before dispatch, and all
     // other early returns that never produce a provider terminal event.

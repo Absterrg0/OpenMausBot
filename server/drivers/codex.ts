@@ -758,6 +758,9 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
         const env = childEnv();
         if (planToken) env.OPENMAUSBOT_CHATGPT_TOKEN = planToken;
         const appServerArgs = ["app-server", ...(plan ? chatgptPlanCodexArgs() : config.managed ? managedCodexArgs(config.managed) : codexLocalProviderArgs(env, turn.model)), ...codexToolSurfaceArgs(),
+          // Native snapshots can restore inherited variables after the shell
+          // policy has filtered them. Scoped MCP gate settings must stay private.
+          ...(turn.toolScope === undefined ? [] : ["-c", "features.shell_snapshot=false"]),
           // A guest-driven turn (SendTurnInput.guestConfined): no shell and
           // no file reads, whatever the person's own config says (-c wins
           // over config files). The turn also starts with no environment.
@@ -828,7 +831,7 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
           }
         }
 
-        const selectionConfig = turn.toolScope === undefined ? {} : { config: { mcp_servers: Object.fromEntries(
+        const selectionConfig: { config?: Record<string, unknown> } = turn.toolScope === undefined ? {} : { config: { mcp_servers: Object.fromEntries(
           [...selectedMcp].map(([name, server]) => [name, "command" in server ? {
             command: server.command, args: server.args, env_vars: Object.keys(server.env), env: {}, default_tools_approval_mode: selectedApprovals.get(name) ? "auto" : "prompt",
           } : {}]),
@@ -1575,6 +1578,22 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
           );
         }
         if (turn.toolScope !== undefined) {
+          if ((effectiveConfig as { features?: { shell_snapshot?: unknown } } | null)?.features?.shell_snapshot !== false) {
+            throw new Error("Codex could not disable inherited shell snapshots. No prompt was sent.");
+          }
+          // Gate descriptors belong to MCP children, never native shell tools.
+          // Extend the effective policy for both new and resumed threads so
+          // local, Company and ChatGPT turns retain the person's exclusions.
+          const rawPolicy = (effectiveConfig as { shell_environment_policy?: unknown } | null)?.shell_environment_policy;
+          if (rawPolicy !== undefined && (!rawPolicy || typeof rawPolicy !== "object" || Array.isArray(rawPolicy))) {
+            throw new Error("Codex could not confirm its shell environment policy. No prompt was sent.");
+          }
+          const policy = (rawPolicy ?? {}) as Record<string, unknown>;
+          const excluded = policy.exclude === undefined ? [] : policy.exclude;
+          if (!Array.isArray(excluded) || excluded.some(name => typeof name !== "string")) {
+            throw new Error("Codex could not confirm its shell environment exclusions. No prompt was sent.");
+          }
+          selectionConfig.config!["shell_environment_policy.exclude"] = [...new Set([...excluded, "OMB_GATE_CONFIG_*"])];
           const catalog = (effectiveConfig as { mcp_servers?: unknown } | null)?.mcp_servers;
           if (!catalog || typeof catalog !== "object" || Array.isArray(catalog)) throw new Error("Codex could not confirm its selected MCP configuration. No prompt was sent.");
           for (const [name, entry] of Object.entries(catalog)) {

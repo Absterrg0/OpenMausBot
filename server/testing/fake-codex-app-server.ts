@@ -368,6 +368,9 @@ process.stdin.on("data", (chunk) => {
                   },
                 }),
               developer_instructions: process.env.FAKE_CODEX_INSTRUCTIONS ?? null,
+              ...(process.env.FAKE_CODEX_SHELL_ENVIRONMENT_POLICY ? {
+                shell_environment_policy: JSON.parse(process.env.FAKE_CODEX_SHELL_ENVIRONMENT_POLICY),
+              } : {}),
               // `-c features.<name>=<bool>` overrides, as the real config/read reports them.
               features: Object.fromEntries(process.argv.flatMap((arg, index) => {
                 const match = process.argv[index - 1] === "-c" ? /^features\.(\w+)=(true|false)$/.exec(arg) : null;

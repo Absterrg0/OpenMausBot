@@ -55,17 +55,18 @@ instance.adapter.onEvent((event) => { events.push(event); if (event.type === "re
 const evidence: unknown[] = [];
 async function turn(kind: string, toolScope?: ToolScope, resumeCursor?: string) {
   scenario = kind; round = 0; const before = payloads.length, eventStart = events.length;
-  await instance.adapter.sendTurn({ threadId: "scope-contract", cwd: home, text: "Complete only the selected disposable fixture tools.", model: "omlx::fixture", approvalMode: "ask", toolScope, resumeCursor,
+  const { turnId } = await instance.adapter.sendTurn({ threadId: "scope-contract", cwd: home, text: "Complete only the selected disposable fixture tools.", model: "omlx::fixture", approvalMode: "ask", toolScope, resumeCursor,
     integrations: kind === "mail" ? { custom: { mail: { command: process.execPath, args: [mail], env: { RECEIPT: receipt } } } } : {},
   });
   const deadline = Date.now() + 30_000;
-  while (!events.slice(eventStart).some((event) => event.type === "turn.completed") && Date.now() < deadline) await delay(50);
-  assert(events.slice(eventStart).some((event) => event.type === "turn.completed"), "Grok must settle");
-  const errors = events.slice(eventStart).filter((event) => event.type === "runtime.error");
+  while (!events.slice(eventStart).some((event) => event.type === "turn.completed" && event.turnId === turnId) && Date.now() < deadline) await delay(50);
+  const completed = events.slice(eventStart).find((event) => event.type === "turn.completed" && event.turnId === turnId);
+  const errors = events.slice(eventStart).filter((event) => event.type === "runtime.error" && event.turnId === turnId);
   assert.equal(errors.length, 0, JSON.stringify(errors));
+  assert(completed?.ok === true, `Grok ${kind} turn must complete successfully: ${JSON.stringify(completed)}`);
   assert(payloads.length > before, "A successful turn must reach the owned provider");
   const requests = payloads.slice(before), names = requests[0]!.tools?.map((tool) => tool.function.name) ?? [];
-  evidence.push({ scenario: kind, names, schemaBytes: Buffer.byteLength(JSON.stringify(requests[0]!.tools ?? [])), requests: requests.length });
+  evidence.push({ scenario: kind, ok: completed.ok, names, schemaBytes: Buffer.byteLength(JSON.stringify(requests[0]!.tools ?? [])), requests: requests.length });
   return { names, requests, cursor: events.slice(eventStart).find((event) => event.type === "session.started")?.sessionId as string | undefined };
 }
 try {

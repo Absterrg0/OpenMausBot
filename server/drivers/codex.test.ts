@@ -168,6 +168,59 @@ describe("CodexDriver turns (fake app-server)", () => {
     expect(recorder.events.some((event) => event.type === "runtime.error" && /outside the selected configuration/.test(event.message))).toBe(true);
   });
 
+  it.each(["ask", "custom", "full"] as const)("preserves shell exclusions for scoped %s turns on new and resumed threads", async (approvalMode) => {
+    const dump = join(scratch, "shell-policy.json"); process.env.FAKE_CODEX_DUMP = dump;
+    const policy = { inherit: "all", ignore_default_excludes: true, exclude: ["USER_SECRET_*"],
+      include_only: ["*"], set: { SAFE_FIXTURE_LABEL: "retained" } };
+    await create({ mode: "resume", environment: { HOME: scratch, CODEX_HOME: join(scratch, ".codex"),
+      FAKE_CODEX_MCP_OVERRIDES: "1", FAKE_CODEX_SHELL_ENVIRONMENT_POLICY: JSON.stringify(policy) } });
+    for (const resumeCursor of [undefined, "old-session"]) {
+      const { turnId } = await instance.adapter.sendTurn({ threadId: "scoped-shell", text: "Fixture", approvalMode, resumeCursor,
+        toolScope: { allow: ["native:*", "mcp:notes:read"] },
+        integrations: { custom: { notes: { type: "http", url: "https://example.test/notes", headers: { authorization: "synthetic-fixture-credential" } } } },
+      });
+      const completed = await recorder.until(event => event.type === "turn.completed" && event.turnId === turnId);
+      expect(completed).toMatchObject({ ok: true });
+      const seen = JSON.parse(readFileSync(dump, "utf8"));
+      expect(seen.argv).toContain("features.shell_snapshot=false");
+      const thread = seen.calls.find((call: { method: string }) => call.method === (resumeCursor ? "thread/resume" : "thread/start"));
+      expect(thread.params.config["shell_environment_policy.exclude"]).toEqual([...policy.exclude, "OMB_GATE_CONFIG_*"]);
+      expect(thread.params.config).not.toHaveProperty("shell_environment_policy");
+      expect(Object.keys(seen.env).some(name => name.startsWith("OMB_GATE_CONFIG_"))).toBe(true);
+      expect(JSON.stringify({ argv: seen.argv, calls: seen.calls })).not.toContain("synthetic-fixture-credential");
+    }
+  });
+
+  it("refuses a scoped prompt when inherited shell snapshots cannot be disabled", async () => {
+    const dump = join(scratch, "unsafe-shell-snapshot.json"); process.env.FAKE_CODEX_DUMP = dump;
+    await create({ environment: { HOME: scratch, CODEX_HOME: join(scratch, ".codex"),
+      FAKE_CODEX_MCP_OVERRIDES: "1", FAKE_CODEX_IGNORE_FEATURES: "1" } });
+    const { turnId } = await instance.adapter.sendTurn({ threadId: "unsafe-shell-snapshot", text: "Must not run.",
+      toolScope: { allow: ["native:*", "mcp:notes:read"] },
+      integrations: { custom: { notes: { type: "http", url: "https://example.test/notes", headers: {} } } },
+    });
+    const completed = await recorder.until(event => event.type === "turn.completed" && event.turnId === turnId);
+    expect(completed).toMatchObject({ ok: false });
+    expect(recorder.events.some(event => event.type === "runtime.error" && /shell snapshots/.test(event.message))).toBe(true);
+    const seen = existsSync(dump) ? JSON.parse(readFileSync(dump, "utf8")) : { calls: [] };
+    expect(seen.calls.some((call: { method: string }) => call.method === "turn/start")).toBe(false);
+  });
+
+  it.each([null, false, [], { exclude: null }, { exclude: ["SAFE_*", 42] }])("refuses a scoped prompt with a malformed shell policy %j", async (policy) => {
+    const dump = join(scratch, "invalid-shell-policy.json"); process.env.FAKE_CODEX_DUMP = dump;
+    await create({ environment: { HOME: scratch, CODEX_HOME: join(scratch, ".codex"),
+      FAKE_CODEX_MCP_OVERRIDES: "1", FAKE_CODEX_SHELL_ENVIRONMENT_POLICY: JSON.stringify(policy) } });
+    const { turnId } = await instance.adapter.sendTurn({ threadId: "invalid-shell-policy", text: "Must not run.",
+      toolScope: { allow: ["native:*", "mcp:notes:read"] },
+      integrations: { custom: { notes: { type: "http", url: "https://example.test/notes", headers: {} } } },
+    });
+    const completed = await recorder.until(event => event.type === "turn.completed" && event.turnId === turnId);
+    expect(completed).toMatchObject({ ok: false });
+    expect(recorder.events.some(event => event.type === "runtime.error" && /shell environment/.test(event.message))).toBe(true);
+    const seen = existsSync(dump) ? JSON.parse(readFileSync(dump, "utf8")) : { calls: [] };
+    expect(seen.calls.some((call: { method: string }) => call.method === "turn/start")).toBe(false);
+  });
+
   it("keeps multiple scoped Codex servers independent on new and resumed threads, including custom approvals", async () => {
     const dump = join(scratch, "multi-scope.json"); process.env.FAKE_CODEX_DUMP = dump;
     const upstream = join(scratch, "upstream.cjs"), receipt = join(scratch, "receipt.txt");

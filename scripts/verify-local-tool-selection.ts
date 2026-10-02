@@ -113,7 +113,7 @@ try {
   async function turn(kind: string, toolScope: ToolScope, text: string) {
     scenario = kind; const start = events.length, before = captures.length;
     let timeout: ReturnType<typeof setTimeout> | undefined;
-    await Promise.race([
+    const { turnId } = await Promise.race([
       instance!.adapter.sendTurn({ threadId: `local-${kind}`, cwd: home, text, toolScope, approvalMode: "ask",
         model: engine === "pi" ? `fixture/${model}` : `lmstudio::${model}`,
         integrations: { custom: { mail: { command: process.execPath, args: [mail], env: { RECEIPT: receipt } } } },
@@ -121,14 +121,15 @@ try {
       new Promise<never>((_, reject) => { timeout = setTimeout(() => reject(new Error(`Local ${engine} ${kind} timed out`)), 180_000); }),
     ]).finally(() => clearTimeout(timeout));
     const deadline = Date.now() + 180_000;
-    while (!events.slice(start).some(event => event.type === "turn.completed") && Date.now() < deadline) await delay(50);
-    const turnEvents = events.slice(start);
-    assert(turnEvents.some(event => event.type === "turn.completed"), "Local model turn must settle");
+    while (!events.slice(start).some(event => event.type === "turn.completed" && event.turnId === turnId) && Date.now() < deadline) await delay(50);
+    const turnEvents = events.slice(start).filter(event => event.turnId === turnId);
+    const completed = turnEvents.find(event => event.type === "turn.completed");
+    assert(completed?.ok === true, "Local model turn must complete successfully");
     const errors = turnEvents.filter(event => event.type === "runtime.error"); assert.equal(errors.length, 0, JSON.stringify(errors));
     while (inFlight > 0 && Date.now() < deadline) await delay(20);
     assert.equal(inFlight, 0, "Provider evidence must finish before changing scenarios");
     const main = captures.slice(before).filter(row => !row.auxiliary); assert(main.length > 0, "Turn must reach the actual local model");
-    console.log(JSON.stringify({ phase: "turn-completed", engine, scenario, requests: main, approvals }));
+    console.log(JSON.stringify({ phase: "turn-completed", ok: completed.ok, engine, scenario, requests: main, approvals }));
     return main;
   }
   const nativeNames = engine === "pi" ? ["read", "edit", "write"] : ["read_file", "search_replace", "write"];
