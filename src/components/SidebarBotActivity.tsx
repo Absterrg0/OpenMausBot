@@ -140,9 +140,12 @@ export function crossBotPinnedThreads(bots: Bot[], groups: Group[], queued: Reco
         .filter((task) => task.pinned === true && !task.routineRunId)
         .map((task) => ({ ...task, queued: Boolean(queued[task.threadId]?.length), botId: bot.id, botName: bot.name }))),
     ...groups
-      .flatMap((group): FlatAttentionEntry[] => (group.tasks ?? [])
-        .filter((task) => task.pinned === true)
-        .map((task) => ({ ...task, queued: Boolean(queued[task.threadId]?.length), groupId: group.id, groupName: group.name, groupThreadId: group.threadId }))),
+      .flatMap((group): FlatAttentionEntry[] => {
+        const activity = new Map(sidebarGroupActivityTasks(group, bots, queued).map((task) => [task.threadId, task]));
+        return (group.tasks ?? [])
+          .filter((task) => task.pinned === true)
+          .map((task) => ({ ...task, ...activity.get(task.threadId), queued: Boolean(queued[task.threadId]?.length), groupId: group.id, groupName: group.name, groupThreadId: group.threadId }));
+      }),
   ];
   return orderedThreadList(flat).map(({ botId, botName, groupId, groupName, groupThreadId, ...task }): AttentionThread =>
     groupId !== undefined
