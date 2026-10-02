@@ -41,6 +41,9 @@ const calls: Array<{
 let malformedConnectedAccounts = false;
 let connectedAccountsUnavailable = false;
 let emptyConnectedAccounts = false;
+/** What reading one account by id reports. It can be newer than the list:
+ * a sign-in finishes, or another request removes the account, in between. */
+let accountStatusNow: Record<string, string> = { ca_notion: "INITIATED" };
 /** When set, the account list is exactly these, and a link request adds the
  * account it would create, as upstream does. */
 let linkedAccounts: Array<{
@@ -332,6 +335,12 @@ beforeAll(async () => {
         next_cursor: url.searchParams.has("toolkits") ? undefined : "toolkits-page-2",
       };
       return res.end(JSON.stringify(page));
+    }
+    const single = url.pathname.match(/^\/api\/v3\.1\/connected_accounts\/(ca_[\w-]+)$/);
+    if (req.method === "GET" && single) {
+      const status = accountStatusNow[single[1]];
+      res.writeHead(status ? 200 : 404, { "content-type": "application/json" });
+      return res.end(JSON.stringify(status ? { id: single[1], status } : { error: { message: "not found" } }));
     }
     if (req.method === "GET" && url.pathname === "/api/v3.1/connected_accounts") {
       if (connectedAccountsUnavailable) {
@@ -1222,6 +1231,61 @@ describe.sequential("Composio Sessions", () => {
     const untouched = calls.length;
     await expect(authorizeService(cfg, "github", "WORK")).rejects.toMatchObject({ status: 409 });
     expect(calls.slice(untouched).some((call) => call.method === "DELETE" || call.path.endsWith("/link"))).toBe(false);
+  });
+
+  it("only replaces an attempt that is still unfinished when it is read again", async () => {
+    const cfg: AppConfig = {
+      composio: { apiKey: "ak_test", userId: "openmausbot_existing", sessionId: "trs_test" },
+    };
+    const sent = (from: number) =>
+      calls.slice(from).filter((call) => call.method === "DELETE" || call.path.endsWith("/link")).map((call) => call.method);
+    try {
+      // The list still says INITIATED, but the sign-in finished meanwhile:
+      // the account is connected now and must survive.
+      accountStatusNow = { ca_notion: "ACTIVE" };
+      let before = calls.length;
+      await expect(authorizeService(cfg, "notion", "team")).rejects.toMatchObject({ status: 409 });
+      expect(sent(before)).toEqual([]);
+      // Another request already removed it: nothing to delete, link anyway.
+      accountStatusNow = {};
+      before = calls.length;
+      await expect(authorizeService(cfg, "notion", "team")).resolves.toEqual({
+        url: "https://connect.composio.dev/link/notion",
+      });
+      expect(sent(before)).toEqual(["POST"]);
+    } finally {
+      accountStatusNow = { ca_notion: "INITIATED" };
+    }
+  });
+
+  it("gives overlapping requests for one connection the same link", async () => {
+    const cfg: AppConfig = {
+      composio: { apiKey: "ak_test", userId: "openmausbot_existing", sessionId: "trs_test" },
+    };
+    const links = (from: number) => calls.slice(from).filter((call) => call.path.endsWith("/link")).length;
+    linkedAccounts = [];
+    try {
+      const before = calls.length;
+      const [first, second, other] = await Promise.all([
+        authorizeService(cfg, "googledrive", "work"),
+        authorizeService(cfg, "googledrive", "Work"),
+        authorizeService(cfg, "googledrive", "personal"),
+      ]);
+      expect(second).toBe(first);
+      expect(other).not.toBe(first);
+      // One link for "work" and one for "personal"; nothing was replaced.
+      expect(links(before)).toBe(2);
+      expect(calls.slice(before).some((call) => call.method === "DELETE")).toBe(false);
+      // A later request is a retry in its own right.
+      accountStatusNow = { ca_linked_1: "INITIATED", ca_linked_2: "INITIATED" };
+      const later = calls.length;
+      await authorizeService(cfg, "googledrive", "work");
+      expect(links(later)).toBe(1);
+      expect(calls.slice(later).filter((call) => call.method === "DELETE")).toHaveLength(1);
+    } finally {
+      linkedAccounts = null;
+      accountStatusNow = { ca_notion: "INITIATED" };
+    }
   });
 
   it("lets an alias be used again once the attempt that carried it has lapsed", async () => {

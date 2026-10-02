@@ -135,6 +135,8 @@ describe("connected-apps broker boundaries", () => {
       next_cursor: "accounts-page-2",
     };
     let connectedAccountsUnavailable = false;
+    // What reading ca_personal by id reports; it can be newer than the list.
+    let personalStatusNow = "INITIALIZING";
     vi.stubGlobal("fetch", async (input: string | URL | Request, init?: RequestInit) => {
       const url = String(input);
       fetchCalls.push({ url, init });
@@ -173,6 +175,9 @@ describe("connected-apps broker boundaries", () => {
           });
         }
         return Response.json(accounts);
+      }
+      if (url.endsWith("/connected_accounts/ca_personal") && !init?.method) {
+        return Response.json({ id: "ca_personal", status: personalStatusNow });
       }
       if (/\/connected_accounts\/ca_(work|personal)\?/.test(url) && init?.method === "DELETE") return Response.json({ success: true });
       return Response.json({ error: "not found" }, { status: 404 });
@@ -282,6 +287,14 @@ describe("connected-apps broker boundaries", () => {
     // A connected account keeps its alias.
     const taken = await authorize("gmail", "Work", installation, env as never, ctx as never);
     expect(taken.status).toBe(409);
+    // The list says the attempt is unfinished, but its sign-in completed
+    // since: it is a connected account now and must not be removed.
+    personalStatusNow = "ACTIVE";
+    const connectedSince = fetchCalls.length;
+    const kept = await authorize("gmail", "personal", installation, env as never, ctx as never);
+    expect(kept.status).toBe(409);
+    expect(fetchCalls.slice(connectedSince).some((call) => call.init?.method === "DELETE" || call.url.endsWith("/link"))).toBe(false);
+    personalStatusNow = "INITIALIZING";
     // An attempt nobody finished still holds its alias upstream, so asking
     // for that link again replaces the attempt instead of refusing it.
     const before = fetchCalls.length;

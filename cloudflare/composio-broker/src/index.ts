@@ -515,12 +515,22 @@ async function authorize(
     return json({ error: "Add an account alias so the existing connection is not replaced" }, 400);
   }
   for (const account of retried) {
-    const removed = await composioRequest(
-      env,
-      `/connected_accounts/${encodeURIComponent(account.id!)}?revoke_on_delete=true`,
-      { method: "DELETE" },
-    );
-    if (!removed.ok) return json({ error: await upstreamError(removed, "Authorization unavailable") }, 502);
+    // The list is already a moment old. A sign-in finished in another tab
+    // since then makes this a connected account, which must not be removed:
+    // read it again and only replace an attempt that is still unfinished.
+    const path = `/connected_accounts/${encodeURIComponent(account.id!)}`;
+    const current = await composioRequest(env, path);
+    if (current.status === 404) continue;
+    if (!current.ok) return json({ error: await upstreamError(current, "Authorization unavailable") }, 502);
+    const status = connectedAccountResponseSchema.parse(await current.json()).status ?? "";
+    if (LAPSED_ACCOUNT.test(status)) continue;
+    if (!UNFINISHED_ACCOUNT.test(status)) {
+      return json({ error: `Account alias "${alias}" is already in use for ${slug}` }, 409);
+    }
+    const removed = await composioRequest(env, `${path}?revoke_on_delete=true`, { method: "DELETE" });
+    if (!removed.ok && removed.status !== 404) {
+      return json({ error: await upstreamError(removed, "Authorization unavailable") }, 502);
+    }
   }
   const linkRequest: AccountLinkRequest = { toolkit: slug };
   if (alias) linkRequest.alias = alias;
