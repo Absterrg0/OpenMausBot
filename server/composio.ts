@@ -1255,6 +1255,12 @@ export async function removeAccount(cfg: AppConfig, slug: string, accountId: str
   return { removed: 1 };
 }
 
+/** Auth links being minted right now, by backend, toolkit and alias. A
+ * request replaces the unfinished attempt left by an earlier one, so two that
+ * overlap must share one link: the second would otherwise remove the account
+ * the first has just created and leave its caller holding a dead link. */
+const authorizationsInFlight = new Map<string, Promise<{ url: string }>>();
+
 /** Mint a browser auth link for one service. Returns { url } or throws. */
 export async function authorizeService(cfg: AppConfig, slug: string, requestedAlias?: string | null) {
   let alias = normalizeAccountAlias(requestedAlias);
@@ -1262,6 +1268,17 @@ export async function authorizeService(cfg: AppConfig, slug: string, requestedAl
   const mode = connectionMode(cfg);
   const unavailable = managedConnectorUnavailableReason(mode, toolkit);
   if (unavailable) throw inputError(unavailable, 409);
+  const key = JSON.stringify([connectorToolsIdentity(cfg), toolkit, alias?.toLowerCase() ?? ""]);
+  const inFlight = authorizationsInFlight.get(key);
+  if (inFlight) return inFlight;
+  const minted = mintAuthLink(cfg, toolkit, alias).finally(() => {
+    if (authorizationsInFlight.get(key) === minted) authorizationsInFlight.delete(key);
+  });
+  authorizationsInFlight.set(key, minted);
+  return minted;
+}
+
+async function mintAuthLink(cfg: AppConfig, toolkit: string, alias: string | undefined): Promise<{ url: string }> {
   const apiKey = projectApiKey(cfg);
   if (!apiKey) {
     const request: RequestInit = { method: "POST" };
@@ -1314,11 +1331,26 @@ export async function authorizeService(cfg: AppConfig, slug: string, requestedAl
     }
   }
   for (const account of retried) {
-    const removed = await fetch(
-      `${apiBase()}/connected_accounts/${encodeURIComponent(account.id!)}?revoke_on_delete=true`,
-      { method: "DELETE", headers: projectHeaders(apiKey), signal: AbortSignal.timeout(30_000) },
-    );
-    if (!removed.ok) throw new Error(await responseError(removed, `Composio authorization: HTTP ${removed.status}`));
+    // The list is already a moment old. A sign-in finished in another tab
+    // since then makes this a connected account, which must not be removed:
+    // read it again and only replace an attempt that is still unfinished.
+    const path = `${apiBase()}/connected_accounts/${encodeURIComponent(account.id!)}`;
+    const current = await fetch(path, { headers: projectHeaders(apiKey), signal: AbortSignal.timeout(15_000) });
+    if (current.status === 404) continue;
+    if (!current.ok) throw new Error(await responseError(current, `Composio authorization: HTTP ${current.status}`));
+    const status = connectedAccountResponseSchema.parse(await current.json()).status ?? "";
+    if (LAPSED_ACCOUNT.test(status)) continue;
+    if (!UNFINISHED_ACCOUNT.test(status)) {
+      throw inputError(`Account alias "${alias}" is already in use for ${toolkit}`, 409);
+    }
+    const removed = await fetch(`${path}?revoke_on_delete=true`, {
+      method: "DELETE",
+      headers: projectHeaders(apiKey),
+      signal: AbortSignal.timeout(30_000),
+    });
+    if (!removed.ok && removed.status !== 404) {
+      throw new Error(await responseError(removed, `Composio authorization: HTTP ${removed.status}`));
+    }
   }
   const linkRequest: AccountLinkRequest = { toolkit };
   if (alias) linkRequest.alias = alias;
