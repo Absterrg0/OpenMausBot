@@ -407,6 +407,8 @@ it("keeps the session and scope checks ahead of the lease, and closes a session'
   const closedMine = once(mine, "close");
   expect(viewer.closeForOwner("nobody", "test-bot")).toBe(0);
   expect(viewer.closeForOwner(admin.session.id, "test-bot")).toBe(1);
+  // Asked again before the socket's close event: nothing left to close.
+  expect(viewer.closeForOwner(admin.session.id, "test-bot")).toBe(0);
   await closedMine;
   expect(other.destroyed).toBe(false);
   expect(browser.destroyed).toBe(false);
