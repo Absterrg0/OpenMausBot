@@ -18,7 +18,7 @@
 // it happens, which is why waiting feels like listening to someone work
 // rather than listening to nothing.
 import { useCallback, useEffect, useId, useRef, useState } from "react";
-import { Loader2, Phone, PhoneOff, X } from "lucide-react";
+import { AudioLines, Loader2, Phone, PhoneOff, X } from "lucide-react";
 
 import { useStore, visibleMessages, type Bot } from "@/state/store";
 import { cn } from "@/lib/cn";
@@ -33,6 +33,8 @@ import { isRoutineApproval, isSkillApproval, pendingApprovals, spokenApprovalPro
 import { track } from "@/lib/analytics";
 import { useDesktopCapabilities } from "./DesktopCapabilities";
 import { callCapabilityHelp } from "@/lib/call-capability";
+import { t } from "@/lib/i18n";
+import { VoiceSetupDialog } from "./VoiceSetupDialog";
 
 /** Spoken answers to a permission card. Anything else is read as a reply
  * to the bot, not as consent — an approval must never be granted by a
@@ -43,9 +45,15 @@ const NO = /^(no|nope|don'?t|do not|stop|deny|denied|cancel|never|skip it)\b/i;
 type Phase = "listening" | "sending" | "working" | "speaking";
 const CALL_ENDPOINT_MS = 850;
 
-export function CallButton({ bot }: { bot: Bot }) {
+/** Where a call button sits: the header's icon row (rooms), or the composer's
+ * action row (a bot's chat), where it is a filled circle the size of Send and
+ * its help opens upward, away from the bottom edge of the window. */
+export type CallButtonPlacement = "header" | "composer";
+
+export function CallButton({ bot, placement = "header" }: { bot: Bot; placement?: CallButtonPlacement }) {
   return (
     <CallTargetButton
+      placement={placement}
       targetId={bot.id}
       targetName={bot.name}
       voices={[bot.voice]}
@@ -63,11 +71,14 @@ export function CallTargetButton({
   setupBotId,
   requireExplicitVoices,
   onStart,
+  placement = "header",
 }: {
+  placement?: CallButtonPlacement;
   targetId: string;
   targetName: string;
   voices: Array<string | undefined>;
-  /** Agent profile to open when voice setup is missing (rooms choose a member). */
+  /** The agent whose voice the set-up pop-up edits when voice is missing
+   * (rooms choose a member). */
   setupBotId?: string;
   /** Rooms cannot rely on one workspace fallback for multiple speakers. */
   requireExplicitVoices: boolean;
@@ -76,6 +87,11 @@ export function CallTargetButton({
   const { state, dispatch } = useStore();
   const { capabilities, ready: capabilitiesReady } = useDesktopCapabilities();
   const active = useOnCall() === targetId;
+  // Paired to another computer, the voice engine and its key stay on the
+  // host, and the pairing takes agent changes only through the profile route
+  // the remote agent settings save with. There, voice set-up opens those
+  // settings, as it always did, instead of the pop-up.
+  const remoteClient = window.ogb?.remoteClient?.active === true;
   const capabilityHelp = capabilitiesReady
     ? callCapabilityHelp(capabilities, Boolean(window.ogb?.speechStart))
     : null;
@@ -89,10 +105,20 @@ export function CallTargetButton({
   const unavailable = !active && (!capabilitiesReady || !supported || !voiceReady);
   const voiceSetupRequired = capabilitiesReady && supported && !voiceReady;
   const [helpOpen, setHelpOpen] = useState(false);
+  // Voice set-up opens over the chat instead of the bot's full settings.
+  const [voiceSetupOpen, setVoiceSetupOpen] = useState(false);
+  // In a room the pop-up moves on to the next member without a voice; once
+  // every member has one it stays on the last, instead of jumping back to
+  // the first member (the room's fallback).
+  const [voiceSetupBotId, setVoiceSetupBotId] = useState(setupBotId);
+  if (voiceSetupRequired && setupBotId !== voiceSetupBotId) setVoiceSetupBotId(setupBotId);
+  const shownSetupBotId = voiceSetupRequired ? setupBotId : voiceSetupBotId;
+  const setupBot = shownSetupBotId ? state.bots.find((candidate) => candidate.id === shownSetupBotId) : undefined;
   const helpMotion = useMenuMotion(Boolean(unavailable && helpOpen));
   const rootRef = useRef<HTMLDivElement>(null);
   const buttonRef = useRef<HTMLButtonElement>(null);
   const helpId = useId();
+  const composer = placement === "composer";
   const label = active
     ? `Hang up on ${targetName}`
     : !capabilitiesReady
@@ -135,6 +161,13 @@ export function CallTargetButton({
     };
   }, [helpOpen]);
 
+  // The one way a call starts: this button, or the set-up pop-up's "Start
+  // call" once a voice is ready.
+  const begin = () => {
+    onStart();
+    startCall(targetId);
+  };
+
   return (
     <div ref={rootRef} className="relative">
       <button
@@ -145,23 +178,30 @@ export function CallTargetButton({
             setHelpOpen((open) => !open);
             return;
           }
-          onStart();
-          startCall(targetId);
+          begin();
         }}
         aria-expanded={unavailable ? helpOpen : undefined}
         aria-controls={unavailable ? helpId : undefined}
         aria-label={label}
         title={label}
+        data-call-button={placement}
         className={cn(
-          "relative flex size-9 items-center justify-center rounded-full transition-colors",
+          "relative flex shrink-0 items-center justify-center rounded-full transition-colors",
+          composer ? "size-8" : "size-9",
           active
             ? "bg-danger text-white hover:brightness-110"
-            : unavailable
-              ? "text-ink-tertiary hover:bg-raised hover:text-ink-secondary"
-              : "text-ink-secondary hover:bg-raised hover:text-ink",
+            : composer
+              ? unavailable
+                ? "bg-control text-ink-tertiary hover:text-ink-secondary"
+                : "bg-control text-ink hover:bg-raised"
+              : unavailable
+                ? "text-ink-tertiary hover:bg-raised hover:text-ink-secondary"
+                : "text-ink-secondary hover:bg-raised hover:text-ink",
         )}
       >
-        {active ? <PhoneOff size={17} /> : <Phone size={17} />}
+        {active
+          ? <PhoneOff size={composer ? 15 : 17} />
+          : composer ? <AudioLines size={16} aria-hidden="true" /> : <Phone size={17} />}
         {unavailable && (
           <span className="absolute right-1 top-1 size-1.5 rounded-full bg-warning ring-2 ring-app" aria-hidden="true" />
         )}
@@ -172,7 +212,7 @@ export function CallTargetButton({
           id={helpId}
           role="group"
           aria-label="Call unavailable"
-          className={cn("absolute right-0 z-30 mt-1.5 w-[280px] rounded-xl border border-hairline bg-panel p-3 text-left shadow-2xl", helpMotion.className)} {...helpMotion.exitProps}
+          className={cn("absolute right-0 z-30 w-[280px]", composer ? "bottom-full mb-1.5" : "mt-1.5", "rounded-xl border border-hairline bg-panel p-3 text-left shadow-2xl", helpMotion.className)} {...helpMotion.exitProps}
         >
           <div className="text-[13px] font-medium text-ink">Call unavailable</div>
           <div className="mt-1 text-[12px] leading-[1.45] text-ink-secondary">{reason}</div>
@@ -188,20 +228,41 @@ export function CallTargetButton({
               Choose This computer
             </button>
           )}
-          {voiceSetupRequired && (
+          {voiceSetupRequired && setupBot && (
             <button
               type="button"
+              aria-haspopup={remoteClient ? undefined : "dialog"}
+              data-voice-setup-open
               onClick={() => {
                 setHelpOpen(false);
-                if (setupBotId && setupBotId !== targetId) dispatch({ type: "select", id: setupBotId });
-                dispatch({ type: "toggleSettings", open: true, section: "voice" });
+                if (remoteClient) {
+                  // In a room the agent is a member: open its chat first.
+                  if (setupBot.id !== targetId) dispatch({ type: "select", id: setupBot.id });
+                  dispatch({ type: "toggleSettings", open: true, section: "voice" });
+                  return;
+                }
+                setVoiceSetupOpen(true);
               }}
-              className="mt-2.5 rounded-lg bg-accent px-3 py-1.5 text-[12px] font-medium text-white hover:brightness-110"
+              className="mt-2.5 rounded-lg bg-accent px-3 py-1.5 text-[12px] font-medium text-accent-ink hover:brightness-110"
             >
-              Open agent settings
+              {t("call.voiceSetup.open")}
             </button>
           )}
         </div>
+      )}
+
+      {voiceSetupOpen && setupBot && (
+        <VoiceSetupDialog
+          bot={setupBot}
+          callName={targetName}
+          ready={supported && voiceReady}
+          returnFocusRef={buttonRef}
+          onClose={() => setVoiceSetupOpen(false)}
+          onStartCall={() => {
+            setVoiceSetupOpen(false);
+            begin();
+          }}
+        />
       )}
     </div>
   );

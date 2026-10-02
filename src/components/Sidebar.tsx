@@ -8,7 +8,6 @@ import {
   Archive,
   BellDot,
   Bot as BotIcon,
-  CalendarDays,
   Check,
   ChevronRight,
   ClipboardCopy,
@@ -18,7 +17,6 @@ import {
   FolderPlus,
   Library,
   Loader2,
-  Network,
   MoreHorizontal,
   Pencil,
   PanelLeftClose,
@@ -27,7 +25,6 @@ import {
   PinOff,
   Plus,
   Search,
-  Puzzle,
   Share2,
   Trash2,
   Users,
@@ -45,7 +42,6 @@ import { cn } from "@/lib/cn";
 import { useHeldMenuMotion, useMenuMotion } from "./MenuMotion";
 import { lastNonReceipt } from "@/lib/receipts";
 import { t } from "@/lib/i18n";
-import { isRoutineProblemRun } from "@/lib/routines";
 import type { LocaleKey } from "@/locales";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { FullAccessWarning } from "./FullAccessWarning";
@@ -105,7 +101,7 @@ import {
 import { sidebarSectionAttention } from "@/lib/sidebar-attention";
 import { botListItemPointerIntent } from "@/lib/sidebar-selection";
 import { phoneSettingsAction, SidebarPhoneButton } from "./SidebarPhoneButton";
-import { SidebarMoreMenu } from "./SidebarMoreMenu";
+import { SidebarFooterNav } from "./SidebarFooterNav";
 import { DesktopWorkspaceSwitcher } from "./DesktopWorkspaceSwitcher";
 import { useCloudOwner } from "./CloudOwner";
 import { profileInitials, SidebarProfileMenu } from "./SidebarProfileMenu";
@@ -118,6 +114,13 @@ import { SidebarPinnedThreadsPanel } from "./SidebarPinnedThreadsPanel";
 import { ShortcutHint } from "./ShortcutHint";
 import { citationPreviewText } from "@/lib/citations";
 import { usePopoverDismiss } from "@/hooks/use-popover-dismiss";
+import { useAdvancedMode } from "@/lib/interface-mode";
+
+/** Vertical centre of the macOS traffic lights, in CSS px from the window
+ * top: electron/window-chrome.mjs sets trafficLightPosition.y = 16 and the
+ * buttons are 14px tall. The sidebar's top row is twice this tall so its
+ * centred controls sit on the lights' line. */
+export const MAC_TRAFFIC_LIGHT_CENTER_Y = 23;
 
 const SECTION_LABEL_KEYS: Record<string, LocaleKey> = {
   [PINNED_SECTION_ID]: "sidebar.section.pinned",
@@ -1803,6 +1806,7 @@ export function Sidebar({ open, onClose, collapseToIcons = false }: {
   const deletingRoom = deletingRoomId ? state.groups.find((g) => g.id === deletingRoomId) : undefined;
   const [plusOpen, setPlusOpen] = useState(false);
   const plusMotion = useMenuMotion(plusOpen);
+  const advanced = useAdvancedMode();
   const [attentionOpen, setAttentionOpen] = useState(false);
   const attentionMotion = useMenuMotion(attentionOpen);
   const [attentionPinned, setAttentionPinnedState] = useState(() => loadSidebarAttentionPinned());
@@ -2127,44 +2131,80 @@ export function Sidebar({ open, onClose, collapseToIcons = false }: {
         open ? "max-md:translate-x-0" : "max-md:-translate-x-full",
       )}
     >
-      {/* macOS owns inset traffic lights; Linux/Windows use native chrome. */}
+      {/* One top row: [traffic lights] [drag space] [server] [buttons].
+          macOS owns inset traffic lights; Linux/Windows use native chrome.
+          On macOS the row is twice the lights' centre line tall, so
+          items-center puts every control on that line. The server switcher
+          sits at the right, just left of the buttons, so the left stays an
+          empty drag region clear of the lights; where the row is too tight
+          for its name and a visible gap, it shows icon + chevron only, and
+          the buttons never wrap. The row is `relative` so the switcher's
+          error note hangs inside the sidebar.
+          The icons rail is too narrow for a row and stacks instead, server
+          switcher underneath. */}
       <div
-        className={cn("flex items-center pt-3.5 pb-1", density === "icons" ? "flex-col gap-1 px-2" : "justify-between px-4")}
-        style={windowDragStyle}
+        data-sidebar-top-row
+        className={cn(
+          "flex items-center",
+          density === "icons" ? "flex-col gap-1 px-2 pt-3.5 pb-1" : "relative pl-4 pr-2",
+          density !== "icons" && !macInset && "h-12",
+        )}
+        style={density !== "icons" && macInset ? { ...windowDragStyle, height: MAC_TRAFFIC_LIGHT_CENTER_Y * 2 } : windowDragStyle}
       >
         {macInset ? (
-          <div className={density === "icons" ? "h-5 w-full" : "w-14"} />
+          // The lights span 16-76px on macOS 26; from the row's 16px inset this
+          // ends 12px past them, so nothing clickable starts before 88px.
+          <div aria-hidden="true" data-traffic-light-space className={density === "icons" ? "h-5 w-full" : "w-[72px] shrink-0"} />
         ) : browser ? (
-          <div className="flex items-center gap-2">
+          <div className={cn("flex shrink-0 items-center gap-2", density !== "icons" && "mr-3")}>
             <span className="size-3 rounded-full bg-[#ff5f57]" />
             <span className="size-3 rounded-full bg-[#febc2e]" />
             <span className="size-3 rounded-full bg-[#28c840]" />
           </div>
-        ) : <div />}
+        ) : null}
+        {density !== "icons" && (
+          // Everything between the lights and the buttons; the switcher's
+          // pill reads this slot's width (container `sidebar-top`). Below
+          // 164px, its 140px cap plus a 24px drag gap, the pill drops its name
+          // for icon + chevron rather than fill the slot up to the lights. On
+          // macOS at 320px the slot is 121px in Advanced, 189px in Simple.
+          <div data-sidebar-top-slot className="@container/sidebar-top flex min-w-0 flex-1 items-center">
+            {/* Empty, so it stays a drag region; it takes the slack, which
+                keeps the switcher beside the buttons. */}
+            <div data-sidebar-top-spacer className="min-w-0 flex-1" />
+            {/* Gives way first when the row is tight; only the switcher's own
+                button opts out of the drag region. */}
+            <div data-sidebar-top-switcher className="flex min-w-0 max-w-[140px] items-center">
+              <DesktopWorkspaceSwitcher inline cloudHome={state.config?.cloudHome === true} owner={cloudOwner} />
+            </div>
+          </div>
+        )}
         <div
-          className={cn("relative flex items-center", density === "icons" ? "flex-col gap-1" : "gap-1")}
+          data-sidebar-top-buttons
+          className={cn("relative flex shrink-0 items-center", density === "icons" ? "flex-col gap-1" : "ml-0.5 gap-0.5")}
           style={windowNoDragStyle}
         >
-          {!collapseToIcons && <button
+          {/* Simple mode keeps only "+". Expand stays so an icons rail is never a dead end. */}
+          {!collapseToIcons && (advanced || density === "icons") && <button
             type="button"
             onClick={toggleCollapsed}
             aria-label={density === "icons" ? t("sidebar.density.expand") : t("sidebar.density.collapseAria")}
-            className="flex size-10 items-center justify-center rounded-md text-ink-secondary hover:bg-raised hover:text-ink"
+            className="flex size-8 items-center justify-center rounded-md text-ink-secondary hover:bg-raised hover:text-ink"
             title={density === "icons" ? t("sidebar.density.expand") : t("sidebar.density.collapse")}
           >
-            {density === "icons" ? <PanelLeftOpen size={20} /> : <PanelLeftClose size={20} />}
+            {density === "icons" ? <PanelLeftOpen size={17} /> : <PanelLeftClose size={17} />}
           </button>}
-          <div ref={attentionMenuRef} className={density === "icons" ? "relative" : "contents"}>
+          {advanced && <div ref={attentionMenuRef} className={density === "icons" ? "relative" : "contents"}>
             <button
               type="button"
               onClick={() => setAttentionOpen((o) => !o)}
               aria-label={t("attention.title")}
               title={t("attention.title")}
-              className="relative flex size-10 items-center justify-center rounded-md text-ink-secondary hover:bg-raised hover:text-ink"
+              className="relative flex size-8 items-center justify-center rounded-md text-ink-secondary hover:bg-raised hover:text-ink"
             >
-              <Activity size={20} strokeWidth={2} />
+              <Activity size={17} strokeWidth={2} />
               {attention.length > 0 && (
-                <span className="absolute right-1 top-1 flex min-w-4 items-center justify-center rounded-full bg-accent px-0.5 text-[9.5px] font-semibold leading-4 text-ink">{attention.length > 9 ? "9+" : attention.length}</span>
+                <span className="absolute -right-0.5 -top-0.5 flex min-w-4 items-center justify-center rounded-full bg-accent px-0.5 text-[9.5px] font-semibold leading-4 text-ink">{attention.length > 9 ? "9+" : attention.length}</span>
               )}
             </button>
             {attentionMotion.shown && (
@@ -2195,17 +2235,17 @@ export function Sidebar({ open, onClose, collapseToIcons = false }: {
                 </div>
               </>
             )}
-          </div>
+          </div>}
           {/* `contents` keeps the popover anchored to the header row */}
           <div ref={plusMenuRef} className="contents">
           <button
             ref={importReturnRef}
             onClick={() => setPlusOpen((o) => !o)}
             aria-label={remoteClient ? t("sidebar.new") : t("sidebar.newOrShare")}
-            className="flex size-10 items-center justify-center rounded-md text-ink-secondary hover:bg-raised hover:text-ink"
+            className="flex size-8 items-center justify-center rounded-md text-ink-secondary hover:bg-raised hover:text-ink"
             title={remoteClient ? t("sidebar.new") : t("sidebar.newOrShare")}
           >
-            <Plus size={20} strokeWidth={2} />
+            <Plus size={17} strokeWidth={2} />
           </button>
           {plusMotion.shown && (
             <>
@@ -2310,7 +2350,7 @@ export function Sidebar({ open, onClose, collapseToIcons = false }: {
         }}
       />}
 
-      <DesktopWorkspaceSwitcher compact={density === "icons"} cloudHome={state.config?.cloudHome === true} owner={cloudOwner} />
+      {density === "icons" && <DesktopWorkspaceSwitcher compact cloudHome={state.config?.cloudHome === true} owner={cloudOwner} />}
       <OrganizationIdentity compact={density === "icons"} />
       {/* Search */}
       <div className={cn("pt-1 pb-3", density === "icons" ? "hidden" : "px-3")}>
@@ -2524,85 +2564,11 @@ export function Sidebar({ open, onClose, collapseToIcons = false }: {
 
       {/* Footer */}
       <div className={cn("pb-3 pt-2", density === "icons" ? "px-2" : "px-3")}>
-        {density === "icons" && (
-          <>
-          <button
-            onClick={() => dispatch({ type: "showTeamMap" })}
-            aria-label={density === "icons" ? t("sidebar.nav.teamMap") : undefined}
-            title={density === "icons" ? t("sidebar.nav.teamMap") : undefined}
-            className={cn(
-              "flex min-h-10 w-full items-center rounded-xl py-2 text-left transition-colors",
-              density === "icons" ? "justify-center px-2" : "gap-3 px-3",
-              state.activeView === "team-map" ? "bg-raised text-ink" : "text-ink hover:bg-raised/50",
-            )}
-          >
-            <Network size={20} className={state.activeView === "team-map" ? "text-accent" : "text-ink-secondary"} />
-            <span className={cn("flex-1 text-[14px]", density === "icons" && "hidden")}>{t("sidebar.nav.teamMap")}</span>
-          </button>
-          <button
-            data-tour="nav-automations"
-            onClick={() => dispatch({ type: "showRoutines" })}
-            aria-label={density === "icons" ? t("sidebar.nav.automations") : undefined}
-            title={density === "icons" ? t("sidebar.nav.automations") : undefined}
-            className={cn(
-              "flex min-h-10 w-full items-center rounded-xl py-2 text-left transition-colors",
-              density === "icons" ? "justify-center px-2" : "gap-3 px-3",
-              state.activeView === "routines" ? "bg-raised text-ink" : "text-ink hover:bg-raised/50",
-            )}
-          >
-            <CalendarDays size={20} className={state.activeView === "routines" ? "text-accent" : "text-ink-secondary"} />
-            <span className={cn("flex-1 text-[14px]", density === "icons" && "hidden")}>{t("sidebar.nav.automations")}</span>
-            {state.routineRuns.some((run) => isRoutineProblemRun(run) && !run.seenAt) && (
-              <span className="size-2 rounded-full bg-danger" />
-            )}
-          </button>
-          <button
-            onClick={() => dispatch({ type: "togglePlugins", open: true })}
-            className={cn("flex min-h-10 w-full items-center rounded-xl py-2 text-left hover:bg-raised/50", density === "icons" ? "justify-center px-2" : "gap-3 px-3")}
-            aria-label={density === "icons" ? t("sidebar.nav.connectedApps") : undefined}
-            title={density === "icons" ? t("sidebar.nav.connectedApps") : undefined}
-          >
-            <Puzzle size={20} className="text-ink-secondary" />
-            <span className={cn("text-[14px] text-ink", density === "icons" && "hidden")}>{t("sidebar.nav.connectedApps")}</span>
-          </button>
-          </>
-        )}
+        <SidebarFooterNav density={density} />
         {density === "icons" && (
           <SidebarPhoneButton
             density={density}
             onOpen={() => dispatch(phoneSettingsAction())}
-          />
-        )}
-          {density !== "icons" && (
-          <SidebarMoreMenu
-            items={[
-              {
-                key: "team-map",
-                label: t("sidebar.nav.teamMap"),
-                icon: <Network size={18} />,
-                active: state.activeView === "team-map",
-                onSelect: () => dispatch({ type: "showTeamMap" }),
-              },
-              {
-                key: "routines",
-                tourId: "nav-automations",
-                label: t("sidebar.nav.automations"),
-                icon: <CalendarDays size={18} />,
-                active: state.activeView === "routines",
-                // folded away, this dot would otherwise vanish with the row
-                attention: state.routineRuns.some(
-                  (run) => isRoutineProblemRun(run) && !run.seenAt,
-                ),
-                onSelect: () => dispatch({ type: "showRoutines" }),
-              },
-              {
-                key: "plugins",
-                tourId: "nav-apps",
-                label: t("sidebar.nav.connectedApps"),
-                icon: <Puzzle size={18} />,
-                onSelect: () => dispatch({ type: "togglePlugins", open: true }),
-              },
-            ]}
           />
         )}
         {density === "icons" ? (
