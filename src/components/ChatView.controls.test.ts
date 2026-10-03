@@ -89,6 +89,24 @@ describe("Advanced mode in the header menu", () => {
   });
 });
 
+describe("glass header", () => {
+  it("floats the header over the transcript, which starts below it and scrolls on underneath", () => {
+    const markup = renderToStaticMarkup(createElement(ChatView, { bot }));
+    const frame = markup.indexOf("data-glass-frame");
+    const header = markup.indexOf('data-glass-bar="top"');
+    const name = markup.indexOf("data-chathead-row");
+    const scroller = markup.indexOf('class="glass-scroller ');
+    expect(frame).toBeGreaterThan(-1);
+    expect(frame).toBeLessThan(header);
+    expect(header).toBeLessThan(name);
+    expect(name).toBeLessThan(scroller);
+    // The glass is tinted with the chat's own background, not the sidebar's.
+    expect(markup.slice(frame, header)).toContain("[--glass-tint:var(--color-app)]");
+    // The transcript is padded by the header's measured height.
+    expect(markup.slice(scroller)).toMatch(/class="glass-scroller-content[^"]*"[^>]*role="log"/);
+  });
+});
+
 describe("thread control placement", () => {
   it.each([true, false])("leaves All threads to the sidebar in both modes (advanced: %s)", (advanced) => {
     fixture.advanced = advanced;

@@ -59,6 +59,7 @@ import { useFocusMessage } from "@/lib/focus-message";
 import { shortPath } from "@/lib/short-path";
 import { BOTTOM_FOLLOW_THRESHOLD, shouldResumeBottomFollow, useBottomFollowResize } from "@/lib/bottom-follow";
 import { useComposerDockPad } from "@/lib/composer-dock";
+import { GlassBar, GlassScrollFrame } from "./GlassScrollFrame";
 import { awaitedMemberId, showWorkingDots } from "@/lib/turn-tail";
 import { liveActivityLabel } from "@/lib/live-activity";
 import { splitTranscriptAttachments } from "@/lib/composer-attachments";
@@ -1267,6 +1268,12 @@ export function GroupView({ group }: { group: Group }) {
       {membersOpen && !remoteClient && !group.dm && (
         <ManageMembersPanel group={group} onClose={closeMembers} triggerRef={membersTriggerRef} />
       )}
+      {/* As in ChatView: the transcript scrolls on under the header and its
+          banners, which are liquid glass tinted with the room's background. */}
+      <GlassScrollFrame className="flex-1 [--glass-tint:var(--color-app)]">
+      {/* Above anything raised inside the transcript (the room set-up card
+          is z-20 so its menus clear the composer), below the GroupCallOverlay (z-30). */}
+      <GlassBar edge="top" className="z-[25]">
       {/* Header: static member avatars; a ring + dot marks the working bot. */}
       <div
         style={headerDragStyle}
@@ -1439,11 +1446,11 @@ export function GroupView({ group }: { group: Group }) {
           </div>
         );
       })()}
+      </GlassBar>
 
-      <div className="relative min-h-0 flex-1">
       <div
         ref={scrollRef}
-        className="h-full overflow-x-hidden overflow-y-auto px-5 [overflow-anchor:none]"
+        className="glass-scroller h-full overflow-x-hidden overflow-y-auto px-5 [overflow-anchor:none]"
         onWheel={(e) => {
           if (e.deltaY < 0) setBottomFollow(false);
           else if (atEnd()) setBottomFollow(true);
@@ -1469,13 +1476,13 @@ export function GroupView({ group }: { group: Group }) {
         }}
       >
         {setupPending ? (
-          <div className="flex min-h-full w-full items-center py-8">
+          <div className="flex min-h-full w-full items-center pb-8" style={{ paddingTop: "calc(var(--glass-top, 0px) + 2rem)" }}>
             <RoomSetup group={group} members={members} />
           </div>
         ) : (
         <div
           ref={transcriptRef}
-          className="flex w-full flex-col gap-3"
+          className="glass-scroller-content flex w-full flex-col gap-3"
           style={{ paddingBottom: composerDock.pad }}
           role="log"
           // off, as in ChatView: TranscriptAnnouncer speaks once per reply
@@ -1601,7 +1608,7 @@ export function GroupView({ group }: { group: Group }) {
         onAdd={(citation) => appendDraftAttachments(`group:${citation.source.ownerId}:${citation.source.threadId}`, [citation])}
       />
       </div>
-      </div>
+      </GlassScrollFrame>
     </main>
   );
 }

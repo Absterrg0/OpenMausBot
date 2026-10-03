@@ -103,6 +103,7 @@ import { sidebarSectionAttention } from "@/lib/sidebar-attention";
 import { botListItemPointerIntent } from "@/lib/sidebar-selection";
 import { phoneSettingsAction, SidebarPhoneButton } from "./SidebarPhoneButton";
 import { SidebarFooterNav } from "./SidebarFooterNav";
+import { GlassBar, GlassScrollFrame, GlassScroller } from "./GlassScrollFrame";
 import { DesktopWorkspaceSwitcher } from "./DesktopWorkspaceSwitcher";
 import { useCloudOwner } from "./CloudOwner";
 import { profileInitials, SidebarProfileMenu } from "./SidebarProfileMenu";
@@ -2151,6 +2152,12 @@ export function Sidebar({ open, onClose, collapseToIcons = false }: {
         open ? "max-md:translate-x-0" : "max-md:-translate-x-full",
       )}
     >
+      {/* The bot list scrolls on under the head (top row, search, pinned
+          panels) and the foot (places and profile), both liquid glass. The
+          frame fills the sidebar, so the resize handle inside it still
+          spans the sidebar's full height. */}
+      <GlassScrollFrame className="flex-1">
+      <GlassBar edge="top">
       {/* One top row: [traffic lights] [drag space] [server] [buttons].
           macOS owns inset traffic lights; Linux/Windows use native chrome.
           On macOS the row is twice the lights' centre line tall, so
@@ -2333,43 +2340,6 @@ export function Sidebar({ open, onClose, collapseToIcons = false }: {
         </div>
       </div>
 
-      {density !== "icons" && <div
-        role="separator"
-        aria-label={t("sidebar.resize")}
-        aria-orientation="vertical"
-        aria-valuemin={240}
-        aria-valuemax={maxSidebarWidth}
-        aria-valuenow={Math.min(sidebarWidth ?? defaultWidth, maxSidebarWidth)}
-        tabIndex={0}
-        data-sidebar-resize
-        className="absolute inset-y-0 -right-1 z-20 hidden w-2 cursor-col-resize touch-none hover:bg-accent/20 focus-visible:bg-accent/30 md:block"
-        style={windowNoDragStyle}
-        onPointerDown={(event) => {
-          if (event.button !== 0) return;
-          event.preventDefault();
-          event.currentTarget.setPointerCapture(event.pointerId);
-          setResizing(true);
-        }}
-        onPointerMove={(event) => {
-          if (!event.currentTarget.hasPointerCapture(event.pointerId)) return;
-          const next = resizeTo(event.clientX - (sidebarRef.current?.getBoundingClientRect().left ?? 0));
-          if (next !== null) event.currentTarget.setAttribute("aria-valuenow", String(next));
-        }}
-        onPointerUp={(event) => {
-          if (event.currentTarget.hasPointerCapture(event.pointerId)) finishResize();
-        }}
-        onPointerCancel={finishResize}
-        onKeyDown={(event) => {
-          if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
-          event.preventDefault();
-          const limit = sidePanelOpen ? defaultWidth : Math.min(480, window.innerWidth - 320);
-          const next = resizeTo(Math.min(widthRef.current ?? defaultWidth, limit) + (event.key === "ArrowRight" ? 16 : -16));
-          if (next === null) return;
-          setSidebarWidth(next);
-          saveSidebarWidth(next);
-        }}
-      />}
-
       {density === "icons" && <DesktopWorkspaceSwitcher compact cloudHome={state.config?.cloudHome === true} owner={cloudOwner} />}
       <OrganizationIdentity compact={density === "icons"} />
       {/* Search */}
@@ -2390,7 +2360,9 @@ export function Sidebar({ open, onClose, collapseToIcons = false }: {
       {universalPins && pinnedBots.length > 0 && (
         <div
           data-sidebar-universal-pins=""
-          className="max-h-[min(42%,280px)] shrink-0 overflow-y-auto border-b border-hairline/40 px-2 pb-2"
+          // vh, not %: inside the glass head a percentage has no height to
+          // resolve against and would stop capping the list.
+          className="max-h-[min(40vh,280px)] shrink-0 overflow-y-auto border-b border-hairline/40 px-2 pb-2"
         >
           {density !== "icons" && !pinnedCircles && (
             <div className="px-2 pb-1 pt-1 text-[11px] font-medium uppercase tracking-[0.08em] text-ink-secondary">
@@ -2430,9 +2402,47 @@ export function Sidebar({ open, onClose, collapseToIcons = false }: {
           onToggle={layoutInteractive ? () => toggleSection(PINNED_THREADS_SECTION_ID) : undefined}
         />
       )}
+      </GlassBar>
+
+      {density !== "icons" && <div
+        role="separator"
+        aria-label={t("sidebar.resize")}
+        aria-orientation="vertical"
+        aria-valuemin={240}
+        aria-valuemax={maxSidebarWidth}
+        aria-valuenow={Math.min(sidebarWidth ?? defaultWidth, maxSidebarWidth)}
+        tabIndex={0}
+        data-sidebar-resize
+        className="absolute inset-y-0 -right-1 z-20 hidden w-2 cursor-col-resize touch-none hover:bg-accent/20 focus-visible:bg-accent/30 md:block"
+        style={windowNoDragStyle}
+        onPointerDown={(event) => {
+          if (event.button !== 0) return;
+          event.preventDefault();
+          event.currentTarget.setPointerCapture(event.pointerId);
+          setResizing(true);
+        }}
+        onPointerMove={(event) => {
+          if (!event.currentTarget.hasPointerCapture(event.pointerId)) return;
+          const next = resizeTo(event.clientX - (sidebarRef.current?.getBoundingClientRect().left ?? 0));
+          if (next !== null) event.currentTarget.setAttribute("aria-valuenow", String(next));
+        }}
+        onPointerUp={(event) => {
+          if (event.currentTarget.hasPointerCapture(event.pointerId)) finishResize();
+        }}
+        onPointerCancel={finishResize}
+        onKeyDown={(event) => {
+          if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+          event.preventDefault();
+          const limit = sidePanelOpen ? defaultWidth : Math.min(480, window.innerWidth - 320);
+          const next = resizeTo(Math.min(widthRef.current ?? defaultWidth, limit) + (event.key === "ArrowRight" ? 16 : -16));
+          if (next === null) return;
+          setSidebarWidth(next);
+          saveSidebarWidth(next);
+        }}
+      />}
 
       {/* Bot list */}
-      <div className="flex-1 overflow-y-auto px-2">
+      <GlassScroller className="px-2">
         <div className="flex flex-col gap-0.5">
           {matchingBots.length === 0 && visibleGroups.length === 0 && q && q.length < MIN_QUERY && (
             <div className="px-3 py-6 text-center text-[13px] text-ink-secondary">{t("sidebar.noMatch", { query })}</div>
@@ -2577,11 +2587,12 @@ export function Sidebar({ open, onClose, collapseToIcons = false }: {
           })}
           <SearchResults query={query} onLanded={() => setQuery("")} />
         </div>
-      </div>
+      </GlassScroller>
       <p className="sr-only" aria-live="polite" aria-atomic="true">
         {reorderAnnouncement}
       </p>
 
+      <GlassBar edge="bottom">
       {/* This window's Live call, while its chat is not on screen. Outside
           the scrolling sections, so it always shows. */}
       <LiveCallPill
@@ -2622,6 +2633,8 @@ export function Sidebar({ open, onClose, collapseToIcons = false }: {
           </div>
         )}
       </div>
+      </GlassBar>
+      </GlassScrollFrame>
 
       <BotContextMenu
           menu={menu}
