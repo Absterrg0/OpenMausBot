@@ -241,6 +241,36 @@ object ConnectionAdvice {
         }
     }
 
+    /**
+     * What the person can change when pairing could not reach [host], or null when the address
+     * itself is all there is to say.
+     *
+     * Two Android failures read as "the computer is off" and are not. A Tailscale name that does
+     * not resolve is Tailscale switched off on this phone, or a Private DNS provider answering
+     * before Tailscale's own resolver can. A socket the system refused outright (EPERM, EACCES)
+     * is the phone's local-network permission, not the computer.
+     */
+    fun pairingAdvice(error: Throwable, host: String): String? {
+        val chain = generateSequence(error) { it.cause }.toList()
+        val detail = chain.joinToString(" ") { it.message.orEmpty() }.lowercase()
+        if (LOCAL_NETWORK_REFUSALS.any { it in detail }) return LOCAL_NETWORK_ADVICE
+        val unresolved = chain.any { it is UnknownHostException } ||
+            "unable to resolve host" in detail || "unknown host" in detail
+        if (unresolved && CompanionEndpoint.inferredDirectKind(host) == CompanionEndpointKind.TAILNET) {
+            return "“$host” didn't resolve. Make sure Tailscale is connected on this phone, and set " +
+                "Private DNS (Settings → Network & internet) to Off or Automatic — a named Private DNS " +
+                "provider can't resolve Tailscale names."
+        }
+        return null
+    }
+
+    /** How a socket the phone itself refused reads, across the JVM and Android's libcore. */
+    private val LOCAL_NETWORK_REFUSALS = listOf("eperm", "operation not permitted", "eacces", "permission denied")
+
+    private const val LOCAL_NETWORK_ADVICE =
+        "Android blocked this app from your local network. Allow local network access for it in " +
+            "the phone's Settings, then try again."
+
     private fun fallbackAdvice(tryingNext: String?): String =
         tryingNext?.let { " Trying $it next." }.orEmpty() + " The app keeps retrying automatically."
 }

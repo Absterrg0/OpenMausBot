@@ -46,9 +46,11 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.openmausbot.companion.core.CompanionEndpoint
 import com.openmausbot.companion.core.Connection
 import com.openmausbot.companion.core.PairingInvite
 import com.openmausbot.companion.core.PairingRouteError
+import com.openmausbot.companion.core.ServerAddressError
 import com.openmausbot.companion.core.ServerPairingRetryError
 import com.openmausbot.companion.discovery.DiscoveredService
 import com.openmausbot.companion.discovery.DiscoveryState
@@ -140,6 +142,19 @@ fun PairingScreen(onCancel: () -> Unit) {
         if (missing.isNotEmpty()) environment.requestPermissions(missing)
         delay(8_000)
         searchedLongEnough = true
+    }
+
+    // The QR code, a deep link and a typed address reach a LAN or Bonjour
+    // computer without passing the list above, and on Android 17 dialing one
+    // needs the local-network grant — without it the redemption fails as
+    // "Couldn't reach this computer". So it is asked for when the confirmation
+    // for such a computer opens, the first moment the app will dial it. Hosted
+    // and Tailscale computers ask for nothing. Keyed on the computer, not the
+    // handle, so a rebind after a process restart does not ask twice.
+    LaunchedEffect(pending?.connection) {
+        val connection = pending?.connection ?: return@LaunchedEffect
+        val missing = environment.permissions.localRoutePermissions(pairingRoutes(connection))
+        if (missing.isNotEmpty()) environment.requestPermissions(missing)
     }
 
     // The credential goes to the process-scoped store; only the handle is ever
@@ -358,11 +373,21 @@ fun PairingScreen(onCancel: () -> Unit) {
                     onContinue = {
                         haptics.play(HapticCue.SELECT)
                         failure = null
+                        // The whole link a server or the desktop printed
+                        // (https://host/pair#code=…, openmausbot://pair?…) names
+                        // both the address and the credential, so it takes the
+                        // scanner's road: Session vets it and the confirmation
+                        // opens. The field is emptied because it is saved
+                        // instance state, which never holds a credential.
+                        val text = manualAddress.trim()
                         val connection = Connection.parse(manualAddress)
-                        if (connection == null) {
-                            failure = invalidAddressMessage
-                        } else {
-                            openPending(connection, fromScan = false)
+                        when {
+                            PairingInvite.parse(text) != null -> {
+                                manualAddress = ""
+                                session.receivePairingURL(text)
+                            }
+                            connection == null -> failure = invalidAddressMessage
+                            else -> openPending(connection, fromScan = false)
                         }
                     },
                 )
@@ -421,14 +446,36 @@ internal enum class PairingFailureDisposition {
     RESET_TYPED_ATTEMPT,
 }
 
-/** Route ambiguity and retryable server refusals keep the same logical request alive. */
+/**
+ * Route ambiguity, retryable server refusals, and a server that could not be
+ * reached keep the same logical request alive. An address that answered and is
+ * not a server clears the code like any other refusal, as iOS does: the code was
+ * for a different address.
+ */
 internal fun pairingFailureDisposition(
     error: Throwable,
     cameFromScanner: Boolean,
 ): PairingFailureDisposition = when {
-    error is PairingRouteError || error is ServerPairingRetryError -> PairingFailureDisposition.RETAIN_ATTEMPT
+    error is PairingRouteError || error is ServerPairingRetryError ||
+        (error is ServerAddressError && !error.notAServer) ->
+        PairingFailureDisposition.RETAIN_ATTEMPT
     cameFromScanner -> PairingFailureDisposition.DROP_SCANNED_ATTEMPT
     else -> PairingFailureDisposition.RESET_TYPED_ATTEMPT
+}
+
+/**
+ * The routes pairing with [connection] may dial: inside the consent boundary
+ * the invite carries — or the one `Session.pair` sets for a typed or discovered
+ * computer — the ones `pairFirstReachable` probes. A server pairing dials the
+ * first of them.
+ */
+internal fun pairingRoutes(connection: Connection): List<CompanionEndpoint> {
+    val invited = if (connection.allowedRouteKinds == null) {
+        connection.establishingRoutePolicyFromInvite()
+    } else {
+        connection
+    }
+    return invited.automaticEndpoints
 }
 
 @Composable
@@ -578,6 +625,19 @@ private fun CodeSection(
                     ),
                     modifier = Modifier.fillMaxWidth(),
                 )
+                // Twelve symbols that are not a server code almost always hold
+                // a 0, O, 1 or I the server never prints. Say so rather than
+                // leave Connect greyed out without a reason — the hint
+                // `PairingView.swift` shows under the same condition.
+                if (code.length >= 12 && !PairingInvite.isPairingCode(code)) {
+                    Text(
+                        text = stringResource(R.string.mobile_pairing_code_server_symbols_hint),
+                        fontSize = 13.sp,
+                        color = secondaryTint,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
                 Button(
                     onClick = { onSubmit(code) },
                     enabled = PairingInvite.isPairingCode(code) && !pairing,

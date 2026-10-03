@@ -2,6 +2,7 @@ package com.openmausbot.companion.core
 
 import java.io.IOException
 import java.net.ConnectException
+import java.net.UnknownHostException
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
@@ -220,6 +221,57 @@ class PairingClientTest {
         assertTrue(stub.requests.isNotEmpty())
         assertTrue(stub.requests.all { it.url.encodedPath == "/api/health" && it.body == null })
         assertFalse(stub.requests.any { request -> request.bodyText().contains(CREDENTIAL) })
+    }
+
+    @Test
+    fun unresolvableTailnetNameExplainsTailscaleDns() = runBlocking {
+        val stub = PairingStub {
+            StubAction.Failure(
+                UnknownHostException("Unable to resolve host \"mac.tail1234.ts.net\": No address associated with hostname"),
+            )
+        }
+        val connection = Connection(name = "Mac", host = "mac.tail1234.ts.net", port = 8810)
+
+        val error = assertFailsWith<PairingRouteError> {
+            CompanionClient.pairFirstReachable(connection, CREDENTIAL, "Pixel", client = stub.client)
+        }
+
+        val route = "http://mac.tail1234.ts.net:8810"
+        assertEquals(listOf(route), error.attemptedRoutes)
+        assertTrue(
+            generateSequence(error.routeFailures.getValue(route)) { it.cause }.any { it is UnknownHostException },
+            "the route's own failure is kept, not folded into unreachable",
+        )
+        assertEquals(
+            "Couldn't reach this computer through any available route ($route). Keep Phone access " +
+                "turned on in OpenMausBot, then try again. “mac.tail1234.ts.net” didn't resolve. Make " +
+                "sure Tailscale is connected on this phone, and set Private DNS (Settings → Network & " +
+                "internet) to Off or Automatic — a named Private DNS provider can't resolve Tailscale names.",
+            error.message,
+        )
+        assertTrue(stub.pairRequests.isEmpty())
+    }
+
+    @Test
+    fun locallyRefusedSocketAsksForLocalNetworkAccess() = runBlocking {
+        val stub = PairingStub {
+            StubAction.Failure(
+                ConnectException(
+                    "failed to connect to /192.168.1.42 (port 8810) from /:: (port 0): " +
+                        "connect failed: EPERM (Operation not permitted)",
+                ),
+            )
+        }
+        val connection = Connection(name = "Mac", host = "192.168.1.42", port = 8810)
+
+        val error = assertFailsWith<PairingRouteError> {
+            CompanionClient.pairFirstReachable(connection, CREDENTIAL, "Pixel", client = stub.client)
+        }
+
+        val message = assertNotNull(error.message)
+        assertTrue("Allow local network access" in message, message)
+        assertFalse("Tailscale" in message, "a LAN address has nothing to do with Tailscale")
+        assertTrue(stub.pairRequests.isEmpty())
     }
 
     @Test

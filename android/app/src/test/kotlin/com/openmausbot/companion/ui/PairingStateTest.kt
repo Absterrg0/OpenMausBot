@@ -4,6 +4,7 @@ import androidx.compose.runtime.saveable.SaverScope
 import com.openmausbot.companion.core.Connection
 import com.openmausbot.companion.core.PairingInvite
 import com.openmausbot.companion.core.PairingRouteError
+import com.openmausbot.companion.core.ServerAddressError
 import com.openmausbot.companion.discovery.DiscoveredService
 import com.openmausbot.companion.discovery.toConnection
 import kotlin.test.Test
@@ -552,6 +553,34 @@ class PairingFailureDispositionTest {
         assertEquals(
             PairingFailureDisposition.RETAIN_ATTEMPT,
             pairingFailureDisposition(error, cameFromScanner = false),
+        )
+    }
+
+    @Test
+    fun `an unreachable server keeps either kind of attempt for a retry`() {
+        val unreachable = ServerAddressError.unreachable(
+            "https://mini.example",
+            "mini.example",
+            java.io.IOException("Failed to connect"),
+        )
+        for (cameFromScanner in listOf(true, false)) {
+            assertEquals(
+                PairingFailureDisposition.RETAIN_ATTEMPT,
+                pairingFailureDisposition(unreachable, cameFromScanner),
+            )
+        }
+    }
+
+    @Test
+    fun `an address that is not a server clears the code as iOS does`() {
+        val notAServer = ServerAddressError.notAServer("https://mini.example", java.io.IOException("404"))
+        assertEquals(
+            PairingFailureDisposition.DROP_SCANNED_ATTEMPT,
+            pairingFailureDisposition(notAServer, cameFromScanner = true),
+        )
+        assertEquals(
+            PairingFailureDisposition.RESET_TYPED_ATTEMPT,
+            pairingFailureDisposition(notAServer, cameFromScanner = false),
         )
     }
 

@@ -197,7 +197,7 @@
     <string name="mobile_run_b1b39260">Run</string>
     <string name="mobile_run_now_2af00e23">Run now</string>
     <string name="mobile_runs_every_dd679464">Runs every</string>
-    <string name="mobile_discovery_permission_hint">Searching this network needs %1$s, which is still off. The QR code and the address below work without it.</string>
+    <string name="mobile_discovery_permission_hint">Searching this network needs %1$s, which is still off. The QR code and the address below still work, though pairing over this network may ask for local network access.</string>
     <string name="mobile_send_to_bd1c2c33">SEND TO</string>
     <string name="mobile_sharing_f789760c">SHARING</string>
     <string name="mobile_slash_commands_e7bb82f3">SLASH COMMANDS</string>
@@ -763,6 +763,7 @@
     <string name="mobile_until_6_pm">Until 6 PM</string>
     <string name="mobile_until_9_am_tomorrow">Until 9 AM tomorrow</string>
     <string name="mobile_pairing_code_placeholder">6-digit or ABCD-EFGH-JKLM code</string>
+    <string name="mobile_pairing_code_server_symbols_hint">A server\'s code is 12 letters and digits, never 0, O, 1 or I.</string>
     <string name="mobile_threads_list">Threads list</string>
     <string name="mobile_list_density">List density</string>
     <string name="mobile_change_list_density">Change list density</string>

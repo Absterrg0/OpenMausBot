@@ -248,7 +248,11 @@ class Session(
                     redeemPairing(invited, credential, deviceName, pairRequestId)
                 } catch (error: Throwable) {
                     if (error is kotlinx.coroutines.CancellationException) throw error
-                    val routeFailure = error is PairingRouteError || error is ServerPairingRetryError
+                    // Nothing authoritative was heard, or the credential never left the phone:
+                    // the same one stays redeemable.
+                    val routeFailure = error is PairingRouteError ||
+                        error is ServerPairingRetryError ||
+                        error is ServerAddressError
                     if (qr && !routeFailure) burnQrCredential(credential)
                     _actionError.value = if (qr && !routeFailure) qrFailureMessage(error) else error.message
                     throw error
@@ -307,11 +311,11 @@ class Session(
     ): Pair<Connection, String> {
         val serverCode = PairingInvite.normalizedServerCode(credential)
         if (serverCode != null) {
-            val descriptor: ServerEnvironment
-            val paired: ServerPairResponse
-            try {
-                descriptor = CompanionClient(invited, null, httpClient).environment()
-                paired = CompanionClient.pairWithServer(invited, serverCode, deviceName, requestId, httpClient)
+            // Identity first, on the public descriptor: a wrong address then fails as an
+            // address problem rather than a code problem, and the code is never sent.
+            val descriptor = confirmServer(invited)
+            val paired = try {
+                CompanionClient.pairWithServer(invited, serverCode, deviceName, requestId, httpClient)
             } catch (error: java.io.IOException) {
                 if (error is APIError.Status && error.code < 500 && error.code != 429) throw error
                 throw ServerPairingRetryError(error)
@@ -337,6 +341,26 @@ class Session(
             ?: CompanionEndpoint.direct(outcome.connection.host, outcome.connection.port, priority = 10_000)
         stored = winner?.let(stored::promoting) ?: stored.promoting(stored.host)
         return stored to paired.token
+    }
+
+    /**
+     * `GET /.well-known/openmausbot/environment` on a server about to be paired — the port of
+     * `confirmServer(at:)` in `ios/App/Session.swift`.
+     *
+     * Nothing there means this address is not a server. Anything else is passed on with its own
+     * reason: folding it into "could not finish connecting" made a wrong port, a refused
+     * connection, a name that does not resolve and a QR pointing at localhost all read the same.
+     * Either way the code never left the phone, which is what [ServerAddressError] tells the
+     * caller.
+     */
+    private suspend fun confirmServer(connection: Connection): ServerEnvironment = try {
+        CompanionClient(connection, null, httpClient).environment()
+    } catch (error: java.io.IOException) {
+        throw if (error is APIError.Status && error.code == 404) {
+            ServerAddressError.notAServer(connection.displayAddress, error)
+        } else {
+            ServerAddressError.unreachable(connection.displayAddress, connection.host, error)
+        }
     }
 
     suspend fun pair(

@@ -196,7 +196,7 @@
     <string name="mobile_run_b1b39260">运行</string>
     <string name="mobile_run_now_2af00e23">立即运行</string>
     <string name="mobile_runs_every_dd679464">运行频率</string>
-    <string name="mobile_discovery_permission_hint">搜索此网络需要 %1$s 权限，目前尚未激活。你仍可使用 QR Code 和下方地址，不必打开这些权限。</string>
+    <string name="mobile_discovery_permission_hint">搜索此网络需要 %1$s 权限，目前尚未激活。你仍可使用 QR Code 和下方地址，但通过此网络配对时可能会请求本地网络访问权限。</string>
     <string name="mobile_send_to_bd1c2c33">发送至</string>
     <string name="mobile_sharing_f789760c">正在分享</string>
     <string name="mobile_slash_commands_e7bb82f3">斜线指令</string>
@@ -762,6 +762,7 @@
     <string name="mobile_until_6_pm">直到下午 6 点</string>
     <string name="mobile_until_9_am_tomorrow">直到明天上午 9 点</string>
     <string name="mobile_pairing_code_placeholder">6 位数或 ABCD-EFGH-JKLM 代码</string>
+    <string name="mobile_pairing_code_server_symbols_hint">服务器代码由 12 个字母和数字组成，不含 0、O、1 或 I。</string>
     <string name="mobile_threads_list">对话列表</string>
     <string name="mobile_list_density">列表密度</string>
     <string name="mobile_change_list_density">更改列表密度</string>

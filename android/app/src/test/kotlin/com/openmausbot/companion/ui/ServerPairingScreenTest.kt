@@ -98,6 +98,43 @@ class ServerPairingScreenTest {
     }
 
     @Test
+    fun manualAddressAcceptsPastedServerPairingLink() {
+        compose.onNodeWithText("Other ways to connect").performClick()
+        compose.onAllNodes(hasSetTextAction())[0]
+            .performTextInput(server.url("/pair#code=ABCD-EFGH-JKLM").toString())
+        compose.onNodeWithText("Continue").performScrollTo().performClick()
+        compose.waitUntil(5_000) {
+            compose.onAllNodesWithText("Pair with this computer").fetchSemanticsNodes().isNotEmpty()
+        }
+        // The link carried the code, so this is the scanner's confirmation, not a code to type.
+        compose.onNodeWithText(server.url("/").toString().trimEnd('/')).assertIsDisplayed()
+        assertTrue(requests.isEmpty(), "a pasted link must not probe or redeem before confirmation")
+        compose.onNodeWithText("Pair with this computer").performScrollTo().performClick()
+        awaitPairing()
+        val sent = CompanionJson.parseToJsonElement(
+            requests.single { it.path == "/api/auth/pair" }.body.readUtf8(),
+        ).jsonObject
+        assertEquals("ABCDEFGHJKLM", sent["code"]?.jsonPrimitive?.content)
+    }
+
+    @Test
+    fun serverCodeWithLookalikeSymbolsSaysWhyConnectIsDisabled() {
+        val hint = "A server's code is 12 letters and digits, never 0, O, 1 or I."
+        compose.onNodeWithText("Other ways to connect").performClick()
+        compose.onAllNodes(hasSetTextAction())[0].performTextInput(server.url("/").toString().trimEnd('/'))
+        compose.onNodeWithText("Continue").performScrollTo().performClick()
+        val code = compose.onNode(hasSetTextAction())
+        code.performTextInput("abcd-efgh-jkl")
+        compose.onNodeWithText(hint).assertDoesNotExist()
+        code.performTextReplacement("abcd-efgh-jkl0")
+        compose.onNodeWithText("Connect").assertIsNotEnabled()
+        compose.onNodeWithText(hint).assertIsDisplayed()
+        code.performTextReplacement("abcd-efgh-jklm")
+        compose.onNodeWithText(hint).assertDoesNotExist()
+        compose.onNodeWithText("Connect").assertIsEnabled()
+    }
+
+    @Test
     fun temporaryServerFailureRetainsTheScannedCodeAndAttemptIdForRetry() {
         failFirstPair = true
         acceptScan()

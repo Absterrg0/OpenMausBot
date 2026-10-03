@@ -6,6 +6,7 @@ import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import com.openmausbot.companion.permissions.CompanionPermissions
@@ -144,6 +145,45 @@ class PairingDiscoveryTimingTest {
 
         assertEquals(1, scene.discovery.starts.value)
         assertEquals(emptyList(), scene.asked(), "asked again for something already granted")
+    }
+
+    /**
+     * The QR path never opens the list, so it never met the local-network ask
+     * that the list makes — and on Android 17 a LAN computer then failed as
+     * unreachable. The confirmation for one is where it is asked instead.
+     */
+    @Test
+    fun `a LAN invite asks for the local network when its confirmation opens`() {
+        val scene = scene()
+        mount(scene)
+
+        scene.session.receivePairingURL("openmausbot://pair?address=192.168.1.42:8810&code=123456")
+        awaitConfirmation()
+
+        assertEquals(
+            listOf(CompanionPermissions.PERMISSION_ACCESS_LOCAL_NETWORK),
+            scene.asked(),
+            "a LAN computer must ask for the local network before it is dialed, and only for that",
+        )
+        assertEquals(0, scene.discovery.starts.value, "confirming a known address is not a browse")
+    }
+
+    @Test
+    fun `a Tailscale invite asks for nothing`() {
+        val scene = scene()
+        mount(scene)
+
+        scene.session.receivePairingURL("openmausbot://pair?address=mac.tail1234.ts.net:8810&code=123456")
+        awaitConfirmation()
+
+        assertEquals(emptyList(), scene.asked(), "a Tailscale computer is not on the local network")
+    }
+
+    private fun awaitConfirmation() {
+        compose.waitUntil(5_000) {
+            compose.onAllNodesWithText("Pair with this computer").fetchSemanticsNodes().isNotEmpty()
+        }
+        compose.waitForIdle()
     }
 
     @Test

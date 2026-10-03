@@ -1,9 +1,12 @@
 package com.openmausbot.companion.permissions
 
 import android.Manifest
+import com.openmausbot.companion.core.CompanionEndpoint
+import com.openmausbot.companion.core.CompanionEndpointKind
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
 class CompanionPermissionsTest {
@@ -51,6 +54,41 @@ class CompanionPermissionsTest {
     }
 
     @Test
+    fun api37LanRouteAsksForLocalNetworkOnly() {
+        val granted = mutableSetOf<String>()
+        val permissions = CompanionPermissions(sdkInt = 37, granted = { it in granted })
+        val localNetwork = listOf(CompanionPermissions.PERMISSION_ACCESS_LOCAL_NETWORK)
+
+        assertEquals(localNetwork, permissions.localRoutePermissions(listOf(lan)).toList())
+        assertEquals(localNetwork, permissions.localRoutePermissions(listOf(bonjour)).toList())
+        assertEquals(
+            localNetwork,
+            permissions.localRoutePermissions(listOf(hosted, lan)).toList(),
+            "one local route among those the phone will dial is enough to need the grant",
+        )
+        assertFalse(
+            permissions.localRoutePermissions(listOf(lan)).contains(Manifest.permission.NEARBY_WIFI_DEVICES),
+            "dialing a known address is not a browse; nearby devices stays with the list",
+        )
+
+        granted += CompanionPermissions.PERMISSION_ACCESS_LOCAL_NETWORK
+        assertTrue(permissions.localRoutePermissions(listOf(lan)).isEmpty(), "asked again for a grant it has")
+    }
+
+    @Test
+    fun hostedAndTailnetRoutesAskForNothing() {
+        val permissions = CompanionPermissions(sdkInt = 37, granted = { false })
+        assertTrue(permissions.localRoutePermissions(listOf(hosted, tailnet)).isEmpty())
+        assertTrue(permissions.localRoutePermissions(emptyList()).isEmpty())
+    }
+
+    @Test
+    fun api36AsksForNothing() {
+        val permissions = CompanionPermissions(sdkInt = 36, granted = { false })
+        assertTrue(permissions.localRoutePermissions(listOf(lan, bonjour)).isEmpty())
+    }
+
+    @Test
     fun recordAudioIsNeverPartOfTheStartupPrompt() {
         var recordAudioGranted = false
         val permissions = CompanionPermissions(
@@ -65,4 +103,12 @@ class CompanionPermissionsTest {
         recordAudioGranted = true
         assertTrue(permissions.recordAudioGranted())
     }
+
+    private val lan = route("http://192.168.1.42:8810", CompanionEndpointKind.LAN)
+    private val bonjour = route("http://openmausbot-aa.local:8810", CompanionEndpointKind.BONJOUR)
+    private val hosted = route("https://mac.companion.example", CompanionEndpointKind.HOSTED)
+    private val tailnet = route("http://mac.tail1234.ts.net:8810", CompanionEndpointKind.TAILNET)
+
+    private fun route(url: String, kind: CompanionEndpointKind): CompanionEndpoint =
+        assertNotNull(CompanionEndpoint.create(url, kind, priority = 0))
 }

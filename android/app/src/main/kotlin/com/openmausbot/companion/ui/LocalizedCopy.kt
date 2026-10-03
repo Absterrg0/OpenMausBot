@@ -433,7 +433,7 @@ private val localizedCopyResources = mapOf(
     "Search" to R.string.mobile_search_bce06414,
     "Search apps" to R.string.mobile_search_apps_ca3ce8f3,
     "Search threads" to R.string.mobile_search_threads_006299d3,
-    "Searching this network needs %1\$s, which is still off. The QR code and the address below work without it." to R.string.mobile_discovery_permission_hint,
+    "Searching this network needs %1\$s, which is still off. The QR code and the address below still work, though pairing over this network may ask for local network access." to R.string.mobile_discovery_permission_hint,
     "Section name" to R.string.mobile_section_name_75e2b3c1,
     "Secure HTTPS" to R.string.mobile_share_route_secure_https,
     "Select text" to R.string.mobile_select_text_9d49219e,

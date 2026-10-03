@@ -1188,8 +1188,26 @@ private fun SearchHitRow(hit: SearchHit, onClick: () -> Unit) {
 /** Connection state, shown only when it is not "fine". */
 @Composable
 fun StatusBanner() {
-    val session = LocalCompanion.current.session
+    val environment = LocalCompanion.current
+    val session = environment.session
     val status by session.status.collectAsState()
+    val connection by session.connection.collectAsState()
+    // A saved LAN or Bonjour computer that will not connect on Android 17 may be
+    // missing the local-network grant: a pairing made before the phone updated,
+    // or a grant taken back in Settings. Ask here, where the failure is already
+    // on screen, rather than at launch (the root asks for nothing) — and once
+    // per computer, because every retry walks this banner back through
+    // Connecting and would otherwise ask again.
+    val offline = status is Session.Status.Offline
+    var askedForLocalNetwork by rememberSaveable(connection?.id) { mutableStateOf(false) }
+    LaunchedEffect(offline, connection?.id) {
+        val routes = connection?.automaticEndpoints
+        if (!offline || askedForLocalNetwork || routes == null) return@LaunchedEffect
+        val missing = environment.permissions.localRoutePermissions(routes)
+        if (missing.isEmpty()) return@LaunchedEffect
+        askedForLocalNetwork = true
+        environment.requestPermissions(missing)
+    }
     val banner: Pair<String, Color>? = when (val current = status) {
         Session.Status.Live, Session.Status.Unpaired -> null
         Session.Status.Connecting -> stringResource(R.string.mobile_connecting_fd3e7969) to secondaryTint

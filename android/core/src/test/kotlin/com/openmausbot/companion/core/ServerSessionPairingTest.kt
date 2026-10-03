@@ -43,10 +43,44 @@ class ServerSessionPairingTest {
     @Test
     fun failedDescriptorNeverSpendsCodeOrSavesAConnection() = runBlocking<Unit> {
         Fixture { request -> if (request.url.encodedPath.contains("well-known")) 404 to "{}" else null }.use { f ->
-            assertFailsWith<APIError.Status> { f.session.pair(f.invite) }
+            val error = assertFailsWith<ServerAddressError> { f.session.pair(f.invite) }
+            assertEquals(
+                "https://mini.example isn't an OpenMausBot server. Check the address and try again.",
+                error.message,
+            )
             assertNull(f.store.saved)
             assertTrue(f.tokens.values.isEmpty())
             assertEquals(1, f.requests.size)
+        }
+    }
+
+    @Test
+    fun unreachableServerNamesTheAddressAndSendsNoCode() = runBlocking<Unit> {
+        val reachable = java.util.concurrent.atomic.AtomicBoolean(false)
+        Fixture { request ->
+            if (!reachable.get() && request.url.encodedPath.contains("well-known")) {
+                throw IOException("Failed to connect to mini.example/203.0.113.7:443")
+            }
+            null
+        }.use { f ->
+            val error = assertFailsWith<ServerAddressError> { f.session.pair(f.invite, "attempt-unreachable") }
+            assertEquals(
+                "Couldn't reach https://mini.example: Failed to connect to mini.example/203.0.113.7:443.",
+                error.message,
+            )
+            assertTrue(
+                f.requests.none { it.url.encodedPath == "/api/auth/pair" },
+                "the code must not be sent to an address that never answered",
+            )
+            assertNull(f.store.saved)
+            // The code never left the phone, so it is not spent: the same code and attempt
+            // pair once the address answers.
+            reachable.set(true)
+            f.session.pair(f.invite, "attempt-unreachable")
+            assertNotNull(f.store.saved)
+            val post = f.requests.single { it.url.encodedPath == "/api/auth/pair" }
+            val body = CompanionJson.parseToJsonElement(Buffer().also { post.body!!.writeTo(it) }.readUtf8()).jsonObject
+            assertEquals("attempt-unreachable", body["attemptId"]?.jsonPrimitive?.content)
         }
     }
 
