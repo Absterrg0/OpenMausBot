@@ -260,20 +260,3 @@ export function surfacePrompt(
   if (opts.cloudHome) for (const [desktop, cloudHome] of CLOUD_HOME_WORDING) text = text.replace(desktop, cloudHome);
   return text + (opts.note ?? "");
 }
-
-/** Tool names that touch a screen, for engines that report bare names.
- * Mirrors the screen-poller regex in the harness. */
-const SCREEN_TOOL = /^(?:screenshot|click|type_text|press_key|scroll|open_url|wait_for|computer_|browser_)/i;
-
-/** Which surface a completed tool call landed on, or null when it cannot
- * be told apart. The Claude driver namespaces MCP tools by server, which
- * is the only fully reliable signal; a bare name is trusted only when one
- * surface was mounted, because both servers expose `browser_snapshot`. */
-export function surfaceForTool(toolName: string, mounted: MountedSurfaces): Surface | null {
-  if (toolName.startsWith("mcp__browser__")) return mounted.browser ? "browser" : null;
-  if (toolName.startsWith("mcp__computer__")) return mounted.computer;
-  if (!SCREEN_TOOL.test(toolName)) return null;
-  if (mounted.computer && !mounted.browser) return mounted.computer;
-  if (!mounted.computer && mounted.browser && /^browser_/i.test(toolName)) return "browser";
-  return null;
-}

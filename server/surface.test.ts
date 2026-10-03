@@ -10,7 +10,6 @@ import {
   placeFailureMessage,
   placeUnavailable,
   resolveSurface,
-  surfaceForTool,
   surfaceOfComputerKind,
   surfacePrompt,
 } from "./surface.ts";
@@ -190,24 +189,6 @@ describe("surfacePrompt", () => {
     }
     expect(surfacePrompt({ computer: "cloud", browser: true }, { canSelect: true }))
       .toContain("this computer is the user's host, Local VM is an isolated desktop, the cloud computer is remote");
-  });
-});
-
-describe("surfaceForTool", () => {
-  it("trusts the Claude driver's server namespace", () => {
-    expect(surfaceForTool("mcp__browser__browser_snapshot", { computer: "cloud", browser: true })).toBe("browser");
-    expect(surfaceForTool("mcp__computer__browser_snapshot", { computer: "cloud", browser: true })).toBe("cloud");
-    expect(surfaceForTool("mcp__computer__screenshot", { computer: "local", browser: false })).toBe("local");
-    // a namespaced call for something this turn never mounted is noise
-    expect(surfaceForTool("mcp__browser__browser_click", { computer: "cloud", browser: false })).toBeNull();
-  });
-
-  it("only trusts a bare name when one surface was mounted", () => {
-    expect(surfaceForTool("browser_snapshot", { computer: "cloud", browser: true })).toBeNull();
-    expect(surfaceForTool("screenshot", { computer: "vm", browser: false })).toBe("vm");
-    expect(surfaceForTool("browser_navigate", { computer: null, browser: true })).toBe("browser");
-    expect(surfaceForTool("Bash: ls", { computer: "vm", browser: false })).toBeNull();
-    expect(surfaceForTool("Read", { computer: null, browser: true })).toBeNull();
   });
 });
 

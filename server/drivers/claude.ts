@@ -1416,7 +1416,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
         args.push("--disallowedTools", config.disallowedTools.join(","));
       }
       const turnEnvironment = environment();
-      if ((turn.refreshSystemPrompt || turn.guestConfined || turn.toolScope !== undefined) && !cliVersionChecked) {
+      if (!cliVersionChecked) {
         const version = await readCliVersion(turnEnvironment);
         if (version) {
           cliVersion = parseClaudeCliVersion(version);
@@ -1456,12 +1456,12 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
       if (compactWindow && cliHasAutocompact === true) {
         args.push("--autocompact", compactWindow);
       }
-      // An old pair conversation can still carry its first assignment in
-      // Claude's recorded system prompt. The current brief rides in the user
-      // turn, so refresh the recorded prompt on --resume too. Gated by the
-      // version floor like every other flag the CLI may predate: an unknown
-      // flag is a hard argument error, not a graceful degrade.
-      if (turn.refreshSystemPrompt && cliVersionChecked && claudeCliSupports(cliVersion, "--system-prompt-snapshot")) {
+      // A resumed conversation can still carry an earlier assignment, place
+      // or teammate list in Claude's recorded system prompt, so every turn
+      // refreshes the recorded prompt, on --resume too. Gated by the version
+      // floor like every other flag the CLI may predate: an unknown flag is a
+      // hard argument error, not a graceful degrade.
+      if (cliVersionChecked && claudeCliSupports(cliVersion, "--system-prompt-snapshot")) {
         args.push("--system-prompt-snapshot", "off");
       }
       const turnModel = config.managed ? turn.model : await resolveClaudeTurnModel(turn.model, turnEnvironment);
