@@ -119,4 +119,52 @@ class TranscriptPresentationTest {
         assertEquals("Worked for 1m 05s", fold.label)
         assertEquals("Worked", fold.copy(elapsed = 999.0).label)
     }
+
+    /**
+     * At Hidden the phone should read like a chat: while the bot works, its
+     * in-between messages are one grey status line, not a pile of bubbles
+     * (Omkar, 2026-10-03). Port of the iOS tests.
+     */
+    @Test
+    fun hiddenTurnsLiveNarrationIntoOneStatusLine() {
+        val transcript = messages("""
+            [
+              {"id":"old","role":"bot","kind":"text","at":500,"text":"Earlier, unfinished","turnId":"turn-0"},
+              {"id":"user","role":"user","kind":"text","at":1000,"text":"Check this"},
+              {"id":"n1","role":"bot","kind":"text","at":2000,"text":"Let me check the logs","turnId":"turn-1"},
+              {"id":"tool","role":"bot","kind":"activity","at":2500,"tool":{"name":"Bash"},"turnId":"turn-1"},
+              {"id":"n2","role":"bot","kind":"text","at":3000,"text":"Found it, fixing now","turnId":"turn-1"}
+            ]
+        """)
+        val live = liveNarration(transcript, busy = true, detail = ActivityDetail.HIDDEN)
+        assertEquals(setOf("n1", "n2"), live.hiddenIds)
+        assertEquals("Found it, fixing now", live.latest)
+    }
+
+    @Test
+    fun otherLevelsIdleBotsAndFinishedTurnsKeepTheirBubbles() {
+        val running = messages("""
+            [
+              {"id":"user","role":"user","kind":"text","at":1000,"text":"Check this"},
+              {"id":"n1","role":"bot","kind":"text","at":2000,"text":"Let me check","turnId":"turn-1"}
+            ]
+        """)
+        assertEquals(LiveNarration.NONE, liveNarration(running, busy = true, detail = ActivityDetail.FULL))
+        assertEquals(LiveNarration.NONE, liveNarration(running, busy = true, detail = ActivityDetail.REDUCED))
+        // Not working any more but never marked final: nothing hidden, nothing lost.
+        assertEquals(LiveNarration.NONE, liveNarration(running, busy = false, detail = ActivityDetail.HIDDEN))
+        val finished = messages("""
+            [
+              {"id":"user","role":"user","kind":"text","at":1000,"text":"Check this"},
+              {"id":"n1","role":"bot","kind":"text","at":2000,"text":"Let me check","turnId":"turn-1"},
+              {"id":"answer","role":"bot","kind":"text","at":3000,"text":"Done","turnId":"turn-1","turnTerminal":true}
+            ]
+        """)
+        assertEquals(LiveNarration.NONE, liveNarration(finished, busy = true, detail = ActivityDetail.HIDDEN))
+    }
+
+    @Test
+    fun theDefaultActivityOnAPhoneIsHidden() {
+        assertEquals(ActivityDetail.HIDDEN, ActivityDetail.PHONE_DEFAULT)
+    }
 }

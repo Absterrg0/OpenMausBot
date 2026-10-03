@@ -91,6 +91,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalUriHandler
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
@@ -105,6 +106,7 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.openmausbot.companion.R
 import com.openmausbot.companion.audio.MicrophoneAccess
+import com.openmausbot.companion.core.ActivityDetail
 import com.openmausbot.companion.core.AttachmentPolicy
 import com.openmausbot.companion.core.Chat
 import com.openmausbot.companion.core.ChatTarget
@@ -118,6 +120,8 @@ import com.openmausbot.companion.core.DownloadedFile
 import com.openmausbot.companion.core.Message
 import com.openmausbot.companion.core.ThreadRef
 import com.openmausbot.companion.core.TranscriptRow
+import com.openmausbot.companion.core.liveNarration
+import com.openmausbot.companion.core.takeLastCharacters
 import com.openmausbot.companion.core.target
 import com.openmausbot.companion.core.transcriptRows
 import java.util.Locale
@@ -460,8 +464,16 @@ private fun LoadedChat(
     // The source transcript stays intact for approvals, mascot state and
     // pagination. Only the rendered rows fold activity according to the local
     // preference, so changing the choice never mutates server state.
-    val transcript = remember(rawTranscript, activityDetail) {
-        transcriptRows(rawTranscript, activityDetail)
+    // At Hidden, what a working bot has said so far in this turn is left out of
+    // the rows and shown as one grey status line above the composer instead.
+    val live = remember(rawTranscript, activityDetail, chat.busy) {
+        liveNarration(rawTranscript, chat.busy, activityDetail)
+    }
+    val transcript = remember(rawTranscript, activityDetail, live) {
+        transcriptRows(
+            if (live.hiddenIds.isEmpty()) rawTranscript else rawTranscript.filterNot { it.id in live.hiddenIds },
+            activityDetail,
+        )
     }
     var expandedTurns by remember(threadId) { mutableStateOf(emptySet<String>()) }
     var revealedTurnMessageId by remember(threadId) { mutableStateOf<String?>(null) }
@@ -474,6 +486,13 @@ private fun LoadedChat(
     // `ChatView.swift`, and the reason it is a rule rather than three `if`s here.
     val tail = LiveTail.of(streaming = streaming, reasoning = reasoning, busy = chat.busy, detail = activityDetail)
     val liveText = streaming?.takeIf { tail == TranscriptTail.STREAM }
+    // The status line's words: the reply as it streams, else the newest
+    // in-between message. Null unless Hidden and the bot is working.
+    val liveStatus = if (chat.busy && activityDetail == ActivityDetail.HIDDEN) {
+        streaming?.takeIf { it.isNotBlank() }?.takeLastCharacters(240) ?: live.latest
+    } else {
+        null
+    }
     val liveReasoning = reasoning?.takeIf { tail == TranscriptTail.REASONING }
     val hasMore = state.hasMore[threadId] == true
     // What stops the predictive chips from covering the one question on screen
@@ -1085,6 +1104,7 @@ private fun LoadedChat(
                     attachmentError = null
                 },
                 stoppable = chat.canStop,
+                liveStatus = liveStatus,
                 onStop = {
                     haptics.play(HapticCue.SELECT)
                     scope.launch { session.interrupt(chat) }
@@ -1538,6 +1558,34 @@ private val PLUS_SHEET_RADIUS = 28.dp
 /** The + becomes an ×. */
 private const val PLUS_TURN_DEGREES = 45f
 
+/**
+ * What a working bot is saying, at Hidden: one grey line above the composer,
+ * replaced by each new message, instead of a bubble per message. Port of the iOS
+ * `LiveStatusLine`.
+ */
+@Composable
+private fun LiveStatusLine(text: String) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 4.dp)
+            .testTag("live-status-line")
+            .semantics(mergeDescendants = true) { },
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        CircularProgressIndicator(modifier = Modifier.size(12.dp), strokeWidth = 1.5.dp, color = secondaryTint)
+        Text(
+            text = text.replace('\n', ' '),
+            fontSize = 13.sp,
+            color = secondaryTint,
+            maxLines = 1,
+            // The newest words are the ones worth reading, as on iOS.
+            overflow = TextOverflow.StartEllipsis,
+        )
+    }
+}
+
 /** A quiet progress line above the field — `ProgressView` plus a caption on iOS. */
 @Composable
 private fun ComposerStatusLine(text: String) {
@@ -1618,6 +1666,7 @@ private fun Composer(
     onDismissError: () -> Unit,
     stoppable: Boolean,
     onStop: () -> Unit,
+    liveStatus: String? = null,
 ) {
     val canSend = AttachmentImportRules.canSend(draft, attachments.size, preparing, sending)
     val inFlight = preparing || sending
@@ -1634,6 +1683,7 @@ private fun Composer(
             .padding(start = 12.dp, end = 12.dp, top = 6.dp, bottom = 8.dp),
         verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
+        liveStatus?.trim()?.takeIf { it.isNotEmpty() }?.let { LiveStatusLine(it) }
         if (dictationError != null) {
             Text(
                 text = dictationError,

@@ -13,7 +13,7 @@ struct ChatListView: View {
     @EnvironmentObject private var session: Session
     @EnvironmentObject private var liveCall: LiveCallController
     @State private var query = ""
-    @AppStorage(PrefKey.activityDetail) private var activityDetail = ActivityDetail.full.rawValue
+    @AppStorage(PrefKey.activityDetail) private var activityDetail = ActivityDetail.phoneDefault.rawValue
     @AppStorage(PrefKey.rosterDensity) private var rosterDensity = RosterDensity.default.rawValue
     /// Driven so that making a bot can open it. Value-based navigation alone
     /// cannot push without a tap, and a new bot appearing silently at the
@@ -704,7 +704,7 @@ struct ChatListView: View {
     // MARK: - Data
 
     /// The reader's activity level, which the roster preview folds by.
-    private var activity: ActivityDetail { ActivityDetail(rawValue: activityDetail) ?? .full }
+    private var activity: ActivityDetail { ActivityDetail(rawValue: activityDetail) ?? .phoneDefault }
 
     /// How much each row says, from Settings.
     private var density: RosterDensity { RosterDensity(stored: rosterDensity) }

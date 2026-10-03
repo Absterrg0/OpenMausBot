@@ -297,6 +297,14 @@ final class Session: ObservableObject {
                 }
                 focusedMessageId = "progress2"
             }
+            // A turn still running: no reply marked final yet, so its
+            // narration is live (Hidden's status line, 2026-10-03).
+            if arguments.contains("-chat-live-narration-preview"),
+               var messages = state.messages["preview-gmail"],
+               let index = messages.lastIndex(where: { $0.turnTerminal == true }) {
+                messages[index].turnTerminal = nil
+                state.messages["preview-gmail"] = messages
+            }
             if arguments.contains("-chat-compaction-preview"),
                var receipt = state.messages["preview-gmail"]?.last {
                 receipt.id = "preview-compaction"

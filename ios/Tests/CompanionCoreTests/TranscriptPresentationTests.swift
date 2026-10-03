@@ -104,4 +104,55 @@ final class TranscriptPresentationTests: XCTestCase {
         XCTAssertEqual(WebhookMessageContent.parse(noPayload)?.task, "Check this")
         XCTAssertNil(WebhookMessageContent.parse(noPayload)?.payload)
     }
+
+    // MARK: - Live narration at Hidden (Omkar's call, 2026-10-03)
+
+    /// At Hidden the phone should read like a chat: while the bot works, its
+    /// in-between messages are one grey status line, not a pile of bubbles.
+    func testHiddenTurnsLiveNarrationIntoOneStatusLine() throws {
+        let transcript = try messages("""
+        [
+          {"id":"old","role":"bot","kind":"text","at":500,"text":"Earlier, unfinished","turnId":"turn-0"},
+          {"id":"user","role":"user","kind":"text","at":1000,"text":"Check this"},
+          {"id":"n1","role":"bot","kind":"text","at":2000,"text":"Let me check the logs","turnId":"turn-1"},
+          {"id":"tool","role":"bot","kind":"activity","at":2500,"tool":{"name":"Bash"},"turnId":"turn-1"},
+          {"id":"n2","role":"bot","kind":"text","at":3000,"text":"Found it, fixing now","turnId":"turn-1"}
+        ]
+        """)
+        let live = liveNarration(transcript, busy: true, detail: .hidden)
+        XCTAssertEqual(live.hiddenIds, ["n1", "n2"])
+        XCTAssertEqual(live.latest, "Found it, fixing now")
+        // Only the turn answering the latest message: an older unfinished turn stays as it was.
+        XCTAssertFalse(live.hiddenIds.contains("old"))
+    }
+
+    func testOtherLevelsIdleBotsAndFinishedTurnsKeepTheirBubbles() throws {
+        let running = try messages("""
+        [
+          {"id":"user","role":"user","kind":"text","at":1000,"text":"Check this"},
+          {"id":"n1","role":"bot","kind":"text","at":2000,"text":"Let me check","turnId":"turn-1"}
+        ]
+        """)
+        XCTAssertEqual(liveNarration(running, busy: true, detail: .full), .none)
+        XCTAssertEqual(liveNarration(running, busy: true, detail: .reduced), .none)
+        // Not working any more, but never marked final (an older desktop, a
+        // crash): nothing is hidden, so nothing it said is lost.
+        XCTAssertEqual(liveNarration(running, busy: false, detail: .hidden), .none)
+
+        let finished = try messages("""
+        [
+          {"id":"user","role":"user","kind":"text","at":1000,"text":"Check this"},
+          {"id":"n1","role":"bot","kind":"text","at":2000,"text":"Let me check","turnId":"turn-1"},
+          {"id":"answer","role":"bot","kind":"text","at":3000,"text":"Done","turnId":"turn-1","turnTerminal":true}
+        ]
+        """)
+        // The turn is settled even if the busy flag lags: the fold owns it.
+        XCTAssertEqual(liveNarration(finished, busy: true, detail: .hidden), .none)
+    }
+
+    func testTheDefaultActivityOnAPhoneIsHidden() {
+        // The phone should feel like a normal chat (Omkar, 2026-10-03); the
+        // desktop likewise hides tool calls until they are turned on.
+        XCTAssertEqual(ActivityDetail.phoneDefault, .hidden)
+    }
 }

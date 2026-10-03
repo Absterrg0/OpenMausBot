@@ -15,6 +15,11 @@ public enum ActivityDetail: String, CaseIterable, Codable, Sendable {
     /// No activity chips at all.
     case hidden
 
+    /// What a phone starts with until the reader chooses: the phone should
+    /// read like a normal chat (Omkar, 2026-10-03), and the desktop likewise
+    /// hides tool calls until they are switched on. A stored choice wins.
+    public static let phoneDefault: ActivityDetail = .hidden
+
     public var label: String {
         switch self {
         case .full: "Full"
@@ -229,6 +234,36 @@ public func isActivityReceipt(_ message: Message) -> Bool {
     case .activity, .digest, .compaction: return true
     default: return false
     }
+}
+
+/// The messages a bot has written so far in the turn it is still working on,
+/// before any of them is known to be its answer.
+public struct LiveNarration: Equatable, Sendable {
+    /// Rows the transcript leaves out while the turn runs.
+    public let hiddenIds: Set<String>
+    /// The newest of them: the one grey status line shown instead.
+    public let latest: String?
+
+    public static let none = LiveNarration(hiddenIds: [], latest: nil)
+}
+
+/// At Hidden, a working bot's in-between messages ("Let me check the logs")
+/// are one grey status line rather than a pile of bubbles (Omkar, 2026-10-03).
+///
+/// Only the turn answering the latest message, only while the bot works, and
+/// only until the server marks the turn's final reply: then the turn folds
+/// into its "Worked for" row as at every other level. A turn that ends
+/// without that mark (an older desktop, a crash) is no longer busy, so its
+/// messages show as bubbles and nothing it said is lost.
+public func liveNarration(_ messages: [Message], busy: Bool, detail: ActivityDetail) -> LiveNarration {
+    guard busy, detail == .hidden else { return .none }
+    let lastUser = messages.lastIndex { $0.role == .user }
+    let recent = messages[(lastUser.map { $0 + 1 } ?? 0)...]
+    let said = recent.filter { $0.role == .bot && $0.kind == .text && !($0.turnId ?? "").isEmpty }
+    guard let turn = said.last?.turnId else { return .none }
+    let narration = said.filter { $0.turnId == turn }
+    guard !narration.contains(where: { $0.turnTerminal == true }) else { return .none }
+    return LiveNarration(hiddenIds: Set(narration.map(\.id)), latest: narration.last?.text)
 }
 
 /// Folds a transcript to the requested level of detail.

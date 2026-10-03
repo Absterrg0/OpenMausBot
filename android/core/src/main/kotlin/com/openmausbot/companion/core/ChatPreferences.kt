@@ -13,8 +13,15 @@ enum class ActivityDetail(val wireValue: String, val label: String, val caption:
     ;
 
     companion object {
+        /**
+         * What a phone starts with until the reader chooses: the phone should read
+         * like a normal chat (Omkar, 2026-10-03), and the desktop likewise hides
+         * tool calls until they are switched on. A stored choice wins.
+         */
+        val PHONE_DEFAULT: ActivityDetail = HIDDEN
+
         fun fromWire(value: String?): ActivityDetail =
-            entries.firstOrNull { it.wireValue == value } ?: FULL
+            entries.firstOrNull { it.wireValue == value } ?: PHONE_DEFAULT
     }
 }
 
@@ -186,6 +193,39 @@ val ToolActivity.label: String get() = failedTurnCause(name) ?: name
 fun isActivityReceipt(message: Message): Boolean = when (message.kind) {
     Message.Kind.ACTIVITY, Message.Kind.DIGEST, Message.Kind.COMPACTION -> true
     else -> false
+}
+
+/** The messages a bot has written so far in the turn it is still working on. Port of iOS `LiveNarration`. */
+data class LiveNarration(
+    /** Rows the transcript leaves out while the turn runs. */
+    val hiddenIds: Set<String>,
+    /** The newest of them: the one grey status line shown instead. */
+    val latest: String?,
+) {
+    companion object {
+        val NONE = LiveNarration(emptySet(), null)
+    }
+}
+
+/**
+ * At Hidden, a working bot's in-between messages ("Let me check the logs") are
+ * one grey status line rather than a pile of bubbles (Omkar, 2026-10-03).
+ *
+ * Only the turn answering the latest message, only while the bot works, and only
+ * until the server marks the turn's final reply: then the turn folds into its
+ * "Worked for" row as at every other level. A turn that ends without that mark (an
+ * older desktop, a crash) is no longer busy, so its messages show as bubbles and
+ * nothing it said is lost.
+ */
+fun liveNarration(messages: List<Message>, busy: Boolean, detail: ActivityDetail): LiveNarration {
+    if (!busy || detail != ActivityDetail.HIDDEN) return LiveNarration.NONE
+    val lastUser = messages.indexOfLast { it.role == Message.Role.USER }
+    val said = messages.drop(lastUser + 1)
+        .filter { it.role == Message.Role.BOT && it.kind == Message.Kind.TEXT && !it.turnId.isNullOrEmpty() }
+    val turn = said.lastOrNull()?.turnId ?: return LiveNarration.NONE
+    val narration = said.filter { it.turnId == turn }
+    if (narration.any { it.turnTerminal == true }) return LiveNarration.NONE
+    return LiveNarration(narration.map { it.id }.toSet(), narration.lastOrNull()?.text)
 }
 
 /**

@@ -62,6 +62,27 @@ final class TranscriptPresentationUITests: XCTestCase {
         screenshot("Webhook payload expanded on demand", in: app)
     }
 
+    /// At Hidden a working bot's in-between messages are one grey status
+    /// line above the composer, not bubbles (Omkar, 2026-10-03).
+    @MainActor
+    func testHiddenShowsLiveNarrationAsOneStatusLine() {
+        let app = launchPreview(detail: "hidden", live: true)
+        let line = app.descendants(matching: .any)["live-status-line"]
+        XCTAssertTrue(line.waitForExistence(timeout: 5))
+        XCTAssertTrue(line.label.contains("The build failed because a dependency is missing."), line.label)
+        XCTAssertFalse(contains("Let me inspect", in: app))
+        XCTAssertFalse(app.buttons["assistant-turn.preview-turn"].exists, "nothing folds before the turn ends")
+        screenshot("Hidden: live narration as one status line", in: app)
+    }
+
+    @MainActor
+    func testFullKeepsLiveNarrationAsBubbles() {
+        let app = launchPreview(detail: "full", live: true)
+        XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "Let me inspect the build logs.")).firstMatch.waitForExistence(timeout: 5))
+        XCTAssertFalse(app.descendants(matching: .any)["live-status-line"].exists)
+        screenshot("Full: live narration stays as bubbles", in: app)
+    }
+
     @MainActor
     func testHiddenSuppressesLiveReasoning() {
         let app = launchPreview(detail: "hidden", reasoning: true)
@@ -78,7 +99,7 @@ final class TranscriptPresentationUITests: XCTestCase {
     }
 
     @MainActor
-    private func launchPreview(detail: String, reasoning: Bool = false, focused: Bool = false, receipts: Bool = false, update: Bool = false) -> XCUIApplication {
+    private func launchPreview(detail: String, reasoning: Bool = false, focused: Bool = false, receipts: Bool = false, update: Bool = false, live: Bool = false) -> XCUIApplication {
         continueAfterFailure = false
         let app = XCUIApplication()
         app.launchArguments = [
@@ -97,6 +118,7 @@ final class TranscriptPresentationUITests: XCTestCase {
         if focused { app.launchArguments.append("-chat-focus-preview") }
         if receipts { app.launchArguments.append("-chat-compaction-preview") }
         if update { app.launchArguments.append("-chat-update-preview") }
+        if live { app.launchArguments.append("-chat-live-narration-preview") }
         app.launch()
         let threads = app.buttons["threads-toggle.preview-pepper"]
         XCTAssertTrue(threads.waitForExistence(timeout: 10))

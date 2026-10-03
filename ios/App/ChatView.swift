@@ -75,7 +75,7 @@ struct ChatView: View {
 
     @AppStorage(PrefKey.islandIntro) private var islandIntro = IslandIntro.oncePerBot.rawValue
     @AppStorage(PrefKey.islandSeen) private var islandSeen = ""
-    @AppStorage(PrefKey.activityDetail) private var activityDetail = ActivityDetail.full.rawValue
+    @AppStorage(PrefKey.activityDetail) private var activityDetail = ActivityDetail.phoneDefault.rawValue
     @AppStorage(PrefKey.quickReplies) private var quickReplies = ""
 
     init(chat: Chat) {
@@ -135,8 +135,26 @@ struct ChatView: View {
 
     /// The transcript as the reader has asked to see it: every chip, folded
     /// runs, or none at all.
+    private var detail: ActivityDetail { ActivityDetail(rawValue: activityDetail) ?? .phoneDefault }
+
+    /// At Hidden, what a working bot has said so far in this turn: left out of
+    /// the transcript and shown as one grey status line above the composer.
+    private var live: LiveNarration { liveNarration(messages, busy: current.busy, detail: detail) }
+
     private var rows: [TranscriptRow] {
-        transcriptRows(messages, detail: ActivityDetail(rawValue: activityDetail) ?? .full)
+        let live = live
+        let shown = live.hiddenIds.isEmpty ? messages : messages.filter { !live.hiddenIds.contains($0.id) }
+        return transcriptRows(shown, detail: detail)
+    }
+
+    /// The status line's words: the reply as it streams, else the newest
+    /// in-between message. Nil unless Hidden and the bot is working.
+    private var liveStatusLine: String? {
+        guard current.busy, detail == .hidden else { return nil }
+        if let streaming = session.state.streaming[threadId], !streaming.isEmpty {
+            return String(streaming.suffix(240))
+        }
+        return live.latest
     }
 
     /// The composer's chip row, as edited in Settings.
@@ -235,7 +253,9 @@ struct ChatView: View {
                         // one arrives — the store clears it on the same frame
                         // that appends the message, so there is never a beat
                         // where both are on screen.
-                        if current.busy, let live = session.state.streaming[threadId], !live.isEmpty {
+                        // At Hidden the words go to the status line above the
+                        // composer; the transcript keeps the typing dots.
+                        if current.busy, detail != .hidden, let live = session.state.streaming[threadId], !live.isEmpty {
                             StreamingBubble(text: live, reasoning: nil, color: current.color)
                                 .id(Self.liveBubbleId)
                         } else if current.busy, activityDetail != ActivityDetail.hidden.rawValue,
@@ -1298,6 +1318,10 @@ struct ChatView: View {
     /// A round + and a glass pill with dictation and send inside it.
     private var composer: some View {
         VStack(spacing: 6) {
+            if let line = liveStatusLine?.trimmingCharacters(in: .whitespacesAndNewlines), !line.isEmpty {
+                LiveStatusLine(text: line)
+                    .transition(.opacity)
+            }
             if !heldSends.isEmpty {
                 QueuedSendList(sends: heldSends, steer: steerQueued, steering: steering, edit: editQueued) { send in
                     Task { await session.cancelQueued(send, threadId: threadId, in: current) }
@@ -2685,6 +2709,29 @@ struct StreamingBubble: View {
         // No `.textSelection` on purpose: selecting text that is still growing
         // fights the reader, and the settled bubble a frame later is
         // selectable anyway.
+    }
+}
+
+/// What a working bot is saying, at Hidden: one grey line above the composer,
+/// replaced by each new message, instead of a bubble per message.
+private struct LiveStatusLine: View {
+    let text: String
+
+    var body: some View {
+        HStack(spacing: 8) {
+            ProgressView()
+                .controlSize(.mini)
+            Text(verbatim: text.replacingOccurrences(of: "\n", with: " "))
+                .font(.system(size: 13))
+                .foregroundStyle(Color.secondary)
+                .lineLimit(1)
+                .truncationMode(.head)
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 8)
+        .animation(.easeOut(duration: 0.15), value: text)
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("live-status-line")
     }
 }
 

@@ -182,6 +182,8 @@ class ChatPreferencesTest {
 
     @Test
     fun unknownActivityDetailUsesIosDefault() {
-        assertEquals(ActivityDetail.FULL, ActivityDetail.fromWire("unknown"))
+        // The phone reads like a normal chat until the reader chooses (2026-10-03).
+        assertEquals(ActivityDetail.HIDDEN, ActivityDetail.fromWire("unknown"))
+        assertEquals(ActivityDetail.HIDDEN, ActivityDetail.fromWire(null))
     }
 }

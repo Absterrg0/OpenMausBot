@@ -26,7 +26,7 @@ extension ActivityDetail {
     /// cannot hold an `@AppStorage` of its own: Live Activities, the widget
     /// writer and Walkie read the same line the Updates pill does.
     static var stored: ActivityDetail {
-        ActivityDetail(rawValue: UserDefaults.standard.string(forKey: PrefKey.activityDetail) ?? "") ?? .full
+        ActivityDetail(rawValue: UserDefaults.standard.string(forKey: PrefKey.activityDetail) ?? "") ?? .phoneDefault
     }
 }
 

@@ -28,7 +28,9 @@ import kotlin.test.assertTrue
 class LiveTailTest {
     @Test
     fun `hidden reasoning keeps answer tokens and otherwise falls back to busy state`() {
-        assertEquals(TranscriptTail.STREAM, LiveTail.of("Answer", "Thinking", true, ActivityDetail.HIDDEN))
+        // At Hidden the streaming words go to the status line; the transcript keeps the dots.
+        assertEquals(TranscriptTail.WORKING, LiveTail.of("Answer", "Thinking", true, ActivityDetail.HIDDEN))
+        assertEquals(TranscriptTail.STREAM, LiveTail.of("Answer", "Thinking", false, ActivityDetail.HIDDEN))
         assertEquals(TranscriptTail.WORKING, LiveTail.of(null, "Thinking", true, ActivityDetail.HIDDEN))
         assertEquals(TranscriptTail.NONE, LiveTail.of(null, "Thinking", false, ActivityDetail.HIDDEN))
     }

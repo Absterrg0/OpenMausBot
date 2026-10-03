@@ -50,7 +50,9 @@ object LiveTail {
         streaming: String?, reasoning: String?, busy: Boolean,
         detail: ActivityDetail = ActivityDetail.FULL,
     ): TranscriptTail = when {
-        !streaming.isNullOrEmpty() -> TranscriptTail.STREAM
+        // At Hidden a working bot's words go to the status line above the
+        // composer; the transcript keeps the dots.
+        !streaming.isNullOrEmpty() && !(busy && detail == ActivityDetail.HIDDEN) -> TranscriptTail.STREAM
         detail != ActivityDetail.HIDDEN && !reasoning.isNullOrEmpty() -> TranscriptTail.REASONING
         busy -> TranscriptTail.WORKING
         else -> TranscriptTail.NONE
