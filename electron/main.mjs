@@ -937,6 +937,9 @@ function ensureCompanionAccountService() {
     // Retry capacity/transient setup failures with backoff, and re-provision a
     // reclaimed endpoint behind the same address without a new sign-in.
     autoRecover: true,
+    // The failure code and support reference reach server.log, and with it
+    // the bug-report bundle.
+    log: (line) => slog(line),
   });
   return companionAccountService;
 }

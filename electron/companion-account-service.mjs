@@ -249,6 +249,11 @@ export function createCompanionAccountService({
   autoRetryMaxMs = DEFAULT_AUTO_RETRY_MAX_MS,
   endpointCheckIntervalMs = DEFAULT_ENDPOINT_CHECK_INTERVAL_MS,
   firstEndpointCheckMs = DEFAULT_FIRST_ENDPOINT_CHECK_MS,
+  // One line per failed setup step, for server.log and the bug-report bundle.
+  // The phase message is replaced by every retry, so without this a support
+  // reference shown once is gone. Only the code, HTTP status, request id and
+  // retry delay are written: never an email, token, credential or address.
+  log = () => {},
 } = {}) {
   const configured = Boolean(client);
   let healthy = false;
@@ -301,6 +306,7 @@ export function createCompanionAccountService({
     const jittered = Math.round(backoff * (0.8 + 0.4 * random()));
     const delay = Math.min(autoRetryMaxMs, Math.max(jittered, error.retryAfterMs ?? 0));
     autoRetryAttempt += 1;
+    writeLog(`companion account: retrying ${error.code} in ${Math.round(delay / 1_000)}s (attempt ${autoRetryAttempt})`);
     autoRetryTimer = setTimer(() => {
       autoRetryTimer = null;
       void retryFromTimer().catch(() => {});
@@ -565,11 +571,24 @@ export function createCompanionAccountService({
     return settledState();
   };
 
+  const writeLog = (line) => {
+    try {
+      log(line);
+    } catch {
+      // Logging never changes the outcome of a setup step.
+    }
+  };
+
   const failAction = (
     error,
     { email, expiredSessionIsSignedOut = false, signedOut = false } = {},
   ) => {
     const message = friendlyCompanionAccountError(error);
+    writeLog(
+      error instanceof ControlPlaneError
+        ? `companion account: setup failed code=${error.code} status=${error.status || "none"} ref=${error.requestId || "none"}`
+        : "companion account: setup failed on this computer (not a control-plane answer)",
+    );
     phase = {
       status:
         signedOut ||

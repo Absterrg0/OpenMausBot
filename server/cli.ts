@@ -867,7 +867,7 @@ async function planTunnel(options: CliOptions, log: (line: string) => void, reco
       return { error: `--tunnel: ${message(error)}` };
     }
   } else {
-    account = createTunnelAccount({ dataDir: options.dataDir, version: serverVersion(), recovery });
+    account = createTunnelAccount({ dataDir: options.dataDir, version: serverVersion(), recovery, log: (line) => log(`tunnel: ${line}`) });
     if (account.credentials.status === "unavailable") return fail(`${account.credentials.file} exists but could not be read; fix or remove it`);
     if (!describeTunnelAccount(account.credentials.read()).email) {
       return fail("no account on this machine yet: run `openmausbot login` first, then `openmausbot serve --tunnel`");

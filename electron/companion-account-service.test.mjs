@@ -901,6 +901,58 @@ describe("Companion account background recovery", () => {
     await expect(service.state()).resolves.toMatchObject({ status: "ready", endpoint: ENDPOINT });
   });
 
+  it("logs each failed setup step with its code and support reference, and nothing secret", async () => {
+    const requestId = "55555555-5555-4555-8555-555555555555";
+    const timers = manualTimers();
+    const log = vi.fn();
+    const client = readyClient({
+      ensureEndpoint: vi.fn(async () => {
+        throw new ControlPlaneError("endpoint_unavailable", 502, requestId);
+      }),
+    });
+    const { service } = serviceFixture({
+      client,
+      log,
+      autoRecover: true,
+      autoRetryBaseMs: 1_000,
+      autoRetryMaxMs: 1_000_000,
+      random: () => 0.5,
+      setTimer: timers.setTimer,
+      clearTimer: timers.clearTimer,
+    });
+
+    await service.verifyCode("ada@example.com", "12345678");
+
+    // The reference shown once in the panel is replaced by the next retry;
+    // the log is where support can still find it.
+    const lines = log.mock.calls.map(([line]) => line);
+    expect(lines).toEqual([
+      `companion account: setup failed code=endpoint_unavailable status=502 ref=${requestId}`,
+      "companion account: retrying endpoint_unavailable in 1s (attempt 1)",
+    ]);
+    for (const secret of [ACCOUNT_TOKEN, CONNECTOR_TOKEN, INSTALLATION_ID, INSTALLATION_CREDENTIAL, ENDPOINT, "ada@example.com"]) {
+      expect(lines.join("\n")).not.toContain(secret);
+    }
+  });
+
+  it("finishes a setup step the same way when the log cannot be written", async () => {
+    const client = readyClient({
+      ensureEndpoint: vi.fn(async () => {
+        throw new ControlPlaneError("endpoint_unavailable", 502);
+      }),
+    });
+    const { service } = serviceFixture({
+      client,
+      log: () => {
+        throw new Error("disk full");
+      },
+    });
+
+    await expect(service.verifyCode("ada@example.com", "12345678")).resolves.toMatchObject({
+      status: "error",
+    });
+  });
+
   it("does not retry on its own without autoRecover or for failures that need the user", async () => {
     for (const [autoRecover, error] of [
       [false, new ControlPlaneError("endpoint_capacity", 503, "", 600_000)],
