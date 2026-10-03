@@ -109,6 +109,9 @@
     <string name="mobile_expand_9869e506">展開</string>
     <string name="mobile_expanded_6d170474">已展開</string>
     <string name="mobile_file_b4915d3a">檔案</string>
+    <string name="mobile_file_video">影片</string>
+    <string name="mobile_file_audio">音訊</string>
+    <string name="mobile_tap_to_play">點一下以播放</string>
     <string name="mobile_for_example_summarize_this_and_lis_12b3d099">例如：整理摘要並列出後續步驟</string>
     <string name="mobile_from_5_minutes_to_24_hours_a6bafa40">從 5 分鐘到 24 小時</string>
     <string name="mobile_group_name_optional_0fd3a15c">群組名稱（選填）</string>

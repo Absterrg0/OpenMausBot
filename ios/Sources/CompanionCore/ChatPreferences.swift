@@ -180,7 +180,11 @@ public func rosterPreview(_ messages: [Message], detail: ActivityDetail) -> Stri
 /// What a single message reads as in a roster row.
 func previewText(of message: Message) -> String {
     switch message.kind {
-    case .text: return message.webhookContent?.task ?? message.text ?? ""
+    case .text:
+        if let task = message.webhookContent?.task { return task }
+        if let text = message.text, !text.isEmpty { return text }
+        // A bot that only sent a file says so by its name.
+        return message.attachedFiles.first?.name ?? ""
     // a pending card's question is the preview; the roster row already
     // says "waiting on you" beside it
     case .options:

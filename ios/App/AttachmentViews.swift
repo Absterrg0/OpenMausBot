@@ -234,10 +234,18 @@ struct TranscriptAttachmentView: View {
         .accessibilityHint(thumbnail == nil ? "Loads the image preview" : "Opens the image full screen")
     }
 
+    private var fileSymbol: String {
+        switch attachment.fileFamily {
+        case .video: "play.rectangle.fill"
+        case .audio: "waveform"
+        case .document: "doc.fill"
+        }
+    }
+
     private var fileCard: some View {
         Button(action: openPreview) {
             HStack(spacing: 10) {
-                Image(systemName: "doc.fill")
+                Image(systemName: fileSymbol)
                     .font(.system(size: 16, weight: .medium))
                     .foregroundStyle(foreground)
                     .frame(width: 38, height: 38)
@@ -248,7 +256,7 @@ struct TranscriptAttachmentView: View {
                     Text(attachment.name)
                         .font(.system(size: 13, weight: .semibold))
                         .lineLimit(1)
-                    Text(previewLoading ? "Opening…" : "Tap to preview")
+                    Text(previewLoading ? "Opening…" : attachment.fileFamily == .document ? "Tap to preview" : "Tap to play")
                         .font(.system(size: 11))
                         .foregroundStyle(foreground.opacity(0.68))
                 }

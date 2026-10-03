@@ -110,6 +110,9 @@
     <string name="mobile_expand_9869e506">Expand</string>
     <string name="mobile_expanded_6d170474">Expanded</string>
     <string name="mobile_file_b4915d3a">FILE</string>
+    <string name="mobile_file_video">VIDEO</string>
+    <string name="mobile_file_audio">AUDIO</string>
+    <string name="mobile_tap_to_play">Tap to play</string>
     <string name="mobile_for_example_summarize_this_and_lis_12b3d099">For example: summarize this and list the next steps</string>
     <string name="mobile_from_5_minutes_to_24_hours_a6bafa40">From 5 minutes to 24 hours</string>
     <string name="mobile_group_name_optional_0fd3a15c">Group name (optional)</string>

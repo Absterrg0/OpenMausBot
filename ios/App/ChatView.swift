@@ -1883,6 +1883,14 @@ struct TextBubble: View {
                         messageId: message.id, foreground: mine ? BubbleColor.mineText : .primary
                     )
                 }
+                // Documents, audio and video a bot sent with attach_file. The
+                // card opens the full-screen viewer, which plays video.
+                ForEach(message.attachedFiles, id: \.path) { attachment in
+                    TranscriptAttachmentView(
+                        attachment: attachment, threadId: chat.threadId,
+                        messageId: message.id, foreground: mine ? BubbleColor.mineText : .primary
+                    )
+                }
                 // Bots get markdown, you do not — the same split the desktop
                 // makes. Markdown you did not intend is worse than markdown
                 // you did: a message about `**` should show the asterisks.

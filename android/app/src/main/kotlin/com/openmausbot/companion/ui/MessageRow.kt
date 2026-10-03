@@ -89,6 +89,7 @@ import androidx.compose.ui.unit.sp
 import com.openmausbot.companion.audio.VoiceNoteController
 import com.openmausbot.companion.core.Chat
 import com.openmausbot.companion.core.AttachedMessageContent
+import com.openmausbot.companion.core.attachedFiles
 import com.openmausbot.companion.core.generatedImages
 import com.openmausbot.companion.core.voiceNotes
 import com.openmausbot.companion.core.DisplayedMessageAttachment
@@ -546,6 +547,14 @@ private fun TextBubble(
             message.generatedImages.forEach { attachment ->
                 SharedAttachmentView(threadId, message, attachment, openAttachment)
             }
+            // Documents, audio and video a bot sent with attach_file (MOCA-155).
+            // The card opens the file sheet; Open hands video to the player.
+            message.attachedFiles.forEach { attachment ->
+                SharedAttachmentView(
+                    threadId, message, attachment, openAttachment,
+                    foreground = if (mine) BubbleColor.mineText else MaterialTheme.colorScheme.onSurface,
+                )
+            }
             // Bots get markdown, you do not — the same split the desktop makes.
             // Markdown you did not intend is worse than markdown you did: a
             // message about `**` should show the asterisks.
@@ -597,16 +606,19 @@ private fun SharedAttachmentView(
     message: Message,
     attachment: DisplayedMessageAttachment,
     onOpen: ((DisplayedMessageAttachment, Message, DownloadedFile?) -> Unit)?,
+    /** Your own bubble is blue with white text; a bot's file sits on the theme surface. */
+    foreground: Color = BubbleColor.mineText,
 ) {
     if (attachment.kind == DisplayedMessageAttachment.Kind.IMAGE) {
         SharedImageAttachment(threadId, message, attachment, onOpen)
         return
     }
+    val family = attachment.fileFamily
     Row(
         modifier = Modifier
             .widthIn(max = 360.dp)
             .clip(RoundedCornerShape(16.dp))
-            .background(BubbleColor.mineText.copy(alpha = 0.10f))
+            .background(foreground.copy(alpha = 0.10f))
             .clickable(enabled = onOpen != null, role = Role.Button) {
                 onOpen?.invoke(attachment, message, null)
             }
@@ -617,17 +629,27 @@ private fun SharedAttachmentView(
         horizontalArrangement = Arrangement.spacedBy(10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Text(stringResource(R.string.mobile_file_b4915d3a), fontSize = 11.sp, fontWeight = FontWeight.Bold, color = BubbleColor.mineText.copy(alpha = 0.68f))
+        val label = when (family) {
+            DisplayedMessageAttachment.FileFamily.VIDEO -> R.string.mobile_file_video
+            DisplayedMessageAttachment.FileFamily.AUDIO -> R.string.mobile_file_audio
+            DisplayedMessageAttachment.FileFamily.DOCUMENT -> R.string.mobile_file_b4915d3a
+        }
+        val hint = if (family == DisplayedMessageAttachment.FileFamily.DOCUMENT) {
+            R.string.mobile_tap_to_preview_fa5ce0ea
+        } else {
+            R.string.mobile_tap_to_play
+        }
+        Text(stringResource(label), fontSize = 11.sp, fontWeight = FontWeight.Bold, color = foreground.copy(alpha = 0.68f))
         Column(modifier = Modifier.weight(1f)) {
             Text(
                 attachment.name,
                 fontSize = 14.sp,
                 fontWeight = FontWeight.Medium,
-                color = BubbleColor.mineText,
+                color = foreground,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
-            Text(stringResource(R.string.mobile_tap_to_preview_fa5ce0ea), fontSize = 12.sp, color = BubbleColor.mineText.copy(alpha = 0.68f))
+            Text(stringResource(hint), fontSize = 12.sp, color = foreground.copy(alpha = 0.68f))
         }
     }
 }

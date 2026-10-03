@@ -21,6 +21,22 @@ public struct DisplayedMessageAttachment: Hashable, Sendable {
         self.path = path
         self.name = name
     }
+
+    /// What a file card promises: video and audio play in the viewer, the
+    /// rest preview. Read from the extension, the same signal the server
+    /// uses to pick the file's type (mimeFor in server/message-file.ts).
+    public enum FileFamily: Sendable {
+        case video, audio, document
+    }
+
+    public var fileFamily: FileFamily {
+        let ext = (name as NSString).pathExtension.lowercased()
+        switch ext {
+        case "mp4", "mov", "m4v", "webm": return .video
+        case "mp3", "m4a", "wav", "aac", "ogg", "oga", "opus", "flac": return .audio
+        default: return .document
+        }
+    }
 }
 
 public struct AttachedMessageContent: Hashable, Sendable {
@@ -294,6 +310,23 @@ public struct AttachedMessageContent: Hashable, Sendable {
 }
 
 extension Message {
+    /// Files a bot sent with attach_file — documents, audio and video — in wire
+    /// order and deduplicated like generatedImages. Before these rendered, a
+    /// file-only reply was an empty bubble on the phone (MOCA-155). Paths are
+    /// server metadata, passed unchanged to the message-scoped file route.
+    public var attachedFiles: [DisplayedMessageAttachment] {
+        var seen = Set<String>()
+        return (attachments ?? []).compactMap { attachment in
+            guard attachment.kind == "file", let path = attachment.path,
+                  !path.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                  seen.insert(path).inserted else { return nil }
+            return DisplayedMessageAttachment(
+                kind: .file, path: path,
+                name: AttachedMessageContent.displayName(providedName: attachment.name, path: path, kind: .file)
+            )
+        }
+    }
+
     /// Paths are server metadata, passed unchanged to the message-scoped file route.
     public var generatedImages: [DisplayedMessageAttachment] {
         var seen = Set<String>()

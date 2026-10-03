@@ -137,7 +137,10 @@ fun rosterPreview(messages: List<Message>, detail: ActivityDetail): String =
 
 /** What a single message reads as in a roster row. */
 internal fun previewText(message: Message): String = when (message.kind) {
-    Message.Kind.TEXT -> message.webhookContent?.task ?: message.text.orEmpty()
+    Message.Kind.TEXT -> message.webhookContent?.task
+        ?: message.text?.takeIf { it.isNotEmpty() }
+        // A bot that only sent a file says so by its name.
+        ?: message.attachedFiles.firstOrNull()?.name.orEmpty()
     // a pending card's question is the preview; the roster row already says
     // "waiting on you" beside it
     Message.Kind.OPTIONS -> {

@@ -1708,13 +1708,19 @@ public struct ServerEnvironment: Codable, Hashable, Sendable {
     public var version: String?
 }
 
-/// Keep future attachment kinds decodable; image entries display inline and
-/// audio entries render as voice notes (Message.voiceNotes). Unknown kinds
-/// decode without breaking, so a newer computer never gaps the transcript.
+/// Keep future attachment kinds decodable; image entries display inline,
+/// file entries (a bot's attach_file: documents, audio, video) show as file
+/// cards (Message.attachedFiles), and audio entries render as voice notes
+/// (Message.voiceNotes). Unknown kinds decode without breaking, so a newer
+/// computer never gaps the transcript.
 public struct MessageImageAttachment: Codable, Hashable, Sendable {
     public var kind: String
     public var path: String?
     public var mime: String?
+    /// The file's name as the bot sent it, for a `kind: "file"` entry.
+    /// Presentation only: it is basenamed before display and never used as
+    /// a path.
+    public var name: String?
     /// The server's duration estimate for an audio attachment, in
     /// milliseconds; shown until the player loads real metadata.
     public var durationMs: Double?

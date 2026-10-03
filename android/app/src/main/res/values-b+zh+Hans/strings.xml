@@ -109,6 +109,9 @@
     <string name="mobile_expand_9869e506">展开</string>
     <string name="mobile_expanded_6d170474">已展开</string>
     <string name="mobile_file_b4915d3a">文件</string>
+    <string name="mobile_file_video">视频</string>
+    <string name="mobile_file_audio">音频</string>
+    <string name="mobile_tap_to_play">点一下以播放</string>
     <string name="mobile_for_example_summarize_this_and_lis_12b3d099">例如：整理摘要并列出后续步骤</string>
     <string name="mobile_from_5_minutes_to_24_hours_a6bafa40">从 5 分钟到 24 小时</string>
     <string name="mobile_group_name_optional_0fd3a15c">群组名称（选填）</string>

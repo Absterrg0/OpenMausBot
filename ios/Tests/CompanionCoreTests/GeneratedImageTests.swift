@@ -27,4 +27,45 @@ final class GeneratedImageTests: XCTestCase {
         XCTAssertTrue(message.generatedImages.isEmpty)
         XCTAssertEqual(message.text, "Still visible")
     }
+
+    /// A bot's attach_file sends documents, audio and video as `kind:"file"`
+    /// with a name (server/bot-attachment.ts). The phone dropped them, and the
+    /// message read as an empty bubble (MOCA-155). They are file cards now,
+    /// opened through the same message-scoped file route as images.
+    func testABotsFileAttachmentsBecomeNamedFileCards() throws {
+        let source = #"{"id":"sent","role":"bot","kind":"text","at":1,"text":"","attachments":[{"kind":"file","path":"/data/attachments/9f.mp4","mime":"video/mp4","name":"demo clip.mp4"},{"kind":"image","path":"/data/attachments/a1.png","mime":"image/png"},{"kind":"file","path":"/data/attachments/77.pdf","mime":"application/pdf","name":"../../report.pdf"},{"kind":"file","path":"/data/attachments/9f.mp4","name":"again.mp4"},{"kind":"file","path":" "},{"kind":"hologram","path":"/data/attachments/x.bin"}]}"#
+        let message = try JSONDecoder().decode(Message.self, from: Data(source.utf8))
+        XCTAssertEqual(message.attachedFiles, [
+            DisplayedMessageAttachment(kind: .file, path: "/data/attachments/9f.mp4", name: "demo clip.mp4"),
+            // A crafted name is presentation only and never a path.
+            DisplayedMessageAttachment(kind: .file, path: "/data/attachments/77.pdf", name: "report.pdf"),
+        ])
+        XCTAssertEqual(message.generatedImages.map(\.path), ["/data/attachments/a1.png"], "images keep their own card")
+        XCTAssertEqual(message.attachments?.first?.name, "demo clip.mp4")
+        // The name survives the transcript cache.
+        let cached = try JSONDecoder().decode(Message.self, from: JSONEncoder().encode(message))
+        XCTAssertEqual(cached.attachedFiles, message.attachedFiles)
+    }
+
+    func testAFileOnlyBotMessagePreviewsAsItsFileName() throws {
+        let source = #"{"id":"sent","role":"bot","kind":"text","at":1,"text":"","attachments":[{"kind":"file","path":"/data/attachments/9f.mp4","mime":"video/mp4","name":"demo clip.mp4"}]}"#
+        let message = try JSONDecoder().decode(Message.self, from: Data(source.utf8))
+        XCTAssertEqual(rosterPreview([message], detail: .full), "demo clip.mp4")
+        var captioned = message
+        captioned.text = "Here is the clip"
+        XCTAssertEqual(rosterPreview([captioned], detail: .full), "Here is the clip", "words beat a file name")
+    }
+
+    func testAFileCardKnowsVideoAndAudioFromTheExtension() {
+        func family(_ name: String) -> DisplayedMessageAttachment.FileFamily {
+            DisplayedMessageAttachment(kind: .file, path: "/data/attachments/x", name: name).fileFamily
+        }
+        XCTAssertEqual(family("demo clip.MP4"), .video)
+        XCTAssertEqual(family("screen.mov"), .video)
+        XCTAssertEqual(family("talk.webm"), .video)
+        XCTAssertEqual(family("memo.m4a"), .audio)
+        XCTAssertEqual(family("song.mp3"), .audio)
+        XCTAssertEqual(family("weekly-report.pdf"), .document)
+        XCTAssertEqual(family("notes"), .document)
+    }
 }

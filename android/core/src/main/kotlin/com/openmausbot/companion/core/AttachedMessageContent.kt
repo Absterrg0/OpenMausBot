@@ -10,6 +10,20 @@ data class DisplayedMessageAttachment(
     val durationMs: Double? = null,
 ) {
     enum class Kind { IMAGE, FILE, AUDIO }
+
+    /**
+     * What a file card promises: video and audio play, the rest preview. Read
+     * from the extension, the signal the server uses to pick the file's type
+     * (mimeFor in server/message-file.ts). Port of the iOS `fileFamily`.
+     */
+    enum class FileFamily { VIDEO, AUDIO, DOCUMENT }
+
+    val fileFamily: FileFamily
+        get() = when (name.substringAfterLast('.', "").lowercase()) {
+            "mp4", "mov", "m4v", "webm" -> FileFamily.VIDEO
+            "mp3", "m4a", "wav", "aac", "ogg", "oga", "opus", "flac" -> FileFamily.AUDIO
+            else -> FileFamily.DOCUMENT
+        }
 }
 
 data class AttachedMessageContent(
@@ -211,6 +225,25 @@ data class AttachedMessageContent(
         }
     }
 }
+
+/**
+ * Files a bot sent with attach_file — documents, audio and video — in wire
+ * order and deduplicated like [generatedImages]. Before these rendered, a
+ * file-only reply was an empty bubble on the phone (MOCA-155). The path goes
+ * unchanged to the originating message's authenticated file route.
+ */
+val Message.attachedFiles: List<DisplayedMessageAttachment>
+    get() = attachments.orEmpty()
+        .filter { it.kind == "file" && !it.path.isNullOrBlank() }
+        .distinctBy { it.path }
+        .map {
+            val path = requireNotNull(it.path)
+            DisplayedMessageAttachment(
+                kind = DisplayedMessageAttachment.Kind.FILE,
+                path = path,
+                name = AttachedMessageContent.displayName(it.name, path, DisplayedMessageAttachment.Kind.FILE),
+            )
+        }
 
 /** Preserve the server path exactly for the originating message's authenticated file route. */
 val Message.generatedImages: List<DisplayedMessageAttachment>
