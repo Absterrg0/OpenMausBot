@@ -34,7 +34,6 @@ function context(overrides: Partial<ToolCallContext> = {}): ToolCallContext {
       createdThisTurn: 0,
       roomPostsThisTurn: 0,
       threadsOpenedThisTurn: 0,
-      memoryRefusalsThisTurn: 0,
       delegationTaskIdsThisTurn: new Set(),
     },
     ...overrides,

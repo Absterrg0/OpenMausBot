@@ -24,7 +24,6 @@ export interface TurnGuards {
   createdThisTurn: number;
   roomPostsThisTurn: number;
   threadsOpenedThisTurn: number;
-  memoryRefusalsThisTurn: number;
   /** Delegations made in this turn: their ids may not be checked or waited
    * on until a later one. */
   delegationTaskIdsThisTurn: Set<string>;
@@ -69,7 +68,6 @@ export function toolCallContextFromEnv(env: NodeJS.ProcessEnv): ToolCallContext 
       createdThisTurn: 0,
       roomPostsThisTurn: 0,
       threadsOpenedThisTurn: 0,
-      memoryRefusalsThisTurn: 0,
       delegationTaskIdsThisTurn: new Set<string>(),
     },
   };
@@ -88,11 +86,9 @@ const MAX_ROOM_POSTS_PER_TURN = 3;
 // deciding. The harness holds the same ceiling; this copy exists so the
 // refusal reaches the model without a round trip.
 const MAX_THREADS_PER_TURN = 5;
-// A memory write the harness refused (a stale passage, a full file) needs
-// one re-read and one corrected retry, not a loop of the same append. The
-// third refusal in a turn closes the tool so the turn ends with the person
-// told what did not fit instead of a transcript of retries.
-const MAX_MEMORY_REFUSALS_PER_TURN = 3;
+/** How many entries a memory_update reply names when its write moved some
+ * to the archive; the rest are counted. */
+const MOVED_ENTRIES_SHOWN = 5;
 
 const SHORT_WEEKDAYS = {
   mon: "monday",
@@ -1101,12 +1097,6 @@ export async function callTool(name: string, args: Json, context: ToolCallContex
       || (args.action !== "append" && (typeof args.old_text !== "string" || !args.old_text.trim()))) {
       return { text: "Use memory_update action=append with text, replace or supersede with text and old_text, or remove with old_text.", isError: true };
     }
-    if (turn.memoryRefusalsThisTurn >= MAX_MEMORY_REFUSALS_PER_TURN) {
-      return {
-        text: `Memory updates are closed for the rest of this turn: ${MAX_MEMORY_REFUSALS_PER_TURN} were refused. Do not retry. Tell the person what you wanted to keep and why it did not fit; they can tidy MEMORY.md in Settings, and you can try again in your next turn.`,
-        isError: true,
-      };
-    }
     const { body: r } = await apiResponse("/api/internal/memory", {
       method: "POST",
       body: JSON.stringify({
@@ -1118,16 +1108,22 @@ export async function callTool(name: string, args: Json, context: ToolCallContex
         ...(typeof args.until === "string" && args.until.trim() ? { until: args.until.trim() } : {}),
       }),
     });
-    if (r.error || r.ok !== true) {
-      turn.memoryRefusalsThisTurn += 1;
-      const recent = Array.isArray(r.recent) ? r.recent.filter((line) => typeof line === "string") : [];
-      // A full file: the refusal carries the newest entries so the model
-      // can merge them in this same turn without a read round trip.
-      const tail = r.code === "over-budget" && recent.length ? `\n\nMost recent entries, oldest first:\n${recent.join("\n")}` : "";
-      return { text: `${String(r.error ?? "Memory update was not confirmed.")}${tail}`, isError: true };
-    }
+    if (r.error || r.ok !== true) return { text: String(r.error ?? "Memory update was not confirmed."), isError: true };
     const entry = typeof r.entry === "string" && r.entry ? ` Entry: ${r.entry}` : "";
-    return { text: `Memory updated.${entry}${r.truncated ? " MEMORY.md exceeds the prompt load budget; keep it short and curated." : ""}` };
+    const moved = Array.isArray(r.moved) ? r.moved.filter((line) => typeof line === "string") : [];
+    // A write never fails for size: the bot hears where older notes went,
+    // and the one case it cannot fix itself, in one plain sentence.
+    const full = r.truncated
+      ? "\nSaved, but the lines that never move out of MEMORY.md (hand-written ones, health and safety facts) fill what loads each session, so the newest entries do not load. Ask the person to trim MEMORY.md in Settings."
+      : "";
+    // Named by their first line, a few at most: a file grown far past the
+    // budget by hand can move hundreds in one write.
+    const shown = moved.slice(0, MOVED_ENTRIES_SHOWN).map((text) => text.split("\n")[0]);
+    const more = moved.length > shown.length ? `\n…and ${moved.length - shown.length} more` : "";
+    const movedNote = moved.length
+      ? `\nTo stay within what loads each session, moved ${moved.length === 1 ? "1 older entry" : `${moved.length} older entries`} to memory/archive.md (session_search finds them):\n${shown.join("\n")}${more}`
+      : "";
+    return { text: `Memory updated.${entry}${full}${movedNote}` };
   }
   if (name === "retry_thread") {
     const botId = String(args.bot_id ?? "").trim();
