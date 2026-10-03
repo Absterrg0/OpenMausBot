@@ -119,7 +119,7 @@ extension CompanionState {
         // wants tool calls sees it; a status notice is for everyone.
         if let last = visibleTranscript(forThread: threadId).last, last.kind == .activity, let tool = last.tool,
            detail != .hidden || isStatusNotice(last) {
-            return tool.name
+            return tool.label
         }
         return "Working…"
     }

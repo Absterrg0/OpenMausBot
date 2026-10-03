@@ -28,6 +28,7 @@ import { assertRequestTarget, guardedRequestPath, requestConflict, requestNeedsI
 import { botAvatarUrlFromStoredPath } from "../shared/bot-avatar.ts";
 import { BOT_PROFILE_LIMITS } from "../shared/bot-profile.ts";
 import { CLOUD_COMPUTER_BUSY_ERROR } from "../shared/computer-contention.ts";
+import { failedTurnTool } from "../shared/failed-turn.ts";
 import { canWorkOnCloud, type CloudEngine } from "../shared/cloud-computer.ts";
 import {
   approvalModeFor,
@@ -5998,7 +5999,7 @@ const watchdog = new TurnWatchdog({
     store.appendMessage(turn.threadId, {
       role: "bot",
       kind: "activity",
-      tool: { name: `error: no activity for ${minutes} minutes — the turn was stopped`, ok: false },
+      tool: failedTurnTool(`no activity for ${minutes} minutes — the turn was stopped`),
     });
     // a routine's stall reports through its own failure path
     if (bot && routineRun?.target !== "bot") {
@@ -7574,9 +7575,9 @@ bus.subscribe((event: RuntimeEvent) => {
             watchdog.setWaitingOnHuman(event.threadId, false);
             if (outcome !== "unavailable") pushMessage({
               role: "bot", kind: "activity",
-              tool: { name: outcome === "rejected"
-                ? `The provider rejected this action despite ${verdict.source === "command-allowlist" ? "the saved command permission" : "Full access"}.`
-                : "error: could not deliver approval to the provider; retry the task after reconnecting.", ok: false },
+              tool: outcome === "rejected"
+                ? { name: `The provider rejected this action despite ${verdict.source === "command-allowlist" ? "the saved command permission" : "Full access"}.`, ok: false }
+                : failedTurnTool("could not deliver approval to the provider; retry the task after reconnecting."),
             });
             return;
           }
@@ -7720,14 +7721,7 @@ bus.subscribe((event: RuntimeEvent) => {
       pushMessage({
         role: "bot",
         kind: "activity",
-        tool: {
-          // a setup error carries its fix, which must not be cut mid-command
-          name: `error: ${event.message.slice(0, event.setup ? 320 : 160)}`,
-          ok: false,
-          setup: event.setup,
-          ...(event.terminal ? { terminal: true } : {}),
-          ...(event.claudeUpdate ? { claudeUpdate: true } : {}),
-        },
+        tool: failedTurnTool(event.message, event),
       });
       // a setup error means the engine could not even start: the bot is
       // dead until something changes, not merely idle. The next successful
@@ -8107,10 +8101,7 @@ function dispatchDelegationWake(botId: string, threadId: string, targetName: str
       store.appendMessage(threadId, {
         role: "bot",
         kind: "activity",
-        tool: {
-          name: `error: could not resume after delegation — ${message.slice(0, 120)}`,
-          ok: false,
-        },
+        tool: failedTurnTool(`could not resume after delegation — ${message}`),
       });
       routines?.failThread(threadId, `Could not resume after delegation: ${message}`);
     });
@@ -8211,7 +8202,7 @@ function reportIncident(input: { kind: IncidentKind; bot: BotRecord; threadId: s
     store.appendMessage(incidents.threadId, {
       role: "bot",
       kind: "activity",
-      tool: { name: `error: the incident could not reach ${chief.name} — ${why.slice(0, 120)}`, ok: false },
+      tool: failedTurnTool(`the incident could not reach ${chief.name} — ${why}`),
     });
     tellThePerson();
   });
@@ -8604,7 +8595,7 @@ const runDelegatedTurn: Parameters<typeof drainDelegations>[3] = (toBotId, rawTe
       store.appendMessage(sourceThreadId, {
         role: "bot",
         kind: "activity",
-        tool: { name: `error: delegation to @${bot?.name ?? toBotId} could not start — ${why.slice(0, 120)}`, ok: false },
+        tool: failedTurnTool(`delegation to @${bot?.name ?? toBotId} could not start — ${why}`),
       });
     };
     return startTurn(toBotId, text, {
@@ -8715,10 +8706,7 @@ function drainQueuedSends() {
       }).catch((err) => {
         store.appendMessage(threadId, {
           role: "bot", kind: "activity",
-          tool: {
-            name: `error: queued message could not start — ${(err instanceof Error ? err.message : String(err)).slice(0, 120)}`,
-            ok: false,
-          },
+          tool: failedTurnTool(`queued message could not start — ${err instanceof Error ? err.message : String(err)}`),
         });
         resolve();
         // M2: only this group left the queue, and a turn that never
@@ -8775,10 +8763,7 @@ function drainAsideLane() {
         }).catch((err) => {
           store.appendMessage(threadId, {
             role: "bot", kind: "activity",
-            tool: {
-              name: `error: queued aside could not start — ${(err instanceof Error ? err.message : String(err)).slice(0, 120)}`,
-              ok: false,
-            },
+            tool: failedTurnTool(`queued aside could not start — ${err instanceof Error ? err.message : String(err)}`),
           });
           resolve();
         }).catch(reject);
@@ -9115,7 +9100,7 @@ async function startOrQueueOpenedThread(
     store.appendMessage(threadId, {
       role: "bot",
       kind: "activity",
-      tool: { name: `error: this thread could not start — ${why.slice(0, 120)}`, ok: false },
+      tool: failedTurnTool(`this thread could not start — ${why}`),
     });
     return { state: "failed", error: why };
   }
@@ -10037,7 +10022,7 @@ async function startTurn(
         store.appendMessage(threadId, {
           role: "bot",
           kind: "activity",
-          tool: { name: `error: ${message.slice(0, 160)}`, ok: false },
+          tool: failedTurnTool(message),
         });
         if (opts?.automationSource === undefined && !opts?.commsDepth && !opts?.cardContinuation) {
           notify(buildNotification("turn-failed", bot, threadId, redactSecretsInText(message), { avatarUrl: bot.avatarUrl }));
@@ -10754,7 +10739,7 @@ async function startTurn(
         role: "bot",
         kind: "activity",
         turnSucceeded: false,
-        tool: { name: `error: ${message.slice(0, 160)}`, ok: false },
+        tool: failedTurnTool(message),
       });
       // Worth a buzz for the same reason a routine failure is, and the rule
       // notify.ts encodes: the bot is not working, and the cause is usually
@@ -12292,7 +12277,7 @@ async function runGroupMemberTurn(
       role: "bot",
       kind: "activity",
       from: { botId: bot.id, name: bot.name, color: bot.color },
-      tool: { name: `error: ${message}`, ok: false },
+      tool: failedTurnTool(message),
     });
     onDispatchError?.(message);
     return true;
@@ -12434,7 +12419,7 @@ async function runGroupMemberTurn(
       role: "bot",
       kind: "activity",
       from: { botId: bot.id, name: bot.name, color: bot.color },
-      tool: { name: `error: ${message}`, ok: false },
+      tool: failedTurnTool(message),
     });
     onDispatchError?.(message);
     return true;
@@ -13007,7 +12992,7 @@ async function runGroupMemberTurn(
           role: "bot",
           kind: "activity",
           from: { botId: bot.id, name: bot.name, color: bot.color },
-          tool: { name: `error: ${message.slice(0, 140)}`, ok: false },
+          tool: failedTurnTool(message),
         });
         onDispatchError?.(message);
         watchdog.settle(threadId);
@@ -13208,7 +13193,7 @@ async function runGroupMemberTurn(
     store.appendMessage(threadId, {
       role: "bot", kind: "activity",
       from: { botId: bot.id, name: bot.name, color: bot.color },
-      tool: { name: `error: ${message}`, ok: false },
+      tool: failedTurnTool(message),
     });
     onDispatchError?.(message);
     if (orchestration) {
@@ -13934,10 +13919,7 @@ function drainQueuedChannelSends(): void {
         store.appendMessage(threadId, {
           role: "bot",
           kind: "activity",
-          tool: {
-            name: `error: queued channel message could not start — ${(error instanceof Error ? error.message : String(error)).slice(0, 120)}`,
-            ok: false,
-          },
+          tool: failedTurnTool(`queued channel message could not start — ${error instanceof Error ? error.message : String(error)}`),
         });
       }
       // A message with no eligible responder creates no operation. Continue
@@ -15428,7 +15410,7 @@ async function reloadProviders() {
       if (store.taskByThread(botId, threadId)) {
         store.appendMessage(threadId, {
           role: "bot", kind: "activity",
-          tool: { name: "error: turn interrupted — provider settings changed", ok: false },
+          tool: failedTurnTool("turn interrupted — provider settings changed"),
         });
         store.setTaskActivity(botId, threadId, "idle");
       }

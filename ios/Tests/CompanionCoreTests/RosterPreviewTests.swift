@@ -96,6 +96,14 @@ final class RosterPreviewTests: XCTestCase {
         XCTAssertEqual(rosterPreview(messages, detail: .reduced), "shell")
     }
 
+    func testAFailedTurnPreviewsAsItsCauseAtEveryLevel() {
+        let limit = "Your Pro plan includes 2 cloud computers at once. Delete one to start another."
+        let messages = [text("a", "On it"), activity("b", "error: \(limit)", ok: false)]
+        for detail in ActivityDetail.allCases {
+            XCTAssertEqual(rosterPreview(messages, detail: detail), limit)
+        }
+    }
+
     func testReducedStillShowsAFailureRatherThanFoldingIt() {
         let messages = [activity("a", "shell"), activity("b", "deploy", ok: false)]
         XCTAssertEqual(rosterPreview(messages, detail: .reduced), "deploy")

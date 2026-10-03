@@ -98,6 +98,7 @@ import com.openmausbot.companion.core.OptionCard
 import com.openmausbot.companion.core.ThreadRef
 import com.openmausbot.companion.core.ToolActivity
 import com.openmausbot.companion.core.forTask
+import com.openmausbot.companion.core.label
 import com.openmausbot.companion.core.routineExecutionRef
 import com.openmausbot.companion.core.TranscriptCard
 import com.openmausbot.companion.core.TranscriptCards
@@ -994,7 +995,7 @@ private fun ActivityChip(
                 .padding(start = 4.dp)
                 .then(linked)
                 .semantics(mergeDescendants = true) {
-                    contentDescription = ActivityReceipt.announcement(tool.name, status)
+                    contentDescription = ActivityReceipt.announcement(tool.label, status)
                 },
             horizontalArrangement = Arrangement.spacedBy(6.dp),
             verticalAlignment = Alignment.CenterVertically,
@@ -1014,10 +1015,12 @@ private fun ActivityChip(
                 )
             }
             Text(
-                text = tool.name,
+                text = tool.label,
                 fontSize = 13.sp,
-                maxLines = 1,
+                maxLines = ActivityReceipt.nameLines(status),
                 color = if (status == ActivityStatus.ERROR) tint else secondaryTint,
+                // measured after the badge, so a wrapped failure never pushes it out
+                modifier = Modifier.weight(1f, fill = false),
             )
             if (ActivityReceipt.showsLabel(status)) {
                 Text(

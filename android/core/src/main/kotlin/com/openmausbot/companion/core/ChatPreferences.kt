@@ -141,7 +141,7 @@ internal fun previewText(message: Message): String = when (message.kind) {
             else -> card.title
         }
     }
-    Message.Kind.ACTIVITY -> message.tool?.name.orEmpty()
+    Message.Kind.ACTIVITY -> message.tool?.label.orEmpty()
     Message.Kind.SCREEN -> "Screenshot"
     Message.Kind.DIGEST -> ""
     Message.Kind.COMPACTION -> message.compaction?.chipText ?: message.text.orEmpty()
@@ -164,6 +164,25 @@ internal fun previewText(message: Message): String = when (message.kind) {
 fun isStatusNotice(message: Message): Boolean =
     message.kind == Message.Kind.ACTIVITY && message.tool?.name?.startsWith("notice:") == true
 
+/**
+ * A turn that failed is stored as an activity row named "error: <what went wrong>"
+ * (shared/failed-turn.ts on the computer). The cause without that marker; null for any
+ * other row. Port of `failedTurnCause` in `ChatPreferences.swift`: the chip and the
+ * roster preview both read it here, so neither shows the marker.
+ */
+fun failedTurnCause(name: String): String? =
+    if (name.startsWith("error:")) name.removePrefix("error:").trim() else null
+
+/**
+ * A failed turn's row. Like a status notice it is never hidden: it is the only sign the
+ * bot did not answer, and desktop always shows it too.
+ */
+fun isFailedTurn(message: Message): Boolean =
+    message.kind == Message.Kind.ACTIVITY && message.tool?.let { failedTurnCause(it.name) } != null
+
+/** What the chip and the roster say: a failed turn's cause, or the step. */
+val ToolActivity.label: String get() = failedTurnCause(name) ?: name
+
 fun isActivityReceipt(message: Message): Boolean = when (message.kind) {
     Message.Kind.ACTIVITY, Message.Kind.DIGEST, Message.Kind.COMPACTION -> true
     else -> false
@@ -171,7 +190,8 @@ fun isActivityReceipt(message: Message): Boolean = when (message.kind) {
 
 /**
  * Fold a transcript to the selected activity detail. Failed steps are never folded in reduced
- * mode; hidden mode intentionally removes all activity, including failures.
+ * mode; hidden mode removes tool activity, failed steps included, but never a status notice
+ * or a failed turn ([isFailedTurn]).
  */
 fun transcriptRows(messages: List<Message>, detail: ActivityDetail): List<TranscriptRow> {
     // Only a server completion marker makes narration foldable. Legacy and
@@ -215,7 +235,7 @@ fun transcriptRows(messages: List<Message>, detail: ActivityDetail): List<Transc
             if (turn != null) {
                 flush()
                 add(turn)
-            } else if (message.id in hiddenIds || (detail == ActivityDetail.HIDDEN && isActivityReceipt(message) && !isStatusNotice(message))) {
+            } else if (message.id in hiddenIds || (detail == ActivityDetail.HIDDEN && isActivityReceipt(message) && !isStatusNotice(message) && !isFailedTurn(message))) {
                 // The reversible turn fold owns narration; Hidden owns tools.
             } else if (detail != ActivityDetail.REDUCED || message.kind != Message.Kind.ACTIVITY) {
                 // The digest lands here too: its own row, never a step in a run.

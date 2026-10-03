@@ -194,6 +194,14 @@ class ActivityReceiptTest {
     }
 
     @Test
+    fun `a failure is read whole, a step stays one line`() {
+        // "Your Pro plan includes 2 cloud computers at once. Del…" lost its next action
+        assertEquals(Int.MAX_VALUE, ActivityReceipt.nameLines(ActivityStatus.ERROR))
+        assertEquals(1, ActivityReceipt.nameLines(ActivityStatus.SUCCESS))
+        assertEquals(1, ActivityReceipt.nameLines(ActivityStatus.RUNNING))
+    }
+
+    @Test
     fun `every state reaches a screen reader, success included`() {
         assertEquals("grep, running", ActivityReceipt.announcement("grep", ActivityStatus.RUNNING))
         assertEquals("grep, success", ActivityReceipt.announcement("grep", ActivityStatus.SUCCESS))

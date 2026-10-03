@@ -46,6 +46,19 @@ final class ChatPreferencesTests: XCTestCase {
         XCTAssertEqual(transcriptRows(messages, detail: .hidden).map(\.id), ["a", "d"])
     }
 
+    // The turn's own failure is the only sign the bot did not answer; a failed
+    // step inside a turn that went on is tool noise like any other.
+    func testHiddenKeepsAFailedTurnButNotAFailedStep() {
+        var failedTurn = Message(id: "e", role: .bot, kind: .activity, at: 1)
+        failedTurn.tool = ToolActivity(name: "error: Not logged in · Please run /login", ok: false, setup: true)
+        let messages = [text("a"), activity("b", ok: false), failedTurn]
+        XCTAssertEqual(transcriptRows(messages, detail: .hidden).map(\.id), ["a", "e"])
+        XCTAssertTrue(isFailedTurn(failedTurn))
+        XCTAssertFalse(isFailedTurn(activity("b", ok: false)))
+        XCTAssertEqual(failedTurn.tool?.label, "Not logged in · Please run /login")
+        XCTAssertEqual(activity("b").tool?.label, "run")
+    }
+
     // The digest and compaction receipts are the harness talking about the
     // tool calls: hidden with them, but never folded into a run of them.
 

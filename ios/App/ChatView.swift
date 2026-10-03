@@ -1933,7 +1933,7 @@ struct ActivityChip: View {
             // carry raw output, and that log stays on the computer's side.
             let output = outputIsProse ? tool.expandableOutput : nil
             let receipt = SkillExecutionReceiptView(
-                skillName: tool.name,
+                skillName: tool.label,
                 status: tool.ok.map { $0 ? "success" : "error" } ?? "running",
                 output: output ?? "",
                 outputIsProse: outputIsProse
@@ -1972,7 +1972,7 @@ struct ActivityChip: View {
                     receipt.allowsHitTesting(false)
                 }
                 .buttonStyle(.plain)
-                .accessibilityLabel(tool.name)
+                .accessibilityLabel(tool.label)
                 .accessibilityHint("Opens the thread")
             } else {
                 receipt

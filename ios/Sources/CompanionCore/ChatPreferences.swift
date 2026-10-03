@@ -183,7 +183,7 @@ func previewText(of message: Message) -> String {
         return card.isPending && !card.subtitle.isEmpty ? card.subtitle : card.title
     case .secret:
         return message.secret?.label ?? message.text ?? "Credential required"
-    case .activity: return message.tool?.name ?? ""
+    case .activity: return message.tool?.label ?? ""
     case .screen: return "Screenshot"
     case .digest: return ""
     case .compaction: return message.compaction?.chipText ?? message.text ?? ""
@@ -202,6 +202,26 @@ func previewText(of message: Message) -> String {
 /// tool chips.
 public func isStatusNotice(_ message: Message) -> Bool {
     message.kind == .activity && (message.tool?.name.hasPrefix("notice:") ?? false)
+}
+
+/// A turn that failed is stored as an activity row named "error: <what went
+/// wrong>" (shared/failed-turn.ts on the computer). The cause without that
+/// marker; nil for any other row. The chip and the roster preview both read
+/// it here, so neither shows the marker.
+public func failedTurnCause(_ name: String) -> String? {
+    guard name.hasPrefix("error:") else { return nil }
+    return name.dropFirst("error:".count).trimmingCharacters(in: .whitespaces)
+}
+
+/// A failed turn's row. Like a status notice it is never hidden: it is the
+/// only sign the bot did not answer, and desktop always shows it too.
+public func isFailedTurn(_ message: Message) -> Bool {
+    message.kind == .activity && message.tool.flatMap { failedTurnCause($0.name) } != nil
+}
+
+extension ToolActivity {
+    /// What the chip and the roster say: a failed turn's cause, or the step.
+    public var label: String { failedTurnCause(name) ?? name }
 }
 
 public func isActivityReceipt(_ message: Message) -> Bool {
@@ -265,7 +285,7 @@ public func transcriptRows(_ messages: [Message], detail: ActivityDetail) -> [Tr
             continue
         }
         if hiddenIDs.contains(message.id) { continue }
-        if detail == .hidden && isActivityReceipt(message) && !isStatusNotice(message) { continue }
+        if detail == .hidden && isActivityReceipt(message) && !isStatusNotice(message) && !isFailedTurn(message) { continue }
         // A turn that touched nothing leaves a digest with nothing to show;
         // an empty row would still cost the transcript a gap.
         if message.kind == .digest && DigestSummary(text: message.text ?? "").isEmpty { continue }

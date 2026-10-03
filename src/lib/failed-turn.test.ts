@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { Bot, InstanceInfo } from "@/state/store";
 
 vi.hoisted(() => vi.stubGlobal("window", {}));
-const { activityPreview, botEngine, failedTurnCause, failedTurnHeadline } = await import("./failed-turn");
+const { activityPreview, botEngine, failedTurnCause, signedOutEngine } = await import("./failed-turn");
 
 const engine = (patch: Partial<InstanceInfo> = {}, snapshot: Partial<InstanceInfo["snapshot"]> = {}): InstanceInfo => ({
   instanceId: "claude", driverKind: "claudeAgent", displayName: "Claude",
@@ -12,7 +12,6 @@ const engine = (patch: Partial<InstanceInfo> = {}, snapshot: Partial<InstanceInf
   ...patch,
   snapshot: { state: "available", authenticated: false, ...snapshot },
 } as InstanceInfo);
-const SIGNED_OUT = "Claude isn't signed in yet. Sign in below, then send your message again.";
 const loginRow = { name: "error: Not logged in · Please run /login", ok: false, setup: true };
 
 describe("failed turn text", () => {
@@ -23,7 +22,8 @@ describe("failed turn text", () => {
   });
 
   it("says a signed-out engine is signed out instead of the CLI's /login instruction", () => {
-    expect(failedTurnHeadline("Not logged in · Please run /login", engine())).toBe(SIGNED_OUT);
+    const claude = engine();
+    expect(signedOutEngine(loginRow, claude)).toBe(claude);
     // the list says the same, without pointing "below" at a card it does not show
     expect(activityPreview(loginRow, engine())).toBe("Claude isn't signed in");
   });
@@ -34,12 +34,14 @@ describe("failed turn text", () => {
     // an API-key engine's card is a key row, and its own words say so
     const keyed = engine({ driverKind: "opencode", access: "api" } as Partial<InstanceInfo>, { version: "1" });
     expect(activityPreview({ ...loginRow, name: "error: Add your key in Settings → API keys" }, keyed)).toBe("Add your key in Settings → API keys");
-    expect(failedTurnHeadline("Add your key in Settings → API keys", keyed)).toBe("Add your key in Settings → API keys");
+    expect(signedOutEngine(loginRow, keyed)).toBeUndefined();
     // a failure that is not about setup is never blamed on sign-in
     expect(activityPreview({ name: "error: rate limited", ok: false }, engine())).toBe("rate limited");
     expect(activityPreview(loginRow, undefined)).toBe("Not logged in · Please run /login");
     // a too-old Claude Code gets the update offer, never a sign-in promise
     expect(activityPreview({ ...loginRow, name: "error: needs a newer Claude Code", claudeUpdate: true }, engine())).toBe("needs a newer Claude Code");
+    // …even on a company-managed Claude, which chat cannot update
+    expect(signedOutEngine({ ...loginRow, claudeUpdate: true }, engine({ readOnly: true }))).toBeUndefined();
   });
 
   it("previews a plan-limit refusal whole and leaves ordinary steps alone", () => {

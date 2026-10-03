@@ -17,6 +17,7 @@ import { join } from "node:path";
 import { writeFileAtomic } from "./atomic.ts";
 import { getOrCreateChannel, mirrorExchange, type CommsBus } from "./comms-visibility.ts";
 import { DATA_DIR } from "./config.ts";
+import { failedTurnTool } from "../shared/failed-turn.ts";
 import { newId } from "./contracts.ts";
 import { peerApprovalFailure, requestPeerApproval, type ApprovalBus, type PeerApprovalFailure } from "./peer-approval.ts";
 import { canAccessTeam, peerAllowed } from "./peer-roster.ts";
@@ -485,7 +486,7 @@ export function drainDelegations(
           appendDeliveryMessage(bus, threadId, item, {
             role: "bot",
             kind: "activity",
-            tool: { name: `error: delegation failed — ${why.slice(0, 120)}`, ok: false },
+            tool: failedTurnTool(`delegation failed — ${why}`),
           });
         } catch (reportError) {
           console.error("delegation failed and could not be reported", reportError);
@@ -723,7 +724,7 @@ async function processOne(
     appendDeliveryMessage(bus, sourceThreadId, item, {
       role: "bot",
       kind: "activity",
-      tool: { name: `error: delegation to ${item.toBotId} failed — no such bot`, ok: false },
+      tool: failedTurnTool(`delegation to ${item.toBotId} failed — no such bot`),
     });
     return "settled";
   }

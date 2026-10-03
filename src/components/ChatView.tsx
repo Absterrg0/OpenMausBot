@@ -49,7 +49,7 @@ import { openExternalLink } from "@/lib/app-links";
 import { ClaudeUpdatePrompt } from "./ClaudeUpdatePrompt";
 import { MacCuaRecoveryActions } from "./MacCuaRecoveryActions";
 import { macCuaPermissionMessage, missingMacCuaPermissions } from "@/lib/mac-cua-permissions";
-import { failedTurnCause, failedTurnHeadline } from "@/lib/failed-turn";
+import { failedTurnCause, signedOutEngine } from "@/lib/failed-turn";
 import { isProviderSafetyBlock, PROVIDER_SAFETY_GUIDANCE, PROVIDER_SAFETY_HELP_URL } from "../../shared/provider-safety";
 import { BotAvatar } from "./Avatar";
 import { TurnPresence } from "./TurnPresence";
@@ -175,11 +175,15 @@ function CopyButton({ text, className }: { text: string; className?: string }) {
  * one click away under it. */
 export function ErrorRow({
   message,
+  headline: plainHeadline,
   onRetry,
   setupInstance,
   claudeUpdateInstance,
 }: {
   message: string;
+  /** A plain sentence to open with instead of `message` (FailedTurnRow's
+   * signed-out line); `message` then moves under Details. */
+  headline?: string;
   onRetry?: () => void;
   setupInstance?: InstanceInfo;
   /** The Claude engine to update when this turn failed because its Claude
@@ -195,8 +199,7 @@ export function ErrorRow({
     failedPermissions.length > 0 && failedPermissions.join(",") === currentPermissions.join(",")
     ? macCuaPermissionMessage(currentPermissions)
     : null;
-  // an update offer replaces the setup card, so it is not a sign-in either
-  const headline = macCuaReason ?? failedTurnHeadline(message, claudeUpdateInstance ? undefined : setupInstance);
+  const headline = macCuaReason ?? plainHeadline ?? message;
   return (
     <div className="flex justify-start">
       <div className="w-fit max-w-[min(42rem,78%)] rounded-xl border border-danger/30 bg-danger/10 px-3.5 py-2.5 text-[13.5px] text-danger">
@@ -251,9 +254,11 @@ export function FailedTurnRow({ tool, engine, onRetry }: {
   engine: InstanceInfo | undefined;
   onRetry?: () => void;
 }) {
+  const signedOut = signedOutEngine(tool, engine);
   return (
     <ErrorRow
       message={failedTurnCause(tool.name) ?? tool.name}
+      headline={signedOut && t("chat.error.signedOut", { name: signedOut.displayName })}
       onRetry={onRetry}
       setupInstance={tool.setup ? engine : undefined}
       claudeUpdateInstance={tool.claudeUpdate ? claudeUpdateTarget(engine) : undefined}

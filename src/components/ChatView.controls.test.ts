@@ -54,7 +54,8 @@ vi.mock("./ApprovalModeSelector", () => ({ ApprovalModeSelector: (props: Compone
   return createElement("span", { "data-test-approval-control": true });
 } }));
 
-const { ChatView, ErrorRow, NewConversationInstead, claudeUpdateTarget } = await import("./ChatView");
+const { ChatView, ErrorRow, FailedTurnRow, NewConversationInstead, claudeUpdateTarget } = await import("./ChatView");
+const { activityPreview } = await import("@/lib/failed-turn");
 afterAll(() => vi.unstubAllGlobals());
 
 const bot: Bot = {
@@ -174,15 +175,21 @@ describe("thread control placement", () => {
       authentication: { method: "paste-code" },
       models: { default: "sonnet", options: [] },
     } as InstanceInfo;
-    const markup = renderToStaticMarkup(createElement(ErrorRow, { message: "Not logged in · Please run /login", onRetry: () => {}, setupInstance: claude }));
+    const markup = renderToStaticMarkup(createElement(FailedTurnRow, { tool: { name: "error: Not logged in · Please run /login", ok: false, setup: true }, engine: claude, onRetry: () => {} }));
     expect(markup).toContain(">Claude isn&#x27;t signed in yet. Sign in below, then send your message again.</span>");
     expect(markup).toContain("Sign in to Claude</button>");
     expect(markup).toMatch(/<summary[^>]*>Details<\/summary><p[^>]*>Not logged in · Please run \/login<\/p>/);
     expect(markup).not.toContain(">Retry<");
-    // an update offer is not a sign-in: the row keeps the engine's words
-    const update = renderToStaticMarkup(createElement(ErrorRow, { message: "Claude Code 2.1.268 does not support this model", setupInstance: claude, claudeUpdateInstance: claude }));
-    expect(update).toContain(">Claude Code 2.1.268 does not support this model</span>");
-    expect(update).not.toContain("signed in");
+    // an update offer is not a sign-in: the row keeps the engine's words,
+    // on a company-managed Claude too (chat cannot update it, so no offer
+    // shows, but the row is still about the update, as the list says)
+    const update = { name: "error: Claude Code 2.1.268 does not support this model", ok: false, setup: true, claudeUpdate: true };
+    for (const engine of [claude, { ...claude, readOnly: true }]) {
+      const row = renderToStaticMarkup(createElement(FailedTurnRow, { tool: update, engine }));
+      expect(row).toContain(">Claude Code 2.1.268 does not support this model</span>");
+      expect(row).not.toContain("isn&#x27;t signed in");
+      expect(activityPreview(update, engine)).toBe("Claude Code 2.1.268 does not support this model");
+    }
   });
   it("offers to update Claude Code for a too-old install, or hands over the command", () => {
     const claude = { instanceId: "claude", driverKind: "claudeAgent", displayName: "Claude", snapshot: { state: "available", authenticated: true } } as InstanceInfo;

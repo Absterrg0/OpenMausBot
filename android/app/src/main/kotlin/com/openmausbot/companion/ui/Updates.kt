@@ -9,6 +9,7 @@ import com.openmausbot.companion.core.OptionCard
 import com.openmausbot.companion.core.PendingApproval
 import com.openmausbot.companion.core.forTask
 import com.openmausbot.companion.core.isStatusNotice
+import com.openmausbot.companion.core.label
 import com.openmausbot.companion.core.rosterPreview
 import com.openmausbot.companion.core.takeLastCharacters
 import com.openmausbot.companion.core.visibleTasks
@@ -126,7 +127,7 @@ private fun CompanionState.workingLine(threadId: String, detail: ActivityDetail)
     // calls sees it; a status notice is for everyone.
     val last = visibleTranscript(threadId).lastOrNull()
     if (last?.kind == Message.Kind.ACTIVITY && (detail != ActivityDetail.HIDDEN || isStatusNotice(last))) {
-        last.tool?.let { return it.name }
+        last.tool?.let { return it.label }
     }
     return WORKING_LINE
 }

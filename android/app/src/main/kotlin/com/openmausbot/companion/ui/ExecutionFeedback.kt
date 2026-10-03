@@ -156,6 +156,12 @@ object ActivityReceipt {
      */
     fun showsLabel(status: ActivityStatus): Boolean = status != ActivityStatus.SUCCESS
 
+    /**
+     * Lines the name may take. A step is one quiet line; a failure is read whole, because
+     * its last words are usually what to do next ("Delete one to start another.").
+     */
+    fun nameLines(status: ActivityStatus): Int = if (status == ActivityStatus.ERROR) Int.MAX_VALUE else 1
+
     /** The whole row, as one sentence, for a reader who cannot see the dot. */
     fun announcement(name: String, status: ActivityStatus): String =
         "$name, ${label(status).lowercase()}"

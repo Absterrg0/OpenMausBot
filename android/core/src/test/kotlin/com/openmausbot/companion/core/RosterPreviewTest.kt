@@ -140,6 +140,13 @@ class RosterPreviewTest {
     }
 
     @Test
+    fun aFailedTurnPreviewsAsItsCauseAtEveryLevel() {
+        val limit = "Your Pro plan includes 2 cloud computers at once. Delete one to start another."
+        val messages = listOf(text("a", "On it"), activity("b", "error: $limit", ok = false))
+        for (detail in ActivityDetail.entries) assertEquals(limit, rosterPreview(messages, detail))
+    }
+
+    @Test
     fun reducedStillShowsAFailureRatherThanFoldingIt() {
         val messages = listOf(activity("a", "shell"), activity("b", "deploy", ok = false))
         assertEquals("deploy", rosterPreview(messages, ActivityDetail.REDUCED))

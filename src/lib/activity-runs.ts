@@ -8,6 +8,7 @@
 import type { Message } from "@/state/store";
 import { formatElapsed } from "@/lib/working-time";
 import { t } from "@/lib/i18n";
+import { failedTurnCause } from "../../shared/failed-turn";
 
 export type ActivityTranscriptItem =
   | { kind: "message"; message: Message }
@@ -45,7 +46,7 @@ function foldable(message: Message): boolean {
   if (message.kind !== "activity" || !tool) return false;
   if (message.comm || message.threadRef || isStatusActivity(message)) return false;
   if (tool.ok !== true) return false;
-  return !tool.name.startsWith("error:");
+  return failedTurnCause(tool.name) === null;
 }
 
 type TurnFold = Extract<TranscriptItem, { kind: "turn" }>;
