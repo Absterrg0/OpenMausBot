@@ -2273,11 +2273,11 @@ describe("coordinate_bots arguments (room turn)", () => {
 
   it("maps camelCase aliases onto the canonical snake_case fields", async () => {
     const res = await roomRpc("tools/call", { name: "coordinate_bots", arguments: {
-      botIds: ["bot-helper"], message: "please review the patch", requestKey: "review-1",
+      botIds: ["bot-helper"], message: "please review the patch",
     } });
     expect(res.result.isError).toBeFalsy();
     expect(lastCoordinateBody).toMatchObject({
-      botIds: ["bot-helper"], message: "please review the patch", requestKey: "review-1",
+      botIds: ["bot-helper"], message: "please review the patch",
     });
   });
 
@@ -2332,13 +2332,16 @@ describe("coordinate_bots arguments (room turn)", () => {
   it("keeps the documented snake_case key when both spellings arrive", async () => {
     const res = await roomRpc("tools/call", { name: "coordinate_bots", arguments: {
       bot_ids: ["bot-helper"], botIds: ["bot-other"], group_id: "room-right", groupId: "room-wrong",
-      message: "m", request_key: "k-2", requestKey: "wrong",
+      message: "m", request_key: "from an older tool list", label: "from an older tool list",
     } });
     expect(res.result.isError).toBeFalsy();
     expect(lastCoordinateBody).toMatchObject({
-      botIds: ["bot-helper"], groupId: "room-right", requestKey: "k-2",
+      botIds: ["bot-helper"], groupId: "room-right",
     });
     expect(lastCoordinateBody.botIds).not.toContain("bot-other");
+    // Fields from an older tool list are dropped.
+    expect(lastCoordinateBody).not.toHaveProperty("requestKey");
+    expect(lastCoordinateBody).not.toHaveProperty("label");
   });
 
   it("names the expected snake_case fields when arguments are unusable", async () => {
@@ -2348,7 +2351,7 @@ describe("coordinate_bots arguments (room turn)", () => {
     } });
     expect(res.result.isError).toBe(true);
     const text = res.result.content[0].text;
-    for (const field of ["bot_ids", "message", "request_key", "group_id", "rework", "label"]) {
+    for (const field of ["bot_ids", "message", "group_id", "rework"]) {
       expect(text).toContain(field);
     }
     expect(text).toContain("botIds");

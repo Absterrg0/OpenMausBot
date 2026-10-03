@@ -82,6 +82,9 @@ export interface TaskOpenedBy {
    * durable conversation between two bots; "work" closes itself once its
    * result has been reported. */
   kind?: "pair" | "work";
+  /** The opener's own conversation this "work" thread was opened from.
+   * Everything that conversation later sends this bot continues here. */
+  threadId?: string;
   at: number;
 }
 

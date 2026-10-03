@@ -2460,6 +2460,15 @@ export class Store {
     return this.bot(botId)?.tasks?.find((t) => t.threadId === threadId);
   }
 
+  /** The thread `fromBotId` opened on this bot from its conversation
+   * `fromThreadId` with coordinate_bots: one per conversation and teammate,
+   * so whatever that conversation sends later continues it. A thread the
+   * person archived is left alone. */
+  workThread(botId: string, fromBotId: string, fromThreadId: string): TaskRecord | undefined {
+    return this.tasks(botId).find((t) => t.openedBy?.kind === "work" && t.openedBy.botId === fromBotId &&
+      t.openedBy.threadId === fromThreadId && t.archivedAt === undefined);
+  }
+
   /** A turn gets an independent snapshot without changing the selected task
    * or mutating the bot's defaults while another turn is running. */
   projectBotForTask(botId: string, threadId: string): BotRecord | null {

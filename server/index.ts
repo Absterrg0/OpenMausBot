@@ -4774,7 +4774,7 @@ function outstandingAssignmentsPrompt(threadId: string): string {
     assignment: node.text.slice(0, 1_000),
     status: node.status === "queued" ? "waiting for that teammate to be free" : "working on it now",
   }));
-  return ` Assignments you already sent are still outstanding, and nothing in this conversation cancelled them: ${JSON.stringify(listed)}. Do not send them again, do not poll or wait for them, and do not tell the user they were lost. Each result returns to this conversation on its own and resumes you then. Answer the message above with that work still in flight.`;
+  return ` Assignments you already sent are still outstanding, and nothing in this conversation cancelled them: ${JSON.stringify(listed)}. Do not resend them, do not poll or wait for them, and do not tell the user they were lost. Each result returns to this conversation on its own and resumes you then. To change or add to one, send the change to the same teammate with coordinate_bots; it runs after the current work. Answer the message above with that work still in flight.`;
 }
 
 const roomHandoffs = new RoomHandoffs(join(DATA_DIR, "room-handoffs.json"), {
@@ -4840,9 +4840,10 @@ const roomHandoffs = new RoomHandoffs(join(DATA_DIR, "room-handoffs.json"), {
     }
     // A successful direct work thread closes after its result is reported:
     // folded out of the sidebar, never deleted, and reopened if addressed.
-    // Failed or withheld work stays visible.
+    // Failed or withheld work stays visible, and so does a thread whose
+    // next request is already waiting there.
     const childTask = store.taskByThread(child.botId, child.threadId);
-    if (!child.groupId && child.status === "completed" && !problem && !childTask?.closedBy
+    if (!child.groupId && child.status === "completed" && !problem && !childTask?.closedBy && !roomHandoffs.activeDirect(child.threadId)
       && childTask?.openedBy?.kind === "work" && childTask.openedBy.botId === parent.botId) {
       store.setTaskClosedBy(child.botId, child.threadId,
         { botId: parent.botId, name: store.bot(parent.botId)?.name ?? childTask.openedBy.name, at: Date.now() });
@@ -17634,19 +17635,16 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
           })).filter(g => g.members.length);
           return json(res, 200, { currentRoom: source ? { id: source.id, name: source.name, workingFolder: source.cwd || null } : null,
             bots: reachablePeers(store.bots, internalSender).map(bot => ({ id: bot.id, name: bot.name, title: bot.title, section: bot.section, busy: bot.busy })),
-            rooms, note: "Without group_id: use this room when in a room, otherwise each distinct assignment starts a fresh thread for that teammate. Give a self-contained brief. Each bot uses its own environment and permissions. Files are not transferred: pass absolute paths only when accessible to the recipient, otherwise pass the content." });
+            rooms, note: "Each bot uses its own environment and permissions. Files are not transferred: pass absolute paths only when accessible to the recipient, otherwise pass the content." });
         }
         if (method === "POST" && path === "/api/internal/coordinate-bots") {
           const parsed = z.object({
             groupId: z.string().min(1).max(128).optional(),
             botIds: z.array(z.string().min(1).max(128)).min(1).max(4).refine(ids => new Set(ids).size === ids.length),
-            message: z.string().trim().min(1).max(4000), requestKey: z.string().regex(/^[\w-]{1,100}$/),
+            message: z.string().trim().min(1).max(4000),
             rework: z.boolean().default(false),
-            // Only ever a name for a thread, so it travels under the same
-            // one-line rule as a peer thread title.
-            label: z.string().trim().min(1).max(60).refine(fitsOnOneLine).optional(),
           }).safeParse(await readInternalBody());
-          if (!parsed.success) return json(res, 400, { error: "Provide 1-4 distinct botIds, message (1-4000 characters), a short requestKey (letters, digits, underscores or hyphens) and an optional one-line label of at most 60 characters." });
+          if (!parsed.success) return json(res, 400, { error: "Provide 1-4 distinct botIds and a message of 1-4000 characters." });
           const groupId = parsed.data.groupId ?? source?.id;
           const destination = groupId ? store.group(groupId) : undefined;
           if (groupId && !destination) return json(res, 404, { error: "No such room; use list_room_targets." });
@@ -17695,60 +17693,61 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
             });
             approvalGranted = true;
           }
-          const accepted: { requestId: string; botId: string; duplicate: boolean; status: string }[] = [];
-          const errors: { botId: string; error: string }[] = [];
+          // A room shows one brief per call, addressed to the call's recipients.
+          const requestBatchKey = destination ? randomUUID() : undefined;
           // One receipt per recipient, in the order the caller addressed
           // them. Dispatch is asynchronous (RoomHandoffs.tick), so a fresh
-          // enqueue is honestly "queued"; a duplicate inherits the state of
-          // the node that already carries this request_key.
+          // enqueue is honestly "queued"; a repeat reports the request it
+          // repeats.
           const receipts: PeerDeliveryReceipt[] = [];
+          // Why nothing was sent, in full: a receipt's detail is clipped.
+          const refused: string[] = [];
           for (const target of targets) {
             let createdThread: string | undefined;
             try {
               requireActiveInternalCapability();
+              // Outside a room this conversation has one thread with each
+              // teammate: the first request opens it, everything after
+              // continues it and runs once the work already there is done.
+              const continued = destination ? undefined : store.workThread(target.botId, internalSender.id, address.threadId);
               if (!destination) {
-                const task = store.createTask(target.botId,
-                  `@${internalSender.name}${parsed.data.label ? ` · ${parsed.data.label}` : " · work"}`,
-                  false, undefined, { botId: internalSender.id, name: internalSender.name, kind: "work", at: Date.now() });
+                const task = continued ?? store.createTask(target.botId, `@${internalSender.name} · work`, false, undefined,
+                  { botId: internalSender.id, name: internalSender.name, kind: "work", threadId: address.threadId, at: Date.now() });
                 if (!task) throw new Error("The recipient no longer exists");
-                target.threadId = createdThread = task.threadId;
+                target.threadId = task.threadId;
+                if (!continued) createdThread = task.threadId;
                 applyDelegatedLevel(internalSender, internalCapability.threadId, store.bot(target.botId)!, target.threadId);
               }
               const { node, duplicate } = roomHandoffs.enqueue(address, internalCapability.generation, internalCapability.roomHandoffId,
-                target, parsed.data.requestKey + ":" + target.botId, parsed.data.message, approvalGranted, parsed.data.rework, [...store.messagesFor(address.threadId)].reverse().find(m => m.role === "user" && m.kind === "text")?.text ?? "",
-                destination ? parsed.data.requestKey : undefined);
-              // A retry keeps its original task; discard the speculative row.
-              if (duplicate && createdThread && createdThread !== node.threadId) {
-                store.deleteTask(target.botId, createdThread);
-              }
-              if (!duplicate && createdThread) threadStarters.set(createdThread, openerFrom(address.threadId));
+                target, target.botId, parsed.data.message, approvalGranted, parsed.data.rework, [...store.messagesFor(address.threadId)].reverse().find(m => m.role === "user" && m.kind === "text")?.text ?? "",
+                requestBatchKey);
+              // A repeat lands on the request already made, possibly in a
+              // thread the person archived meanwhile; a thread opened for it
+              // is never used.
+              if (duplicate && createdThread) store.deleteTask(target.botId, createdThread);
+              else if (createdThread) threadStarters.set(createdThread, openerFrom(address.threadId));
               createdThread = undefined; // The durable coordinator now owns this task.
-              accepted.push({ requestId: node.id, botId: node.botId, duplicate, status: node.status });
-              // A duplicate request_key lands on the node enqueue already
-              // made. Only a live node can still report: a failed or
-              // cancelled one already fired its report and tick() skips it,
-              // so promising "its result will resume you" would be the one
-              // lie a receipt must never tell.
+              // Only a live request can still report: a finished one already
+              // fired its report and tick() skips it, so a repeat of it sends
+              // nothing and says how to run it again.
+              const title = destination ? undefined : store.taskByThread(node.botId, node.threadId)?.title;
+              const finished: Partial<Record<RoomHandoff["status"], string>> = {
+                completed: "it already finished and its result stands; send it with rework=true to run it again",
+                failed: "it failed; send it with rework=true to retry", cancelled: "it was cancelled; send it with rework=true to retry",
+              };
+              const notSent = duplicate && finished[node.status] ? `not sent again: ${finished[node.status]}` : undefined;
+              if (notSent) refused.push(notSent);
               receipts.push(peerDeliveryReceipt({
                 botId: node.botId,
                 botName: store.bot(node.botId)?.name,
-                outcome: duplicate
-                  ? node.status === "running" || node.status === "completed"
-                    ? "injected"
-                    : node.status === "failed" || node.status === "cancelled"
-                      ? "failed"
-                      : "queued"
-                  : "queued",
-                detail: duplicate
-                  ? node.status === "running"
-                    ? "duplicate request_key — this teammate is already running that exact assignment"
-                    : node.status === "completed"
-                      ? "duplicate request_key — this teammate already completed that assignment; the earlier result stands"
-                      : node.status === "failed" || node.status === "cancelled"
-                        ? `duplicate request_key — the earlier assignment ${node.status === "cancelled" ? "was cancelled" : "failed"} and will not rerun or resume you; resend with a new request_key to retry`
-                      : "duplicate request_key — already in flight; its result will resume you automatically"
-                  : "handed to the coordinator; the teammate's turn has not started yet",
+                outcome: notSent ? "failed" : !duplicate || node.status === "queued" ? "queued" : "injected",
+                detail: notSent ?? (duplicate
+                  ? `already sent: it is ${node.status === "queued" ? "queued" : "under way"} and its result will resume you`
+                  : title
+                    ? `sent to "${title}"; it runs after anything still running there`
+                    : "handed to the coordinator; the teammate's turn has not started yet"),
                 requestId: node.id,
+                ...(destination ? {} : { threadId: node.threadId }),
               }));
               if (!duplicate) {
                 const recipient = store.bot(target.botId)!;
@@ -17764,14 +17763,13 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
                 store.deleteTask(target.botId, createdThread);
               }
               const said = error instanceof Error ? error.message : String(error);
-              errors.push({ botId: target.botId, error: said });
-              receipts.push(peerDeliveryReceipt({
-                botId: target.botId, botName: store.bot(target.botId)?.name, outcome: "failed", detail: said,
-              }));
+              refused.push(said);
+              receipts.push(peerDeliveryReceipt({ botId: target.botId, botName: store.bot(target.botId)?.name, outcome: "failed", detail: said }));
             }
           }
-          return json(res, accepted.length ? 200 : 409, { accepted, errors, receipts,
-            ...(accepted.length ? { message: "End your turn after sending all work. These actual teammates will reply and resume you automatically. Do not poll or wait." } : { error: errors.map(e => e.error).join("; ") }),
+          const sent = refused.length < receipts.length;
+          return json(res, sent ? 200 : 409, { receipts,
+            ...(sent ? { message: "End your turn after sending all work. These actual teammates will reply and resume you automatically. Do not poll or wait." } : { error: refused.join("; ") }),
           });
         }
       }

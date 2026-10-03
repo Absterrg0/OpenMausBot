@@ -393,6 +393,12 @@ export function verificationServerEnvironment(parentEnv: NodeJS.ProcessEnv, data
   if (parentEnv.OMB_TEST_FAIL_AUDIO_APPEND_ONCE) {
     childEnv.OMB_TEST_FAIL_AUDIO_APPEND_ONCE = parentEnv.OMB_TEST_FAIL_AUDIO_APPEND_ONCE;
   }
+  // Desktop mode: the server runs as the desktop app runs it, and the owner
+  // capability the app would hand it is this one (see desktop-parent.mjs).
+  if (parentEnv.OMB_TEST_DESKTOP_OWNER_TOKEN) {
+    childEnv.OMB_TEST_DESKTOP_OWNER_TOKEN = parentEnv.OMB_TEST_DESKTOP_OWNER_TOKEN;
+    childEnv.OMB_DESKTOP_PARENT = "1";
+  }
   return childEnv;
 }
 
@@ -473,6 +479,9 @@ export async function launchVerificationServer(
   const serverArgs = ["--experimental-strip-types"];
   if (childEnv.OMB_TEST_FAIL_AUDIO_APPEND_ONCE === "1") {
     serverArgs.push("--import", pathToFileURL(join(ROOT, "server", "testing", "fail-audio-append-once.mjs")).href);
+  }
+  if (childEnv.OMB_TEST_DESKTOP_OWNER_TOKEN) {
+    serverArgs.push("--import", pathToFileURL(join(ROOT, "server", "testing", "desktop-parent.mjs")).href);
   }
   serverArgs.push(join(ROOT, "server", "index.ts"));
   const child = spawn(process.execPath, serverArgs, {
