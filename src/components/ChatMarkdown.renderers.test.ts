@@ -4,7 +4,8 @@
 // means new element types and React throws away every element of the
 // message: code highlights, wrap and copy state, spoilers, image previews.
 // And a message that cannot hold a thread link has no reason to follow the
-// thread list at all.
+// thread list at all. Nor should a re-render or a re-mount of the same text
+// parse it again to repair tables and normalize math.
 import { createElement } from "react";
 import * as React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
@@ -19,7 +20,14 @@ vi.mock("react", async (importOriginal) => {
   const react = await importOriginal<typeof React>();
   return { ...react, use: vi.fn(react.use), useContext: vi.fn(react.useContext) };
 });
+// react-markdown is stubbed above, so every parse counted here is one of
+// ChatMarkdown's own passes over the text (table repair, math delimiters)
+vi.mock("mdast-util-from-markdown", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("mdast-util-from-markdown")>();
+  return { ...actual, fromMarkdown: vi.fn(actual.fromMarkdown) };
+});
 
+import { fromMarkdown } from "mdast-util-from-markdown";
 import { ChatMarkdown } from "./ChatMarkdown";
 import { ThreadRefsContext, type ThreadRefsValue } from "./ThreadRefs";
 
@@ -69,5 +77,33 @@ describe("ChatMarkdown element renderers", () => {
     vi.mocked(React.useContext).mockClear();
     markdownProps(before, "Done in [QA](OpenMausBot://thread/qa-245?bot=scout).");
     expect(threadListReads()).toBe(1);
+  });
+});
+
+describe("ChatMarkdown normalization", () => {
+  beforeEach(() => vi.mocked(fromMarkdown).mockClear());
+
+  it("parses a message for table repair and math once, however often it renders", () => {
+    // the heading reads the thread list, so this bubble re-renders when it changes
+    const text = "## Costs\n\n| Step | Cost |\n|---|\n| build | 5 |\n\nArea \\(x^2\\).";
+    const first = markdownProps(before, text);
+    expect(first.children).toContain("$x^2$");
+    expect(fromMarkdown).toHaveBeenCalledTimes(2);
+
+    const second = markdownProps(after, text);
+    expect(second.children).toBe(first.children);
+    expect(fromMarkdown).toHaveBeenCalledTimes(2);
+  });
+
+  it("remembers a bounded number of messages, newest kept", () => {
+    const oldest = "The oldest message.";
+    markdownProps(before, oldest);
+    for (let i = 0; i < 1000; i++) markdownProps(before, `Message ${i}.`);
+
+    vi.mocked(fromMarkdown).mockClear();
+    markdownProps(before, "Message 999.");
+    expect(fromMarkdown).not.toHaveBeenCalled();
+    markdownProps(before, oldest);
+    expect(fromMarkdown).toHaveBeenCalledOnce();
   });
 });

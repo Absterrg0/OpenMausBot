@@ -29,6 +29,7 @@ import {
   getSnippetFileName,
 } from "../lib/code-block";
 import { repairMarkdownTables } from "../lib/markdown-tables";
+import { TRANSCRIPT_WINDOW_SIZE } from "../lib/transcript-window";
 import { windowsPathDestinations } from "../../shared/markdown-windows-paths";
 import { looksLikeThreadRefUrl, parseThreadRefUrl, resolveThreadRefAddress, remarkThreadRefs } from "../lib/thread-refs";
 import { MarkdownImagePreview, useLocalFileSave, type MessageAttachmentContext } from "./AttachmentPreview";
@@ -781,6 +782,39 @@ export function normalizeMathDelimiters(text: string, imageOffsets?: Map<number,
   return normalized;
 }
 
+/** A message's text as react-markdown reads it. */
+interface NormalizedMarkdown {
+  source: string;
+  /** markdown image offsets after math normalization → offsets in the stored text */
+  imageOffsets?: Map<number, number>;
+}
+
+// Table repair and math normalization each parse the whole message on top of
+// react-markdown's own parse, and what they produce depends on the text alone.
+// Keep it per text, so a bubble that renders again (a thread list change under
+// a message holding a '#') or mounts again (a thread revisited, the raw view
+// toggled off) skips both parses. Two transcript windows' worth: the open
+// thread and the one before it.
+const normalizedCache = new Map<string, NormalizedMarkdown>();
+const NORMALIZED_CACHE_MAX = TRANSCRIPT_WINDOW_SIZE * 2;
+
+function normalizeMessageMarkdown(text: string): NormalizedMarkdown {
+  const cached = normalizedCache.get(text);
+  if (cached) return cached;
+  // A near-miss table from a model renders as an unreadable run of pipes
+  // unless it is repaired before parsing. Table repair moves image source
+  // offsets, so image messages skip that repair but still normalize math.
+  const imageOffsets = text.includes(MARKDOWN_IMAGE) ? new Map<number, number>() : undefined;
+  const source = normalizeMathDelimiters(imageOffsets ? text : repairMarkdownTables(text), imageOffsets);
+  if (normalizedCache.size >= NORMALIZED_CACHE_MAX) {
+    const first = normalizedCache.keys().next().value;
+    if (first !== undefined) normalizedCache.delete(first);
+  }
+  const normalized = { source, imageOffsets };
+  normalizedCache.set(text, normalized);
+  return normalized;
+}
+
 /** What a message's element renderers need from that message. The renderers
  * are defined once, below: react-markdown makes each one an element type,
  * and a fresh function per render would hand React a new type for every
@@ -953,13 +987,7 @@ function ChatMarkdownComponent({ text, message, mentionPeers = NO_MENTION_PEERS,
   // may be called conditionally), so opening or renaming a thread, renaming
   // a bot or changing the selection leaves every other bubble alone.
   const { threads, currentBotId } = MAY_LINK_THREAD.test(text) ? use(ThreadRefsContext) : NO_THREAD_REFS;
-  // A near-miss table from a model renders as an unreadable run of pipes
-  // unless it is repaired before parsing. Table repair moves image source
-  // offsets, so image messages skip that repair but still normalize math.
-  const imageOffsets = text.includes(MARKDOWN_IMAGE) ? new Map<number, number>() : undefined;
-  const source = normalizeMathDelimiters(imageOffsets
-    ? text
-    : repairMarkdownTables(text), imageOffsets);
+  const { source, imageOffsets } = normalizeMessageMarkdown(text);
   return (
     <MessageScopeContext.Provider value={{ message, imageOffsets, threads, currentBotId }}>
       <div className="chat-md min-w-0 [&>*+*]:mt-2">
