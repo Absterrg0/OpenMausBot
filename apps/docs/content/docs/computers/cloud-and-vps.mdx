@@ -18,6 +18,10 @@ at native resolution; tool approvals and **Take control** still apply. A model
 without computer tools can't use the cloud computer: choose another model, or set
 **Works on** to Auto.
 
+On **Auto**, a conversation works on the Boat only after the bot moves it there
+(it asks to switch with `select_computer`). Auto by itself never reads, wakes or
+creates a Boat, so it adds no cloud computer calls to an ordinary message.
+
 ## Bring your own VPS
 
 OpenMausBot can control Docker on an x86_64 Linux server through an SSH config alias. The agent process stays on your local machine; only Docker commands and the managed desktop container run on the VPS.

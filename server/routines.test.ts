@@ -43,7 +43,7 @@ function harness(start = new Date(2026, 7, 17, 8, 0, 0).getTime()) {
   const taskActivations: boolean[] = [];
   const taskTitles: string[] = [];
   const goalTasks: Array<{ groupId: string; title: string }> = [];
-  const interruptedTurns: Array<{ botId: string; threadId: string; runOn: string }> = [];
+  const interruptedTurns: Array<{ botId: string; threadId: string }> = [];
   const interruptedGoals: Array<{
     groupId: string;
     threadId: string;
@@ -76,8 +76,8 @@ function harness(start = new Date(2026, 7, 17, 8, 0, 0).getTime()) {
     startGoal: async (groupId, threadId, prompt, coordinatorBotId, runId, onDispatchError) => {
       startedGoals.push({ groupId, threadId, prompt, coordinatorBotId, runId, onDispatchError });
     },
-    interruptTurn: async (botId, threadId, runOn) => {
-      interruptedTurns.push({ botId, threadId, runOn });
+    interruptTurn: async (botId, threadId) => {
+      interruptedTurns.push({ botId, threadId });
     },
     interruptGoal: async (groupId, threadId, outcome) => {
       interruptedGoals.push({ groupId, threadId, ...(outcome ? { outcome } : {}) });
@@ -1763,7 +1763,7 @@ describe("RoutineManager", () => {
       finishedAt: startedAt! + 5 * 60_000,
     });
     expect(h.interruptedTurns).toEqual([
-      { botId: "maus-timeout", threadId: "thread-1", runOn: "maus" },
+      { botId: "maus-timeout", threadId: "thread-1" },
     ]);
   });
 

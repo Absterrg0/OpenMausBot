@@ -54,11 +54,17 @@ it("keeps the bot's own engine on the cloud computer, and a failed place never b
   const commands: string[] = [];
   let prompts = 0;
   let boxesCreated = 0;
+  /** Every request to the Boat account, reads included. */
+  let boatCalls = 0;
+  /** A new Boat whose desktop link can't be made, and whose rollback delete
+   * then fails: the provision fails and leaves a deletion fence. */
+  let failNewBoat = false;
   const upstream = createServer(async (req, res) => {
     const path = new URL(req.url ?? "/", "http://fixture").pathname;
     let raw = ""; for await (const part of req) raw += part;
     const body = raw ? JSON.parse(raw) : {};
     res.setHeader("content-type", "application/json");
+    if (path.startsWith("/boxes")) boatCalls++;
     if (path === "/v1/models") return res.end(JSON.stringify({ data: [{ id: "tools-off-model" }] }));
     if (path === "/v1/chat/completions") {
       res.setHeader("content-type", "text/event-stream");
@@ -74,15 +80,16 @@ it("keeps the bot's own engine on the cloud computer, and a failed place never b
     }
     if (path === "/boxes" && req.method === "POST") {
       boxesCreated++;
-      const row = { id: "bx_23456789", name: body.name, state: "idle" }; rows.push(row);
+      const row = { id: ["bx_23456789", "bx_3456789a"][rows.length]!, name: body.name, state: "idle" }; rows.push(row);
       return res.end(JSON.stringify({ box: row }));
     }
     if (path === "/boxes") return res.end(JSON.stringify({ boxes: rows }));
     if (path.endsWith("/commands")) { commands.push(String(body.command)); return res.end(JSON.stringify({ exitCode: 0, stdout: "captured", stderr: "" })); }
     if (path.endsWith("/artifacts")) { res.setHeader("content-type", "image/jpeg"); return res.end(JPEG); }
-    if (path.endsWith("/desktop")) return res.end(JSON.stringify({ desktopUrl: "https://desktop.fixture.invalid" }));
+    if (path.endsWith("/desktop")) return res.end(JSON.stringify(failNewBoat ? {} : { desktopUrl: "https://desktop.fixture.invalid" }));
     const row = rows.find(entry => path === "/boxes/" + entry.id);
     if (row) {
+      if (req.method === "DELETE" && failNewBoat) { res.statusCode = 500; return res.end(JSON.stringify({ ok: false, message: "fixture refused delete" })); }
       if (req.method === "PATCH" && typeof body.name === "string") row.name = body.name;
       return res.end(JSON.stringify({ box: row }));
     }
@@ -190,6 +197,45 @@ it("keeps the bot's own engine on the cloud computer, and a failed place never b
     await hostedTurn(bot.id, bot.activeTaskId, model);
     expect(boxesCreated).toBe(1);
 
+    // Auto never reaches the Boat for an engine that uses it as a computer,
+    // even while this bot's Boat is running: no Boat call before the engine
+    // starts, and no place recorded, so a later message can't wake or
+    // recreate a machine nobody chose for this conversation.
+    const autoThread = (await apiOk("POST", `/api/bots/${bot.id}/tasks`, {})).task.threadId as string;
+    const callsBeforeAuto = boatCalls;
+    rmSync(fixture.fixtureDumpPath, { force: true });
+    await control(["send", "--bot", bot.id, "--task", autoThread, "--text", "what is 2+2?"]);
+    expect((await dump()).mcpConfig?.mcpServers?.computer?.args?.[1]).not.toBe("computer");
+    await finish(bot.id, autoThread);
+    expect(boatCalls - callsBeforeAuto, "an Auto turn read the Boat account").toBe(0);
+    expect((await task(bot.id, autoThread)).surface).toBeUndefined();
+    rows.length = 0; // the Boat is gone; the conversation still never creates one
+    await control(["send", "--bot", bot.id, "--task", autoThread, "--text", "and 3+3?"]);
+    await finish(bot.id, autoThread);
+    expect(boxesCreated).toBe(1);
+    expect(boatCalls - callsBeforeAuto).toBe(0);
+
+    // A Hosted desktop turn whose new Boat can't be finished, and whose
+    // rollback delete isn't confirmed, leaves the Boat fenced for deletion.
+    // Its failure names Works on, and that next action works: an Auto turn
+    // never reads the fenced Boat, so the same conversation answers again.
+    failNewBoat = true;
+    const { bot: fenced } = await control(["new-bot", "--name", "Fenced fixture"]);
+    await apiOk("PATCH", `/api/bots/${fenced.id}`, { computer: "cloud" });
+    await control(["send", "--bot", fenced.id, "--task", fenced.activeTaskId, "--text", "Use the hosted desktop."]);
+    expect((await control(["wait", "--bot", fenced.id, "--task", fenced.activeTaskId, "--timeout", "30"])).status).toBe("failed");
+    expect((await lastRows(fenced.activeTaskId)).at(-1)).toMatch(/^error: box desktop link could not be created.*Set Works on to Auto in this bot's settings to continue\.$/);
+    await control(["send", "--bot", fenced.id, "--task", fenced.activeTaskId, "--text", "Try the hosted desktop again."]);
+    expect((await control(["wait", "--bot", fenced.id, "--task", fenced.activeTaskId, "--timeout", "30"])).status).toBe("failed");
+    expect((await lastRows(fenced.activeTaskId)).at(-1)).toBe("error: this cloud computer is being deleted — wait for it to finish, or retry Delete if it needs attention. Set Works on to Auto in this bot's settings to continue.");
+    await apiOk("PATCH", `/api/bots/${fenced.id}`, { computer: null });
+    const callsBeforeFencedAuto = boatCalls;
+    await control(["send", "--bot", fenced.id, "--task", fenced.activeTaskId, "--text", "what is 2+2?"]);
+    await finish(fenced.id, fenced.activeTaskId);
+    expect(boatCalls).toBe(callsBeforeFencedAuto);
+    failNewBoat = false;
+    expect(boxesCreated).toBe(2);
+
     // An engine without computer tools is refused before anything is created,
     // with the one setting that changes it; that setting unbreaks the bot.
     await apiOk("PUT", "/api/config", { openaiCompat: { url: `${origin}/v1`, key: "synthetic-fixture-key", model: "tools-off-model" } });
@@ -200,8 +246,21 @@ it("keeps the bot's own engine on the cloud computer, and a failed place never b
     await control(["send", "--bot", plain.id, "--task", plain.activeTaskId, "--text", "hello"]);
     expect((await control(["wait", "--bot", plain.id, "--task", plain.activeTaskId, "--timeout", "30"])).status).toBe("failed");
     expect((await lastRows(plain.activeTaskId)).at(-1)).toBe("error: This model can't use a computer. Choose another model, or set Works on to Auto.");
-    expect(boxesCreated).toBe(1);
+    expect(boxesCreated).toBe(2);
     expect((await task(plain.id, plain.activeTaskId)).busy).toBe(false);
+    // A cloud routine is refused by the same rule, naming its own control.
+    const { routine } = await apiOk("POST", "/api/routines", { name: "Tools-off cloud", botId: plain.id,
+      prompt: "Inspect the cloud desktop.", runOn: "cloud", enabled: false,
+      schedule: { type: "interval", everyMinutes: 60, anchorAt: Date.now() + 3_600_000 } });
+    const { run } = await apiOk("POST", `/api/routines/${routine.id}/run`, {});
+    let routineThread = "";
+    await expect.poll(async () => {
+      routineThread = (await apiOk("GET", "/api/routines")).runs.find((entry: any) => entry.id === run.id)?.threadId ?? "";
+      return routineThread;
+    }, { timeout: 15_000 }).not.toBe("");
+    expect((await control(["wait", "--bot", plain.id, "--task", routineThread, "--timeout", "30"])).status).toBe("failed");
+    expect((await lastRows(routineThread)).at(-1)).toBe("error: This model can't use a computer. Choose another model, or change where this routine runs.");
+    expect(boxesCreated).toBe(2);
     await apiOk("PATCH", `/api/bots/${plain.id}`, { computer: null });
     await control(["send", "--bot", plain.id, "--task", plain.activeTaskId, "--text", "hello again"]);
     expect((await control(["wait", "--bot", plain.id, "--task", plain.activeTaskId, "--timeout", "30"])).status).toBe("settled");

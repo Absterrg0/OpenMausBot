@@ -28,6 +28,7 @@ import { assertRequestTarget, guardedRequestPath, requestConflict, requestNeedsI
 import { botAvatarUrlFromStoredPath } from "../shared/bot-avatar.ts";
 import { BOT_PROFILE_LIMITS } from "../shared/bot-profile.ts";
 import { CLOUD_COMPUTER_BUSY_ERROR } from "../shared/computer-contention.ts";
+import { canWorkOnCloud, type CloudEngine } from "../shared/cloud-computer.ts";
 import {
   approvalModeFor,
   modelSwitchNeedsAsk,
@@ -220,7 +221,6 @@ import {
   type SendTurnInput,
   type SteerOutcome,
   newId,
-  usesCloudComputer,
 } from "./contracts.ts";
 import { RETRY_MAX_ATTEMPTS } from "./drivers/retry.ts";
 import { recoveryCapabilityError } from "./automatic-recovery.ts";
@@ -2456,6 +2456,14 @@ class ComputerWaitParked extends Error {
     this.resource = resource;
     this.generation = generation;
   }
+}
+/** A place the turn was told to use failed to attach: its cause plus the one
+ * control that changes it (placeUnavailable). A cancelled setup, a parked
+ * computer wait and an already-worded place failure pass through as they
+ * are. The one wrapper for a bot thread and a room turn. */
+function asPlaceFailure(error: unknown, place: Surface, source: PlaceSource, limit?: number): unknown {
+  if (error instanceof DirectTurnSetupCancelled || error instanceof ComputerWaitParked || error instanceof PlaceUnavailableError) return error;
+  return placeUnavailable(place, source, error instanceof Error ? error.message : String(error), limit);
 }
 const directTurnDispatchClaims = new Map<string, DirectTurnDispatchClaim>();
 const directTurnGenerationByThread = new Map<string, string>();
@@ -5977,10 +5985,7 @@ const watchdog = new TurnWatchdog({
     repeats.settle(turn.threadId);
     const bot = botForThread(turn.botId, turn.threadId);
     const routineRun = activeRoutineRunForThread(turn.threadId);
-    const instance = bot
-      ? runningTurnInstance(bot, turn.threadId)
-      : runningTurnEngines.get(turn.threadId) ?? null;
-    void instance?.adapter.interruptTurn(turn.threadId).catch(() => {});
+    void runningTurnInstance(bot, turn.threadId)?.adapter.interruptTurn(turn.threadId).catch(() => {});
     const minutes = Math.round(TURN_STALL_MS / 60_000);
     if (routineRun?.target === "bot") {
       routines?.failThread(turn.threadId, `No activity for ${minutes} minutes — the routine was stopped`);
@@ -6682,9 +6687,9 @@ async function attachTeamBoat(computer: TeamComputerRecord, botId: string, owner
   let machine = await boat.findBoat(cfg, ownerId);
   if (!machine) throw new Error("The team's Boat computer is missing; explicitly create or retry it from the Team map");
   await bindTurnComputer(owner, `computer:box:${machine.id}`, true);
-  const action = boat.boatTurnLifecycleAction({ explicitCloud: true, canMount: true, state: typeof machine.state === "string" ? machine.state : null });
+  const action = boat.boatTurnLifecycleAction({ explicitCloud: true, state: typeof machine.state === "string" ? machine.state : null });
   if (action === "wake") machine = await boat.readyBoat(cfg, ownerId);
-  if (!machine || boat.boatTurnLifecycleAction({ explicitCloud: true, canMount: true, state: typeof machine.state === "string" ? machine.state : null }) !== "attach") {
+  if (!machine || boat.boatTurnLifecycleAction({ explicitCloud: true, state: typeof machine.state === "string" ? machine.state : null }) !== "attach") {
     throw new Error("The team computer is not ready; check it in the Team map");
   }
   if (turnResourceOwners.get(owner.threadId)?.generation !== owner.generation ||
@@ -6693,6 +6698,11 @@ async function attachTeamBoat(computer: TeamComputerRecord, botId: string, owner
     mount: cloudComputerMount(botId, owner, machine.id, remoteAgent),
     capture: () => boat.screenshotBoat(cfg, ownerId, machine!.id),
   };
+}
+
+/** The two engine facts the cloud-computer rule reads (shared/cloud-computer.ts). */
+function cloudEngine(instance: ReturnType<typeof registry.get>): CloudEngine {
+  return { driverKind: instance?.driverKind, computerMcp: instance?.adapter.capabilities.computerMcp };
 }
 
 /** How a turn's engine reaches a cloud computer. The Computer engine runs its
@@ -6777,11 +6787,13 @@ async function mountBotVps(
 
 /** The bot's own Boat. Explicit Cloud is the consent boundary: it may create a
  * missing machine and wake an archived one (~8s, and it un-pauses billing);
- * Auto only attaches a machine that is already running. */
+ * Auto (only ever the Computer engine, see startTurn) only attaches a machine
+ * that is already running. Callers have already checked that the engine can
+ * work on it (cloudPlaceDriverError). */
 async function attachBotBoat(
   bot: BotRecord,
   owner: TurnOwner,
-  opts: { explicitCloud: boolean; canMount: boolean; remoteAgent: boolean },
+  opts: { explicitCloud: boolean; remoteAgent: boolean },
 ) {
   // Explicit cloud turns can provision/wake the same bot's Boat. Claim before
   // any network await so setup itself cannot race another turn.
@@ -6797,7 +6809,6 @@ async function attachBotBoat(
   }
   const lifecycleOf = (explicitCloud: boolean) => boat.boatTurnLifecycleAction({
     explicitCloud,
-    canMount: opts.canMount,
     state: typeof b?.state === "string" ? b.state : null,
   });
   let lifecycle = lifecycleOf(opts.explicitCloud);
@@ -6820,7 +6831,7 @@ async function attachBotBoat(
   await bindTurnComputer(owner, `computer:box:${machine.id}`, opts.remoteAgent);
   return {
     capture: () => boat.screenshotBoat(cfg, bot.id, machine.id),
-    mount: opts.canMount ? cloudComputerMount(bot.id, owner, machine.id, opts.remoteAgent) : null,
+    mount: cloudComputerMount(bot.id, owner, machine.id, opts.remoteAgent),
   };
 }
 
@@ -6939,7 +6950,8 @@ async function computerPreviewSurface(bot: BotRecord, threadId?: string) {
  * A Cloud home lists only the places it has (cloud-home.ts), so a bot never
  * tells the person to set up this computer or a Local VM there. */
 async function selectableComputers(bot: BotRecord) {
-  const caps = registry.get(bot.modelSelection.instanceId)?.adapter.capabilities;
+  const instance = registry.get(bot.modelSelection.instanceId);
+  const caps = instance?.adapter.capabilities;
   const off = bot.computer === "off";
   const localEngine = caps?.remoteAgent !== true;
   const surfaces = (["cloud", "vm", "local", "browser"] as const).filter(surface => !CLOUD_HOME || cloudHomeOffersPlace(surface));
@@ -6956,15 +6968,15 @@ async function selectableComputers(bot: BotRecord) {
       if (off) reason = "Computer access is Off in this bot's settings.";
       else if (surface === "cloud") {
         if (bot.cloudBackend === "vps") {
-          const status = localEngine && caps?.computerMcp ? await vps.vpsComputerStatus(cfg, bot.id) : null;
+          const status = canWorkOnCloud(cloudEngine(instance), "vps") ? await vps.vpsComputerStatus(cfg, bot.id) : null;
           ready = status?.ready === true;
           canStart = Boolean(status?.daemonUp && status.managed && status.container === "stopped" &&
             status.image && status.imageMatches && status.network === "private" && status.mounts === "none" && status.security === "hardened");
           canCreate = Boolean(status?.configured && status.daemonUp && status.container === "missing");
           reason = status?.problem ?? reason;
-        } else if (boat.boatConfigured(cfg) && caps !== undefined && usesCloudComputer(caps)) {
+        } else if (boat.boatConfigured(cfg) && canWorkOnCloud(cloudEngine(instance), "box")) {
           const status = await boat.boatStatus(cfg, bot.id);
-          const lifecycle = boat.boatTurnLifecycleAction({ explicitCloud: true, canMount: true, state: status.box?.state ?? null });
+          const lifecycle = boat.boatTurnLifecycleAction({ explicitCloud: true, state: status.box?.state ?? null });
           ready = lifecycle === "attach";
           canStart = lifecycle === "wake";
           canCreate = lifecycle === "provision";
@@ -7026,9 +7038,9 @@ function continueComputerSelection(threadId: string, generation: string | undefi
 /** The engine that dispatched each live turn. A bot's settings may change
  * mid-turn; an interrupt or steer must reach the engine actually running. */
 const runningTurnEngines = new Map<string, NonNullable<ReturnType<typeof registry.get>>>();
-function runningTurnInstance(bot: NonNullable<ReturnType<typeof store.bot>>, threadId: string): ReturnType<typeof registry.get> {
+function runningTurnInstance(bot: BotRecord | null | undefined, threadId: string): ReturnType<typeof registry.get> {
   // A turn always runs on the bot's own engine, wherever it works.
-  return runningTurnEngines.get(threadId) ?? registry.get(bot.modelSelection.instanceId);
+  return runningTurnEngines.get(threadId) ?? (bot ? registry.get(bot.modelSelection.instanceId) : null);
 }
 
 function providerTransitionForTurn(
@@ -9856,7 +9868,6 @@ async function startTurn(
       // landed. A team computer or a cloud routine is not this conversation's
       // choice, so those ignore the pin.
       const dispatchTask = store.taskByThread(bot.id, threadId);
-      if (plan.clearPin && dispatchTask) store.patchTask(bot.id, threadId, { surface: undefined });
       if (plan.computer !== undefined && plan.computer !== "cloud" && instance.adapter.capabilities.remoteAgent === true) {
         throw new Error("the Computer engine works on the cloud computer — set Works on to Cloud, or choose another engine");
       }
@@ -9870,15 +9881,16 @@ async function startTurn(
       // Where an explicit place came from, so its failure names the one
       // control that changes it (and a failed Auto-recorded pin is cleared).
       // Auto and a team's shared computer are nobody's per-turn choice.
-      const placeSource: PlaceSource | undefined = teamComputer || wants === undefined || wants === "off" ? undefined
+      const namedPlace = teamComputer || wants === undefined || wants === "off" ? undefined : wants;
+      const placeSource: PlaceSource | undefined = !namedPlace ? undefined
         : opts?.runOn === "cloud" ? "routine"
         : plan.pinned ? (dispatchTask?.surfaceSource === "auto" ? "auto-pin" : "pin")
         : "works-on";
       // An engine that cannot use the cloud computer is refused here, before
       // anything is created or woken — never handed to another engine.
       if (wants === "cloud" && placeSource) {
-        const unsupported = cloudPlaceDriverError(instance.adapter.capabilities, cloudBackend, placeSource);
-        if (unsupported) throw new PlaceUnavailableError("cloud", placeSource, unsupported);
+        const unsupported = cloudPlaceDriverError(cloudEngine(instance), cloudBackend, placeSource);
+        if (unsupported) throw new PlaceUnavailableError("cloud", unsupported);
       }
       let previewCapture: (() => Promise<{ png: string; format: string }>) | null = null;
       let browserCapture: (() => Promise<{ png: string; format: string }>) | null = null;
@@ -10148,7 +10160,7 @@ async function startTurn(
         // the person explicitly opted this bot into remote lifecycle actions.
         // On Auto an engine that cannot use a computer simply skips it.
         if ((wants === "cloud" || (wants === undefined && managedPolicy.computerAllowed("vps"))) && cloudBackend === "vps" &&
-            !cloudPlaceDriverError(instance.adapter.capabilities, "vps")) {
+            canWorkOnCloud(cloudEngine(instance), "vps")) {
           // The VPS "computer" is the desktop inside this bot's managed
           // container, and only screen work needs that desktop to itself.
           // So the lease is claimed on the first computer call, through the
@@ -10191,27 +10203,28 @@ async function startTurn(
           }
         }
 
-        // Cloud is strict when selected. Every engine that can use it may also
-        // reuse an already-ready Boat on Auto.
         if (teamComputer) {
           const attached = await attachTeamBoat(teamComputer, bot.id, resourceOwner,
-            usesCloudComputer(instance.adapter.capabilities), instance.adapter.capabilities.remoteAgent === true);
+            canWorkOnCloud(cloudEngine(instance), "box"), instance.adapter.capabilities.remoteAgent === true);
           Object.assign(integrations, attached.mount);
           previewCapture = attached.capture;
           computerKind = "box";
         }
-        if (!teamComputer && usesCloudComputer(instance.adapter.capabilities) && (wants === "cloud" || (wants === undefined && !computerPlaceRefusal("box"))) && cloudBackend === "box" && boat.boatConfigured(cfg)) {
-          const attached = await attachBotBoat(bot, resourceOwner, {
-            explicitCloud: wants === "cloud",
-            canMount: usesCloudComputer(instance.adapter.capabilities),
-            remoteAgent: instance.adapter.capabilities.remoteAgent === true,
-          });
+        // Cloud is strict when selected. On Auto only the Computer engine,
+        // whose whole turn runs on its Boat, attaches one, and only one that
+        // is already running. Every other engine reaches the Boat only when
+        // this conversation is on it (Works on, a pin, a cloud routine, or
+        // select_computer): an Auto turn never reads the Boat account, so it
+        // adds no Boat call, cannot be stopped by a Boat being deleted, and
+        // never records a place nobody chose.
+        const remoteAgent = instance.adapter.capabilities.remoteAgent === true;
+        if (!teamComputer && cloudBackend === "box" && boat.boatConfigured(cfg) &&
+            (wants === "cloud" || (wants === undefined && remoteAgent && !computerPlaceRefusal("box")))) {
+          const attached = await attachBotBoat(bot, resourceOwner, { explicitCloud: wants === "cloud", remoteAgent });
           if (attached) {
             previewCapture = attached.capture;
-            if (attached.mount) {
-              Object.assign(integrations, attached.mount);
-              computerKind = "box";
-            }
+            Object.assign(integrations, attached.mount);
+            computerKind = "box";
           }
         }
         if (wants === "cloud" && cloudBackend === "box" && !boat.boatConfigured(cfg)) {
@@ -10221,9 +10234,10 @@ async function startTurn(
           throw new Error("the cloud computer could not be created or reached");
         }
       } catch (error) {
-        if (!placeSource || wants === undefined || wants === "off" || error instanceof DirectTurnSetupCancelled ||
-            error instanceof ComputerWaitParked || error instanceof PlaceUnavailableError) throw error;
-        throw placeUnavailable(wants, placeSource, error instanceof Error ? error.message : String(error));
+        // Auto, Off and a team's shared computer name no place; they fail as
+        // they are.
+        if (!namedPlace || !placeSource) throw error;
+        throw asPlaceFailure(error, namedPlace, placeSource);
       }
 
       // Auto-only host fallback. Electron owns cua-driver/TCC attribution;
@@ -10412,8 +10426,9 @@ async function startTurn(
       // Pin on use (issue #1650): every computer that registers a claim
       // slot — a ready Local VM, the VPS, the host fallback, a VM created
       // for this turn — records its pin inside the claim itself, so a turn
-      // that only mounted tools records nothing. A Box attached during
-      // dispatch and the built-in browser (no seat to claim) pin here.
+      // that only mounted tools records nothing. The Computer engine's Boat
+      // (its whole turn runs there) and the built-in browser (no seat to
+      // claim) pin here.
       if (autoPinAllowed()) {
         const claimSlot = autoVmClaims.get(threadId);
         const pinsAtClaim = claimSlot?.owner.generation === resourceOwner.generation;
@@ -11063,11 +11078,8 @@ routines = new RoutineManager({
     discardDelegations(commsBus, threadId);
     cancelDirectTurnDispatch(botId, threadId);
     revokeInternalCapabilitiesForThread(threadId);
-    const instance = bot
-      ? runningTurnInstance(bot, threadId)
-      : runningTurnEngines.get(threadId) ?? null;
     try {
-      await instance?.adapter.interruptTurn(threadId);
+      await runningTurnInstance(bot, threadId)?.adapter.interruptTurn(threadId);
     } finally {
       closeOpenApprovals(threadId);
     }
@@ -11230,8 +11242,8 @@ async function cloudRoutineReadiness(botId: string, threadId?: string): Promise<
   const instance = registry.get(bot.modelSelection.instanceId);
   if (!instance) return { ready: false, reason: "The target bot's model is unavailable. Choose another model in the bot's settings." };
   // The same rule a cloud turn applies, before anything is provisioned.
-  const unsupported = cloudPlaceDriverError(instance.adapter.capabilities, "box");
-  if (unsupported) return { ready: false, reason: "This model can't use a computer. Choose another model, or change where this routine runs." };
+  const unsupported = cloudPlaceDriverError(cloudEngine(instance), "box", "routine");
+  if (unsupported) return { ready: false, reason: unsupported };
   try {
     if ((await instance.snapshot()).state !== "available") {
       return { ready: false, reason: "The target bot's model is not ready to use the Boat cloud computer." };
@@ -12573,8 +12585,8 @@ async function runGroupMemberTurn(
   // The same one rule as a bot thread, before anything is provisioned: an
   // engine that cannot use the cloud computer is refused, never swapped.
   if (!roomTeamComputer && roomPlan.computer === "cloud") {
-    const unsupported = cloudPlaceDriverError(instance.adapter.capabilities, turnProvider(readyBot) === "vps" ? "vps" : "box");
-    if (unsupported) throw new PlaceUnavailableError("cloud", "works-on", unsupported);
+    const unsupported = cloudPlaceDriverError(cloudEngine(instance), turnProvider(readyBot) === "vps" ? "vps" : "box");
+    if (unsupported) throw new PlaceUnavailableError("cloud", unsupported);
   }
   // One place per room turn as well: a team computer reached on Auto means
   // no separate built-in browser.
@@ -12595,7 +12607,7 @@ async function runGroupMemberTurn(
 
   if (roomTeamComputer) {
     const attached = await attachTeamBoat(roomTeamComputer, readyBot.id, resourceOwner,
-      usesCloudComputer(instance.adapter.capabilities), instance.adapter.capabilities.remoteAgent === true);
+      canWorkOnCloud(cloudEngine(instance), "box"), instance.adapter.capabilities.remoteAgent === true);
     if (isCancelled?.() || groupSpeakers.get(threadId) !== roomSpeaker ||
         activeInternalGenerationByThread.get(threadId) !== internalGeneration) return false;
     Object.assign(integrations, attached.mount);
@@ -12637,10 +12649,9 @@ async function runGroupMemberTurn(
       } else {
         if (!boat.boatConfigured(cfg)) throw new Error(BOAT_NOT_CONFIGURED);
         const remoteAgent = instance.adapter.capabilities.remoteAgent === true;
-        const attached = await attachBotBoat(readyBot, resourceOwner, { explicitCloud: true,
-          canMount: usesCloudComputer(instance.adapter.capabilities), remoteAgent });
+        const attached = await attachBotBoat(readyBot, resourceOwner, { explicitCloud: true, remoteAgent });
         if (!roomSetupIsCurrent()) return false;
-        if (!attached?.mount) throw new Error("the cloud computer could not be created or reached");
+        if (!attached) throw new Error("the cloud computer could not be created or reached");
         Object.assign(integrations, attached.mount);
         roomScreenBotId = readyBot.id;
         startScreenPoller(readyBot.id, threadId, { computer: attached.capture }, { screenIsTheWork: remoteAgent });
@@ -12692,9 +12703,8 @@ async function runGroupMemberTurn(
   } catch (error) {
     const place = roomPlan.computer;
     if (place !== "cloud" && place !== "vm" && place !== "local") throw error;
-    if (error instanceof DirectTurnSetupCancelled || error instanceof ComputerWaitParked || error instanceof PlaceUnavailableError) throw error;
     // A room row is not cut, so the cause keeps all its words.
-    throw placeUnavailable(place, "works-on", error instanceof Error ? error.message : String(error), Infinity);
+    throw asPlaceFailure(error, place, "works-on", Infinity);
   }
 
   const roster = readyGroup.memberIds

@@ -589,16 +589,6 @@ export interface ProviderDriver<Config = unknown> {
 
 export type AnyProviderDriver = ProviderDriver<any>;
 
-/** True when this driver's turn can run against a cloud computer — natively
- * (remoteAgent) or through its computer tools (computerMcp), where the cloud
- * computer is one more stdio server. The one rule for Hosted desktop: every
- * cloud attach path refuses an engine without it before anything is
- * provisioned (cloudPlaceDriverError). Derived, so no driver can declare it
- * out of step with the two fields it reads. */
-export function usesCloudComputer(capabilities: Pick<ProviderAdapter["capabilities"], "remoteAgent" | "computerMcp">): boolean {
-  return capabilities.remoteAgent === true || capabilities.computerMcp === true;
-}
-
 let eventCounter = 0;
 export const newEventId = () => `ev-${Date.now().toString(36)}-${(eventCounter++).toString(36)}`;
 export const newId = () => crypto.randomUUID();

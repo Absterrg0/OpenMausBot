@@ -18,7 +18,7 @@ const RECOVERY: Record<HarnessMcpKind, string> = {
   computer: " Keep working on the assigned cloud computer only; do not bypass a person's control of it, and take a fresh screenshot before repeating an action whose result is uncertain.",
 };
 
-export function parseHarnessMcpKind(value: unknown): HarnessMcpKind | null {
+function parseHarnessMcpKind(value: unknown): HarnessMcpKind | null {
   return value === "browser" || value === "computer" ? value : null;
 }
 

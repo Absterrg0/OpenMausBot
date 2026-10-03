@@ -7698,14 +7698,13 @@ describe("harness HTTP API", () => {
       boatPromptBodies.length = 0;
       rmSync(fakeClaudeDump, { force: true });
       expect((await api("POST", `/api/bots/${bot.id}/messages`, { text: "Describe your available computer tools" })).status).toBe(202);
-      // Auto reuses the bot's Boat that is already running, as one more
-      // computer server on its own engine: never created, never Boat's runner.
+      // Auto never reaches the Boat for an engine that uses it as a computer,
+      // even one that is already running: not read, not mounted, not created.
       type Dump = { argv: string[]; mcpConfig: { mcpServers: Record<string, { args?: string[] }> }; systemPrompt: string };
       const local = await readJsonFileWhenReady<Dump>(fakeClaudeDump);
-      expect(local.mcpConfig.mcpServers.computer?.args).toEqual([expect.stringMatching(/harness-mcp-proxy\.(?:ts|js)$/), "computer"]);
-      expect(local.systemPrompt).toContain("You control the assigned cloud computer");
+      expect(local.mcpConfig.mcpServers.computer).toBeUndefined();
       expect(boatPromptBodies).toHaveLength(0);
-      expect(boatRouteCalls.some(call => call.method === "POST" && call.path === "/boxes")).toBe(false);
+      expect(boatRouteCalls).toEqual([]);
       await api("POST", `/api/bots/${bot.id}/interrupt`, {}); await idle();
 
       // A Local VM pin must win even when the bot default says Cloud. The

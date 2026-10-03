@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { cloudRunner, isActiveTurnRefusal, isRemoteScreenshotContention, remoteScreenshotSource } from "@/lib/remote-desktop";
+import { boatCapableEngine, isActiveTurnRefusal, isRemoteScreenshotContention, remoteScreenshotSource } from "@/lib/remote-desktop";
 import type { InstanceInfo } from "@/state/store";
 import { CLOUD_COMPUTER_BUSY_ERROR } from "../../shared/computer-contention";
 
@@ -9,13 +9,13 @@ describe("remote VPS preview", () => {
     const plain = { instanceId: "plain", driverKind: "openai-compat", snapshot: { state: "available" }, capabilities: { computerMcp: false } } as InstanceInfo;
     const tools = { ...plain, instanceId: "tools", driverKind: "claude", capabilities: { computerMcp: true } } as InstanceInfo;
     const boat = { ...plain, instanceId: "box", driverKind: "boxAgent", capabilities: {} } as InstanceInfo;
-    // An engine without computer tools has no cloud runner: the Computer
+    // An engine without computer tools can't work on the Boat: the Computer
     // engine is never borrowed for it (the provider_not_configured bug).
-    expect(cloudRunner([plain, tools, boat], "plain")).toBeUndefined();
-    expect(cloudRunner([plain, tools, boat], "tools")).toBe(tools);
-    expect(cloudRunner([plain, tools, boat], "box")).toBe(boat);
-    expect(cloudRunner([plain, { ...tools, snapshot: { state: "unavailable" } }, boat], "tools")?.snapshot.state).toBe("unavailable");
-    expect(cloudRunner([plain, tools, boat])).toBeUndefined();
+    expect(boatCapableEngine([plain, tools, boat], "plain")).toBeUndefined();
+    expect(boatCapableEngine([plain, tools, boat], "tools")).toBe(tools);
+    expect(boatCapableEngine([plain, tools, boat], "box")).toBe(boat);
+    expect(boatCapableEngine([plain, { ...tools, snapshot: { state: "unavailable" } }, boat], "tools")?.snapshot.state).toBe("unavailable");
+    expect(boatCapableEngine([plain, tools, boat])).toBeUndefined();
   });
   it("retries only known transient contention, not permanent 409 failures", () => {
     expect(isRemoteScreenshotContention({ status: 409, message: "this bot's cloud computer is being changed — wait for it to finish" })).toBe(true);
