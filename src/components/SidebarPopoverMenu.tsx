@@ -1,13 +1,11 @@
-// The popover shared by the two rows at the foot of the sidebar: the Tools
-// row and the profile row. Both are a trigger that opens a list of items
-// above itself; only the trigger's shape and the open gesture differ, so the
-// keyboard handling, the outside-click close and the item chrome live here
-// once.
+// The popover shared by the sidebar's profile row and the chat header's More
+// button: a trigger that opens a list of items. Only the trigger's shape, the
+// side the menu opens on and the open gesture differ, so the keyboard
+// handling, the outside-click close and the item chrome live here once.
 //
-// Tools opens on hover (it is a browsing gesture — you sweep the bottom of
-// the sidebar looking for the page you want). The profile menu opens on click
-// only, because a menu that appears under the cursor when you are aiming at
-// nothing in particular is startling on a row you pass over constantly.
+// More opens on hover. The profile menu opens on click only, because a menu
+// that appears under the cursor when you are aiming at nothing in particular
+// is startling on a row you pass over constantly.
 import { useEffect, useId, useRef, useState } from "react";
 import { cn } from "@/lib/cn";
 import { useMenuMotion } from "./MenuMotion";
@@ -22,9 +20,8 @@ export interface SidebarMenuItem {
   note?: string;
   icon?: React.ReactNode;
   active?: boolean;
-  /** the item wants attention (a failed routine, a downloaded update); a
-   * folded item cannot show its own dot, so the trigger carries one on its
-   * behalf */
+  /** the item wants attention (an update ready to install, or one that
+   * failed); drawn as a dot on the item */
   attention?: boolean;
   /** what the attention means — something went wrong (default) or something
    * good is waiting */
@@ -51,7 +48,6 @@ const OPEN_DELAY_MS = 80;
 const CLOSE_DELAY_MS = 250;
 
 export function SidebarPopoverMenu({
-  tourId,
   items,
   ariaLabel,
   openOnHover = false,
@@ -59,20 +55,13 @@ export function SidebarPopoverMenu({
   renderTrigger,
 }: {
   /** "above" stretches over the trigger's width and opens upward (the
-   * sidebar's bottom menus); "below" hangs a fixed-width sheet under the
+   * sidebar's profile menu); "below" hangs a fixed-width sheet under the
    * trigger's right edge (a header icon). */
   placement?: "above" | "below";
-  /** `data-tour` id for the trigger button */
-  tourId?: string;
   items: SidebarMenuItem[];
   ariaLabel: string;
   openOnHover?: boolean;
-  renderTrigger: (state: {
-    open: boolean;
-    attention: boolean;
-    /** the loudest tone among the items asking for attention */
-    attentionTone: "danger" | "accent";
-  }) => React.ReactNode;
+  renderTrigger: (state: { open: boolean }) => React.ReactNode;
 }) {
   const [open, setOpen] = useState(false);
   const [pinned, setPinned] = useState(false);
@@ -108,11 +97,6 @@ export function SidebarPopoverMenu({
 
   usePopoverDismiss(open, rootRef, close);
 
-  const asking = items.filter((item) => item.attention);
-  const attention = asking.length > 0;
-  // a failure outranks good news when both are folded away
-  const attentionTone = asking.some((item) => item.attentionTone !== "accent") ? "danger" : "accent";
-
   return (
     <div
       ref={rootRef}
@@ -128,7 +112,6 @@ export function SidebarPopoverMenu({
     >
       <button
         type="button"
-        data-tour={tourId}
         aria-haspopup="menu"
         aria-expanded={open}
         aria-controls={open ? menuId : undefined}
@@ -143,7 +126,7 @@ export function SidebarPopoverMenu({
         }}
         className="w-full"
       >
-        {renderTrigger({ open, attention, attentionTone })}
+        {renderTrigger({ open })}
       </button>
 
       {motion.shown && (
