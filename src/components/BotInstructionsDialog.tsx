@@ -2,11 +2,11 @@ import { useCallback, useEffect, useRef } from "react";
 import { createPortal } from "react-dom";
 import { BookOpen, X } from "lucide-react";
 
-import { MausAvatar } from "./Avatar";
+import { BotAvatar } from "./Avatar";
 import { normalizeState } from "@/lib/mascot";
 import type { Bot } from "@/state/store";
 
-export function BotInstructionsDialog({ bot, onClose }: { bot: Bot; onClose: () => void }) {
+export function BotInstructionsDialog({ bot, onClose, inline = false }: { bot: Bot; onClose: () => void; inline?: boolean }) {
   const dialogRef = useRef<HTMLDivElement>(null);
   const onCloseRef = useRef(onClose);
   onCloseRef.current = onClose;
@@ -50,7 +50,7 @@ export function BotInstructionsDialog({ bot, onClose }: { bot: Bot; onClose: () 
     };
   }, [close]);
 
-  return createPortal(
+  const content = (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/55 p-4 backdrop-blur-[2px] sm:p-6"
       onMouseDown={(event) => event.target === event.currentTarget && close()}
@@ -65,9 +65,8 @@ export function BotInstructionsDialog({ bot, onClose }: { bot: Bot; onClose: () 
       >
         <header className="flex items-start justify-between gap-4 border-b border-hairline/40 px-6 pb-4 pt-6 sm:px-8 sm:pt-7">
           <div className="flex min-w-0 items-center gap-3">
-            <MausAvatar
-              color={bot.color}
-              bodyId={bot.mascotBody ?? undefined}
+            <BotAvatar
+              bot={bot}
               state={normalizeState(bot.mascotExpression) ?? "idle"}
               size={38}
               motion="none"
@@ -102,7 +101,7 @@ export function BotInstructionsDialog({ bot, onClose }: { bot: Bot; onClose: () 
             </div>
           ) : (
             <div className="rounded-xl border border-dashed border-hairline bg-inset px-5 py-12 text-center">
-              <BookOpen size={22} className="mx-auto text-ink-secondary/60" />
+              <BookOpen size={22} className="mx-auto text-ink-tertiary" />
               <p className="mt-3 text-[13px] font-medium text-ink">No instructions yet</p>
               <p className="mt-1 text-[12px] text-ink-secondary">Add them from this bot’s profile.</p>
             </div>
@@ -116,7 +115,7 @@ export function BotInstructionsDialog({ bot, onClose }: { bot: Bot; onClose: () 
           </button>
         </footer>
       </div>
-    </div>,
-    document.body,
+    </div>
   );
+  return inline ? content : createPortal(content, document.body);
 }

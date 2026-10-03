@@ -4,6 +4,7 @@ import com.openmausbot.companion.core.AttachedMessageContent
 import com.openmausbot.companion.core.Bot
 import com.openmausbot.companion.core.Chat
 import com.openmausbot.companion.core.ChatSummary
+import com.openmausbot.companion.core.ChatTarget
 import com.openmausbot.companion.core.CompanionState
 import com.openmausbot.companion.core.Message
 import com.openmausbot.companion.core.OptionCard
@@ -13,6 +14,7 @@ import com.openmausbot.companion.core.Room
 import com.openmausbot.companion.core.Session
 import com.openmausbot.companion.core.chat
 import com.openmausbot.companion.core.TranscriptRow
+import com.openmausbot.companion.core.webhookContent
 
 /**
  * The decisions the chat and roster screens make that are worth testing without
@@ -52,40 +54,23 @@ object ThreadResolution {
     fun chatOrNull(state: CompanionState, threadId: String): Chat? =
         (resolve(state, threadId) as? Result.Open)?.chat
 
-    /**
-     * The chat a destination points at.
-     *
-     * An addressed chat resolves by its owner alone, so the screen follows the
-     * bot: through a task switch, through a task being created, and through the
-     * deletion of the very task that was open — where the desktop moves the bot
-     * to another task and the phone has no business going home. Only an owner
-     * that is really gone closes the chat.
-     */
+    /** Bot selection is local; a room follows its shared current conversation. */
     fun resolve(state: CompanionState, destination: Destination.Conversation): Result =
         when (destination) {
-            is Destination.Chat -> state.chat(destination.target)?.let(Result::Open)
-                ?: unknown(state)
+            is Destination.Chat -> when (val target = destination.target) {
+                is ChatTarget.Bot -> state.chat(target)
+                is ChatTarget.Room -> state.rooms.firstOrNull { it.id == target.roomId }?.let(Chat::RoomChat)
+            }?.let(Result::Open) ?: unknown(state)
             is Destination.Thread -> resolve(state, destination.threadId)
         }
 
     fun resolve(state: CompanionState, threadId: String): Result {
         state.botForThread(threadId)?.let { return Result.Open(Chat.BotChat(it)) }
         state.roomForThread(threadId)?.let { return Result.Open(Chat.RoomChat(it)) }
-        // A bot that switched task now answers to a different thread, and a
-        // notification may name a task that is no longer the open one. The chat
-        // follows the bot, not the thread it was opened on — so a thread that is
-        // one of a bot's tasks still resolves to that bot, and the screen shows
-        // whichever task the bot is in now.
-        state.bots
-            .firstOrNull { bot -> bot.tasks.orEmpty().any { it.threadId == threadId } }
-            ?.let { return Result.Open(Chat.BotChat(it)) }
-        // Channel tasks use the same owner-following navigation as bot tasks.
-        // Session switches the room before opening a notification/search hit;
-        // until then, resolving the owner keeps a stale destination from
-        // looking deleted.
         state.rooms
             .firstOrNull { room -> room.tasks.orEmpty().any { it.threadId == threadId } }
-            ?.let { return Result.Open(Chat.RoomChat(it)) }
+            ?.let { room -> state.chat(ChatTarget.Room(room.id, threadId)) }
+            ?.let { return Result.Open(it) }
         return unknown(state)
     }
 
@@ -145,6 +130,16 @@ object TranscriptLayout {
         message.role == Message.Role.USER -> BubbleTail.TRAILING
         else -> BubbleTail.LEADING
     }
+
+    /**
+     * How far to scroll the transcript, in px, after it got [shrunkBy] px
+     * shorter from the bottom — the call bar under it grew — so that a list
+     * that showed its end shows it again. [hiddenBelow] is how much of the
+     * list's end is below it now. If more is hidden than the list lost, the
+     * end was out of view already: the reader had scrolled up, and stays put.
+     */
+    fun keepEndInView(hiddenBelow: Int, shrunkBy: Int): Int =
+        if (shrunkBy > 0 && hiddenBelow in 1..shrunkBy) hiddenBelow else 0
 }
 
 /**
@@ -229,13 +224,13 @@ object ChatActions {
         if (bot != null) {
             out += ChatAction(
                 id = ChatActionId.NEW_TASK,
-                title = "New task",
+                title = "New thread",
                 subtitle = "Start a fresh thread with ${bot.name}",
-                enabled = bot.busy != true,
+                enabled = TaskRules.canCreate(bot),
             )
             out += ChatAction(
                 id = ChatActionId.TASKS,
-                title = "Tasks",
+                title = "Threads",
                 subtitle = "Switch, rename or remove one",
             )
             out += ChatAction(
@@ -251,7 +246,7 @@ object ChatActions {
         } else if (chat.supportsTasks) {
             out += ChatAction(
                 id = ChatActionId.NEW_TASK,
-                title = "New task",
+                title = "New thread",
                 subtitle = "Start a fresh conversation in ${chat.name}",
                 // iOS: `disabled: current.busy || hasPendingApproval`, on the room
                 // branch only — a channel waiting on an answer does not get a
@@ -260,14 +255,14 @@ object ChatActions {
             )
             out += ChatAction(
                 id = ChatActionId.TASKS,
-                title = "Tasks",
+                title = "Threads",
                 subtitle = "Switch, rename or remove one",
             )
         }
         out += ChatAction(
             id = ChatActionId.SHARE_MARKDOWN,
             title = "Share transcript",
-            subtitle = "This chat as Markdown",
+            subtitle = "This thread as Markdown",
         )
         out += ChatAction(
             id = ChatActionId.SHARE_JSON,
@@ -304,12 +299,12 @@ object RosterLayout {
         SearchPolicy.filter(summaries, query)
 
     /**
-     * Whether the unsearched roster has any row at all. Rooms live in the strip
-     * and tiles are not rows, so "no bots yet" is about bots — which is also
-     * what the empty state says.
+     * Whether the unsearched roster lists anything at all: a bot, or a group —
+     * a row in compact, a tile in comfortable. Only when there is neither does
+     * "No bots yet" show; drawn over group rows, it would sit on top of them.
+     * The iPhone asks the same question.
      */
-    fun listsAnyBot(summaries: List<ChatSummary>): Boolean =
-        summaries.any { it.chat is Chat.BotChat }
+    fun listsAnyChat(summaries: List<ChatSummary>): Boolean = summaries.isNotEmpty()
 
     /** The strip is part of the roster, not of a search result. */
     fun showsGroups(query: String): Boolean = query.isEmpty()
@@ -483,16 +478,26 @@ object MessageActions {
     /** The text worth putting on the clipboard, or null when there is none. */
     fun copyableText(message: Message): String? = when (message.kind) {
         Message.Kind.TEXT, Message.Kind.UNKNOWN -> message.text
-            ?.let { AttachedMessageContent.parse(it) }
-            ?.text
+            ?.let { message.webhookContent?.task ?: AttachedMessageContent.parse(it).text }
             ?.takeIf { it.isNotBlank() }
         // An approval card is worth copying for what it is asking to do.
         Message.Kind.OPTIONS -> message.card
             ?.let { card -> listOf(card.title, card.subtitle).filter { it.isNotBlank() } }
             ?.takeIf { it.isNotEmpty() }
             ?.joinToString("\n\n")
-        // A tool chip is context, and a screenshot is pixels.
-        Message.Kind.ACTIVITY, Message.Kind.SCREEN -> null
+        // A tool chip is context, a screenshot is pixels, a digest is a log line.
+        Message.Kind.ACTIVITY, Message.Kind.SCREEN, Message.Kind.DIGEST -> null
+        Message.Kind.COMPACTION -> message.compaction?.summary ?: message.text?.takeIf { it.isNotBlank() }
+        // The run's report and error are the parts worth keeping; the headline without either.
+        Message.Kind.ROUTINE_RUN -> message.routineRun
+            ?.let { run ->
+                listOfNotNull(
+                    run.headline,
+                    run.summary?.takeIf { it.isNotBlank() },
+                    run.error?.takeIf { it.isNotBlank() },
+                ).joinToString("\n\n")
+            }
+            ?: message.text?.takeIf { it.isNotBlank() }
     }
 
     /**
@@ -502,6 +507,7 @@ object MessageActions {
      */
     fun editableText(message: Message): String? {
         if (message.role != Message.Role.USER || message.kind != Message.Kind.TEXT) return null
+        if (message.webhookContent != null) return null
         val raw = message.text ?: return null
         if (AttachedMessageContent.parse(raw).attachments.isNotEmpty()) return null
         return raw
@@ -569,8 +575,8 @@ object SlashCommands {
         ),
         SlashCommand(
             id = SlashCommandId.TASKS,
-            title = "/tasks",
-            description = "View and manage bot task threads",
+            title = "/threads",
+            description = "View and manage threads",
             effect = SlashEffect.OpenTasks,
         ),
         SlashCommand(

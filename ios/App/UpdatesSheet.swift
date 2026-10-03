@@ -29,7 +29,7 @@ struct UpdatesSheet: View {
                 .padding(.bottom, 6)
 
                 if updates.isEmpty {
-                    ContentUnavailableView(
+                    EmptyStateView(
                         "Nothing needs you",
                         systemImage: "checkmark.circle",
                         description: Text("When a bot stops for an answer, is mid-task, or finishes something, it shows up here.")
@@ -45,8 +45,7 @@ struct UpdatesSheet: View {
         }
         .presentationDetents([.medium, .large])
         .presentationDragIndicator(.visible)
-        .presentationBackground(.thinMaterial)
-        .presentationCornerRadius(28)
+        .sheetChromeCompat()
     }
 
     @ViewBuilder
@@ -85,6 +84,10 @@ private struct UpdateRow: View {
                     Text(update.chat.name)
                         .font(.system(size: 15, weight: .semibold))
                         .foregroundStyle(Color.primary)
+                    Text(update.chat.threadTitle)
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(Color.secondary)
+                        .lineLimit(1)
                     Text(update.line.isEmpty ? " " : update.line)
                         .font(.system(size: 14))
                         .foregroundStyle(Color.secondary)
@@ -98,10 +101,11 @@ private struct UpdateRow: View {
                                 .foregroundStyle(Color.secondary)
                                 .padding(.top, 6)
                         } else {
-                            // The answers, as pills, exactly the options the card
-                            // offered — never a choice invented here.
+                            // The answers, as pills, from the one rule every
+                            // compact surface shares — never a choice
+                            // invented here.
                             HStack(spacing: 8) {
-                                ForEach(card.options, id: \.self) { option in
+                                ForEach(update.answerOptions, id: \.self) { option in
                                     Button {
                                         Haptics.selection()
                                         answering = true
@@ -154,6 +158,7 @@ private struct UpdateRow: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .accessibilityIdentifier("update-\(update.chat.threadId)")
     }
 }
 

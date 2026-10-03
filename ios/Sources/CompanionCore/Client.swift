@@ -47,10 +47,15 @@ public struct Connection: Codable, Hashable, Identifiable, Sendable {
     public var companionDeviceId: String?
     /// Set when this connection was paired against the server's own sessions
     /// (`openmausbot serve` / the Docker stack) rather than the desktop's
-    /// companion sidecar: the bearer is an `omb_sess_` token with the client
-    /// scope, so what the app may administer differs. Absent on connections
-    /// saved before servers could be paired directly.
+    /// companion sidecar: the bearer is an `omb_sess_` token whose scopes
+    /// say what the app may administer. Absent on connections saved before
+    /// servers could be paired directly.
     public var serverEnvironmentId: String?
+    /// The scopes the server granted this session at pairing, kept so the
+    /// app can tell an owner's phone (`admin`) from a chat-only one
+    /// (`client`) without asking. Absent on server connections saved by
+    /// builds that did not record them, which the app treated as chat-only.
+    public var serverScopes: [String]?
 
     public init(
         id: String = UUID().uuidString,
@@ -64,7 +69,8 @@ public struct Connection: Codable, Hashable, Identifiable, Sendable {
         allowedLocalRouteURLs: Set<String>? = nil,
         secretPublicKey: String? = nil,
         companionDeviceId: String? = nil,
-        serverEnvironmentId: String? = nil
+        serverEnvironmentId: String? = nil,
+        serverScopes: [String]? = nil
     ) {
         self.id = id
         self.name = name
@@ -78,12 +84,25 @@ public struct Connection: Codable, Hashable, Identifiable, Sendable {
         self.secretPublicKey = secretPublicKey
         self.companionDeviceId = companionDeviceId
         self.serverEnvironmentId = serverEnvironmentId
+        self.serverScopes = serverScopes
     }
 
-    /// Paired with a server directly (client scope): chat, approvals and
-    /// reading are in; creating bots, changing models, connected apps and
-    /// cloud computers are the owner's, done on the server's own UI.
+    /// Paired with a server directly rather than through the companion
+    /// sidecar. What the phone may do there is for the session's scopes to
+    /// say: see `canAdminister`.
     public var pairedWithServer: Bool { serverEnvironmentId != nil }
+
+    /// Whether this pairing may administer the workspace: create bots and
+    /// sections, change models, generate avatars, connect apps, open cloud
+    /// desktops. A companion pairing always may — the sidecar applies its
+    /// own policy to each request. A server session may only with the
+    /// `admin` scope (`openmausbot pair` grants it; `--client` does not);
+    /// the server answers 403 otherwise, so the app hides those controls
+    /// instead of offering buttons that can only fail.
+    public var canAdminister: Bool {
+        guard pairedWithServer else { return true }
+        return serverScopes?.contains("admin") == true
+    }
 
     /// The representation `URLComponents.host` accepts for a literal IPv6
     /// address. It adds brackets exactly once and leaves DNS/IPv4 names alone.
@@ -327,14 +346,30 @@ public struct PairingInvite: Equatable, Sendable {
         return PairingInvite(connection: connection, credential: code)
     }
 
-    /// A server pairing code: 12 characters from a confusion-free alphabet,
-    /// shown as three dashed groups. Only the shape is checked here; a
-    /// mistyped code fails at the server with its own message. Six-digit
-    /// codes and `omb_pair_` tokens are the companion's and return nil.
+    /// The 32 symbols a server draws pairing codes from: digits and capitals
+    /// without 0, O, 1 and I, which read alike in most fonts.
+    public static let serverCodeAlphabet = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ"
+
+    /// What the server does to a typed code before comparing it
+    /// (`normalizePairingCode` in `server/sessions.ts`): uppercase, drop
+    /// dashes, spaces and anything else that is not a letter or digit, then
+    /// read 0 as O and 1 as I. Identical here so the app and the server
+    /// never disagree about which code was entered.
+    public static func normalizePairingCode(_ raw: String) -> String {
+        String(raw.uppercased().filter { $0.isASCII && ($0.isLetter || $0.isNumber) }
+            .map { $0 == "0" ? "O" : $0 == "1" ? "I" : $0 })
+    }
+
+    /// A server pairing code, normalized: exactly 12 symbols from the
+    /// server's alphabet, dashes optional. Six-digit codes and `omb_pair_`
+    /// tokens are the companion's and return nil. So does a code with a
+    /// character the alphabet does not have — the server would refuse it
+    /// and count the attempt towards its lockout, so it is refused here,
+    /// where the person can still fix it.
     public static func normalizedServerCode(_ raw: String) -> String? {
-        let cleaned = raw.uppercased().filter { $0.isASCII && ($0.isLetter || $0.isNumber) }
-        guard cleaned.count == 12, !cleaned.allSatisfy(\.isNumber) else { return nil }
-        return cleaned
+        let code = normalizePairingCode(raw)
+        guard code.count == 12, code.allSatisfy(serverCodeAlphabet.contains) else { return nil }
+        return code
     }
 
     private static func credential(from values: [String: String]) -> String? {
@@ -416,6 +451,34 @@ public enum APIError: Error, LocalizedError, Sendable {
         if case let .status(code, _) = self { return code == 401 }
         return false
     }
+}
+
+/// What the harness answered about a send. Either the message went straight
+/// in (a message the event stream will deliver), or the thread was busy and
+/// the harness is holding it: queued true plus the queueId and threadId that
+/// identify the held line. Every field is optional because the two shapes
+/// are disjoint and the client reads only the half it got.
+public struct SendReceipt: Decodable, Sendable {
+    public var queued: Bool?
+    public var queueId: String?
+    public var threadId: String?
+    /// "capacity" is the known value; anything else still parses.
+    public var reason: String?
+
+    public init(queued: Bool? = nil, queueId: String? = nil, threadId: String? = nil, reason: String? = nil) {
+        self.queued = queued
+        self.queueId = queueId
+        self.threadId = threadId
+        self.reason = reason
+    }
+}
+
+/// What the respond route answered about a card. Only the plain and peer
+/// approval paths speak it; the specialized card resolvers write their own
+/// shapes, so `outcome` is optional and a body without one reads as nil
+/// rather than as a failure.
+private struct RespondResponse: Decodable {
+    let outcome: String?
 }
 
 /// The exact conversation a retriable send belongs to. Carrying the thread
@@ -605,6 +668,16 @@ public struct CompanionClient: Sendable {
     private func send(_ request: URLRequest) async throws {
         let (data, response) = try await perform(request)
         try Self.check(response, data)
+    }
+
+    /// A send that succeeded is a send that succeeded: the harness's own
+    /// message for it arrives on the event stream, so the receipt here is
+    /// best-effort state. A body this build cannot read means "not queued"
+    /// rather than a failed send.
+    private func sendForReceipt(_ request: URLRequest) async throws -> SendReceipt {
+        let (data, response) = try await perform(request)
+        try Self.check(response, data)
+        return (try? JSONDecoder().decode(SendReceipt.self, from: data)) ?? SendReceipt()
     }
 
     private func perform(_ request: URLRequest) async throws -> (Data, URLResponse) {
@@ -815,6 +888,28 @@ public struct CompanionClient: Sendable {
         return try await send(try makeRequest("GET", "/api/bots", query: query), as: Fleet.self)
     }
 
+    /// The fleet includes only each bot's selected transcript. Recover the
+    /// other threads currently awaiting a person before committing a cold
+    /// snapshot, so their approval cards do not depend on opening the chat.
+    /// Fail the whole refresh on a failed page: advancing the replay cursor
+    /// with a partial snapshot could permanently miss that request.
+    public func fleetForHydration(messages limit: Int = 50) async throws -> (
+        fleet: Fleet, waitingThreads: [String: ThreadPage]
+    ) {
+        try Task.checkCancellation()
+        let fleet = try await fleet(messages: limit)
+        var waitingThreads: [String: ThreadPage] = [:]
+        for bot in fleet.bots {
+            for task in bot.tasks ?? [] where task.activity == "waiting-on-you"
+                && task.threadId != bot.threadId && waitingThreads[task.threadId] == nil {
+                try Task.checkCancellation()
+                waitingThreads[task.threadId] = try await messages(threadId: task.threadId, limit: limit)
+            }
+        }
+        try Task.checkCancellation()
+        return (fleet, waitingThreads)
+    }
+
     /// Scrollback: the page before a message already held.
     public func messages(threadId: String, before: String? = nil, limit: Int = 50) async throws -> ThreadPage {
         var query = [URLQueryItem(name: "limit", value: String(limit))]
@@ -1011,6 +1106,19 @@ public struct CompanionClient: Sendable {
         return data
     }
 
+    /// Fetch a parked voice note with the paired-device bearer token — the
+    /// same authenticated /api/attachments route avatar bytes ride, never a
+    /// bare URL a page could steer. The name follows the route's own
+    /// discipline (readAttachment in server/attachments.ts): one bare
+    /// generated mp3 filename.
+    public func voiceNote(path: String) async throws -> Data {
+        guard let name = Self.voiceNoteFileName(path) else { throw APIError.badURL }
+        let request = try makeRequest("GET", "/api/attachments/\(name)")
+        let (data, response) = try await perform(request)
+        try Self.check(response, data)
+        return data
+    }
+
     private static func validAvatarPath(_ path: String) -> Bool {
         let prefix = "/api/attachments/"
         guard path.hasPrefix(prefix) else { return false }
@@ -1029,8 +1137,55 @@ public struct CompanionClient: Sendable {
         return validStem && ["png", "jpg", "gif", "webp"].contains(String(ext))
     }
 
+    /// The attachment route resolves exactly one bare `[A-Za-z0-9-]+.mp3`
+    /// filename; anything else must not become a request. Directory parts
+    /// are dropped the way the web bubble's attachmentBasename drops them,
+    /// and the full /api/attachments/ prefix is tolerated like avatar paths.
+    static func voiceNoteFileName(_ path: String) -> String? {
+        var name = path
+        if name.hasPrefix("/api/attachments/") {
+            name = String(name.dropFirst("/api/attachments/".count))
+        }
+        if let slash = name.lastIndex(of: "/") {
+            name = String(name[name.index(after: slash)...])
+        }
+        guard let dot = name.lastIndex(of: "."), dot != name.startIndex else { return nil }
+        let stem = name[..<dot]
+        let ext = name[name.index(after: dot)...]
+        let validStem = !stem.isEmpty && stem.utf8.allSatisfy { byte in
+            (48...57).contains(byte)
+                || (65...90).contains(byte)
+                || (97...122).contains(byte)
+                || byte == 45
+        }
+        return validStem && ext == "mp3" ? name : nil
+    }
+
     public func voices() async throws -> [Voice] {
         try await send(try makeRequest("GET", "/api/tts/voices"), as: VoiceListResponse.self).voices
+    }
+
+    /// Switch the voice engine. A provider is a setting, not a secret: it
+    /// rides the ordinary config write, and whichever credential the newly
+    /// selected engine needs appears beside it in settings.
+    public func setVoiceProvider(_ provider: VoiceProvider) async throws -> ConfigStatus {
+        try await send(
+            try makeRequest("PUT", "/api/config", body: ["tts": ["provider": provider.wireValue]]),
+            as: ConfigStatus.self
+        )
+    }
+
+    /// Save the Chatterbox address and model id in one write — an address
+    /// without its model (or the reverse) is half a setting, exactly as on
+    /// the desktop.
+    public func saveChatterboxServer(baseURL: String, model: String) async throws -> ConfigStatus {
+        try await send(
+            try makeRequest(
+                "PUT", "/api/config",
+                body: ["tts": ["baseUrl": baseURL, "model": model]]
+            ),
+            as: ConfigStatus.self
+        )
     }
 
     public func routines() async throws -> (routines: [Routine], runs: [RoutineRun]) {
@@ -1115,11 +1270,20 @@ public struct CompanionClient: Sendable {
         ).bot
     }
 
-    /// Change only the engine, model and optional reasoning effort. This uses
-    /// the companion's narrow model route rather than the desktop's general
-    /// bot PATCH, which also owns execution policy and computer settings.
-    public func updateModel(botId: String, selection: ModelSelection) async throws -> Bot {
+    /// A captured thread uses the task route, which cannot change siblings or
+    /// the profile default. Omitting it retains the legacy narrow model API.
+    public func updateModel(botId: String, selection: ModelSelection, threadId: String? = nil) async throws -> Bot {
         guard Self.validRouteID(botId) else { throw APIError.badURL }
+        if let threadId {
+            guard Self.validRouteID(threadId) else { throw APIError.badURL }
+            let model = try JSONSerialization.jsonObject(with: JSONEncoder().encode(selection))
+            return try await send(
+                try makeRequest("PATCH", "/api/bots/\(botId)/tasks/\(threadId)", body: [
+                    "modelSelection": model, "requireAvailableModel": true,
+                ]),
+                as: BotResponse.self
+            ).bot
+        }
         return try await send(
             try makeRequest("PATCH", "/api/bots/\(botId)/model", encodedBody: selection),
             as: BotResponse.self
@@ -1319,22 +1483,27 @@ public struct CompanionClient: Sendable {
         ).bots
     }
 
-    public func send(text: String, toBot botId: String) async throws {
-        try await send(try makeRequest("POST", "/api/bots/\(botId)/messages", body: ["text": text]))
+    @discardableResult
+    public func send(text: String, toBot botId: String, threadId: String? = nil) async throws -> SendReceipt {
+        var body = ["text": text]
+        if let threadId { body["threadId"] = threadId }
+        return try await sendForReceipt(try makeRequest("POST", "/api/bots/\(botId)/messages", body: body))
     }
 
-    public func send(text: String, toRoom groupId: String) async throws {
-        try await send(try makeRequest("POST", "/api/groups/\(groupId)/messages", body: ["text": text]))
+    @discardableResult
+    public func send(text: String, toRoom groupId: String) async throws -> SendReceipt {
+        return try await sendForReceipt(try makeRequest("POST", "/api/groups/\(groupId)/messages", body: ["text": text]))
     }
 
     /// Retry-safe send used by short-lived clients such as Share Extensions.
     /// `sendId` names the logical send, while `threadId` freezes the selected
     /// task so a retry can never drift to a newly active conversation.
+    @discardableResult
     public func send(
         text: String,
         to destination: MessageDestination,
         sendId: String
-    ) async throws {
+    ) async throws -> SendReceipt {
         let route: String
         let threadId: String
         switch destination {
@@ -1348,11 +1517,141 @@ public struct CompanionClient: Sendable {
             threadId = selectedThreadId
         }
         guard Self.validRouteID(threadId), Self.validSendID(sendId) else { throw APIError.badURL }
-        try await send(try makeRequest(
+        return try await sendForReceipt(try makeRequest(
             "POST",
             route,
             body: ["text": text, "threadId": threadId, "sendId": sendId]
         ))
+    }
+
+    /// Take back a message the harness is holding.
+    ///
+    /// An entry that drained a moment ago is not an error worth showing —
+    /// that is the outcome the caller wanted. But that is matched positively
+    /// on the harness's own wording and never on the status alone: a computer
+    /// too old to have this route answers 404 for it, and reading that as
+    /// "already drained" would take the message off the phone while it is
+    /// still queued on the computer, and it would then arrive anyway.
+    /// Returns true only for a confirmed cancellation. A stale queue row can
+    /// be retired after a drained response, but its words must not be resent.
+    @discardableResult
+    public func cancelQueued(queueId: String, to destination: MessageDestination) async throws -> Bool {
+        let route: String
+        let body: [String: Any]?
+        switch destination {
+        case let .bot(id, threadId):
+            guard Self.validRouteID(id), Self.validRouteID(queueId), Self.validRouteID(threadId) else {
+                throw APIError.badURL
+            }
+            route = "/api/bots/\(id)/queue/\(queueId)"
+            body = ["threadId": threadId]
+        case let .room(id, _):
+            guard Self.validRouteID(id), Self.validRouteID(queueId) else { throw APIError.badURL }
+            route = "/api/groups/\(id)/queue/\(queueId)"
+            body = nil
+        }
+        do {
+            try await send(try makeRequest("DELETE", route, body: body))
+            return true
+        } catch let APIError.status(code, message) where code == 404 {
+            guard message?.localizedCaseInsensitiveContains(Self.alreadyDrainedQueueMessage) == true else {
+                throw APIError.status(
+                    code: 404,
+                    message: "This computer is too old to take back a queued message. Update OpenMausBot on it."
+                )
+            }
+            return false
+        }
+    }
+
+    /// Run Claude Code's own updater on the computer for one engine instance,
+    /// returning the version it now reports. The harness refuses while other
+    /// Claude turns are running; its error text is written for people and
+    /// comes through as the thrown `APIError`.
+    public func updateClaude(instanceId: String) async throws -> String {
+        guard Self.validInstanceID(instanceId) else { throw APIError.badURL }
+        var request = try makeRequest(
+            "POST",
+            "/api/instances/\(instanceId)/claude-update",
+            body: [:]
+        )
+        // The updater downloads and installs a new CLI; the server allows it
+        // up to three minutes. Leave room for its own timeout error rather
+        // than replacing it with the normal twenty-second transport timeout.
+        request.timeoutInterval = 200
+        return try await send(request, as: ClaudeUpdateResponse.self).version
+    }
+
+    private struct ClaudeUpdateResponse: Decodable {
+        let version: String
+    }
+
+    /// Matches the harness's `[\w.-]+` instance route component.
+    private static func validInstanceID(_ value: String) -> Bool {
+        !value.isEmpty && value != "." && value != ".."
+            && value.utf8.allSatisfy { byte in
+                (48...57).contains(byte) || (65...90).contains(byte) || (97...122).contains(byte)
+                    || byte == 45 || byte == 95 || byte == 46
+            }
+    }
+
+    // MARK: - Live calls
+
+    /// How long a call may take to start. The Mac creates the OpenAI session
+    /// (up to 20 s) before it answers, and the sidecar allows 30 s until
+    /// response headers; the usual 20 s here would give up first.
+    public static let liveCallStartTimeout: TimeInterval = 35
+
+    /// Start a Live call: the phone's SDP offer goes to the Mac, which creates
+    /// the GPT-Live session with its own key and returns OpenAI's answer.
+    ///
+    /// The two 409s carry structure `check` would drop — `needsKey` (no key on
+    /// the Mac) and `activeCall` (who is on the line) — so they are read here
+    /// first and thrown as `LiveCallStartError`. Everything else is the usual
+    /// `APIError` with the Mac's own message.
+    public func startLiveCall(botId: String, threadId: String?, sdp: String) async throws -> LiveCallStart {
+        guard Self.validRouteID(botId), threadId.map(Self.validRouteID) ?? true else { throw APIError.badURL }
+        var body: [String: Any] = ["botId": botId, "sdp": sdp, "client": "ios"]
+        if let threadId { body["threadId"] = threadId }
+        var request = try makeRequest("POST", "/api/live/session", body: body)
+        request.timeoutInterval = Self.liveCallStartTimeout
+        let (data, response) = try await perform(request)
+        if let http = response as? HTTPURLResponse, http.statusCode == 409,
+           let refusal = try? JSONDecoder().decode(LiveCallRefusalBody.self, from: data) {
+            if refusal.needsKey == true { throw LiveCallStartError.needsKey(message: refusal.error) }
+            if let active = refusal.activeCall { throw LiveCallStartError.busy(active: active, message: refusal.error) }
+        }
+        try Self.check(response, data)
+        do {
+            return try JSONDecoder().decode(LiveCallStart.self, from: data)
+        } catch {
+            throw APIError.transport("The computer sent something this app couldn't read.")
+        }
+    }
+
+    /// Hang up. A 404 means the Mac no longer runs that call — which is what
+    /// the caller wanted — so it reads as `nil` rather than an error.
+    public func endLiveCall(callId: String) async throws -> LiveCallState? {
+        do {
+            return try await send(try makeRequest("POST", "/api/live/call/end", body: ["callId": callId]), as: LiveCallEnvelope.self).call
+        } catch let APIError.status(code, _) where code == 404 {
+            return nil
+        }
+    }
+
+    /// The call the Mac is running right now, if any. A phone that connects
+    /// mid-call asks this once after hydrating; the stream carries changes.
+    public func liveCall() async throws -> LiveCallState? {
+        try await send(try makeRequest("GET", "/api/live/call"), as: LiveCallEnvelope.self).call
+    }
+
+    /// Change the non-secret Live settings on the Mac. The key is not a
+    /// field on `LiveSettingsPatch`, and the Mac answers 400 if one is sent.
+    public func updateLiveSettings(_ patch: LiveSettingsPatch) async throws -> LiveSettings {
+        try await send(
+            try makeRequest("PATCH", "/api/live/settings", encodedBody: patch),
+            as: LiveSettingsEnvelope.self
+        ).live
     }
 
     private static func validRouteID(_ value: String) -> Bool {
@@ -1366,28 +1665,41 @@ public struct CompanionClient: Sendable {
         (16...80).contains(value.utf8.count) && validRouteID(value)
     }
 
+    /// The harness's own answer when the entry is not in its queue. Matched
+    /// positively, never on the status alone — see cancelQueued.
+    private static let alreadyDrainedQueueMessage = "no such queued message"
+
     /// Answer an approval or a question.
     ///
     /// Addressed by thread rather than by bot on purpose: a request raised
     /// inside a room belongs to whichever member is speaking, and the
-    /// harness already knows which that is.
+    /// harness already knows which that is. Returns the server's outcome
+    /// when the body carries one, so a caller can tell an ask that never
+    /// ran (`unavailable`) from one that landed; the specialized card
+    /// branches answer in their own shapes and read as nil.
+    @discardableResult
     public func respond(
         threadId: String,
         requestId: String,
         behavior: String,
         message: String? = nil,
         reviewedSha256: String? = nil
-    ) async throws {
+    ) async throws -> String? {
         var body: [String: Any] = ["requestId": requestId, "behavior": behavior]
         if let message { body["message"] = message }
         if let reviewedSha256 { body["reviewedSha256"] = reviewedSha256 }
-        try await send(try makeRequest("POST", "/api/threads/\(threadId)/respond", body: body))
+        let request = try makeRequest("POST", "/api/threads/\(threadId)/respond", body: body)
+        let (data, response) = try await perform(request)
+        try Self.check(response, data)
+        return (try? JSONDecoder().decode(RespondResponse.self, from: data))?.outcome
     }
 
     /// Remember a grant so the same tool stops asking. The harness decides
     /// the key and puts it on the card; the phone never derives its own.
-    public func alwaysAllow(botId: String, key: String) async throws {
-        try await send(try makeRequest("POST", "/api/bots/\(botId)/always-allow", body: ["allowKey": key]))
+    public func alwaysAllow(botId: String, key: String, threadId: String? = nil) async throws {
+        var body = ["allowKey": key]
+        if let threadId { body["threadId"] = threadId }
+        try await send(try makeRequest("POST", "/api/bots/\(botId)/always-allow", body: body))
     }
 
     /// Starts one more account authorization for a toolkit. Revocation is
@@ -1432,13 +1744,34 @@ public struct CompanionClient: Sendable {
         ).message
     }
 
-    public func edit(botId: String, messageId: String, text: String) async throws {
-        try await send(try makeRequest("POST", "/api/bots/\(botId)/messages/\(messageId)/edit", body: ["text": text]))
+    /// Fork the conversation at a user message. Returns the computer's new
+    /// message when the response carries one. `sendId` makes a retry of the
+    /// same edit answer with the existing fork instead of forking twice.
+    @discardableResult
+    public func edit(
+        botId: String,
+        messageId: String,
+        text: String,
+        threadId: String? = nil,
+        sendId: String? = nil
+    ) async throws -> Message? {
+        var body = ["text": text]
+        if let threadId { body["threadId"] = threadId }
+        if let sendId { body["sendId"] = sendId }
+        let (data, response) = try await perform(
+            try makeRequest("POST", "/api/bots/\(botId)/messages/\(messageId)/edit", body: body)
+        )
+        try Self.check(response, data)
+        // The fork already happened; an unreadable body only costs the early
+        // swap, and the event stream still delivers the same fork.
+        return (try? JSONDecoder().decode(EditResponse.self, from: data))?.message
     }
 
-    public func setActiveBranch(botId: String, messageId: String) async throws -> String {
-        try await send(
-            try makeRequest("POST", "/api/bots/\(botId)/active-branch", body: ["messageId": messageId]),
+    public func setActiveBranch(botId: String, messageId: String, threadId: String? = nil) async throws -> String {
+        var body = ["messageId": messageId]
+        if let threadId { body["threadId"] = threadId }
+        return try await send(
+            try makeRequest("POST", "/api/bots/\(botId)/active-branch", body: body),
             as: ActiveBranchResponse.self
         ).activeLeafId
     }
@@ -1455,6 +1788,40 @@ public struct CompanionClient: Sendable {
 
     public func renameTask(botId: String, threadId: String, title: String) async throws {
         try await send(try makeRequest("PATCH", "/api/bots/\(botId)/tasks/\(threadId)", body: ["title": title]))
+    }
+
+    /// Snooze a bot thread: 0 sleeps until its next activity, a timestamp
+    /// (epoch milliseconds) until that moment, and nil wakes it now — JSON
+    /// null is how "stop snoozing" travels, not an omitted field.
+    public func snoozeTask(botId: String, threadId: String, snoozedUntil: Double?) async throws {
+        try await send(try makeRequest(
+            "PATCH", "/api/bots/\(botId)/tasks/\(threadId)",
+            body: ["snoozedUntil": snoozedUntil ?? NSNull()]
+        ))
+    }
+
+    /// Archive puts a thread away without deleting it; `nil` brings it
+    /// back. The server accepts any epoch timestamp to archive and JSON null
+    /// to unarchive, matching the desktop's thread row action.
+    public func archiveTask(botId: String, threadId: String, archivedAt: Double?) async throws {
+        try await send(try makeRequest("PATCH", "/api/bots/\(botId)/tasks/\(threadId)", body: [
+            "archivedAt": archivedAt ?? NSNull(),
+        ]))
+    }
+
+    public func setTaskPinned(botId: String, threadId: String, pinned: Bool) async throws {
+        try await send(try makeRequest("PATCH", "/api/bots/\(botId)/tasks/\(threadId)", body: [
+            "pinned": pinned,
+        ]))
+    }
+
+    /// `title` is the thread's current title. An older server ignores `pinned`
+    /// and would turn a body without `title` into an empty rename.
+    public func setRoomTaskPinned(groupId: String, threadId: String, pinned: Bool, title: String) async throws {
+        try await send(try makeRequest("PATCH", "/api/groups/\(groupId)/tasks/\(threadId)", body: [
+            "pinned": pinned,
+            "title": title,
+        ]))
     }
 
     public func deleteTask(botId: String, threadId: String) async throws -> Bot {
@@ -1479,8 +1846,8 @@ public struct CompanionClient: Sendable {
         try await send(try makeRequest("DELETE", "/api/groups/\(groupId)/tasks/\(threadId)"), as: RoomResponse.self).group
     }
 
-    public func interrupt(botId: String) async throws {
-        try await send(try makeRequest("POST", "/api/bots/\(botId)/interrupt"))
+    public func interrupt(botId: String, threadId: String? = nil) async throws {
+        try await send(try makeRequest("POST", "/api/bots/\(botId)/interrupt", body: threadId.map { ["threadId": $0] }))
     }
 
     public func provideCredential(
@@ -1513,8 +1880,97 @@ public struct CompanionClient: Sendable {
         )
     }
 
-    public func markRead(botId: String) async throws {
-        try await send(try makeRequest("POST", "/api/bots/\(botId)/read"))
+    /// A still of the bot's Local VM, whether or not it is working. The phone
+    /// always names the thread, so the harness answers 409 when that
+    /// conversation is not on the Local VM rather than picturing a computer it
+    /// isn't using (and, in pool mode, pictures that thread's own VM). The
+    /// sidecar requires the same per-device computer access as the cloud
+    /// desktop, and answers 403 while it is off; a server paired directly
+    /// answers 403 to a chat-only pairing.
+    public func localVmScreenshot(botId: String, threadId: String) async throws -> LocalVmScreenshot {
+        guard Self.validRouteID(botId), Self.validRouteID(threadId) else { throw APIError.badURL }
+        var request = try makeRequest(
+            "POST",
+            "/api/bots/\(botId)/local-computer/screenshot",
+            query: [URLQueryItem(name: "threadId", value: threadId)]
+        )
+        // The harness execs into the VM for each capture; a busy VM can take
+        // longer than an ordinary call.
+        request.timeoutInterval = 45
+        return try await send(request, as: LocalVmScreenshot.self)
+    }
+
+    /// Take or hand back a bot's computer under this device's control lease.
+    /// While held, the harness refuses the bot's own computer actions.
+    @discardableResult
+    public func computerControl(botId: String, take: Bool, leaseId: String) async throws -> ComputerControlState {
+        guard Self.validRouteID(botId), Self.validRouteID(leaseId), (16...120).contains(leaseId.count) else {
+            throw APIError.badURL
+        }
+        return try await send(
+            try makeRequest(
+                "POST",
+                "/api/bots/\(botId)/computer/control",
+                body: ["action": take ? "take" : "release", "controlLeaseId": leaseId]
+            ),
+            as: ComputerControlState.self
+        )
+    }
+
+    /// The Local VM's live desktop, relayed by the sidecar or, on a phone
+    /// paired with the server directly, proxied by the server itself. The
+    /// harness grants it only to the lease that holds the computer, and the
+    /// relay or proxy closes as soon as that lease stops holding it.
+    public func localVmViewer(botId: String, threadId: String, leaseId: String) async throws -> LocalVmViewerSession {
+        guard Self.validRouteID(botId), Self.validRouteID(threadId), Self.validRouteID(leaseId),
+              (16...120).contains(leaseId.count)
+        else { throw APIError.badURL }
+        return try await send(
+            try makeRequest(
+                "POST",
+                "/api/bots/\(botId)/local-computer/join",
+                query: [
+                    URLQueryItem(name: "threadId", value: threadId),
+                    URLQueryItem(name: "controlLeaseId", value: leaseId),
+                ],
+                body: [:]
+            ),
+            as: LocalVmViewerSession.self
+        )
+    }
+
+    /// Close this device's relayed viewers for the bot.
+    public func closeViewer(botId: String) async throws {
+        guard Self.validRouteID(botId) else { throw APIError.badURL }
+        // The harness takes computer mutations as JSON only; without a body
+        // it answers 415 and closes nothing.
+        try await send(try makeRequest("POST", "/api/bots/\(botId)/computer/viewer-close", body: [:]))
+    }
+
+    /// The authenticated WebSocket request for a Local VM viewer, relayed or
+    /// proxied: same host and token as every other call, `ws` or `wss` to
+    /// match.
+    public func viewerSocketRequest(_ viewer: LocalVmViewerSession) throws -> URLRequest {
+        guard let base = connection.baseURL,
+              var components = URLComponents(url: base, resolvingAgainstBaseURL: false)
+        else { throw APIError.badURL }
+        components.scheme = components.scheme == "https" ? "wss" : "ws"
+        components.path = "/" + viewer.socketPath
+        let query = viewer.socketQuery.sorted { $0.key < $1.key }.map { URLQueryItem(name: $0.key, value: $0.value) }
+        components.queryItems = query.isEmpty ? nil : query
+        guard let url = components.url else { throw APIError.badURL }
+        var request = URLRequest(url: url)
+        request.timeoutInterval = requestTimeout
+        if let token { request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization") }
+        // websockify carries RFB in binary frames, and the sidecar relays
+        // that subprotocol. The server's own proxy answers without one, and
+        // a handshake that asked for one would be refused.
+        if viewer.relayed { request.setValue("binary", forHTTPHeaderField: "Sec-WebSocket-Protocol") }
+        return request
+    }
+
+    public func markRead(botId: String, threadId: String? = nil) async throws {
+        try await send(try makeRequest("POST", "/api/bots/\(botId)/read", body: threadId.map { ["threadId": $0] }))
     }
 
     public func markRead(roomId: String) async throws {
@@ -1553,7 +2009,15 @@ public struct CompanionClient: Sendable {
     /// send a phone on cellular. The computer panel turns it on for exactly
     /// as long as it is open, which costs a reconnect — cheap, because the
     /// stream resumes from its cursor and loses nothing.
-    public func events(since cursor: String?, screens: Bool = false) throws -> AsyncThrowingStream<StreamFrame, Error> {
+    ///
+    /// `streamingSession` is for tests, which need to see the request the
+    /// stream is opened with; the app leaves it nil and gets the session
+    /// tuned above.
+    public func events(
+        since cursor: String?,
+        screens: Bool = false,
+        streamingSession: URLSession? = nil
+    ) throws -> AsyncThrowingStream<StreamFrame, Error> {
         var query = [URLQueryItem(name: "screens", value: screens ? "on" : "off")]
         if let cursor { query.append(URLQueryItem(name: "since", value: cursor)) }
         var streamRequest = try makeRequest("GET", "/api/events", query: query)
@@ -1567,6 +2031,6 @@ public struct CompanionClient: Sendable {
         // first quiet gap and reconnect, forever, looking like a flaky network
         // rather than a number in the wrong place.
         streamRequest.timeoutInterval = 90
-        return eventStream(request: streamRequest, session: Self.streaming)
+        return eventStream(request: streamRequest, session: streamingSession ?? Self.streaming)
     }
 }

@@ -11,7 +11,16 @@ export interface CommsBus {
   store: Store;
   /** SSE broadcast (kind: "message" envelope). */
   broadcast: (payload: Record<string, unknown>) => void;
-  /** SSE broadcast (kind: "group" envelope) for a single group. */
+  /** Whether the bot can start one more direct thread right now. A bot runs
+   * several threads at once, so "busy" is not "full": a fresh-thread handoff
+   * asks this instead of the bot's busy flag. Absent (tests) = busy flag. */
+  threadSlotFree?: (botId: string) => boolean;
+  /** Whether a turn can land in the bot's standing thread right now — the
+   * same admission startTurn applies to a direct thread: that thread free, a
+   * free capacity slot, and no live group turn. A classic delegation asks
+   * this instead of the whole-bot busy flag, which is true whenever ANY
+   * thread is working. Absent (tests) = busy flag. */
+  canAdmitDirectTurn?: (botId: string, threadId: string) => boolean;
 }
 
 /** Find or create the channel for a peer exchange. When an originating

@@ -2,8 +2,42 @@ import { newId, type ModelSelection } from "./contracts.ts";
 import { botMascotBody } from "../shared/mascot-bodies.ts";
 import { takeImportName } from "../shared/import-name.ts";
 import { MAX_TEAM_BACKUP_BYTES, parseTeamBackup, type BackupTask, type TeamBackup } from "../shared/team-backup.ts";
-import type { BotRecord, GroupRecord, Message, Store } from "./store.ts";
+import type { BotVisibility } from "../shared/wire.ts";
+import type { BotRecord, GroupRecord, Message, Store, TaskRecord } from "./store.ts";
 import type { Routine, RoutineManager } from "./routines.ts";
+import { redactSecretsInText } from "./redact.ts";
+import {
+  listMemoryLogs, listMemoryTopics, readMemoryFile, readMemoryLog, readMemoryTopic,
+  writeMemoryFile, writeMemoryLog, writeMemoryTopic,
+} from "./workspace.ts";
+
+/** A bot's memory as it travels: MEMORY.md, every topic file, every daily
+ * log — scrubbed on the way out, because a file the bot's own file tools
+ * wrote never passed the server's scrub. Absent when the bot has none, so
+ * a backup of a bot that never remembered anything is unchanged. */
+function memoryFor(botId: string): TeamBackup["bots"][number]["memory"] {
+  const file = redactSecretsInText(readMemoryFile(botId).text);
+  const topics = listMemoryTopics(botId).flatMap((topic) => {
+    const text = readMemoryTopic(botId, topic.name);
+    return text === null ? [] : [{ name: topic.name, text: redactSecretsInText(text) }];
+  });
+  const logs = listMemoryLogs(botId).flatMap((name) => {
+    const text = readMemoryLog(botId, name);
+    return text === null ? [] : [{ name, text: redactSecretsInText(text) }];
+  });
+  if (!file && !topics.length && !logs.length) return undefined;
+  return { file, topics, logs };
+}
+
+/** Restore a bot's memory into its fresh workspace: the same writers the
+ * tool and the editor use, so modes (0700 folders, 0600 files), the scrub
+ * and the search index all come for free. Runs before any transcript is
+ * restored, inside the import's rollback — deleteBot removes the workspace. */
+function restoreMemory(botId: string, memory: NonNullable<TeamBackup["bots"][number]["memory"]>): void {
+  if (memory.file) writeMemoryFile(botId, memory.file);
+  for (const topic of memory.topics) writeMemoryTopic(botId, topic.name, topic.text);
+  for (const log of memory.logs) writeMemoryLog(botId, log.name, log.text);
+}
 
 /** Preserve readable history without importing executable cards, live queue
  * entries, approval requests, local paths or provider session handles. */
@@ -26,6 +60,23 @@ export function createTeamBackup(store: Store, routines: Routine[], name: string
     const tasks = record.tasks?.length ? record.tasks : [{ threadId: record.threadId, title: "Conversation", createdAt: record.createdAt }];
     return tasks.map((task) => ({
       key: task.threadId, title: task.title, createdAt: task.createdAt,
+      // Whether the first message already named this task travels with it:
+      // without the marker a restore could re-arm one generated title on a
+      // row that had already used it.
+      titleFromFirstMessage: "titleFromFirstMessage" in task && task.titleFromFirstMessage || undefined,
+      // Who opened the thread travels; the handoff id does not — the
+      // delegation ledger is process-local and never part of a backup.
+      openedBy: "openedBy" in task && task.openedBy
+        ? { botId: task.openedBy.botId, name: task.openedBy.name, at: task.openedBy.at,
+            // What kind of conversation it is travels: a restored pair
+            // conversation is still the standing line between those two
+            // bots, so the import does not read as one more loose row.
+            ...(task.openedBy.kind ? { kind: task.openedBy.kind } : {}) }
+        : undefined,
+      closedBy: "closedBy" in task && task.closedBy
+        ? { botId: task.closedBy.botId, name: task.closedBy.name, at: task.closedBy.at }
+        : undefined,
+      pinned: task.pinned === true ? true : undefined,
       activeLeafId: store.activeLeaf(task.threadId),
       messages: store.messagesFor(task.threadId).map((message) => ({
         id: message.id, role: message.role, text: messageText(message), at: message.at,
@@ -41,7 +92,9 @@ export function createTeamBackup(store: Store, routines: Routine[], name: string
       key: group.id, name: group.name, section: group.section, dm: Boolean(group.dm) && memberIds.length === 2,
       bulletin: group.bulletin, memberIds,
       defaultResponder: group.defaultResponder.kind === "member" && !memberIds.includes(group.defaultResponder.botId)
-        ? { kind: "mentions" as const } : group.defaultResponder,
+        ? { kind: "mentions" as const }
+        : group.defaultResponder.kind === "auto" && group.defaultResponder.fallbackBotId && !memberIds.includes(group.defaultResponder.fallbackBotId)
+          ? { kind: "auto" as const } : group.defaultResponder,
       activeTask: group.threadId, tasks: history(group),
     };
   });
@@ -59,6 +112,12 @@ export function createTeamBackup(store: Store, routines: Routine[], name: string
       section: bot.section, color: bot.color,
       mascotExpression: bot.mascotExpression ?? undefined, mascotBody: bot.mascotBody ?? undefined,
       chiefOfStaff: Boolean(bot.chiefOfStaff), hidden: Boolean(bot.hidden), playbooks: bot.playbooks ?? [],
+      // Grants are workspace-private authority: they travel in this backup
+      // so the team's shape is not lost, but the import below still lands
+      // every bot grant-less — restoring them is a deliberate later choice.
+      ...(bot.connectorTools ? { connectorTools: structuredClone(bot.connectorTools) } : {}),
+      ...(bot.toolScope !== undefined ? { toolScope: structuredClone(bot.toolScope) } : {}),
+      memory: memoryFor(bot.id),
       activeTask: bot.threadId, tasks: history(bot),
     })),
     groups,
@@ -77,7 +136,7 @@ export function createTeamBackup(store: Store, routines: Routine[], name: string
 
 /** Import is always additive, including sections and Chiefs. Rollback owns
  * only the fresh records below and cannot touch any pre-existing bot/chat. */
-export function importTeamBackup(store: Store, routines: RoutineManager, input: unknown, selection: ModelSelection) {
+export function importTeamBackup(store: Store, routines: RoutineManager, input: unknown, selection: ModelSelection, options: { visibility?: BotVisibility } = {}) {
   const backup = parseTeamBackup(input);
   const bots: BotRecord[] = [];
   const groups: GroupRecord[] = [];
@@ -88,7 +147,10 @@ export function importTeamBackup(store: Store, routines: RoutineManager, input: 
   const groupIds = new Map<string, string>();
   const takenNames = new Set(store.bots.map((bot) => bot.name.trim().toLowerCase()));
   const takenGroups = new Set(store.groups.map((group) => group.name.trim().toLowerCase()));
-  const takenSections = new Set([...store.bots, ...store.groups].map((record) => record.section?.trim().toLowerCase() ?? ""));
+  const takenSections = new Set([
+    ...store.sections.map((section) => section.toLowerCase()),
+    ...[...store.bots, ...store.groups].map((record) => record.section?.trim().toLowerCase() ?? ""),
+  ]);
   const sections = new Map<string, string>();
   const sectionFor = (section?: string) => {
     const key = section?.trim() ?? "";
@@ -118,17 +180,38 @@ export function importTeamBackup(store: Store, routines: RoutineManager, input: 
         color: source.color, mascotExpression: source.mascotExpression,
         mascotBody: botMascotBody(source.mascotBody),
         modelSelection: selection, section: sectionFor(source.section),
+        // who may see the imported team is the importing admin's choice
+        ...(options.visibility ? { visibility: options.visibility } : {}),
       }, { seedMessages: false });
       bots.push(bot);
       botIds.set(source.key, bot.id);
       store.patchBot(bot.id, { composio: false, computer: "off", browser: false, approvalMode: "ask", autoApprove: false,
-        hidden: source.hidden, chiefOfStaff: source.chiefOfStaff, playbooks: source.playbooks });
+        connectorTools: {}, toolScope: source.toolScope, hidden: source.hidden, chiefOfStaff: source.chiefOfStaff, playbooks: source.playbooks });
+      if (source.memory) restoreMemory(bot.id, source.memory);
     }
     for (const source of backup.bots) {
       const bot = store.bot(botIds.get(source.key)!)!;
-      const tasks = source.tasks.map((task, i) => ({
-        threadId: i === 0 ? bot.threadId : newId(), title: task.title, createdAt: task.createdAt, resumeCursors: {},
-      }));
+      const tasks = source.tasks.map((task, i): TaskRecord => {
+        const record: TaskRecord = {
+          threadId: i === 0 ? bot.threadId : newId(), title: task.title, createdAt: task.createdAt, resumeCursors: {},
+          modelSelection: structuredClone(bot.modelSelection), activity: "idle" as const, busy: false, unread: false,
+          ...(task.titleFromFirstMessage ? { titleFromFirstMessage: true } : {}),
+        };
+        // Same rule as a message's `from`: the opener is remapped to its
+        // imported twin, and an opener outside this backup leaves no record
+        // rather than a bot id that resolves to a stranger.
+        const opener = task.openedBy && botIds.get(task.openedBy.botId);
+        if (task.openedBy && opener) record.openedBy = { botId: opener, name: task.openedBy.name, at: task.openedBy.at, ...(task.openedBy.kind ? { kind: task.openedBy.kind } : {}) };
+        // A closed thread stays closed after import — the pile the person
+        // tidied does not come back as a pile — with the closer remapped
+        // the same way, or absent when it was a stranger.
+        const closer = task.closedBy && botIds.get(task.closedBy.botId);
+        if (task.closedBy && closer) record.closedBy = { botId: closer, name: task.closedBy.name, at: task.closedBy.at };
+        if (task.pinned === true) record.pinned = true;
+        const newest = task.messages.reduce((max, message) => Math.max(max, message.at), task.createdAt);
+        record.updatedAt = newest;
+        return record;
+      });
       // Own the task IDs before writing their transcripts, so rollback also
       // removes partially imported history if persistence fails midway.
       store.patchBot(bot.id, { tasks, threadId: tasks[source.tasks.findIndex((task) => task.key === source.activeTask)].threadId });
@@ -140,7 +223,9 @@ export function importTeamBackup(store: Store, routines: RoutineManager, input: 
       groupIds.set(source.key, group.id);
       const responder = source.defaultResponder;
       store.patchGroup(group.id, { bulletin: source.bulletin, setupCompletedAt: Date.now(), defaultResponder:
-        responder.kind === "member" ? { kind: "member", botId: botIds.get(responder.botId)! } : responder });
+        responder.kind === "member" ? { kind: "member", botId: botIds.get(responder.botId)! }
+          : responder.kind === "auto" ? { kind: "auto", ...(responder.fallbackBotId ? { fallbackBotId: botIds.get(responder.fallbackBotId)! } : {}) }
+            : responder });
       // Use the existing task APIs for rooms; direct-message rooms have one.
       const threads = source.tasks.map((task, i) => {
         if (i === 0) {
@@ -151,7 +236,12 @@ export function importTeamBackup(store: Store, routines: RoutineManager, input: 
       });
       source.tasks.forEach((task, i) => restore(task, threads[i]));
       if (!source.dm) {
-        group.tasks = source.tasks.map((task, i) => ({ threadId: threads[i], title: task.title, createdAt: task.createdAt }));
+        group.tasks = source.tasks.map((task, i) => ({
+          threadId: threads[i], title: task.title, createdAt: task.createdAt,
+          updatedAt: task.messages.reduce((max, message) => Math.max(max, message.at), task.createdAt),
+          ...(task.pinned === true ? { pinned: true as const } : {}),
+          ...(task.titleFromFirstMessage ? { titleFromFirstMessage: true } : {}),
+        }));
         store.switchGroupTask(group.id, threads[source.tasks.findIndex((task) => task.key === source.activeTask)]);
       }
     }
@@ -167,6 +257,9 @@ export function importTeamBackup(store: Store, routines: RoutineManager, input: 
     // every fresh ID, even a record that never reached the result arrays.
     for (const group of store.groups) if (!existingGroupIds.has(group.id)) store.deleteGroup(group.id);
     for (const bot of store.bots) if (!existingBotIds.has(bot.id)) store.deleteBot(bot.id);
+    for (const section of sections.values()) {
+      if (store.sections.includes(section)) store.changeEmptySection(section, null);
+    }
     throw error;
   }
 }

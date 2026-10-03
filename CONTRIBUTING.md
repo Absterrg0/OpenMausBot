@@ -33,6 +33,7 @@ pnpm dev:desktop   # Electron shell (macOS/Ubuntu; keep server + Vite running)
 pnpm typecheck     # app + server
 pnpm test          # vitest suite (server unit + driver contract + API smoke)
 pnpm test:watch    # same, in watch mode
+pnpm exec vitest run --shard=1/4   # one CI shard, exactly the files CI ran in it
 pnpm check:electron # syntax-check the plain JS Electron entrypoints
 
 pnpm package:mac   # DMG + ZIP; requires Swift/Xcode tools
@@ -155,6 +156,10 @@ how chat routine proposals failed in the field hours after 0.1.38 shipped (#544)
   fixes the next call.
 - A schema test should assert the tool surface stays flat
   (see `server/drivers/agents-proxy.test.ts` — it regexp-guards the serialized schema).
+- The agents tools live in `server/drivers/agents-catalog.ts`, and their serialized `tools/list`
+  is pinned byte for byte and size-budgeted by `server/drivers/agents-catalog-wire.test.ts`.
+  After changing one on purpose, run that file once with `UPDATE_AGENTS_CATALOG_GOLDENS=1`,
+  review the golden diff, and move its `BUDGET_BASELINE` by hand.
 
 ## Adding a language
 
@@ -241,9 +246,41 @@ An upstream PR should contain only the portable product change. Keep local build
 names, credentials, private endpoints, machine-specific configuration, and fork-only release notes
 out of its commits and screenshots.
 
+## Contribution licensing
+
+- No DCO sign-off is required. Submit only code you wrote or have the right
+  to contribute under the applicable project license.
+- Changes under `enterprise/` (source-available, see [LICENSING.md](LICENSING.md))
+  need the [CLA](CLA.md), signed once by commenting on the pull request
+  when the bot asks. Changes outside `enterprise/` do not require a CLA.
+- `enterprise/`, the cloud seam and the licensing files have code owners; a
+  maintainer review is required there.
+
+## CI, in one glance
+
+Every PR runs the same checks, each as its own job so a failure names itself.
+The quick static job runs first; only after it passes do the expensive test and
+build jobs enter the runner queue. This saves capacity on submissions with type,
+lint or build errors, without skipping any checks on mergeable PRs. The required
+gates still fail if preflight fails or a required test job is skipped. It adds
+the preflight duration to an otherwise idle runner pool; it does not cure a
+GitHub-wide scheduling backlog.
+
+- **typecheck + lint** — typecheck, lint, locale catalogs (`pnpm i18n:check`), Electron syntax check, production UI build. Once, on Ubuntu; none of it is platform-specific.
+- **vitest (os, shard n/4)** — the suite split into four shards per platform: Ubuntu and Windows on a PR; macOS as well on main, in the merge queue and on manual runs (macOS runners are scarce and only a couple of tests are macOS-only). The suite runs its files serially on purpose (fake CLIs and a real harness server), so one runner takes ~19 minutes; a shard takes 4–10. To reproduce a shard's failure locally, run the same `pnpm exec vitest run --shard=n/4`. Failures also appear as annotations on the PR.
+- **packaged server smoke (os)** — the server bundle copied out of the repo and started with no `node_modules` in reach.
+- **Windows CUA host smoke**, **macOS smokes (packaged server + Electron)** — real Electron utility processes against disposable homes; never the live app.
+- **Swift tests + iOS build**, **Kotlin tests + Android build** — only when `ios/` or `android/` (or the CI setup) changes. The iPhone/iPad simulator UI suite runs nightly in `ios-thread-ui.yml`.
+- **CI** — the one check the branch rules require. It only aggregates the jobs above; if it is red, the failing job is named in its log.
+
+A `pre-push` hook installed by `pnpm install` runs lint, typecheck and the locale check before a push (about a minute). `git push --no-verify` skips it once; `OMB_SKIP_HOOKS=1` skips it for a session.
+
+Provider fakes under `server/testing/fake-*.ts` must stay dependency-free: they run as bare subprocesses and at least one is copied out of the repo by a test, so a relative import from the repo dies at link time. `server/testing/fakes-self-contained.test.ts` enforces it.
+
 ## Before you open the PR
 
 - [ ] `pnpm typecheck` and `pnpm test` pass
+- [ ] `pnpm lint` passes
 - [ ] Locale changes pass `pnpm i18n:check` and have been reviewed by a speaker
 - [ ] `pnpm check:electron` passes for desktop-shell changes
 - [ ] Ubuntu packaging changes pass `pnpm package:linux` and `node scripts/verify-linux-package.mjs`

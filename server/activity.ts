@@ -7,9 +7,8 @@
 // arguments, and who allowed it. This module reads both back and folds
 // them into one row per thing that happened.
 //
-// Connector calls never pass through the harness — an agent CLI talks to
-// Composio's MCP endpoint directly — which is exactly why this reads the
-// logs instead of tapping a proxy that does not exist.
+// Connector calls pass through the harness relay, whose approval and scope
+// decisions share the decision log. Read those alongside native tool runs.
 import { join } from "node:path";
 
 import { readDecisions, type DecisionKind, type DecisionRow } from "./decision-log.ts";
@@ -158,7 +157,7 @@ function readToolRuns(eventsDir: string, threadId: string): ActivityRow[] {
   const runs = new Map<string, ActivityRow>();
   for (const event of lines) {
     if (event.type === "item.started" && event.itemType === "tool") {
-      const key = event.itemId ?? event.eventId;
+      const key = JSON.stringify([event.turnId ?? "", event.itemId ?? event.eventId]);
       runs.set(
         key,
         describeRow({
@@ -170,7 +169,7 @@ function readToolRuns(eventsDir: string, threadId: string): ActivityRow[] {
         }),
       );
     } else if (event.type === "item.completed" && event.itemType === "tool" && event.itemId) {
-      const run = runs.get(event.itemId);
+      const run = runs.get(JSON.stringify([event.turnId ?? "", event.itemId]));
       if (run) run.outcome = event.ok ? "ran" : "failed";
     }
   }

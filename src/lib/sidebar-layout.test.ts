@@ -27,7 +27,8 @@ describe("sidebar virtual sections", () => {
       expect(userSectionName(id)).toBe(name);
       expect(sidebarSectionLabel(id)).toBe(name);
     }
-    expect(sidebarSectionLabel(CHANNELS_SECTION_ID)).toBe("Channels");
+    expect(sidebarSectionLabel(CHANNELS_SECTION_ID)).toBe("Group chats");
+    expect(sidebarSectionLabel(BOT_CHATS_SECTION_ID)).toBe("Bot threads");
   });
 
   it("round-trips every valid section name without URI encoding", () => {
@@ -78,6 +79,24 @@ describe("sidebar virtual sections", () => {
     const parts = partitionSidebarBots([chief]);
     expect(parts.sectionChiefs).toEqual([chief]);
     expect(parts.pinnedBots).toEqual([]);
+  });
+
+  it("lifts pinned bots from every group when pins are universal", () => {
+    const workChief = { id: "work-chief", chiefOfStaff: true, section: "Work", pinned: true };
+    const home = { id: "home", section: "Home", pinned: true };
+    const looseChief = { id: "loose", chiefOfStaff: true, pinned: true };
+    const stay = { id: "stay", section: "Work" };
+    const hidden = { id: "hidden", section: "Home", pinned: true, hidden: true };
+    const parts = partitionSidebarBots(
+      [workChief, home, looseChief, stay, hidden],
+      { universalPins: true },
+    );
+    expect(parts.pinnedBots.map((bot) => bot.id)).toEqual(["work-chief", "home", "loose"]);
+    expect(parts.sectionChiefs).toEqual([]);
+    expect(parts.unsectionedChief).toBeNull();
+    expect(parts.sectionedBots).toEqual([stay]);
+    expect(workChief.section).toBe("Work");
+    expect(home.section).toBe("Home");
   });
 
   it("forces filtered and icon-only views open and non-reorderable", () => {

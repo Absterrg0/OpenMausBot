@@ -1,7 +1,7 @@
 // Team memory: the people, places, decisions and terms every bot in a
-// section shares. Bots propose; places and terms land at once, people and
-// decisions wait for a tap; the person can edit or delete any of it.
-import { mkdtempSync, readFileSync, statSync } from "node:fs";
+// section shares. Every bot proposal waits for admin review; the person
+// can edit or delete any of it.
+import { mkdirSync, mkdtempSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -23,27 +23,93 @@ afterEach(async () => {
 });
 
 describe("propose", () => {
-  it("accepts a place or a term at once, and holds a person or a decision for the person", () => {
+  it.each(["{broken", '{"version":1,"sections":{"Team":[{"invalid":true}]}}'])("preserves an unreadable existing file instead of replacing it: %s", (bytes) => {
+    const file = join(dir, "team-memory.json");
+    writeFileSync(file, bytes);
+    const reopened = new TeamMemory(file);
+    expect(reopened.list("")).toEqual([]);
+    expect(() => reopened.propose("", { kind: "term", name: "new", detail: "cannot overwrite" }, source)).toThrow(/could not be read/);
+    expect(reopened.list("")).toEqual([]);
+    expect(readFileSync(file, "utf8")).toBe(bytes);
+  });
+
+  it.each(["constructor", "__proto__"])("keeps prototype-like section names through updates, rollback and restart: %s", (section) => {
+    expect(memory.list(section)).toEqual([]);
+    const first = memory.propose(section, { kind: "term", name: "OMB", detail: "original" }, source);
+    const file = join(dir, "team-memory.json");
+    memory = new TeamMemory(file);
+    expect(memory.list(section)[0].detail).toBe("original");
+    expect(memory.update(section, first.entry.id, { detail: "updated" })?.detail).toBe("updated");
+    expect(new TeamMemory(file).list(section)[0].detail).toBe("updated");
+    renameSync(file, file + ".saved");
+    mkdirSync(file);
+    expect(() => memory.update(section, first.entry.id, { detail: "lost" })).toThrow();
+    expect(memory.list(section)[0].detail).toBe("updated");
+    expect(memory.list("")).toEqual([]);
+  });
+
+  it("keeps an approved person unchanged until the replacement is approved", () => {
+    const first = memory.propose("", { kind: "person", name: "Alex", detail: "original" }, source);
+    memory.resolve("", first.entry.id, "accept");
+    const replacement = memory.propose("", { kind: "person", name: "Alex", detail: "replacement" }, { ...source, at: source.at + 1 });
+    expect(replacement.status).toBe("proposed");
+    expect(replacement.entry.id).not.toBe(first.entry.id);
+    expect(memory.systemPrompt("")).toContain("Alex: original");
+    expect(memory.systemPrompt("")).not.toContain("replacement");
+    expect(new TeamMemory(join(dir, "team-memory.json")).systemPrompt("")).toContain("Alex: original");
+    memory.resolve("", replacement.entry.id, "accept");
+    expect(memory.systemPrompt("")).toContain("Alex: replacement");
+    expect(memory.list("").filter(entry => entry.status === "accepted")).toHaveLength(1);
+  });
+
+  it("rejects aliases that would make persisted entries unreadable", () => {
+    expect(() => memory.propose("", { kind: "term", name: "OMB", detail: "app", aliases: ["x".repeat(121)] }, source)).toThrow(/aliases/);
+    expect(memory.list("")).toEqual([]);
+  });
+
+  it("rolls memory back when a mutation cannot be saved", () => {
+    const first = memory.propose("", { kind: "term", name: "OMB", detail: "original" }, source);
+    const file = join(dir, "team-memory.json");
+    renameSync(file, file + ".saved");
+    mkdirSync(file);
+    expect(() => memory.update("", first.entry.id, { detail: "lost" })).toThrow();
+    expect(memory.list("")[0].detail).toBe("original");
+    expect(() => memory.propose("", { kind: "term", name: "new", detail: "lost" }, source)).toThrow();
+    expect(memory.list("")).toHaveLength(1);
+    expect(() => memory.remove("", first.entry.id)).toThrow();
+    expect(memory.list("")).toHaveLength(1);
+  });
+  it("holds every kind outside shared prompts until reviewed", () => {
     const place = memory.propose("", { kind: "place", name: "Launch plan", detail: "Notion page in the Marketing space" }, source);
-    expect(place.status).toBe("accepted");
+    expect(place.status).toBe("proposed");
     const term = memory.propose("", { kind: "term", name: "MCHQ", detail: "MissionControlHQ, our old name" }, source);
-    expect(term.status).toBe("accepted");
+    expect(term.status).toBe("proposed");
     const person = memory.propose("", { kind: "person", name: "Ayush", detail: "Founder, handles sales", aliases: ["Ayu"] }, source);
     expect(person.status).toBe("proposed");
     const decision = memory.propose("", { kind: "decision", name: "Ship Android first", detail: "Decided in the Monday sync" }, source);
     expect(decision.status).toBe("proposed");
     expect(memory.list("").map((entry) => [entry.name, entry.status])).toEqual([
-      ["Launch plan", "accepted"],
-      ["MCHQ", "accepted"],
+      ["Launch plan", "proposed"],
+      ["MCHQ", "proposed"],
       ["Ayush", "proposed"],
       ["Ship Android first", "proposed"],
     ]);
+    expect(memory.systemPrompt("")).toBe("");
+    memory.resolve("", term.entry.id, "accept");
+    expect(memory.systemPrompt("")).toContain("MCHQ");
+    expect(memory.systemPrompt("")).not.toContain("Launch plan");
   });
 
-  it("updates an entry with the same name and kind instead of adding a twin", () => {
-    memory.propose("", { kind: "place", name: "Launch plan", detail: "old page" }, source);
+  it("keeps accepted terms and places until their selected replacement is reviewed", () => {
+    const first = memory.propose("", { kind: "place", name: "Launch plan", detail: "old page" }, source);
+    memory.resolve("", first.entry.id, "accept");
     const again = memory.propose("", { kind: "place", name: "launch plan", detail: "new page" }, source);
-    expect(again.status).toBe("updated");
+    expect(again.status).toBe("proposed");
+    const other = memory.propose("", { kind: "place", name: "launch plan", detail: "another pending revision" }, source);
+    expect(memory.systemPrompt("")).toContain("old page");
+    expect(memory.systemPrompt("")).not.toContain("new page");
+    memory.resolve("", other.entry.id, "reject");
+    memory.resolve("", again.entry.id, "accept");
     expect(memory.list("")).toHaveLength(1);
     expect(memory.list("")[0].detail).toBe("new page");
   });
@@ -62,6 +128,12 @@ describe("propose", () => {
 });
 
 describe("resolve, update, remove", () => {
+  it("rejects edits that collide with another accepted fact", () => {
+    const a = memory.propose("", { kind: "term", name: "Alex", detail: "term" }, source);
+    memory.propose("", { kind: "place", name: "Alex", detail: "place" }, source);
+    expect(() => memory.update("", a.entry.id, { kind: "place" })).toThrow(/already exists/);
+    expect(memory.list("")[0].kind).toBe("term");
+  });
   it("accepts or drops a proposal exactly once", () => {
     const { entry } = memory.propose("", { kind: "person", name: "Bhanu", detail: "CTO" }, source);
     expect(memory.resolve("", entry.id, "accept")).toEqual({ claimed: true, state: "accepted" });
@@ -94,12 +166,15 @@ describe("resolve, update, remove", () => {
 describe("systemPrompt", () => {
   it("is empty with nothing accepted, and lists accepted entries by kind otherwise", () => {
     expect(memory.systemPrompt("")).toBe("");
-    memory.propose("", { kind: "term", name: "MCHQ", detail: "MissionControlHQ" }, source);
-    memory.propose("", { kind: "place", name: "Launch plan", detail: "Notion, Marketing space" }, source);
+    const term = memory.propose("", { kind: "term", name: "MCHQ", detail: "MissionControlHQ" }, source);
+    const place = memory.propose("", { kind: "place", name: "Launch plan", detail: "Notion, Marketing space" }, source);
     const { entry } = memory.propose("", { kind: "person", name: "Ayush", detail: "Founder", aliases: ["Ayu"] }, source);
     memory.propose("", { kind: "decision", name: "Ship Android first", detail: "Monday sync" }, source); // still proposed
     const beforeAccept = memory.systemPrompt("");
     expect(beforeAccept).not.toContain("Ayush");
+    expect(beforeAccept).toBe("");
+    memory.resolve("", term.entry.id, "accept");
+    memory.resolve("", place.entry.id, "accept");
     memory.resolve("", entry.id, "accept");
     const prompt = memory.systemPrompt("");
     expect(prompt).toContain("Ayush (also: Ayu): Founder");
@@ -111,7 +186,8 @@ describe("systemPrompt", () => {
 
   it("stays under its byte budget, newest first when it has to cut", () => {
     for (let i = 0; i < 400; i++) {
-      memory.propose("", { kind: "term", name: `Term ${i}`, detail: "d".repeat(60) }, { ...source, at: source.at + i });
+      const proposed = memory.propose("", { kind: "term", name: `Term ${i}`, detail: "d".repeat(60) }, { ...source, at: source.at + i });
+      memory.resolve("", proposed.entry.id, "accept");
     }
     const prompt = memory.systemPrompt("");
     expect(Buffer.byteLength(prompt, "utf8")).toBeLessThanOrEqual(TEAM_MEMORY_PROMPT_MAX_BYTES + 400);

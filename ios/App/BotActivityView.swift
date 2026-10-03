@@ -1,4 +1,5 @@
 import CompanionCore
+import Combine
 import SwiftUI
 
 /// What one bot did, newest first, grouped by day: every tool it used and
@@ -7,37 +8,51 @@ import SwiftUI
 struct BotActivityView: View {
     let bot: Bot
     @EnvironmentObject private var session: Session
+    @Environment(\.scenePhase) private var scenePhase
     @State private var rows: [ActivityRow]?
+    @State private var days: [Day] = []
+    @State private var presentationDay: Date?
     @State private var loading = false
     @State private var failed = false
+    @State private var loadGeneration = 0
 
     private static let isoParser: ISO8601DateFormatter = {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         return formatter
     }()
+    private static let basicISOParser = ISO8601DateFormatter()
+
+    private struct PresentedRow: Identifiable {
+        let id: Int
+        let row: ActivityRow
+        let time: String
+    }
 
     private struct Day: Identifiable {
         let id: String
         let label: String
-        let rows: [ActivityRow]
+        var rows: [PresentedRow]
     }
 
-    private var days: [Day] {
-        guard let rows else { return [] }
+    // Derive once per changed receipt page/day, not on Session's ordinary
+    // chat invalidations. Both ISO parsing and time formatting stay here.
+    private static func present(_ rows: [ActivityRow], now: Date) -> [Day] {
         let calendar = Calendar.current
         var result: [Day] = []
-        for row in rows {
-            let date = Self.isoParser.date(from: row.at) ?? ISO8601DateFormatter().date(from: row.at) ?? Date()
+        for (index, row) in rows.enumerated() {
+            let parsed = isoParser.date(from: row.at) ?? basicISOParser.date(from: row.at)
+            let date = parsed ?? now
+            let presented = PresentedRow(id: index, row: row, time: parsed.map { $0.formatted(date: .omitted, time: .shortened) } ?? "")
             let key = calendar.startOfDay(for: date)
             let id = "\(key.timeIntervalSince1970)"
             if let last = result.last, last.id == id {
-                result[result.count - 1] = Day(id: id, label: last.label, rows: last.rows + [row])
+                result[result.count - 1].rows.append(presented)
             } else {
                 let label = calendar.isDateInToday(date) ? String(localized: "Today")
                     : calendar.isDateInYesterday(date) ? String(localized: "Yesterday")
                     : date.formatted(.dateTime.weekday(.abbreviated).day().month(.abbreviated))
-                result.append(Day(id: id, label: label, rows: [row]))
+                result.append(Day(id: id, label: label, rows: [presented]))
             }
         }
         return result
@@ -53,14 +68,14 @@ struct BotActivityView: View {
             }
             ForEach(days) { day in
                 Section(day.label) {
-                    ForEach(Array(day.rows.enumerated()), id: \.offset) { _, row in
-                        ActivityRowView(row: row)
+                    ForEach(day.rows) { presented in
+                        ActivityRowView(row: presented.row, time: presented.time)
                     }
                 }
             }
             if failed {
                 Section {
-                    ContentUnavailableView("Couldn't load", systemImage: "wifi.exclamationmark")
+                    EmptyStateView(String(localized: "Couldn't load"), systemImage: "wifi.exclamationmark")
                 }
             }
         }
@@ -68,21 +83,40 @@ struct BotActivityView: View {
         .overlay { if loading && rows == nil { ProgressView() } }
         .task(id: session.connection?.id) {
             rows = nil
+            days = []
+            presentationDay = nil
             failed = false
             await load()
         }
         .refreshable { await load() }
+        .onValueChange(of: scenePhase) { phase in
+            if phase == .active { Task { await load() } }
+        }
+        .onReceive(session.activityUpdates.filter { threadID in
+            let current = session.state.bots.first(where: { $0.id == bot.id }) ?? bot
+            return threadID == current.threadId || current.tasks?.contains(where: { $0.threadId == threadID }) == true
+        }.debounce(for: .milliseconds(400), scheduler: RunLoop.main)) { _ in
+            Task { await load() }
+        }
     }
 
     private func load() async {
+        loadGeneration += 1
+        let generation = loadGeneration
         let connectionID = session.connection?.id
         loading = true
         defer {
-            if !Task.isCancelled, session.connection?.id == connectionID { loading = false }
+            if !Task.isCancelled, session.connection?.id == connectionID, loadGeneration == generation { loading = false }
         }
         let loaded = await session.botActivity(for: bot)
-        guard !Task.isCancelled, session.connection?.id == connectionID else { return }
+        guard !Task.isCancelled, session.connection?.id == connectionID, loadGeneration == generation else { return }
         if let loaded {
+            let now = Date()
+            let day = Calendar.current.startOfDay(for: now)
+            if rows != loaded || presentationDay != day {
+                days = Self.present(loaded, now: now)
+                presentationDay = day
+            }
             rows = loaded
             failed = false
         } else {
@@ -93,13 +127,7 @@ struct BotActivityView: View {
 
 private struct ActivityRowView: View {
     let row: ActivityRow
-
-    private var time: String {
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        let date = formatter.date(from: row.at) ?? ISO8601DateFormatter().date(from: row.at)
-        return date.map { $0.formatted(date: .omitted, time: .shortened) } ?? ""
-    }
+    let time: String
 
     private var chip: (text: LocalizedStringKey, color: Color) {
         switch row.outcome {

@@ -15,12 +15,16 @@ export type BotUpdatePatch = Partial<
     | "mascotExpression"
     | "avatarUrl"
     | "avatarCrop"
+    | "avatarZoom"
+    | "avatarFocusX"
+    | "avatarFocusY"
     | "autoApprove"
     | "approvalMode"
     | "outbound"
     | "fallback"
     | "speakReplies"
     | "voice"
+    | "voiceNotes"
     | "pinned"
     | "hidden"
     | "section"
@@ -30,13 +34,18 @@ export type BotUpdatePatch = Partial<
     | "composio"
     | "browser"
     | "browserProfile"
+    | "memoryUpkeep"
+    | "mcpServers"
     | "modelSelection"
   >
 > & {
   /** null is the wire representation for clearing an explicit destination
    * and returning to Auto. Bot state itself keeps Auto as an absent field. */
   computer?: Bot["computer"] | null;
-  /** null clears the scopes back to every connected app; absent leaves them. */
+  /** null is the wire representation for dropping an explicit grants record
+   * and returning to the legacy all-tools boolean. Bot state keeps that as
+   * an absent field. */
+  connectorTools?: Bot["connectorTools"] | null;
   connectorScopes?: Bot["connectorScopes"] | null;
   /** Rides the PATCH body only: the server's proof that the local-auto
    * warning dialog was shown (see server/index.ts's consent gate). It must
@@ -47,14 +56,17 @@ export type BotUpdatePatch = Partial<
    * confirmed. StoreProvider consumes it before the private Electron request;
    * it is never sent over HTTP or folded into bot state. */
   confirmFullAccess?: boolean;
+  /** Private desktop grant scope, never an HTTP patch or bot field. */
+  applyToAllThreads?: boolean;
 };
 
 /** A wire patch after clear-only values have been normalized for Bot state. */
 export type BotStatePatch = Omit<
   BotUpdatePatch,
-  "computer" | "connectorScopes" | "acknowledgeLocalAuto" | "confirmFullAccess"
+  "computer" | "connectorTools" | "connectorScopes" | "acknowledgeLocalAuto" | "confirmFullAccess" | "applyToAllThreads"
 > & {
   computer?: Bot["computer"];
+  connectorTools?: Bot["connectorTools"];
   connectorScopes?: Bot["connectorScopes"];
 };
 
@@ -110,17 +122,20 @@ const stateOverlay = (patch: BotUpdatePatch): BotStatePatch => {
   const {
     acknowledgeLocalAuto: _localAck,
     confirmFullAccess: _fullConfirmation,
+    applyToAllThreads: _allThreads,
     computer,
+    connectorTools,
     connectorScopes,
     ...fields
   } = patch;
-  const withComputer = computer === null
-    ? { ...fields, computer: undefined }
-    : computer === undefined ? fields : { ...fields, computer };
-  // null clears the scopes; state keeps that as an absent field
-  return connectorScopes === undefined
-    ? withComputer
-    : { ...withComputer, connectorScopes: connectorScopes ?? undefined };
+  const normalized: BotStatePatch = { ...fields };
+  if (computer === null) normalized.computer = undefined;
+  else if (computer !== undefined) normalized.computer = computer;
+  if (connectorTools === null) normalized.connectorTools = undefined;
+  else if (connectorTools !== undefined) normalized.connectorTools = connectorTools;
+  if (connectorScopes === null) normalized.connectorScopes = undefined;
+  else if (connectorScopes !== undefined) normalized.connectorScopes = connectorScopes;
+  return normalized;
 };
 
 /**
@@ -226,8 +241,11 @@ export function createBotPatchQueue(options: BotPatchQueueOptions): BotPatchQueu
       // Execution-boundary edits must start immediately. They still share the
       // same serialized lane, but never sit behind the cosmetic 400 ms
       // debounce where a message/routine could begin under stale permissions.
+      // Connector grants are the same class of boundary: a revoked tool
+      // must stop being callable without waiting out a cosmetic debounce.
       const immediate = Object.prototype.hasOwnProperty.call(patch, "approvalMode") ||
-        Object.prototype.hasOwnProperty.call(patch, "modelSelection");
+        Object.prototype.hasOwnProperty.call(patch, "modelSelection") ||
+        Object.prototype.hasOwnProperty.call(patch, "connectorTools");
       if (immediate) {
         if (entry.timer !== null) clearTimeout(entry.timer);
         entry.timer = null;

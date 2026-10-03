@@ -4,31 +4,66 @@ import {
   APPROVAL_MODES,
   approvalModeFor,
   supportsApprovalMode,
+  modelSwitchNeedsAsk,
   hasNativeAutoReview,
-  requiresNativeApproval,
   isEmergencyApprovalDowngrade,
   isApprovalMode,
 } from "../shared/approval-mode.ts";
+import { createApprovalModeSupport } from "./harness-capabilities.ts";
 
 describe("approval modes", () => {
+  it("resets only grants that cannot safely carry to the selected provider", () => {
+    for (const driver of ["codex", "claudeAgent", "grokAgent", "antigravityAgent", "piAgent", "customAcp"]) {
+      expect(modelSwitchNeedsAsk("ask", "codex", driver)).toBe(false);
+      expect(modelSwitchNeedsAsk("auto", "codex", driver)).toBe(false);
+      expect(modelSwitchNeedsAsk("full", "codex", driver)).toBe(driver !== "codex");
+      expect(modelSwitchNeedsAsk("custom", "codex", driver)).toBe(driver !== "codex");
+    }
+    expect(modelSwitchNeedsAsk("edits", "claudeAgent", "codex")).toBe(true);
+    expect(modelSwitchNeedsAsk("edits", "claudeAgent", "grokAgent")).toBe(false);
+    expect(modelSwitchNeedsAsk("full", "claudeAgent", "claudeAgent")).toBe(false);
+    expect(modelSwitchNeedsAsk("full", "codex", undefined)).toBe(true);
+  });
   it("only exposes implemented provider capabilities", () => {
-    for (const driver of ["codex", "claudeAgent", "antigravityAgent", "cursorAgent", "grokAgent", "opencodeGo"]) {
+    for (const driver of ["codex", "claudeAgent", "antigravityAgent", "cursorAgent", "grokAgent", "opencodeGo", "qwenAgent", "geminiAgent"]) {
       expect(supportsApprovalMode(driver, "full")).toBe(true);
       expect(supportsApprovalMode(driver, "custom")).toBe(driver === "codex");
-      expect(hasNativeAutoReview(driver)).toBe(["codex", "claudeAgent", "cursorAgent"].includes(driver));
-      expect(requiresNativeApproval(driver, "auto")).toBe(true);
+      // Qwen's `--approval-mode auto` is an LLM classifier; Gemini has no reviewer
+      expect(hasNativeAutoReview(driver)).toBe(["codex", "claudeAgent", "cursorAgent", "grokAgent", "qwenAgent"].includes(driver));
+      // auto-accept edits exists only where the engine has such a mode
+      expect(supportsApprovalMode(driver, "edits")).toBe(["claudeAgent", "grokAgent", "antigravityAgent", "qwenAgent", "geminiAgent"].includes(driver));
     }
-    for (const driver of [undefined, "customAgent", "pi"]) expect(supportsApprovalMode(driver, "full")).toBe(false);
-    expect(requiresNativeApproval("antigravityAgent", "full")).toBe(false);
-    expect(requiresNativeApproval("antigravityAgent", "ask")).toBe(false);
-    expect(requiresNativeApproval("opencodeGo", "full")).toBe(false);
-    expect(requiresNativeApproval("codex", "full")).toBe(false);
-    for (const driver of ["claudeAgent", "cursorAgent", "grokAgent"]) {
-      expect(requiresNativeApproval(driver, "full")).toBe(true);
-    }
+    expect(supportsApprovalMode(undefined, "full")).toBe(false);
+    expect(supportsApprovalMode(undefined, "edits")).toBe(false);
   });
-  it("recognizes only the four durable values", () => {
-    expect(APPROVAL_MODES).toEqual(["ask", "auto", "full", "custom"]);
+
+  it.each([
+    "kimiAgent", "droidAgent", "hermesAgent", "customAcp",
+    "piAgent", "boxAgent", "unknown",
+  ])("keeps %s on supported approval levels without claiming native Auto", (driver) => {
+    expect(supportsApprovalMode(driver, "ask")).toBe(true);
+    expect(supportsApprovalMode(driver, "auto")).toBe(true);
+    expect(supportsApprovalMode(driver, "edits")).toBe(false);
+    expect(supportsApprovalMode(driver, "full")).toBe(false);
+    expect(supportsApprovalMode(driver, "custom")).toBe(false);
+    expect(hasNativeAutoReview(driver)).toBe(false);
+  });
+
+  // The chat-completions family has no provider reviewer, so Auto still
+  // behaves like Ask — but Full is implemented in the harness itself
+  // (createOpenAIChatRuntime answers its own gate), so it IS offered. Without
+  // it these engines had no level that ever stops asking, and a Chief's
+  // delegated Full access could not reach them either.
+  it.each(["grok", "openai-compat", "minimax"])("offers harness-implemented Full on %s, but never native Auto", (driver) => {
+    expect(supportsApprovalMode(driver, "ask")).toBe(true);
+    expect(supportsApprovalMode(driver, "auto")).toBe(true);
+    expect(supportsApprovalMode(driver, "full")).toBe(true);
+    expect(supportsApprovalMode(driver, "edits")).toBe(false);
+    expect(supportsApprovalMode(driver, "custom")).toBe(false);
+    expect(hasNativeAutoReview(driver)).toBe(false);
+  });
+  it("recognizes only the five durable values", () => {
+    expect(APPROVAL_MODES).toEqual(["ask", "edits", "auto", "full", "custom"]);
     for (const mode of APPROVAL_MODES) expect(isApprovalMode(mode)).toBe(true);
     for (const value of [undefined, null, true, "automatic", "bypass"]) {
       expect(isApprovalMode(value)).toBe(false);
@@ -65,5 +100,57 @@ describe("approval modes", () => {
     expect(isEmergencyApprovalDowngrade("full", "auto")).toBe(false);
     expect(isEmergencyApprovalDowngrade("ask", "auto")).toBe(false);
     expect(isEmergencyApprovalDowngrade("auto", "ask")).toBe(false);
+  });
+
+  it("holds only the explicitly targeted thread during a composer grant", () => {
+    const approvalGrant = { requestId: "pending", mode: "full", phase: "prepared", threadOnly: true, threadId: "target" };
+    expect(approvalModeFor({ approvalMode: "full", approvalGrant, threadId: "target" })).toBe("ask");
+    expect(approvalModeFor({ approvalMode: "full", approvalGrant, threadId: "other" })).toBe("full");
+    expect(approvalModeFor({ approvalMode: "full", approvalGrant })).toBe("ask");
+  });
+});
+
+describe("approval support bound to a registry", () => {
+  const registry = {
+    cliTarget: (instanceId: string) =>
+      instanceId === "codex-fixture" ? { driverKind: "codex" }
+        : instanceId === "computer-fixture" ? { driverKind: "boxAgent" }
+        : null,
+  };
+  const supports = createApprovalModeSupport(registry);
+
+  it("resolves model selections through the registry", () => {
+    const codex = { instanceId: "codex-fixture", model: "fixture" };
+    const computer = { instanceId: "computer-fixture", model: "fixture" };
+    expect(supports(codex, "full")).toBe(true);
+    expect(supports(codex, "custom")).toBe(true);
+    expect(supports(computer, "ask")).toBe(true);
+    expect(supports(computer, "auto")).toBe(true);
+    expect(supports(computer, "full")).toBe(false);
+    expect(supports(computer, "custom")).toBe(false);
+  });
+
+  it("answers an unknown instance like an unknown driver", () => {
+    const ghost = { instanceId: "ghost", model: "fixture" };
+    expect(supports(ghost, "ask")).toBe(true);
+    expect(supports(ghost, "edits")).toBe(false);
+    expect(supports(ghost, "full")).toBe(false);
+    expect(supports(undefined, "ask")).toBe(true);
+    expect(supports(undefined, "full")).toBe(false);
+  });
+
+  it("passes already-resolved driver views to the table unchanged", () => {
+    expect(supports({ driverKind: "codex" }, "custom")).toBe(true);
+    expect(supports({ driverKind: "boxAgent" }, "full")).toBe(false);
+    expect(supports({ driverKind: undefined }, "ask")).toBe(true);
+    expect(supports({ driverKind: undefined }, "full")).toBe(false);
+  });
+
+  it("agrees with the pure table across every mode", () => {
+    for (const driverKind of ["codex", "claudeAgent", "boxAgent", "piAgent", undefined] as const) {
+      for (const mode of APPROVAL_MODES) {
+        expect(supports({ driverKind }, mode)).toBe(supportsApprovalMode(driverKind, mode));
+      }
+    }
   });
 });

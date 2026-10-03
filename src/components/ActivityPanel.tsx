@@ -9,6 +9,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ListChecks, RefreshCw, X } from "lucide-react";
 import { useStore, type Bot } from "@/state/store";
 import { cn } from "@/lib/cn";
+import { useCaptionChrome } from "@/components/DesktopCapabilities";
 import {
   formatActivityTime,
   groupActivityByDay,
@@ -17,7 +18,7 @@ import {
   type ChipTone,
 } from "@/lib/activity";
 import { openLiveEvents } from "@/lib/live-events";
-import type { RuntimeEvent } from "../../server/contracts.ts";
+import type { RuntimeEvent } from "../../shared/runtime-events";
 
 const LIMIT = 300;
 
@@ -30,11 +31,12 @@ const TONE_CLASS: Record<ChipTone, string> = {
 
 export function ActivityPanel({ bot }: { bot: Bot }) {
   const { dispatch } = useStore();
+  const { padClass } = useCaptionChrome();
   const [rows, setRows] = useState<ActivityRow[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const loadAbort = useRef<AbortController | null>(null);
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (): Promise<boolean> => {
     loadAbort.current?.abort();
     const controller = new AbortController();
     loadAbort.current = controller;
@@ -44,12 +46,14 @@ export function ActivityPanel({ bot }: { bot: Bot }) {
       // SAFETY: this same-version renderer calls the harness's typed
       // activity endpoint; malformed transport data is handled by catch.
       const next = (await res.json()) as { rows: ActivityRow[] };
-      if (controller.signal.aborted) return;
+      if (controller.signal.aborted) return false;
       setRows(next.rows);
       setError(null);
+      return true;
     } catch (e) {
-      if (controller.signal.aborted) return;
+      if (controller.signal.aborted) return false;
       setError(e instanceof Error ? e.message : String(e));
+      return false;
     } finally {
       if (loadAbort.current === controller) loadAbort.current = null;
     }
@@ -73,10 +77,7 @@ export function ActivityPanel({ bot }: { bot: Bot }) {
     let settle: ReturnType<typeof setTimeout> | null = null;
     const stopLive = openLiveEvents({
       screens: false,
-      onSnapshotRequired: async () => {
-        await load();
-        return true;
-      },
+      onSnapshotRequired: load,
       onFrame: (frame) => {
         if (frame.kind !== "runtime") return;
         const event = frame.event;
@@ -112,8 +113,8 @@ export function ActivityPanel({ bot }: { bot: Bot }) {
   };
 
   return (
-    <aside className="animate-panel-in flex h-full w-[400px] shrink-0 flex-col border-l border-hairline/40 bg-panel">
-      <div className="flex items-center justify-between px-4 py-3">
+    <aside aria-label={`${bot.name} activity`} className="animate-panel-in flex h-full w-[400px] max-w-full shrink-0 flex-col border-l border-hairline/40 bg-panel max-md:absolute max-md:inset-y-0 max-md:right-0 max-md:z-30">
+      <div className={cn("flex items-center justify-between px-4 py-3", padClass)}>
         <span className="flex items-center gap-2 text-[15px] font-semibold text-ink">
           <ListChecks size={16} className="text-ink-secondary" /> Activity
         </span>
@@ -170,10 +171,7 @@ function ActivityLine({ row, current, onJump }: { row: ActivityRow; current: boo
     <button
       type="button"
       onClick={onJump}
-      className={cn(
-        "flex w-full items-start gap-3 border-b border-hairline/20 px-4 py-2 text-left",
-        current ? "hover:bg-raised/60" : "hover:bg-raised/60",
-      )}
+      className="flex w-full items-start gap-3 border-b border-hairline/20 px-4 py-2 text-left hover:bg-raised/60"
       title={current ? row.tool : `${row.tool} — in another task; click to open it`}
     >
       <span className="mt-[2px] shrink-0 tabular-nums text-[11px] text-ink-secondary">{formatActivityTime(row.at)}</span>

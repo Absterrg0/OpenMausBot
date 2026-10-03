@@ -64,7 +64,7 @@ const decision = (row: Partial<DecisionRow> & Pick<DecisionRow, "at">) => {
     botName: "Scout",
     tool: "Bash",
     decision: "auto-approved",
-    source: "auto-mode",
+    source: "command-allowlist",
     ...row,
   };
   appendFileSync(join(dataDir, "decisions.ndjson"), JSON.stringify(full) + "\n");
@@ -108,6 +108,16 @@ describe("readBotActivity", () => {
     expect(read().map((row) => [row.tool, row.outcome])).toEqual([
       ["WebSearch", "running"],
       ["Bash", "failed"],
+    ]);
+  });
+
+  it("keeps reused provider item IDs separate across turns, including legacy no-turn events", () => {
+    for (const [turnId, tool, ok, minute] of [["turn-one", "Read", true, "00"], ["turn-two", "Bash", false, "01"], [undefined, "Edit", true, "02"]] as const) {
+      event("t1", `2026-09-07T09:${minute}:00.000Z`, { type: "item.started", itemType: "tool", itemId: "item_0", turnId, title: tool });
+      event("t1", `2026-09-07T09:${minute}:01.000Z`, { type: "item.completed", itemType: "tool", itemId: "item_0", turnId, ok });
+    }
+    expect(read().map(row => [row.tool, row.turnId, row.outcome])).toEqual([
+      ["Edit", undefined, "ran"], ["Bash", "turn-two", "failed"], ["Read", "turn-one", "ran"],
     ]);
   });
 

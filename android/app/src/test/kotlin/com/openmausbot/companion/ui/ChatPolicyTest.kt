@@ -8,10 +8,12 @@ import com.openmausbot.companion.core.ChatTarget
 import com.openmausbot.companion.core.CompanionState
 import com.openmausbot.companion.core.GroupResponder
 import com.openmausbot.companion.core.Message
+import com.openmausbot.companion.core.RoutineRunCard
 import com.openmausbot.companion.core.ModelSelection
 import com.openmausbot.companion.core.OptionCard
 import com.openmausbot.companion.core.Reaction
 import com.openmausbot.companion.core.Room
+import com.openmausbot.companion.core.chat
 import com.openmausbot.companion.core.target
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -64,7 +66,7 @@ class ThreadResolutionTest {
     }
 
     @Test
-    fun `a task switch keeps the chat open, on the new task`() {
+    fun `a remote task switch keeps the original task open`() {
         val tasks = listOf(
             BotTask(threadId = "thread-bot-1", title = "First", createdAt = 0.0),
             BotTask(threadId = "thread-two", title = "Second", createdAt = 1.0),
@@ -76,15 +78,14 @@ class ThreadResolutionTest {
             ThreadResolution.chatOrNull(before, "thread-bot-1")?.threadId,
         )
 
-        // Switching moves the bot to the second task; the destination still names
-        // the first. The chat must follow the bot rather than pop to the roster.
+        // A desktop switch moves its pointer, not this phone's destination.
         val after = CompanionState(
             bots = listOf(bot().copy(threadId = "thread-two", tasks = tasks)),
             cursor = "s:2",
         )
         val resolved = ThreadResolution.resolve(after, "thread-bot-1")
         assertTrue(resolved is ThreadResolution.Result.Open, "resolved to $resolved")
-        assertEquals("thread-two", (resolved as ThreadResolution.Result.Open).chat.threadId)
+        assertEquals("thread-bot-1", (resolved as ThreadResolution.Result.Open).chat.threadId)
         assertEquals("bot-1", resolved.chat.id)
     }
 
@@ -130,21 +131,12 @@ class ThreadResolutionTest {
     }
 }
 
-/**
- * The chat the reader is in follows its bot, and closes only when the bot is
- * really gone — `ios/App/ChatView.swift` resolves `current` by the stable id and
- * derives every transcript lookup from `current.threadId`.
- *
- * `server/store.ts:deleteTask` is the case that used to break it: deleting the
- * open task drops that thread and moves the bot to `bot.tasks[0]`, so a chat
- * addressed by the thread has nothing left to resolve, while one addressed by
- * the bot has.
- */
+/** The local task stays addressed by both owner and thread, including deletion. */
 class ConversationResolutionTest {
     private val hydrated = "stream-1:1"
 
     @Test
-    fun `deleting the open task follows the bot to the task the desktop chose`() {
+    fun `deleting the open task closes it without choosing another`() {
         val bot = bot().copy(
             threadId = "task-2",
             tasks = listOf(BotTask("task-1", "First", 0.0), BotTask("task-2", "Second", 1.0)),
@@ -158,9 +150,7 @@ class ConversationResolutionTest {
         )
 
         val resolved = ThreadResolution.resolve(after, opened)
-        assertTrue(resolved is ThreadResolution.Result.Open, "resolved to $resolved")
-        assertEquals("task-1", (resolved as ThreadResolution.Result.Open).chat.threadId)
-        assertEquals("bot-1", resolved.chat.id)
+        assertEquals(ThreadResolution.Result.Gone, resolved)
     }
 
     @Test
@@ -209,7 +199,40 @@ class ConversationResolutionTest {
     }
 
     @Test
-    fun `a notification thread resolves to the owner the chat then keeps`() {
+    fun `a room destination follows its shared task while explicit history targets stay pinned`() {
+        val original = room().copy(tasks = listOf(
+            BotTask("thread-room-1", "First", 0.0), BotTask("next", "Next", 1.0),
+        ))
+        val destination = Destination.Chat(Chat.RoomChat(original).target)
+        val live = original.copy(threadId = "next", busyBotId = "bot-2", unread = true)
+        val state = CompanionState(rooms = listOf(live), cursor = hydrated)
+
+        val resolved = (ThreadResolution.resolve(state, destination) as ThreadResolution.Result.Open).chat
+        assertEquals(Chat.RoomChat(live), resolved)
+        assertTrue(resolved.busy)
+        assertTrue(resolved.unread)
+        assertEquals("thread-room-1", state.chat(destination.target)?.threadId)
+        assertEquals("thread-room-1", ThreadResolution.chatOrNull(state, "thread-room-1")?.threadId)
+
+        // Deleting the formerly selected room task also keeps the channel open.
+        val removed = state.copy(rooms = listOf(live.copy(tasks = live.tasks?.filter { it.threadId == "next" })))
+        assertEquals("next", (ThreadResolution.resolve(removed, destination) as ThreadResolution.Result.Open).chat.threadId)
+    }
+
+    @Test
+    fun `an addressed bot destination stays local when the desktop selects a sibling`() {
+        val original = bot().copy(tasks = listOf(
+            BotTask("thread-bot-1", "First", 0.0, busy = true), BotTask("next", "Next", 1.0, busy = false),
+        ))
+        val destination = Destination.Chat(Chat.BotChat(original).target)
+        val state = CompanionState(bots = listOf(original.copy(threadId = "next", busy = false)), cursor = hydrated)
+        val resolved = (ThreadResolution.resolve(state, destination) as ThreadResolution.Result.Open).chat
+        assertEquals("thread-bot-1", resolved.threadId)
+        assertTrue(resolved.busy)
+    }
+
+    @Test
+    fun `a notification resolves to its exact task and owner`() {
         val bot = bot().copy(
             threadId = "task-1",
             tasks = listOf(BotTask("task-1", "First", 0.0), BotTask("task-2", "Second", 1.0)),
@@ -219,7 +242,7 @@ class ConversationResolutionTest {
         val resolved = ThreadResolution.resolve(state, Destination.Thread("task-2"))
         assertTrue(resolved is ThreadResolution.Result.Open, "resolved to $resolved")
         assertEquals(
-            ChatTarget.Bot("bot-1", "task-1"),
+            ChatTarget.Bot("bot-1", "task-2"),
             (resolved as ThreadResolution.Result.Open).chat.target,
         )
     }
@@ -259,6 +282,23 @@ class TranscriptLayoutTest {
     @Test
     fun `an index past the end is not a stretch`() {
         assertFalse(TranscriptLayout.startsNewStretch(listOf(message("a", 0.0)), 4))
+    }
+
+    /**
+     * The call bar under the transcript grows (its caption line, the remote
+     * bar's second line), so the list gets shorter from the bottom. A list
+     * that showed its end scrolls back by what the end lost; a reader who had
+     * scrolled up stays where they are.
+     */
+    @Test
+    fun `a list that showed its end keeps it in view when it gets shorter`() {
+        assertEquals(40, TranscriptLayout.keepEndInView(hiddenBelow = 40, shrunkBy = 40), "it was at the end")
+        assertEquals(25, TranscriptLayout.keepEndInView(hiddenBelow = 25, shrunkBy = 40), "part of what it lost was empty space")
+        assertEquals(0, TranscriptLayout.keepEndInView(hiddenBelow = 0, shrunkBy = 40), "the end still shows")
+        assertEquals(0, TranscriptLayout.keepEndInView(hiddenBelow = 300, shrunkBy = 40), "the reader had scrolled up")
+        assertEquals(0, TranscriptLayout.keepEndInView(hiddenBelow = 41, shrunkBy = 40), "the end was already out of view")
+        assertEquals(0, TranscriptLayout.keepEndInView(hiddenBelow = 40, shrunkBy = 0), "the list kept its height")
+        assertEquals(0, TranscriptLayout.keepEndInView(hiddenBelow = 40, shrunkBy = -20), "a taller list needs no help")
     }
 }
 
@@ -582,6 +622,13 @@ class MessageActionsTest {
     @Test
     fun `an unknown kind carrying text is copyable, like it is renderable`() {
         assertEquals("hello", MessageActions.copyableText(message(Message.Kind.UNKNOWN, "hello")))
+    }
+
+    @Test
+    fun `a failed routine run copies the error the card shows`() {
+        val run = RoutineRunCard(routineName = "Brief", status = "failed", summary = "old report", error = "boom")
+        val copied = MessageActions.copyableText(message(Message.Kind.ROUTINE_RUN, null).copy(routineRun = run))
+        assertEquals(true, copied?.contains("boom"))
     }
 
     @Test

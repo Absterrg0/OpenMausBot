@@ -18,7 +18,7 @@
 // drivers/ nested; import.meta.url still resolves to the same location, so
 // that lookup is unaffected.
 import { build } from "esbuild";
-import { copyFileSync, mkdirSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
@@ -41,10 +41,15 @@ const yamlEsmPlugin = {
 // Every file run as its own process. Keep in sync with the spawn sites above.
 const ENTRY_POINTS = [
   "index.ts",
+  "message-search.worker.ts",
   // the `openmausbot` command (serve/pair/sessions/status) for the npm
   // package, the container image and checkouts; pair-cli.ts stays as an alias
   "openmausbot.ts",
   "pair-cli.ts",
+  "workspace-backup.worker.ts",
+  // the OMB Cloud Pro home image's entry point (deploy/fly/Dockerfile): it
+  // spawns index.js beside it and the Caddy edge
+  "cloud-home-start.ts",
   // The packaged smoke probe imports this manifest directly. Importing the
   // shared avatar contract widens TypeScript's inferred emit root to the repo,
   // so tsc may place its copy under dist-server/server/. Bundle an explicit
@@ -52,11 +57,16 @@ const ENTRY_POINTS = [
   // package smoke probe also imports local-computer.js directly.
   "proxy-paths.ts",
   "local-computer.ts",
-  "computer-proxy.ts",
+  "local-computer-proxy.ts",
+  // the hook helper Claude Code runs at PostToolUse/PreCompact/SessionStart/Stop
+  "hooks/omb-hook.ts",
   "container-mcp.ts",
   "vps-container-mcp.ts",
   "permission-proxy.ts",
   "connector-proxy.ts",
+  "mcp-gate.ts",
+  "mcp-remote-proxy.ts",
+  "browser-proxy.ts",
   "drivers/agents-proxy.ts",
   "drivers/dweb-proxy.ts",
   "drivers/phone-proxy.ts",
@@ -122,12 +132,39 @@ await build({
   logLevel: "info",
 });
 
-// pi-mcp-extension.ts is NOT an OpenMausBot entry point: it is loaded by the
-// external `pi` process (pi's own jiti), which resolves its
-// @earendil-works/pi-coding-agent and typebox imports from pi's install. Ship
-// it verbatim as .ts so the packaged app has it too — never bundle it, or
-// esbuild would inline pi's packages and the extension would stop loading.
+// The enterprise layer (enterprise/LICENSE; delete the folder for pure OSS).
+// A package or image has no TypeScript runtime, so ship it bundled to
+// dist-server/enterprise/server/index.js, where server/enterprise.ts finds it
+// inside the server root: the Docker image and the packaged desktop carry
+// dist-server/ alone. The npm package also copies it to
+// <package>/enterprise/server/index.js, beside the server. Its own license
+// travels with it either way.
+if (existsSync(join(root, "enterprise", "server", "index.ts"))) {
+  await build({
+    entryPoints: [join(root, "enterprise", "server", "index.ts")],
+    bundle: true,
+    platform: "node",
+    target: "node20",
+    format: "esm",
+    outfile: join(root, "dist-server", "enterprise", "server", "index.js"),
+    allowOverwrite: true,
+    logLevel: "info",
+  });
+  copyFileSync(join(root, "enterprise", "LICENSE"), join(root, "dist-server", "enterprise", "LICENSE"));
+}
+
+// The model catalog snapshot (server/model-catalog/catalog.ts) is read from
+// disk, not inlined: 1.5 MB of JSON has no place in index.js. The bundle looks
+// for it under model-catalog/ beside itself. Its MIT notice is inside the file.
+const catalogSnapshot = join(root, "dist-server", "model-catalog", "models-dev.snapshot.json");
+mkdirSync(dirname(catalogSnapshot), { recursive: true });
+copyFileSync(join(server, "model-catalog", "models-dev.snapshot.json"), catalogSnapshot);
+
+// Pi loads this through its own jiti and supplies TypeBox. Inline our local
+// policy module so the extension also works without the source checkout;
+// keep the Pi-owned dependency external and retain the .ts loading contract.
 const piMcpExtSrc = join(server, "drivers", "pi-mcp-extension.ts");
 const piMcpExtDest = join(root, "dist-server", "drivers", "pi-mcp-extension.ts");
 mkdirSync(dirname(piMcpExtDest), { recursive: true });
-copyFileSync(piMcpExtSrc, piMcpExtDest);
+await build({ entryPoints: [piMcpExtSrc], outfile: piMcpExtDest, bundle: true,
+  platform: "node", target: "node24", format: "esm", external: ["typebox"], });

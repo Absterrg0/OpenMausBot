@@ -5,7 +5,7 @@
 // and the actual command/path in monospace, and the choices carry their
 // own behavior instead of being matched by their label text.
 import { Check, ShieldCheck, X } from "lucide-react";
-import { type Bot, type Message } from "@/state/store";
+import { type Bot, type Message, type OptionCardData } from "@/state/store";
 import { cn } from "@/lib/cn";
 import { t, tFromServer } from "@/lib/i18n";
 import type { LocaleKey } from "@/locales";
@@ -29,10 +29,29 @@ const SKILL_SETTLED_LABEL = {
   update: "approval.status.skillUpdated",
 } as const;
 
+/** What a settled approval card says happened, or undefined while it is
+ * still open. The card's own status line and the sidebar row both read this,
+ * so a chat that ends on the card never says one thing in each place. */
+export function approvalCardOutcome(card: OptionCardData): string | undefined {
+  if (card.expired === true) return t("approval.status.expired");
+  if (!card.answered) return undefined;
+  const isProposal = Boolean(card.routineRequest || card.skillRequest || card.profileRequest || card.teamSetupRequest);
+  if (card.answered !== "allow") return isProposal ? t("approval.status.cancelled") : t("approval.status.denied");
+  if (card.teamSetupRequest) return card.teamSetupRequest.deletion ? "Bot deleted" : "Team setup applied";
+  const routineAction = card.routineRequest?.operation.action;
+  if (routineAction) return t(ROUTINE_SETTLED_LABEL[routineAction]);
+  const skillAction = card.skillRequest?.action;
+  if (skillAction) return t(SKILL_SETTLED_LABEL[skillAction]);
+  if (card.profileRequest) return t("approval.status.profileUpdated");
+  if (card.routineRequest) return t("approval.status.routineConfirmed");
+  if (card.skillRequest) return t("approval.status.skillConfirmed");
+  return t("approval.status.allowed");
+}
+
 /** The tool's own name is noise to a human: mcp__ogb__computer_batch is
  * "computer batch", Bash is "run a command". */
-function toolLabel(tool?: string): string {
-  if (!tool) return t("approval.tool.action");
+export function toolLabel(tool?: string): string {
+  if (!tool) return t("approval.tool.takeAction");
   const bare = tool.replace(/^mcp__[^_]+__/, "").replace(/_/g, " ");
   const nice: ToolLabels = {
     Bash: "approval.tool.runCommand",
@@ -46,6 +65,21 @@ function toolLabel(tool?: string): string {
     stage_skill: "approval.tool.enableSkill",
     update_skill: "approval.tool.updateSkill",
     update_profile: "approval.tool.updateProfile",
+    // An ACP driver can know the protocol's toolCall kind but not the
+    // tool's name, and sends the kind as the card's tool
+    // (server/drivers/acp/core.ts). Kinds are not verb phrases —
+    // "wants to other" reads as broken — so map every kind it can send
+    // to a real phrase. "shell" is its name for execute; "tool" is its
+    // fallback when an agent sends no kind at all — an unclassified call,
+    // so it reads differently from "other", the agent's own generic kind.
+    shell: "approval.tool.runCommand",
+    edit: "approval.tool.editFile",
+    read: "approval.tool.readFile",
+    fetch: "approval.tool.fetchWebPage",
+    delete: "approval.tool.deleteFile",
+    think: "approval.tool.think",
+    other: "approval.tool.takeAction",
+    tool: "approval.tool.useTool",
   };
   const key = nice[tool];
   return key ? t(key) : bare;
@@ -62,14 +96,17 @@ export function ApprovalCard({
   const card = message.card;
   if (!card) return null;
   const settled = card.answered;
+  const expired = card.expired === true;
+  // decided by voice on a Live call rather than tapped
+  const byVoice = card.answeredBy?.via === "call" ? <span className="text-ink-tertiary">· {t("approval.status.byVoice")}</span> : null;
   const isRoutineRequest = Boolean(card.routineRequest);
   const isSkillRequest = Boolean(card.skillRequest);
   const isProfileRequest = Boolean(card.profileRequest);
+  const isTeamSetup = Boolean(card.teamSetupRequest);
   const routineAction = card.routineRequest?.operation.action;
   const skillAction = card.skillRequest?.action;
   const heldNote = tFromServer(card.heldCode, card.held);
-  const routineSettledLabel = routineAction ? t(ROUTINE_SETTLED_LABEL[routineAction]) : undefined;
-  const skillSettledLabel = skillAction ? t(SKILL_SETTLED_LABEL[skillAction]) : undefined;
+  const outcome = approvalCardOutcome(card);
   const displayTool = isRoutineRequest
     ? routineAction === "create" ? "schedule_routine" : "manage_routine"
     : isSkillRequest
@@ -92,14 +129,15 @@ export function ApprovalCard({
 
   return (
     <div
+      data-tour={settled || expired ? undefined : "approval"}
       className={cn(
         "w-full max-w-[840px] rounded-2xl border bg-card p-4",
-        settled ? "border-hairline/30 opacity-70" : "border-accent/40",
+        settled || expired ? "border-hairline/30 opacity-70" : "border-accent/40",
       )}
     >
       <div className="flex items-baseline justify-between gap-3">
         <div className="text-[15px] font-semibold text-ink">
-          {profileHeader ?? (
+          {isTeamSetup ? card.title : profileHeader ?? (
             <>
               {bot
                 ? t("approval.card.namedWantsTo", { name: bot.name, action: toolLabel(displayTool) })
@@ -107,7 +145,7 @@ export function ApprovalCard({
             </>
           )}
         </div>
-        {displayTool && <span className="shrink-0 font-mono text-[11px] text-ink-secondary">{displayTool}</span>}
+        {displayTool && !isTeamSetup && <span className="shrink-0 font-mono text-[11px] text-ink-secondary">{displayTool}</span>}
       </div>
 
       {/* what, exactly */}
@@ -138,29 +176,15 @@ export function ApprovalCard({
       {/* The decision lives in the composer (one place to answer, and it
           can't be scrolled past); here we only record what happened. */}
       <div className="mt-3 flex items-center gap-1.5 text-[13px] text-ink-secondary">
-        {settled === "allow" ? (
+        {outcome ? (
           <>
-            <Check size={14} className="text-success" />
-            {skillSettledLabel ??
-              routineSettledLabel ??
-              (isProfileRequest
-                ? t("approval.status.profileUpdated")
-                : isRoutineRequest
-                  ? t("approval.status.routineConfirmed")
-                  : isSkillRequest
-                    ? t("approval.status.skillConfirmed")
-                    : t("approval.status.allowed"))}
-          </>
-        ) : settled ? (
-          <>
-            <X size={14} /> {isRoutineRequest || isSkillRequest || isProfileRequest
-              ? t("approval.status.cancelled")
-              : t("approval.status.denied")}
+            {settled === "allow" && !expired ? <Check size={14} className="text-success" /> : <X size={14} />} {outcome}
+            {byVoice}
           </>
         ) : (
           <>
             <ShieldCheck size={14} className="text-accent" />
-            {isRoutineRequest || isSkillRequest || isProfileRequest
+            {isRoutineRequest || isSkillRequest || isProfileRequest || isTeamSetup
               ? t("approval.status.waitingConfirmation")
               : t("approval.status.waitingAnswer")}
           </>

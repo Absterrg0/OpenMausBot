@@ -1,6 +1,5 @@
 // Team memory: the people, places, decisions and terms every bot in a
-// section shares. Bots propose them from conversations (places and terms
-// land at once, people and decisions wait for a tap); this is where the
+// section shares. Bots propose them from conversations for review; this is where the
 // person sees the whole of it, answers what is waiting, and fixes or
 // removes anything. Sits beside the section's shared context, which only
 // the person writes.
@@ -36,22 +35,30 @@ export function TeamMemoryDialog({ section, label, onClose }: { section: string;
   const [entries, setEntries] = useState<Entry[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
+  const busy = useRef(false);
+  const generation = useRef(0);
   const [adding, setAdding] = useState(false);
   const [draft, setDraft] = useState<{ kind: Kind; name: string; detail: string }>({ kind: "term", name: "", detail: "" });
   const query = `section=${encodeURIComponent(section)}`;
 
   const load = useCallback(async () => {
+    const requestGeneration = ++generation.current;
     try {
       const result: { entries: Entry[] } = await api(`/api/team-memory?${query}`);
+      if (generation.current !== requestGeneration) return;
       setEntries(result.entries);
       setError(null);
     } catch (cause) {
+      if (generation.current !== requestGeneration) return;
       setError(cause instanceof Error ? cause.message : String(cause));
     }
   }, [query]);
 
   useEffect(() => {
+    setEntries(null);
+    setError(null);
     void load();
+    return () => { generation.current += 1; };
   }, [load]);
 
   useEffect(() => {
@@ -62,6 +69,13 @@ export function TeamMemoryDialog({ section, label, onClose }: { section: string;
         event.preventDefault();
         onClose();
       }
+      if (event.key === "Tab") {
+        const controls = dialogRef.current?.querySelectorAll<HTMLElement>("button:enabled, input:enabled, select:enabled");
+        if (!controls?.length) return;
+        const first = controls[0], last = controls[controls.length - 1];
+        if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+        else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+      }
     };
     window.addEventListener("keydown", onKey);
     return () => {
@@ -71,15 +85,22 @@ export function TeamMemoryDialog({ section, label, onClose }: { section: string;
   }, [onClose]);
 
   const run = async (id: string | null, request: () => Promise<{ entries: Entry[] }>) => {
+    if (busy.current) return false;
+    busy.current = true;
+    const requestGeneration = ++generation.current;
     setBusyId(id ?? "new");
     setError(null);
     try {
       const result = await request();
+      if (generation.current !== requestGeneration) return false;
       setEntries(result.entries);
+      return true;
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause));
+      if (generation.current === requestGeneration) setError(cause instanceof Error ? cause.message : String(cause));
+      return false;
     } finally {
-      setBusyId(null);
+      busy.current = false;
+      if (generation.current === requestGeneration) setBusyId(null);
     }
   };
 
@@ -92,7 +113,8 @@ export function TeamMemoryDialog({ section, label, onClose }: { section: string;
   };
   const add = () => {
     if (!draft.name.trim() || !draft.detail.trim()) return;
-    void run(null, () => api(`/api/team-memory?${query}`, { method: "POST", body: JSON.stringify(draft) })).then(() => {
+    void run(null, () => api(`/api/team-memory?${query}`, { method: "POST", body: JSON.stringify(draft) })).then((saved) => {
+      if (!saved) return;
       setDraft({ kind: draft.kind, name: "", detail: "" });
       setAdding(false);
     });
@@ -122,8 +144,8 @@ export function TeamMemoryDialog({ section, label, onClose }: { section: string;
               </h2>
             </div>
             <p className="mt-1.5 max-w-[560px] text-[12.5px] leading-relaxed text-ink-secondary">
-              People, places, decisions and terms every bot in this section shares. Bots add what they learn: places and
-              terms land at once, people and decisions wait for you. Edit or remove anything.
+              People, places, decisions and terms every bot in this section shares. Every bot proposal waits for an
+              admin&apos;s review before it is shared. Your own additions are shared immediately. Edit or remove anything.
             </p>
           </div>
           <button
@@ -158,14 +180,14 @@ export function TeamMemoryDialog({ section, label, onClose }: { section: string;
                     </span>
                     <button
                       onClick={() => void accept(entry)}
-                      disabled={busyId === entry.id}
+                      disabled={busyId !== null}
                       className="flex shrink-0 items-center gap-1 rounded-md bg-accent px-2.5 py-1 text-[12px] font-medium text-white disabled:opacity-50"
                     >
                       <Check size={12} /> Remember
                     </button>
                     <button
                       onClick={() => void remove(entry)}
-                      disabled={busyId === entry.id}
+                      disabled={busyId !== null}
                       className="shrink-0 rounded-md px-2 py-1 text-[12px] text-ink-secondary hover:text-ink disabled:opacity-50"
                     >
                       Skip
@@ -178,7 +200,7 @@ export function TeamMemoryDialog({ section, label, onClose }: { section: string;
 
           {entries !== null && entries.filter((entry) => entry.status === "accepted").length === 0 && proposed.length === 0 && (
             <div className="rounded-xl bg-inset px-4 py-6 text-center text-[13px] text-ink-secondary">
-              Nothing shared yet. Bots add entries as they learn who is who and where things live, or add one yourself below.
+              Nothing shared yet. Review what bots propose as they learn who is who and where things live, or add one yourself below.
             </div>
           )}
 
@@ -197,7 +219,9 @@ export function TeamMemoryDialog({ section, label, onClose }: { section: string;
                         <span className="font-medium text-ink">{entry.name}</span>
                         {entry.aliases.length > 0 && <span className="text-ink-secondary"> (also {entry.aliases.join(", ")})</span>}
                         <input
+                          key={entry.updatedAt}
                           defaultValue={entry.detail}
+                          disabled={busyId !== null}
                           onBlur={(event) => editDetail(entry, event.target.value)}
                           onKeyDown={(event) => {
                             if (event.key === "Enter") (event.target as HTMLInputElement).blur();
@@ -211,7 +235,7 @@ export function TeamMemoryDialog({ section, label, onClose }: { section: string;
                       </span>
                       <button
                         onClick={() => void remove(entry)}
-                        disabled={busyId === entry.id}
+                        disabled={busyId !== null}
                         aria-label={`Remove ${entry.name}`}
                         className="shrink-0 rounded-md p-1 text-ink-secondary hover:text-danger disabled:opacity-50"
                       >
@@ -260,7 +284,7 @@ export function TeamMemoryDialog({ section, label, onClose }: { section: string;
               <div className="mt-2 flex items-center gap-2">
                 <button
                   onClick={add}
-                  disabled={busyId === "new" || !draft.name.trim() || !draft.detail.trim()}
+                  disabled={busyId !== null || !draft.name.trim() || !draft.detail.trim()}
                   className="rounded-lg bg-accent px-3 py-1 text-[12.5px] font-medium text-white disabled:opacity-50"
                 >
                   {busyId === "new" ? "Adding…" : "Add"}

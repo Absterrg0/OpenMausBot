@@ -6,6 +6,7 @@ describe("isOutboundTool", () => {
   it("flags tools that send, reply, post, publish, invite, share, or move money", () => {
     for (const name of [
       "GMAIL_SEND_EMAIL",
+      "GMAIL_SEND_DRAFT",
       "GMAIL_REPLY_TO_THREAD",
       "SLACK_SEND_MESSAGE",
       "SLACK_CHAT_POST_MESSAGE",
@@ -86,20 +87,22 @@ describe("connectorCallsIn", () => {
     expect(calls[1].arguments).toEqual({ channel: "#ops", text: "hi" });
   });
 
-  it("reads tool slugs out of workbench code, and treats a raw API proxy as a send", () => {
+  it("treats all arbitrary code as opaque, not as an enumerable send allowance", () => {
     const code = 'for id in ids:\n    run_tool("GMAIL_SEND_EMAIL", {"thread_id": id})\nrun_tool("GMAIL_FETCH_EMAILS", {})';
     expect(connectorCallsIn("COMPOSIO_REMOTE_WORKBENCH", { code_to_execute: code }).map((call) => call.slug)).toEqual([
-      "GMAIL_SEND_EMAIL",
-      "GMAIL_FETCH_EMAILS",
+      "COMPOSIO_PROXY_EXECUTE",
     ]);
     expect(connectorCallsIn("COMPOSIO_REMOTE_WORKBENCH", { code_to_execute: "proxy_execute('POST', 'https://api.x.com')" })
       .map((call) => call.slug)).toEqual(["COMPOSIO_PROXY_EXECUTE"]);
   });
 
-  it("ignores the other meta tools and malformed arguments", () => {
+  it("ignores discovery but fails closed for malformed execution arguments", () => {
     expect(connectorCallsIn("COMPOSIO_SEARCH_TOOLS", { queries: [{ use_case: "send an email" }] })).toEqual([]);
-    expect(connectorCallsIn("COMPOSIO_MULTI_EXECUTE_TOOL", { tools: "nope" })).toEqual([]);
-    expect(connectorCallsIn("COMPOSIO_MULTI_EXECUTE_TOOL", undefined)).toEqual([]);
+    expect(connectorCallsIn("COMPOSIO_MULTI_EXECUTE_TOOL", { tools: "nope" })[0].slug).toBe("COMPOSIO_PROXY_EXECUTE");
+    expect(connectorCallsIn("COMPOSIO_MULTI_EXECUTE_TOOL", undefined)[0].slug).toBe("COMPOSIO_PROXY_EXECUTE");
+    expect(connectorCallsIn("COMPOSIO_REMOTE_WORKBENCH", { code: 'run_tool("GMAIL_" + "SEND_EMAIL", {})' })[0].slug).toBe("COMPOSIO_PROXY_EXECUTE");
+    expect(connectorCallsIn("COMPOSIO_REMOTE_BASH_TOOL", { command: "curl -X POST https://example.test/send" })[0].slug).toBe("COMPOSIO_PROXY_EXECUTE");
+    expect(connectorCallsIn("COMPOSIO_PROXY_EXECUTE", {})[0].slug).toBe("COMPOSIO_PROXY_EXECUTE");
   });
 });
 

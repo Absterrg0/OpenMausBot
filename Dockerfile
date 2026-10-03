@@ -22,6 +22,11 @@ COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 # every workspace member's manifest must exist before install resolves the lockfile
 COPY apps/docs/package.json ./apps/docs/package.json
 COPY cloudflare/control-plane/package.json ./cloudflare/control-plane/package.json
+# package.json's `prepare` runs during install. The script itself is written to
+# no-op without a .git (it exits 0 here), but node still has to be able to LOAD
+# it, and .dockerignore keeps .git out — so copy it in before install or the
+# whole build dies on MODULE_NOT_FOUND.
+COPY scripts/install-git-hooks.mjs ./scripts/install-git-hooks.mjs
 RUN pnpm install --frozen-lockfile
 COPY . .
 RUN pnpm build:server && pnpm exec vite build
@@ -50,7 +55,7 @@ RUN if [ -n "$ENGINES" ]; then npm install -g $ENGINES; fi
 # The bots' browser (docs/plans/browser-engine.md): the pinned agent-browser
 # and a Chrome for Testing with its libraries, so a server bot can browse.
 # Pin here and in server/browser-engine-release.ts together.
-ARG AGENT_BROWSER_VERSION=0.36.0
+ARG AGENT_BROWSER_VERSION=0.37.0
 RUN npm install -g agent-browser@${AGENT_BROWSER_VERSION} \
   && HOME=/opt/openmausbot-browser agent-browser install \
   && ln -s /opt/openmausbot-browser/.agent-browser/browsers/chrome-*/chrome /opt/openmausbot-browser/chrome \

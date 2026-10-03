@@ -1,12 +1,13 @@
-import { readFileSync, rmSync } from "node:fs";
+import { readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { DATA_DIR } from "./config.ts";
-import { Store } from "./store.ts";
+import { Store, UNTITLED_TASK } from "./store.ts";
 import { RoutineManager } from "./routines.ts";
 import { createTeamBackup, importTeamBackup } from "./team-backup.ts";
 import { parseTeamBackup } from "../shared/team-backup.ts";
 import { soulFile, soulHash } from "./bot-folder.ts";
+import { appendMemoryLog, readMemoryFile, readMemoryLog, readMemoryTopic, searchMemoryFiles, updateMemory, workspaceDir, writeMemoryTopic } from "./workspace.ts";
 
 const selection = () => ({ instanceId: "fixture", model: "fixture-model" });
 
@@ -32,7 +33,13 @@ function fixture() {
   store.branchMessage(chief.threadId, root.id, "Edited question");
   store.setActiveLeaf(chief.threadId, answer.id);
   store.renameTask(chief.id, chief.threadId, "First conversation");
+  // created first: tasks are newest-first and the tests below read the
+  // transcript of tasks[0], which must stay the conversation with messages
+  const strangers = store.createTask(chief.id, "Opened by a deleted bot", false, undefined, { botId: "gone-bot", name: "Gone", at: 98 })!;
+  store.setTaskClosedBy(chief.id, strangers.threadId, { botId: "gone-bot", name: "Gone", at: 102 });
   const active = store.createTask(chief.id, "Second conversation")!;
+  store.setTaskOpenedBy(chief.id, active.threadId, { botId: scout.id, name: scout.name, delegationId: "do-not-resume-delegation", kind: "pair", at: 99 });
+  store.setTaskClosedBy(chief.id, active.threadId, { botId: scout.id, name: scout.name, at: 103 });
   store.appendMessage(active.threadId, { role: "user", kind: "text", text: "Current question", queued: true, queueId: "do-not-replay" });
   store.appendMessage(active.threadId, { role: "bot", kind: "options", card: {
     title: "Permission request", subtitle: "Old approval", options: ["Allow"], requestId: "do-not-resume", allowKey: "Bash",
@@ -50,6 +57,64 @@ function fixture() {
 
 describe("additive portable team backups", () => {
   beforeEach(() => rmSync(DATA_DIR, { recursive: true, force: true }));
+
+  it("carries tool restrictions through backup and import without restoring execution grants", () => {
+    const { store, routines, chief, scout } = fixture();
+    const scope = { allow: ["native:read", "mcp:notes:read"], deny: ["mcp:notes:write"] };
+    store.patchBot(chief.id, { toolScope: scope } as never);
+    store.patchBot(scout.id, { toolScope: { allow: [] } } as never);
+    const backup = createTeamBackup(store, routines.listRoutines(), "Selected tools");
+    expect(backup.bots.find((bot) => bot.key === chief.id)).toHaveProperty("toolScope", scope);
+    const restored = importTeamBackup(store, routines, backup, selection());
+    expect(restored.bots.find((bot) => bot.name === "Mira 2")).toMatchObject({ toolScope: scope, computer: "off", composio: false, approvalMode: "ask", connectorTools: {} });
+    expect(restored.bots.find((bot) => bot.name === "Scout 2")).toHaveProperty("toolScope", { allow: [] });
+    const invalid = structuredClone(backup) as unknown as { bots: Array<{ toolScope: unknown }> };
+    invalid.bots[0].toolScope = { allow: null };
+    expect(() => parseTeamBackup(invalid)).toThrow();
+  });
+
+  it("carries each bot's memory, topic notes and daily logs, scrubbed on the way out and private on the way in", () => {
+    const { store, routines, chief, scout } = fixture();
+    const now = new Date(2026, 8, 10, 12);
+    updateMemory(chief.id, { action: "append", text: "The user's name is Ada" }, { source: 'chat "Setup"', now });
+    writeMemoryTopic(chief.id, "deploys.md", "railway up from main\n");
+    appendMemoryLog(chief.id, "shipped 0.1.70", { source: 'chat "Deploy"', now });
+    // a topic the bot's own file tools wrote never met the server's scrub
+    const key = `sk-ant-api03-${"k".repeat(40)}`;
+    writeFileSync(join(workspaceDir(chief.id), "memory", "keys.md"), `anthropic: ${key}\n`);
+
+    const backup = createTeamBackup(store, routines.listRoutines(), "With memory");
+    const exported = backup.bots.find((bot) => bot.key === chief.id)!.memory!;
+    expect(exported.file).toBe('- 2026-09-10 · from chat "Setup" · The user\'s name is Ada\n');
+    expect(exported.topics.map((topic) => topic.name)).toEqual(["deploys.md", "keys.md"]);
+    expect(exported.topics[1].text).not.toContain(key);
+    expect(exported.topics[1].text).toContain("anthropic: «redacted");
+    expect(exported.logs).toEqual([{ name: "2026-09-10.md", text: '- 12:00 · from chat "Deploy" · shipped 0.1.70\n' }]);
+    // a bot that never remembered anything travels as before
+    expect(backup.bots.find((bot) => bot.key === scout.id)!.memory).toBeUndefined();
+    expect(JSON.stringify(backup)).not.toContain(key);
+
+    const result = importTeamBackup(store, routines, JSON.parse(JSON.stringify(backup)), selection());
+    const imported = result.bots.find((bot) => bot.name === "Mira 2")!;
+    expect(readMemoryFile(imported.id).text).toBe(exported.file);
+    expect(readMemoryTopic(imported.id, "deploys.md")).toBe("railway up from main\n");
+    expect(readMemoryTopic(imported.id, "keys.md")).toBe(exported.topics[1].text);
+    expect(readMemoryLog(imported.id, "2026-09-10.md")).toBe(exported.logs[0].text);
+    expect(readFileSync(soulFile(imported.id), "utf8")).toBe(chief.soul);
+    if (process.platform !== "win32") {
+      const dir = workspaceDir(imported.id);
+      expect(statSync(join(dir, "memory")).mode & 0o777).toBe(0o700);
+      expect(statSync(join(dir, "memory", "log")).mode & 0o777).toBe(0o700);
+      for (const file of ["MEMORY.md", "memory/deploys.md", "memory/keys.md", "memory/log/2026-09-10.md"]) {
+        expect(statSync(join(dir, file)).mode & 0o777, file).toBe(0o600);
+      }
+    }
+    // the imported copy is searchable at once, and the original untouched
+    expect(searchMemoryFiles(imported.id, "railway").map((hit) => hit.file)).toEqual(["memory/deploys.md"]);
+    expect(readMemoryFile(chief.id).text).toBe(exported.file);
+    const noMemory = result.bots.find((bot) => bot.name === "Scout 2")!;
+    expect(readMemoryFile(noMemory.id).text).toBe("");
+  });
 
   it("round-trips all bots, sections, Chiefs, rooms, tasks and branches without changing originals", () => {
     const { store, routines, chief, scout, otherChief, archived, group } = fixture();
@@ -73,6 +138,8 @@ describe("additive portable team backups", () => {
     expect(result.bots.find((bot) => bot.name === "Archived 2")).toMatchObject({ hidden: true });
     expect(importedChief).not.toHaveProperty("cwd");
     expect(importedChief).not.toHaveProperty("alwaysAllow");
+    expect(importedChief.tasks?.every((task) => task.activity === "idle" && task.busy === false
+      && task.unread === false && task.modelSelection?.instanceId === selection().instanceId)).toBe(true);
     expect(store.bot(otherChief.id)?.chiefOfStaff).toBe(true);
     expect(store.bot(archived.id)?.hidden).toBe(true);
     expect(importedScout.mascotBody).toBe(scout.mascotBody);
@@ -82,6 +149,17 @@ describe("additive portable team backups", () => {
     expect(roomMessage).toMatchObject({ text: "Room answer", from: { botId: importedScout.id }, peerPost: { unattended: true } });
     expect(result.routines.every((routine) => !routine.enabled && routine.nextRunAt === null)).toBe(true);
     expect(result.routines.find((routine) => routine.target === "room-goal")).toMatchObject({ botId: importedChief.id, groupId: result.groups[0].id });
+    // who opened a thread travels with it, remapped like a message's `from`;
+    // the handoff id stays behind with the ledger it belongs to
+    expect(importedChief.tasks!.find((task) => task.title === "Second conversation")!.openedBy)
+      .toEqual({ botId: importedScout.id, name: scout.name, kind: "pair", at: 99 });
+    expect(importedChief.tasks!.find((task) => task.title === "Opened by a deleted bot")).not.toHaveProperty("openedBy");
+    expect(importedChief.tasks!.find((task) => task.title === "First conversation")).not.toHaveProperty("openedBy");
+    // a thread the opener closed stays closed after import, closer remapped the same way
+    expect(importedChief.tasks!.find((task) => task.title === "Second conversation")!.closedBy)
+      .toEqual({ botId: importedScout.id, name: scout.name, at: 103 });
+    expect(importedChief.tasks!.find((task) => task.title === "Opened by a deleted bot")).not.toHaveProperty("closedBy");
+    expect(importedChief.tasks!.find((task) => task.title === "First conversation")).not.toHaveProperty("closedBy");
     const firstTask = importedChief.tasks!.find((task) => task.title === "First conversation")!;
     expect(store.messagesFor(firstTask.threadId).map((message) => message.text)).toEqual(["Original question", "Original answer", "Edited question"]);
     expect(store.activePath(firstTask.threadId).map((message) => message.text)).toEqual(["Original question", "Original answer"]);
@@ -89,7 +167,7 @@ describe("additive portable team backups", () => {
     expect(importedHistory.every((message) => message.kind === "text" && !message.queued && !message.card)).toBe(true);
     expect(importedHistory[1].text).toContain("Permission request");
     expect(importedHistory[2].text).toContain("file not included");
-    expect(JSON.stringify(backup)).not.toMatch(/do-not-replay|do-not-resume|\/private\/image|\/private\/old-workspace|alwaysAllow|autoApprove|modelSelection/);
+    expect(JSON.stringify(backup)).not.toMatch(/do-not-replay|do-not-resume|\/private\/image|\/private\/old-workspace|alwaysAllow|autoApprove|modelSelection|delegationId/);
     const reloaded = new Store(selection);
     expect(reloaded.bot(importedChief.id)?.soul).toBe(chief.soul);
     expect(reloaded.activePath(firstTask.threadId)).toEqual(store.activePath(firstTask.threadId));
@@ -99,6 +177,52 @@ describe("additive portable team backups", () => {
     const second = importTeamBackup(store, routines, backup, selection());
     expect(second.bots.find((bot) => bot.name === "Mira 3")).toMatchObject({ section: "Engineering 3", chiefOfStaff: true });
     expect(store.bot(importedChief.id)).toEqual(importedChief);
+  });
+
+  it("carries connector grants in the private backup but lands imported bots grant-less", () => {
+    const { store, routines, chief } = fixture();
+    store.patchBot(chief.id, { connectorTools: { gmail: { tools: ["GMAIL_SEND_EMAIL", "GMAIL_SEND_EMAIL"] } } });
+    const backup = createTeamBackup(store, routines.listRoutines(), "Granted team");
+    expect(backup.bots.find((bot) => bot.key === chief.id)?.connectorTools).toEqual({
+      gmail: { tools: ["GMAIL_SEND_EMAIL"] },
+    });
+    const result = importTeamBackup(store, routines, JSON.parse(JSON.stringify(backup)), selection());
+    const imported = result.bots.find((bot) => bot.name === "Mira 2")!;
+    expect(imported.composio).toBe(false);
+    expect(imported.connectorTools).toEqual({});
+    // the backup format itself rejects grant shapes the store would refuse
+    const tampered = JSON.parse(JSON.stringify(backup)) as { bots: { key: string; connectorTools: unknown }[] };
+    tampered.bots[0].connectorTools = { gmail: { tools: [] } };
+    expect(() => parseTeamBackup(tampered)).toThrow();
+  });
+
+  it("keeps first-message title markers armed-once through backup and restore", () => {
+    const { store, routines, chief, group } = fixture();
+    // rows whose first message already named them, one per record kind
+    const titled = store.createTask(chief.id, undefined, false)!.threadId;
+    store.titleTaskFromFirstMessage(chief.id, "Audit the payroll export", titled);
+    const channelTask = store.createGroupTask(group.id, undefined, false)!.threadId;
+    store.titleGroupTaskFromFirstMessage(group.id, "Plan the launch review", channelTask);
+    const backup = createTeamBackup(store, routines.listRoutines(), "Markers");
+    expect(backup.bots.find((bot) => bot.name === "Mira")!.tasks.find((task) => task.key === titled)!.titleFromFirstMessage).toBe(true);
+    expect(backup.groups[0].tasks.find((task) => task.key === channelTask)!.titleFromFirstMessage).toBe(true);
+
+    const result = importTeamBackup(store, routines, JSON.parse(JSON.stringify(backup)), selection());
+    const restoredBot = result.bots.find((bot) => bot.name === "Mira 2")!;
+    const restored = restoredBot.tasks!.find((task) => task.title === "Audit the payroll export")!;
+    expect(restored.titleFromFirstMessage).toBe(true);
+    // the marker still does its job on the restored row: renaming back to
+    // the sentinel cannot re-arm generated titling for a later message
+    store.renameTask(restoredBot.id, restored.threadId, UNTITLED_TASK);
+    expect(store.titleTaskFromFirstMessage(restoredBot.id, "A later message", restored.threadId)).toBeNull();
+    const restoredGroup = result.groups[0];
+    const restoredChannel = restoredGroup.tasks!.find((task) => task.title === "Plan the launch review")!;
+    expect(restoredChannel.titleFromFirstMessage).toBe(true);
+    store.renameGroupTask(restoredGroup.id, restoredChannel.threadId, UNTITLED_TASK);
+    expect(store.titleGroupTaskFromFirstMessage(restoredGroup.id, "A later message", restoredChannel.threadId)).toBeNull();
+    // rows the marker never armed — a backup from before the feature —
+    // restore exactly as they left, with no marker invented for them
+    expect(restoredBot.tasks!.find((task) => task.title === "First conversation")).not.toHaveProperty("titleFromFirstMessage");
   });
 
   it.each(["unknown-version", "duplicate-bot", "cycle", "dangling-room", "dangling-task", "duplicate-chief", "oversized-soul"])("rejects %s before any writes", (corruption) => {
@@ -145,6 +269,7 @@ describe("additive portable team backups", () => {
 
   it("rolls back fresh bots, rooms and transcripts after a late failure", () => {
     const { store, routines } = fixture();
+    const beforeSections = [...store.sections];
     const backup = createTeamBackup(store, routines.listRoutines(), "My team");
     const before = createTeamBackup(store, routines.listRoutines(), "My team");
     const write = vi.spyOn(routines, "create").mockImplementationOnce(() => { throw new Error("fixture disk failure"); });
@@ -152,6 +277,7 @@ describe("additive portable team backups", () => {
     write.mockRestore();
     const after = createTeamBackup(new Store(selection), routines.listRoutines(), "My team");
     expect({ ...after, exportedAt: 0 }).toEqual({ ...before, exportedAt: 0 });
+    expect(new Store(selection).sections).toEqual(beforeSections);
   });
 
   it("refuses to populate a thread that already has history", () => {
@@ -163,6 +289,7 @@ describe("additive portable team backups", () => {
 
   it("also rolls back a creation that throws before returning its new record", () => {
     const { store, routines } = fixture();
+    const beforeSections = [...store.sections];
     const backup = createTeamBackup(store, routines.listRoutines(), "My team");
     const before = structuredClone(store.bots);
     const create = store.createBot.bind(store);
@@ -174,6 +301,7 @@ describe("additive portable team backups", () => {
     fail.mockRestore();
     expect(store.bots).toEqual(before);
     expect(new Store(selection).bots.map((bot) => bot.id)).toEqual(before.map((bot) => bot.id));
+    expect(new Store(selection).sections).toEqual(beforeSections);
   });
 
   it("keeps case-distinct sections and their Chiefs separate", () => {
@@ -196,6 +324,8 @@ describe("additive portable team backups", () => {
     const dm = store.createGroup("Old direct message", [chief.id, scout.id], true);
     store.appendMessage(dm.threadId, { role: "bot", kind: "text", text: "Keep this old reply", from: { botId: chief.id, name: chief.name, color: chief.color } });
     store.deleteBot(chief.id);
+    // Recreate the pre-repair records this legacy-export regression covers.
+    Object.assign(group, { memberIds: [chief.id, scout.id], defaultResponder: { kind: "member", botId: chief.id } });
     const backup = createTeamBackup(store, routines.listRoutines(), "My team");
     expect(backup.warnings).toHaveLength(4);
     expect(backup.routines).toEqual([]);

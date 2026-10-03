@@ -1,3 +1,5 @@
+import { isCitationAttachment, serializeCitation, type CitationAttachment } from "./citations.ts";
+
 // What is attached to the next message: text too long for the input or a
 // file dropped onto the window. Chips fold back into a normal prompt on
 // send, so every driver receives the same message shape.
@@ -30,11 +32,12 @@ export type ImageAttachment = {
   uploading?: boolean;
 };
 
-export type Attachment = PasteAttachment | FileAttachment | ImageAttachment;
+export type Attachment = PasteAttachment | FileAttachment | ImageAttachment | CitationAttachment;
 
 export function isAttachment(value: unknown): value is Attachment {
   if (!value || typeof value !== "object") return false;
   const attachment = value as Record<string, unknown>;
+  if (attachment.kind === "citation") return isCitationAttachment(value);
   if (typeof attachment.id !== "string" || !validSize(attachment.size)) return false;
   if (attachment.kind === "paste") {
     return (
@@ -134,6 +137,21 @@ const DOCUMENT_MIMES: Readonly<Record<string, string>> = {
 };
 
 const ACCEPTED_DOCUMENT_MIMES = new Set(Object.values(DOCUMENT_MIMES));
+
+const AUDIO_MIMES_BY_EXTENSION: Readonly<Record<string, string>> = {
+  opus: "audio/opus",
+  ogg: "audio/ogg",
+  mp3: "audio/mpeg",
+  m4a: "audio/mp4",
+  aac: "audio/aac",
+  wav: "audio/wav",
+  flac: "audio/flac",
+  webm: "audio/webm",
+};
+const ACCEPTED_AUDIO_MIMES = new Set([
+  ...Object.values(AUDIO_MIMES_BY_EXTENSION),
+  "audio/x-m4a", "audio/x-wav", "audio/wave", "audio/x-flac",
+]);
 
 export function documentMime(file: Pick<File, "name" | "type">): string | null {
   const declared = file.type.split(";", 1)[0]!.trim().toLowerCase();
@@ -321,11 +339,14 @@ export async function imageAttachmentFromFile(
   };
 }
 
-/** Copy a supported document into the private attachment store. The prompt
+/** Copy a supported document or audio file into the private attachment store. The prompt
  * then carries the same durable path for the local agent and paired phones,
  * instead of exposing an arbitrary Finder path to the companion route. */
 export async function fileAttachmentFromFile(file: File): Promise<FileAttachment | null> {
-  const mime = documentMime(file);
+  const declared = file.type.split(";", 1)[0]!.trim().toLowerCase();
+  const extension = file.name.split(".").at(-1)?.toLowerCase() ?? "";
+  const mime = documentMime(file) ??
+    (ACCEPTED_AUDIO_MIMES.has(declared) ? declared : AUDIO_MIMES_BY_EXTENSION[extension]);
   if (!mime) return null;
   if (file.size > FILE_MAX_BYTES) {
     throw Object.assign(new Error(`${file.name} exceeds 25 MB`), { status: 413 });
@@ -427,7 +448,9 @@ export function formatSize(bytes: number): string {
 export function composeMessage(text: string, attachments: Attachment[]): string {
   const parts = [text.trim()];
   attachments.forEach((a, i) => {
-    if (a.kind === "paste") {
+    if (a.kind === "citation") {
+      parts.push(serializeCitation(a));
+    } else if (a.kind === "paste") {
       parts.push(`<pasted-text index="${i + 1}">\n${a.text}\n</pasted-text>`);
     } else if (a.kind === "image") {
       parts.push(`<attached-image path="${escapeAttribute(a.path)}" name="${escapeAttribute(a.name)}" />`);
@@ -512,7 +535,13 @@ type TranscriptFence = {
 
 type TranscriptBlock =
   | { kind: "untilBlank" }
-  | { kind: "untilToken"; closingToken: string };
+  | { kind: "untilToken"; closingToken: string; hiddenWrapper?: boolean };
+
+/** The exact wrapper lines composeMessage writes around a pasted block. The
+ * bot needs them to tell pasted from typed text; a person reading their own
+ * message does not. Anything else on the line keeps the tag visible. */
+const PASTED_TEXT_OPEN = /^ {0,3}<pasted-text(?:[\t ]+index="\d+")?[\t ]*>[\t ]*$/i;
+const PASTED_TEXT_CLOSE = /^[\t ]*<\/pasted-text>[\t ]*$/i;
 
 /** Recognise CommonMark-style fenced code without pulling a Markdown parser
  * into the composer bundle. An unterminated fence deliberately protects the
@@ -609,8 +638,14 @@ const TRANSCRIPT_ATTACHMENT_TAG =
   /^<attached-(image|file)[\t ]+path="([^"\r\n]*)"(?:[\t ]+name="([^"\r\n]*)")?[\t ]*\/>[\t ]*$/;
 
 /** Split a stored user message into its display text and attachments for
- * transcript rendering. Prompt-only tags never show in the bubble. */
-export function splitTranscriptAttachments(text: string): TranscriptAttachments {
+ * transcript rendering. Markdown exports preserve whitespace; bubbles trim it.
+ * Bubbles also hide the `<pasted-text>` wrapper lines and show only what was
+ * pasted; exports keep the message exactly as the bot received it. */
+export function splitTranscriptAttachments(
+  text: string,
+  trimDisplay = true,
+  hidePasteWrappers = true,
+): TranscriptAttachments {
   const images: TranscriptImageAttachment[] = [];
   const files: TranscriptFileAttachment[] = [];
   let display = "";
@@ -640,6 +675,7 @@ export function splitTranscriptAttachments(text: string): TranscriptAttachments 
       if (block.kind === "untilBlank") {
         if (/^[\t ]*$/.test(line)) block = null;
       } else if (line.toLowerCase().includes(block.closingToken)) {
+        if (block.hiddenWrapper && PASTED_TEXT_CLOSE.test(line)) consumed = true;
         block = null;
       }
     } else if (marker) {
@@ -660,14 +696,20 @@ export function splitTranscriptAttachments(text: string): TranscriptAttachments 
           consumed = true;
         }
       }
-      if (!consumed) block = transcriptBlockStarting(line);
+      if (!consumed) {
+        block = transcriptBlockStarting(line);
+        if (hidePasteWrappers && block?.kind === "untilToken" && block.closingToken === "</pasted-text>" && PASTED_TEXT_OPEN.test(line)) {
+          block = { ...block, hiddenWrapper: true };
+          consumed = true;
+        }
+      }
     }
 
     if (!consumed) display += text.slice(cursor, wholeLineEnd);
     cursor = wholeLineEnd;
   }
 
-  return { display: display.trim(), images, files };
+  return { display: trimDisplay ? display.trim() : display, images, files };
 }
 
 /** Kept for callers outside the desktop bundle that used the old helper. */
@@ -732,6 +774,14 @@ export function attachmentImageUrl(path: string): string | null {
   return `/api/attachments/${encodeURIComponent(name)}`;
 }
 
+/** Voice notes park as bare generated .mp3 filenames; anything else stays
+ * out of an <audio> src rather than 404ing on a private path. */
+export function attachmentAudioUrl(path: string): string | null {
+  const name = attachmentBasename(path);
+  if (!/^[A-Za-z0-9-]+\.mp3$/.test(name)) return null;
+  return `/api/attachments/${encodeURIComponent(name)}`;
+}
+
 /** One intake path for files arriving by drop OR by the composer's attach
  * button, so a picked file and a dropped one can never behave differently.
  * Uploaders are injected for deterministic tests: callers own the network,
@@ -789,11 +839,64 @@ export async function intakeFiles<T extends DroppedFile & { type: string }>(
   const rejectedNames = results.flatMap((result) => result.rejectedNames);
   const uploadErrors = results.flatMap((result) => result.uploadError ? [result.uploadError] : []);
   const pathless = rejectedNames.length
-    ? `${rejectedNames.join(", ")} — that file has no path on disk. Save it first, then attach it from Finder.`
+    ? `Unable to attach ${rejectedNames.join(", ")}. Choose a supported image, document, or audio file.`
     : null;
   const failed = uploadErrors.length ? uploadErrors.join("; ") : null;
   return {
     attachments,
     notice: pathless && failed ? `${pathless} (${failed})` : (pathless ?? failed),
   };
+}
+
+/**
+ * Whether the composer may pull keyboard focus back into its textarea after an
+ * attachment lands. The draft was the writer's place when focus is still there,
+ * has fallen to the page (a disabled element drops it), or sits on a control
+ * inside the composer such as the paperclip button after the file dialog. A
+ * focused control elsewhere — a dialog, the thread list — is left alone.
+ */
+export function composerShouldRefocus(active: FocusNode | null, input: ComposerInputNode): boolean {
+  if (!active || active === input) return true;
+  const root = input.ownerDocument;
+  if (active === root.body || active === root.documentElement) return true;
+  const composer = input.closest("[data-tour=composer]");
+  return Boolean(composer?.contains(active));
+}
+
+/**
+ * Whether a freshly opened thread's composer should take keyboard focus.
+ * Opening a thread from the sidebar leaves focus on the row or the New thread
+ * button, so the composer takes it from any plain control. It never takes it
+ * from another text field (the sidebar search, a rename) or from an open
+ * dialog, where the person is typing or deciding something else.
+ */
+export function composerTakesFocusOnOpen(active: OpenFocusNode | null, input: ComposerInputNode): boolean {
+  if (composerShouldRefocus(active, input)) return true;
+  if (!active) return true;
+  const tag = active.tagName?.toUpperCase();
+  if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || active.isContentEditable) return false;
+  return !active.closest?.("[role=dialog], [role=alertdialog], [aria-modal=true]");
+}
+
+/**
+ * Whether a change of reply target should put the caret in the composer.
+ * Choosing a message to reply to means the next thing is typing the reply,
+ * so a newly chosen target takes focus (MOCA-263). Clearing the reply, or the
+ * same target arriving again as the draft re-renders, does not.
+ */
+export function replyTargetTakesFocus(previousId: string | null | undefined, nextId: string | null | undefined): boolean {
+  return Boolean(nextId) && nextId !== previousId;
+}
+
+// This file is also compiled for the server, which has no DOM types; the rule
+// only needs these members of the real elements.
+type FocusNode = object;
+interface OpenFocusNode {
+  tagName?: string;
+  isContentEditable?: boolean;
+  closest?(selector: string): object | null;
+}
+interface ComposerInputNode {
+  ownerDocument: { body: FocusNode | null; documentElement: FocusNode | null };
+  closest(selector: string): { contains(node: FocusNode | null): boolean } | null;
 }

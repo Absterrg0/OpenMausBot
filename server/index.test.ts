@@ -4,10 +4,11 @@
 // suite is deterministic with or without agent CLIs installed — and pins
 // the shadow-instance behavior end to end while it's at it.
 import { spawn, type ChildProcess } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { once } from "node:events";
 import { createServer, request, type Server } from "node:http";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { connect, type Socket } from "node:net";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -18,13 +19,16 @@ import {
   DhkemP256HkdfSha256,
   HkdfSha256,
 } from "@hpke/core";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { z } from "zod";
 
 import { removeTempDir, waitForExit } from "./testing/cleanup.ts";
+import { startFakeHttpMcp } from "./testing/fake-http-mcp-server.ts";
+import { startFakeOAuth } from "./testing/fake-oauth-server.ts";
 import { freePortBlock } from "./testing/ports.ts";
 import { openSse } from "./testing/sse.ts";
 import { FILE_MAX_BYTES, IMAGE_MAX_BYTES } from "./attachments.ts";
+import { computerPrompt, SIGN_IN_PROMPT } from "./system-prompt.ts";
 import {
   PHONE_SECRET_INFO,
   phoneSecretAAD,
@@ -99,55 +103,88 @@ async function sealPhoneSecretForTest(
 }
 
 let child: ChildProcess;
-/** stands in for the box provider so config saving never touches the network */
-let boxStub: Server;
-let boxStubPort = 0;
-const boxRouteCalls: Array<{ method: string; path: string }> = [];
-let boxSlowRequestCount = 0;
-let managedBoxRows: Array<Record<string, unknown>> = [];
-let managedBoxListRowsOverride: Array<Record<string, unknown>> | null = null;
-let managedBoxListStatus = 200;
-let managedBoxStopDelayMs = 0;
-let managedBoxRenameDelayMs = 0;
-type DeferredGate = { wait: Promise<void>; release: () => void };
+/** stands in for the boat provider so config saving never touches the network */
+let boatStub: Server;
+let boatStubPort = 0;
+const boatRouteCalls: Array<{ method: string; path: string }> = [];
+const boatPromptBodies: Array<Record<string, unknown>> = [];
+let boatSlowRequestCount = 0;
+let managedBoatRows: Array<Record<string, unknown>> = [];
+let managedBoatListRowsOverride: Array<Record<string, unknown>> | null = null;
+let managedBoatListStatus = 200;
+let managedBoatStopDelayMs = 0;
+let managedBoatRenameDelayMs = 0;
+type DeferredGate = {
+  wait: Promise<void>;
+  release: () => void;
+  entered: Promise<void>;
+  enter: () => void;
+};
 const deferredGate = (): DeferredGate => {
+  let enter!: () => void;
+  const entered = new Promise<void>((resolve) => {
+    enter = resolve;
+  });
   let release!: () => void;
   const wait = new Promise<void>((resolve) => {
     release = resolve;
   });
-  return { wait, release };
+  return { wait, release, entered, enter };
 };
-let managedBoxListGate: DeferredGate | null = null;
-type ManagedBoxCreateMode = "refuse" | "ambiguous" | "fail-rename" | "success";
-let managedBoxCreateMode: ManagedBoxCreateMode = "refuse";
-let managedBoxCreateId = "bx_cdefghjk";
-let managedBoxCreateName = "";
-const managedBoxCreatedIds = new Set<string>();
-const managedBoxDeleteConfirmations: Array<{ boxId: string; confirmation?: string }> = [];
+let managedBoatListGate: DeferredGate | null = null;
+let managedBoatCreateGate: DeferredGate | null = null;
+let managedBoatDeleteGate: DeferredGate | null = null;
+const managedBoatRejectedTokens = new Set<string>();
+const managedBoatCreateBodies: Array<Record<string, unknown>> = [];
+type ManagedBoatCreateMode = "refuse" | "ambiguous" | "fail-rename" | "success";
+let managedBoatCreateMode: ManagedBoatCreateMode = "refuse";
+let managedBoatCreateId = "bx_cdefghjk";
+let managedBoatCreateName = "";
+const managedBoatCreatedIds = new Set<string>();
+const managedBoatDeleteConfirmations: Array<{ boxId: string; confirmation?: string }> = [];
+type ManagedBoatDeletionStatus = "pending" | "processing" | "blocked" | "completed";
+const managedBoatDeletionOperationId = "bdop_0123456789abcdef0123456789abcdef";
+let managedBoatDeletionStatuses: ManagedBoatDeletionStatus[] = [];
+let managedBoatLastDeletionStatus: ManagedBoatDeletionStatus = "completed";
+let managedBoatDeletionTarget = "";
+let managedBoatDeleteRemovesRow = true;
 let home: string;
 let staticDir: string;
 let fakeClaudeDump: string;
+let oneShotTextFile: string;
+let oneShotTextDump: string;
 let fakeDockerFixture: string;
+let fakeVpsFixture: string;
 let fakeDockerLog: string;
 let stderr = "";
-let connectorAccounts: Array<{ id: string; alias: string; status: string; toolkit: { slug: string } }> = [];
-/** Every JSON-RPC message the stub's MCP endpoint received through the relay. */
-let relayedMcpCalls: Array<{ id?: unknown; method?: string; params?: { name?: string; arguments?: unknown } }> = [];
+let connectorAccounts: Array<{ id: string; alias?: string; status: string; toolkit: { slug: string } }> = [];
+let connectorAccountsGate: DeferredGate | null = null;
+// What the stubbed marketplace catalog serves for project keys; empty means
+// the walk found nothing and composio falls back to its curated list.
+let connectorCatalogToolkits: Array<{ slug: string; name: string }> = [];
 const connectorLinkRequests: Array<{ toolkit: string; alias?: string }> = [];
+/** Every frame the harness relayed to the stubbed Composio MCP endpoint. */
+const connectorRelayCalls: Array<{ transportSessionId: string; body: any }> = [];
 const browserCapabilityCalls: Array<{ operation: string; authorization?: string; body: any }> = [];
 let browserRevokeFailuresRemaining = 0;
 let browserRegisterDelayMs = 0;
 
-const managedBoxNameForFixture = (botId: string): string => {
-  // box.ts scopes provider names to the server installation. This test
+const managedBoatNameForFixture = (botId: string): string => {
+  // boat.ts scopes provider names to the server installation. This test
   // process has a different HOME from the isolated server, so derive the
   // provider fixture row from that server's durable id rather than importing
-  // the process-local boxNameFor value.
+  // the process-local boatNameFor value.
   const environmentId = readFileSync(join(home, ".openmausbot", "environment-id"), "utf8").trim();
   const environmentScope = createHash("sha256").update(environmentId).digest("hex").slice(0, 12);
   const botPrefix = botId.slice(0, 8).toLowerCase().replace(/[^a-z0-9]/g, "") || "bot";
   const botHash = createHash("sha256").update(botId).digest("hex").slice(0, 6);
   return `ogb-${environmentScope}-${botPrefix}-${botHash}`;
+};
+
+const managedVpsNameForFixture = (botId: string): string => {
+  const botPrefix = botId.toLowerCase().replace(/[^a-z0-9]/g, "").slice(0, 12) || "bot";
+  const botHash = createHash("sha256").update(botId).digest("hex").slice(0, 12);
+  return `openmausbot-vps-${botPrefix}-${botHash}`;
 };
 
 const expectStoppedTestServerCleanly = (serverChild: ChildProcess, capturedStderr: string): void => {
@@ -202,6 +239,40 @@ const api = async (method: string, path: string, body?: unknown): Promise<{ stat
     body: body ? JSON.stringify(body) : undefined,
   });
   return { status: res.status, body: await res.json() };
+};
+
+/** Pair a device the way a phone or a second person does, and act as them. */
+const asPairedPerson = async (label: string) => {
+  const opened = await api("POST", "/api/auth/pairing", {});
+  expect(opened.status).toBe(200);
+  const paired = await fetch(`${BASE}/api/auth/pair`, {
+    method: "POST",
+    headers: { "content-type": "application/json", "user-agent": label },
+    body: JSON.stringify({ code: opened.body.code }),
+  });
+  const body = await paired.json() as any;
+  expect(paired.status).toBe(200);
+  return {
+    token: body.token as string,
+    label: body.session.label as string,
+    call: async (method: string, path: string, payload?: unknown) => {
+      const res = await fetch(`${BASE}${path}`, {
+        method,
+        headers: { authorization: `Bearer ${body.token}`, ...(payload ? { "content-type": "application/json" } : {}) },
+        body: payload ? JSON.stringify(payload) : undefined,
+      });
+      return { status: res.status, body: await res.json() as any };
+    },
+  };
+};
+
+const chiefRoomRequest = async (baseUrl: string, token: string, route: "create-room" | "manage-room", body: unknown) => {
+  const response = await fetch(`${baseUrl}/api/internal/${route}`, {
+    method: "POST",
+    headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  return { status: response.status, body: await response.json() as Record<string, unknown> };
 };
 
 /** Wait until the server accepts the headers, then let the test complete
@@ -301,24 +372,43 @@ beforeAll(async () => {
   writeFileSync(join(home, "fake-agent-browser"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
   staticDir = join(home, "static");
   fakeClaudeDump = join(home, "fake-claude-dump.json");
+  oneShotTextFile = join(home, "fake-claude-one-shot.txt");
+  oneShotTextDump = join(home, "fake-claude-one-shot-dump.json");
   const fakeDockerDir = join(home, "fake-docker-bin");
   const fakeDockerProgram = join(fakeDockerDir, "docker-empty.mjs");
   fakeDockerFixture = join(home, ".openmausbot", "fake-unmanaged-container");
+  fakeVpsFixture = join(home, ".openmausbot", "fake-vps-container.json");
   fakeDockerLog = join(home, ".openmausbot", "fake-docker-calls.log");
   mkdirSync(fakeDockerDir, { recursive: true });
   writeFileSync(fakeDockerProgram, [
-    'import { appendFileSync, existsSync, readFileSync } from "node:fs";',
+    'import { appendFileSync, existsSync, readFileSync, rmSync } from "node:fs";',
     'const args = process.argv.slice(2);',
     `const fixture = ${JSON.stringify(fakeDockerFixture)};`,
+    `const vpsFixture = ${JSON.stringify(fakeVpsFixture)};`,
     `const log = ${JSON.stringify(fakeDockerLog)};`,
-    'if (existsSync(fixture)) {',
+    'if (existsSync(vpsFixture) && args[0] === "-H") {',
     '  appendFileSync(log, `${args.join(" ")}\\n`);',
-    '  const expected = readFileSync(fixture, "utf8").trim();',
-    '  if (args[0] === "info") { process.stdout.write("29\\n"); process.exit(0); }',
-    '  if (args[0] === "inspect" && args[1] === expected) {',
-    '    process.stdout.write(JSON.stringify([{ Config: { Image: "unmanaged", Labels: {} }, State: { Running: true } }]));',
+    '  const spec = JSON.parse(readFileSync(vpsFixture, "utf8"));',
+    '  if (args[2] === "container" && args[3] === "ls") { process.stdout.write(`${spec.id.slice(0, 12)}\\n`); process.exit(0); }',
+    '  if (args[2] === "container" && args[3] === "inspect") {',
+    '    process.stdout.write(JSON.stringify([{ Id: spec.id, Name: `/${spec.name}`, Config: { Labels: { "com.openmausbot.vps": "1", "com.openmausbot.container": spec.name } }, State: { Status: "exited", Running: false } }]));',
     '    process.exit(0);',
     '  }',
+    '  if (args[2] === "rm" && args[3] === "-f" && args[4] === spec.id) { rmSync(vpsFixture, { force: true }); process.exit(0); }',
+    '  process.exit(127);',
+    '}',
+    'if (existsSync(fixture)) {',
+    '  appendFileSync(log, `${args.join(" ")}\\n`);',
+    '  const raw = readFileSync(fixture, "utf8").trim();',
+    '  let spec = null; try { spec = JSON.parse(raw); } catch {}',
+    '  const expected = spec?.name ?? raw;',
+    '  if (args[0] === "info") { process.stdout.write("29\\n"); process.exit(0); }',
+    '  if (args[0] === "inspect" && args[1] === expected) {',
+    '    const labels = spec?.managed ? { "com.openmausbot.local-vm": "1", "com.openmausbot.workspace": "1", "com.openmausbot.local-vm-target": spec.targetLabel } : {};',
+    '    process.stdout.write(JSON.stringify([{ Config: { Image: "fixture", Labels: labels }, State: { Running: false }, Mounts: spec?.workspace ? [{ Type: "bind", Source: spec.workspace, Destination: "/home/cua/workspace", RW: true }] : [] }]));',
+    '    process.exit(0);',
+    '  }',
+    '  if (args[0] === "rm" && args.at(-1) === expected && spec?.managed) { rmSync(fixture, { force: true }); process.exit(0); }',
     '  process.exit(127);',
     '}',
     'if (args[0] === "-H" && args[2] === "container" && args[3] === "ls") process.exit(0);',
@@ -346,6 +436,9 @@ beforeAll(async () => {
   writeFileSync(
     join(home, ".openmausbot", "config.json"),
     JSON.stringify({
+      // generated titles are opt-in; this suite turns them on because it
+      // owns the one-shot's reply file (FAKE_CLAUDE_TEXT_FILE below)
+      features: { llmThreadTitles: true, browser: false }, // written when the browser was opt-in
       instances: {
         ghost: { driver: "not-a-real-driver", displayName: "Ghost" },
         claude: { driver: "claudeAgent", displayName: "Fixture Claude", config: { cli: FAKE_CLAUDE_CLI } },
@@ -353,6 +446,9 @@ beforeAll(async () => {
         // tests exercise the trusted desktop boundary, while an intentionally
         // missing CLI keeps it out of the default available-model selection.
         codex: { driver: "codex", displayName: "Fixture Codex", config: { cli: join(home, "missing-codex") } },
+        // the engine that runs a turn on the bot's cloud computer (the app
+        // registers it by default); it talks only to the Boat stub
+        computer: { driver: "boxAgent", displayName: "Computer" },
       },
     }),
   );
@@ -386,6 +482,7 @@ beforeAll(async () => {
         name: "Cancel room",
         memberIds: ["test-bot-a"],
         defaultResponder: { kind: "member", botId: "test-bot-a" },
+        tasks: [{ threadId: "test-cancel-room-thread", title: "Cancel room", createdAt: 4, updatedAt: 4 }],
         bulletin: "",
         unread: false,
         createdAt: 4,
@@ -426,16 +523,85 @@ beforeAll(async () => {
       },
     ]),
   );
+  writeFileSync(
+    join(home, ".openmausbot", "bots.json"),
+    JSON.stringify([
+      {
+        id: "test-bot-seed",
+        threadId: "test-bot-seed-thread",
+        name: "Seeded fixture bot",
+        title: "",
+        description: "",
+        soul: "",
+        soulHash: createHash("sha256").update("").digest("hex"),
+        notifications: true,
+        color: "purple",
+        unread: false,
+        modelSelection: { instanceId: "ghost", model: "ghost-1" },
+        resumeCursors: {},
+        createdAt: 0,
+        tasks: [{
+          threadId: "test-bot-seed-thread",
+          title: "Seeded fixture bot",
+          createdAt: 0,
+          updatedAt: 0,
+          resumeCursors: {},
+          modelSelection: { instanceId: "ghost", model: "ghost-1" },
+          unread: false,
+        }],
+      },
+      {
+        id: "test-bot-a",
+        threadId: "test-bot-a-thread",
+        name: "Test bot A",
+        title: "",
+        description: "",
+        soul: "",
+        soulHash: createHash("sha256").update("").digest("hex"),
+        notifications: true,
+        color: "purple",
+        unread: false,
+        modelSelection: { instanceId: "claude", model: "claude-sonnet-5" },
+        resumeCursors: {},
+        createdAt: 1,
+        tasks: [{
+          threadId: "test-bot-a-thread",
+          title: "Test bot A",
+          createdAt: 1,
+          updatedAt: 1,
+          resumeCursors: {},
+          modelSelection: { instanceId: "claude", model: "claude-sonnet-5" },
+          unread: false,
+        }],
+      },
+    ]),
+  );
+  writeFileSync(
+    join(home, ".openmausbot", "messages-test-bot-seed-thread.json"),
+    JSON.stringify({
+      activeLeafId: "test-bot-seed-greeting",
+      messages: [{
+        id: "test-bot-seed-greeting",
+        at: 1,
+        parentId: null,
+        role: "bot",
+        kind: "text",
+        text: "Hi, I'm Seeded fixture bot. What would you like me to do?",
+      }],
+    }),
+  );
 
   const linkedWorkspace = join(home, ".openmausbot", "workspaces", "test-bot-a");
   const linkedFile = join(linkedWorkspace, "phone report.md");
   const linkedImage = join(linkedWorkspace, "preview.png");
   const privateAttachments = join(home, ".openmausbot", "attachments");
   const userAttachment = join(privateAttachments, "shared-notes.pdf");
+  const generatedImage = join(privateAttachments, "generated.png");
   mkdirSync(linkedWorkspace, { recursive: true });
   mkdirSync(privateAttachments, { recursive: true, mode: 0o700 });
   writeFileSync(linkedFile, "# Phone-ready report\n");
   writeFileSync(linkedImage, "png preview bytes");
+  writeFileSync(generatedImage, "generated image bytes");
   writeFileSync(userAttachment, "%PDF shared from the phone\n", { mode: 0o600 });
   writeFileSync(
     join(home, ".openmausbot", "messages-test-linked-file-room-thread.json"),
@@ -478,9 +644,24 @@ beforeAll(async () => {
           text: `<attached-file path="${userAttachment}" name="Trip notes.exe" />`,
         },
         {
+          id: "generated-image-message", at: 7.1, role: "bot", kind: "text",
+          parentId: "user-attached-file-message",
+          attachments: [{ kind: "image", path: generatedImage, mime: "image/png" }],
+        },
+        {
+          id: "outside-generated-image-message", at: 7.2, role: "bot", kind: "text",
+          parentId: "generated-image-message",
+          attachments: [{ kind: "image", path: linkedImage, mime: "image/png" }],
+        },
+        {
+          id: "not-image-attachment-message", at: 7.3, role: "bot", kind: "text",
+          parentId: "outside-generated-image-message",
+          attachments: [{ kind: "image", path: userAttachment, mime: "image/png" }],
+        },
+        {
           id: "user-outside-file-message",
           at: 8,
-          parentId: "user-attached-file-message",
+          parentId: "not-image-attachment-message",
           role: "user",
           kind: "text",
           text: `<attached-file path="${linkedFile}" />`,
@@ -595,7 +776,7 @@ beforeAll(async () => {
   writeFileSync(
     join(home, ".openmausbot", "messages-test-cancel-room-thread.json"),
     JSON.stringify({
-      activeLeafId: "cancel-card",
+      activeLeafId: "cancel-question-card",
       messages: [
         {
           id: "cancel-card",
@@ -613,21 +794,26 @@ beforeAll(async () => {
           },
           from: { botId: "test-bot-a", name: "Test bot A", color: "purple" },
         },
+        {
+          id: "cancel-question-card",
+          at: 5,
+          parentId: "cancel-card",
+          role: "bot",
+          kind: "options",
+          card: {
+            title: "Your bot has a question",
+            subtitle: "Which file should I update?",
+            options: ["README", "Guide"],
+            requestId: "cancel-question-request",
+            requestType: "question",
+          },
+          from: { botId: "test-bot-a", name: "Test bot A", color: "purple" },
+        },
       ],
     }),
   );
 
-  boxStub = createServer(async (req, res) => {
-    // The Composio Session's MCP endpoint, so a relayed tool call lands here
-    // instead of on the internet. Answers every call with one text result.
-    if (req.url === "/mcp") {
-      let raw = "";
-      for await (const chunk of req) raw += chunk;
-      const body = raw ? JSON.parse(raw) : {};
-      relayedMcpCalls.push(body);
-      res.writeHead(200, { "content-type": "application/json" });
-      return res.end(JSON.stringify({ jsonrpc: "2.0", id: body.id, result: { content: [{ type: "text", text: "sent by stub" }] } }));
-    }
+  boatStub = createServer(async (req, res) => {
     if (req.url?.startsWith("/v1/capabilities/")) {
       let raw = "";
       for await (const chunk of req) raw += chunk;
@@ -654,8 +840,16 @@ beforeAll(async () => {
       return res.end(JSON.stringify(operation === "register" ? { ok: true, expiresAt: body.expiresAt } : { ok: true }));
     }
     if (req.url?.startsWith("/api/v3.1/connected_accounts") || req.url?.startsWith("/api/v3/toolkits")) {
+      if (req.url.startsWith("/api/v3.1/connected_accounts") && connectorAccountsGate) {
+        const gate = connectorAccountsGate;
+        connectorAccountsGate = null;
+        gate.enter();
+        await gate.wait;
+      }
       res.writeHead(200, { "content-type": "application/json" });
-      return res.end(JSON.stringify({ items: req.url.startsWith("/api/v3.1/connected_accounts") ? connectorAccounts : [] }));
+      return res.end(JSON.stringify({
+        items: req.url.startsWith("/api/v3.1/connected_accounts") ? connectorAccounts : connectorCatalogToolkits,
+      }));
     }
     if (req.url?.startsWith("/api/v3.1/tool_router/session")) {
       if (req.headers["x-api-key"] !== "ak_good") {
@@ -677,15 +871,68 @@ beforeAll(async () => {
       res.writeHead(201, { "content-type": "application/json" });
       return res.end(JSON.stringify({
         session_id: "trs_config_test",
-        mcp: { type: "http", url: `http://${req.headers.host}/mcp` },
+        mcp: { type: "http", url: "https://app.composio.dev/tool_router/v3/trs_config_test/mcp" },
         config: { user_id: body.user_id },
+      }));
+    }
+    if (req.url?.startsWith("/broker/v1/mcp")) {
+      let raw = "";
+      for await (const chunk of req) raw += chunk;
+      const body = raw ? JSON.parse(raw) : null;
+      connectorRelayCalls.push({
+        transportSessionId: typeof req.headers["mcp-session-id"] === "string" ? req.headers["mcp-session-id"] : "",
+        body,
+      });
+      const requestId = body && typeof body === "object" && "id" in body ? (body as { id: unknown }).id : null;
+      // The grant editor's inventory walks the same MCP handshake a mounted
+      // bot performs: initialize, then tools/list. tools/call keeps the
+      // relay-ok answer the verdict tests assert on.
+      if (body && typeof body === "object" && (body as { method?: unknown }).method === "initialize") {
+        res.writeHead(200, { "content-type": "application/json", "mcp-session-id": "mcp-session-grants" });
+        return res.end(JSON.stringify({
+          jsonrpc: "2.0",
+          id: requestId,
+          result: {
+            protocolVersion: "2025-03-26",
+            capabilities: {},
+            serverInfo: { name: "composio-stub", version: "1" },
+          },
+        }));
+      }
+      if (body && typeof body === "object" && (body as { method?: unknown }).method === "tools/list") {
+        res.writeHead(200, { "content-type": "application/json" });
+        return res.end(JSON.stringify({
+          jsonrpc: "2.0",
+          id: requestId,
+          result: {
+            tools: [
+              { name: "GMAIL_SEND_EMAIL", description: "Send  an email" },
+              // A repeat listing must not duplicate the picker entry.
+              { name: "GMAIL_SEND_EMAIL", description: "duplicate listing" },
+              { name: "GMAIL_FETCH_EMAILS", description: "Fetch emails" },
+              { name: "SLACK_POST_MESSAGE", description: "a".repeat(300) },
+              // Platform meta-tools, connection flows, non-pattern names and
+              // names without a service prefix are never per-tool grants.
+              { name: "COMPOSIO_SEARCH_TOOLS", description: "meta" },
+              { name: "GMAIL_MANAGE_CONNECTIONS", description: "flow" },
+              { name: "gmail_send_email", description: "bad case" },
+              { name: "PLATFORM", description: "no service" },
+            ],
+          },
+        }));
+      }
+      res.writeHead(200, { "content-type": "application/json" });
+      return res.end(JSON.stringify({
+        jsonrpc: "2.0",
+        id: requestId,
+        result: { content: [{ type: "text", text: "relay-ok" }] },
       }));
     }
     if (
       req.headers.authorization === "Bearer box_slow"
       && new URL(req.url ?? "/", "http://box.invalid").pathname === "/boxes"
     ) {
-      boxSlowRequestCount += 1;
+      boatSlowRequestCount += 1;
       await new Promise((resolve) => setTimeout(resolve, 150));
     }
     if (
@@ -695,30 +942,67 @@ beforeAll(async () => {
       const method = req.method ?? "GET";
       const path = req.url ?? "/";
       const requestUrl = new URL(path, "http://box.invalid");
-      boxRouteCalls.push({ method, path });
+      boatRouteCalls.push({ method, path });
+      if (managedBoatRejectedTokens.has(String(req.headers.authorization))) {
+        res.writeHead(401, { "content-type": "application/json" });
+        return res.end(JSON.stringify({ ok: false, code: "unauthorized" }));
+      }
       if (method === "GET" && requestUrl.pathname === "/boxes") {
-        const listGate = managedBoxListGate;
-        if (listGate) await listGate.wait;
-        res.writeHead(managedBoxListStatus, { "content-type": "application/json" });
+        const listGate = managedBoatListGate;
+        if (listGate) {
+          listGate.enter();
+          await listGate.wait;
+        }
+        res.writeHead(managedBoatListStatus, { "content-type": "application/json" });
         return res.end(JSON.stringify(
-          managedBoxListStatus === 200
-            ? { ok: true, boxes: managedBoxListRowsOverride ?? managedBoxRows, pageInfo: { nextCursor: null } }
+          managedBoatListStatus === 200
+            ? { ok: true, boxes: managedBoatListRowsOverride ?? managedBoatRows, pageInfo: { nextCursor: null } }
             : { ok: false, message: "fixture list unavailable" },
         ));
       }
+      if (method === "GET" && requestUrl.pathname === `/deletion-operations/${managedBoatDeletionOperationId}`) {
+        managedBoatLastDeletionStatus = managedBoatDeletionStatuses.shift() ?? managedBoatLastDeletionStatus;
+        if (managedBoatLastDeletionStatus === "completed" && managedBoatDeletionTarget) {
+          managedBoatRows = managedBoatRows.filter((row) => row.id !== managedBoatDeletionTarget);
+          managedBoatCreatedIds.delete(managedBoatDeletionTarget);
+        }
+        return res.end(JSON.stringify({
+          ok: true,
+          type: "deletion.operation",
+          operation: {
+            id: managedBoatDeletionOperationId,
+            kind: "box",
+            targetId: managedBoatDeletionTarget,
+            status: managedBoatLastDeletionStatus,
+          },
+        }));
+      }
       res.setHeader("content-type", "application/json");
       res.statusCode = 200;
+      if (method === "POST" && /^\/boxes\/[^/]+\/prompt$/.test(path)) {
+        let raw = "";
+        for await (const chunk of req) raw += chunk;
+        boatPromptBodies.push(JSON.parse(raw));
+        return res.end(JSON.stringify({ ok: true }));
+      }
       if (method === "POST" && path === "/boxes") {
-        if (managedBoxCreateMode === "ambiguous") {
+        let raw = "";
+        for await (const chunk of req) raw += chunk;
+        managedBoatCreateBodies.push(raw ? JSON.parse(raw) : {});
+        if (managedBoatCreateGate) {
+          managedBoatCreateGate.enter();
+          await managedBoatCreateGate.wait;
+        }
+        if (managedBoatCreateMode === "ambiguous") {
           res.statusCode = 503;
           return res.end(JSON.stringify({ ok: false, message: "provider outcome is unknown" }));
         }
-        if (managedBoxCreateMode === "fail-rename" || managedBoxCreateMode === "success") {
-          managedBoxCreatedIds.add(managedBoxCreateId);
+        if (managedBoatCreateMode === "fail-rename" || managedBoatCreateMode === "success") {
+          managedBoatCreatedIds.add(managedBoatCreateId);
           res.statusCode = 201;
           return res.end(JSON.stringify({
             ok: true,
-            box: { id: managedBoxCreateId, state: "idle" },
+            box: { id: managedBoatCreateId, state: "idle" },
           }));
         }
         return res.end(JSON.stringify({ ok: false, message: "fixture refused create" }));
@@ -732,11 +1016,11 @@ beforeAll(async () => {
       if (method === "POST" && path === "/boxes/route-box/desktop?vnc=1") {
         return res.end(JSON.stringify({ ok: true, desktopUrl: "https://desktop.invalid/route-box" }));
       }
-      const boxMatch = requestUrl.pathname.match(/^\/boxes\/(bx_[23456789abcdefghjkmnpqrstuvwxyz]{8})$/);
-      if (method === "GET" && boxMatch) {
-        const row = managedBoxRows.find((candidate) => candidate.id === boxMatch[1]);
-        const exists = row ?? (managedBoxCreatedIds.has(boxMatch[1]!)
-          ? { id: boxMatch[1], state: "idle" }
+      const boatMatch = requestUrl.pathname.match(/^\/boxes\/(bx_[23456789abcdefghjkmnpqrstuvwxyz]{8})$/);
+      if (method === "GET" && boatMatch) {
+        const row = managedBoatRows.find((candidate) => candidate.id === boatMatch[1]);
+        const exists = row ?? (managedBoatCreatedIds.has(boatMatch[1]!)
+          ? { id: boatMatch[1], name: `provider-${boatMatch[1]}`, state: "idle" }
           : null);
         if (!exists) {
           res.statusCode = 404;
@@ -744,19 +1028,22 @@ beforeAll(async () => {
         }
         return res.end(JSON.stringify({ ok: true, box: exists }));
       }
-      if (method === "PATCH" && boxMatch) {
-        if (managedBoxRenameDelayMs > 0) {
-          await new Promise((resolve) => setTimeout(resolve, managedBoxRenameDelayMs));
+      if (method === "PATCH" && boatMatch) {
+        let raw = "";
+        for await (const chunk of req) raw += chunk;
+        const requestedName = raw ? JSON.parse(raw).name : undefined;
+        if (managedBoatRenameDelayMs > 0) {
+          await new Promise((resolve) => setTimeout(resolve, managedBoatRenameDelayMs));
         }
-        if (managedBoxCreateMode === "fail-rename") {
+        if (managedBoatCreateMode === "fail-rename") {
           res.statusCode = 503;
           return res.end(JSON.stringify({ ok: false, message: "rename unavailable" }));
         }
-        managedBoxRows = [
-          ...managedBoxRows.filter((candidate) => candidate.id !== boxMatch[1]),
-          { id: boxMatch[1], name: managedBoxCreateName, state: "idle" },
+        managedBoatRows = [
+          ...managedBoatRows.filter((candidate) => candidate.id !== boatMatch[1]),
+          { id: boatMatch[1], name: managedBoatCreateName || requestedName, state: "idle" },
         ];
-        return res.end(JSON.stringify({ ok: true, box: managedBoxRows.at(-1) }));
+        return res.end(JSON.stringify({ ok: true, box: managedBoatRows.at(-1) }));
       }
       const desktopMatch = requestUrl.pathname.match(/^\/boxes\/(bx_[23456789abcdefghjkmnpqrstuvwxyz]{8})\/desktop$/);
       if (method === "POST" && desktopMatch) {
@@ -768,46 +1055,67 @@ beforeAll(async () => {
       }
       const stopMatch = requestUrl.pathname.match(/^\/boxes\/(bx_[23456789abcdefghjkmnpqrstuvwxyz]{8})\/stop$/);
       if (method === "POST" && stopMatch) {
-        if (managedBoxStopDelayMs > 0) {
-          await new Promise((resolve) => setTimeout(resolve, managedBoxStopDelayMs));
+        if (managedBoatStopDelayMs > 0) {
+          await new Promise((resolve) => setTimeout(resolve, managedBoatStopDelayMs));
         }
-        managedBoxRows = managedBoxRows.map((row) => row.id === stopMatch[1] ? { ...row, state: "archived" } : row);
+        managedBoatRows = managedBoatRows.map((row) => row.id === stopMatch[1] ? { ...row, state: "archived" } : row);
         return res.end(JSON.stringify({ ok: true }));
       }
       const deleteMatch = requestUrl.pathname.match(/^\/boxes\/(bx_[23456789abcdefghjkmnpqrstuvwxyz]{8})$/);
       if (method === "DELETE" && deleteMatch) {
-        if (managedBoxCreateMode === "fail-rename" && managedBoxCreatedIds.has(deleteMatch[1]!)) {
+        if (managedBoatCreateMode === "fail-rename" && managedBoatCreatedIds.has(deleteMatch[1]!)) {
           res.statusCode = 503;
           return res.end(JSON.stringify({ ok: false, message: "cleanup unavailable" }));
         }
         const confirmation = Array.isArray(req.headers["x-ascii-confirm-delete"])
           ? req.headers["x-ascii-confirm-delete"][0]
           : req.headers["x-ascii-confirm-delete"];
-        managedBoxDeleteConfirmations.push({ boxId: deleteMatch[1], confirmation });
+        managedBoatDeleteConfirmations.push({ boxId: deleteMatch[1], confirmation });
         if (confirmation !== deleteMatch[1]) {
           res.statusCode = 409;
           return res.end(JSON.stringify({ ok: false, message: "confirmation mismatch" }));
         }
-        managedBoxRows = managedBoxRows.filter((row) => row.id !== deleteMatch[1]);
-        managedBoxCreatedIds.delete(deleteMatch[1]!);
+        const deleteGate = managedBoatDeleteGate;
+        if (deleteGate) {
+          deleteGate.enter();
+          await deleteGate.wait;
+        }
+        if (managedBoatDeleteRemovesRow) {
+          managedBoatRows = managedBoatRows.filter((row) => row.id !== deleteMatch[1]);
+          managedBoatCreatedIds.delete(deleteMatch[1]!);
+        }
         res.statusCode = 202;
+        if (managedBoatDeletionStatuses.length || !managedBoatDeleteRemovesRow) {
+          managedBoatDeletionTarget = deleteMatch[1]!;
+          managedBoatLastDeletionStatus = managedBoatDeletionStatuses.shift() ?? "pending";
+          return res.end(JSON.stringify({
+            ok: true,
+            type: "deletion.operation",
+            operation: {
+              id: managedBoatDeletionOperationId,
+              kind: "box",
+              targetId: deleteMatch[1],
+              status: managedBoatLastDeletionStatus,
+            },
+          }));
+        }
         return res.end(JSON.stringify({ ok: true, type: "deletion.operation" }));
       }
       return res.end(JSON.stringify({ ok: true }));
     }
     const ok = req.headers.authorization === "Bearer box_good" || req.headers.authorization === "Bearer box_slow";
-    const directBoxRead = /^\/boxes\/bx_[23456789abcdefghjkmnpqrstuvwxyz]{8}$/.test(req.url ?? "");
-    res.writeHead(ok && directBoxRead ? 404 : ok ? 200 : 401, { "content-type": "application/json" });
+    const directBoatRead = /^\/boxes\/bx_[23456789abcdefghjkmnpqrstuvwxyz]{8}$/.test(req.url ?? "");
+    res.writeHead(ok && directBoatRead ? 404 : ok ? 200 : 401, { "content-type": "application/json" });
     res.end(JSON.stringify(
-      ok && directBoxRead
+      ok && directBoatRead
         ? { ok: false, message: "not found" }
         : ok
           ? { ok: true, boxes: [] }
           : { ok: false, code: "unauthorized" },
     ));
   });
-  await new Promise<void>((r) => boxStub.listen(0, "127.0.0.1", r));
-  boxStubPort = (boxStub.address() as { port: number }).port;
+  await new Promise<void>((r) => boatStub.listen(0, "127.0.0.1", r));
+  boatStubPort = (boatStub.address() as { port: number }).port;
 
   // Emulate only our temporary browser executable, including on Windows where
   // the shell-script marker is not executable. No installed browser is used.
@@ -815,11 +1123,13 @@ beforeAll(async () => {
     import childProcess from "node:child_process";
     import { syncBuiltinESMExports } from "node:module";
     const spawn = childProcess.spawn;
+    const base = ${JSON.stringify(home)};
     childProcess.spawn = function(command, args, options) {
       if (command !== process.env.OMB_AGENT_BROWSER_PATH) return spawn(command, args, options);
       const program = 'const fs = require("node:fs"); const path = require("node:path"); '
-        + 'const base = path.dirname(process.env.OMB_AGENT_BROWSER_PATH); '
+        + 'const base = ' + JSON.stringify(base) + '; '
         + 'fs.appendFileSync(path.join(base, "browser-calls.jsonl"), JSON.stringify({args: process.argv.slice(1), session: process.env.AGENT_BROWSER_SESSION}) + "\\\\n"); '
+        + 'if (process.argv[1] === "session" && process.argv[2] === "list") fs.writeSync(1, JSON.stringify({ success: true, data: { sessions: [] } })); '
         + 'process.exit(fs.existsSync(path.join(base, "browser-clear-fails")) ? 1 : 0);';
       return spawn(process.execPath, ["-e", program, ...args], options);
     };
@@ -836,9 +1146,14 @@ beforeAll(async () => {
       OMB_PORT: String(PORT),
       OMB_WEBHOOK_PORT: String(WEBHOOK_PORT),
       OMB_EXTRA_PATH: fakeDockerDir,
-      OMB_BOX_API: `http://127.0.0.1:${boxStubPort}`,
-      OMB_COMPOSIO_API: `http://127.0.0.1:${boxStubPort}/api/v3.1`,
-      OMB_COMPOSIO_TOOLKITS_API: `http://127.0.0.1:${boxStubPort}/api/v3`,
+      OMB_BOX_API: `http://127.0.0.1:${boatStubPort}`,
+      OMB_COMPOSIO_API: `http://127.0.0.1:${boatStubPort}/api/v3.1`,
+      OMB_COMPOSIO_TOOLKITS_API: `http://127.0.0.1:${boatStubPort}/api/v3`,
+      // Managed connected-apps broker on the stub, so relayed MCP frames are
+      // observable without any network. A project key set through the config
+      // API still wins over this, exactly as in production.
+      OMB_COMPOSIO_BROKER_URL: `http://127.0.0.1:${boatStubPort}/broker`,
+      OMB_COMPOSIO_BROKER_TOKEN: "a".repeat(64),
       OMB_STATIC_DIR: staticDir,
       // The bots' browser engine: a stand-in binary the fake engine CLIs never
       // run; the turn only has to mount it.
@@ -848,6 +1163,13 @@ beforeAll(async () => {
       OMB_SSE_HEARTBEAT_MS: "50",
       FAKE_CLAUDE_MODE: "hang",
       FAKE_CLAUDE_DUMP: fakeClaudeDump,
+      // the one-shot text helper fails by default (its reply file is
+      // missing), so first-message generated titles stay off until a test
+      // writes that file — and its dump never overwrites a turn's dump
+      FAKE_CLAUDE_TEXT_FILE: oneShotTextFile,
+      FAKE_CLAUDE_TEXT_DUMP: oneShotTextDump,
+      // the real CLI runs Manual for these even when asked for auto
+      FAKE_CLAUDE_AUTO_UNAVAILABLE_MODELS: "claude-haiku-4-5",
       OMB_TEST_INTERNAL_CAPABILITY_KEY: TEST_CAPABILITY_KEY,
     },
     stdio: ["ignore", "pipe", "pipe"],
@@ -869,7 +1191,7 @@ beforeAll(async () => {
 }, 30_000);
 
 afterAll(async () => {
-  boxStub?.close();
+  boatStub?.close();
   // Upstream fixed this same Linux scratch-cleanup flake with an inline
   // retry loop; these helpers are that fix plus the cause — the retry AND
   // an exit that is actually waited for before the delete begins.
@@ -878,6 +1200,296 @@ afterAll(async () => {
 });
 
 describe("harness HTTP API", () => {
+  afterEach(async () => {
+    // Issue #1731: this block shares one harness server and store, so a busy
+    // hold that outlives its own test — a turn whose interrupt lost the race
+    // under load, a leaked computer-control lease, an armed fixture gate —
+    // makes every later test's first config or lifecycle write hit the 409
+    // busy guard instead of its expected response. Drain the holds between
+    // tests so a leak fails inside its own test rather than cascading through
+    // the rest of the block.
+    managedBoatListGate?.release();
+    managedBoatListGate = null;
+    managedBoatCreateGate?.release();
+    managedBoatCreateGate = null;
+    managedBoatDeleteGate?.release();
+    managedBoatDeleteGate = null;
+    const deadline = Date.now() + 15_000;
+    let stuck = { bots: [] as string[], groups: [] as string[], computers: [] as string[] };
+    while (Date.now() < deadline) {
+      const state = (await api("GET", "/api/bots?messages=0")).body;
+      // bot.busy aggregates every task, but a bare interrupt reaches only the
+      // bot's default thread — a busy task on another thread survives it and
+      // the drain times out. Read each busy task's thread from the same
+      // listing and interrupt those threads explicitly.
+      const bots = state.bots as Array<{
+        id: string;
+        busy?: boolean;
+        tasks?: Array<{ threadId: string; busy?: boolean }>;
+      }>;
+      stuck = {
+        bots: bots.filter((bot) => bot.busy).map((bot) => bot.id),
+        groups: (state.groups as Array<{ id: string; busyBotId?: string | null }>)
+          .filter((group) => group.busyBotId).map((group) => group.id),
+        computers: Object.entries((state.computerControl ?? {}) as Record<string, { held?: boolean }>)
+          .filter(([, snapshot]) => snapshot?.held).map(([id]) => id),
+      };
+      if (!stuck.bots.length && !stuck.groups.length && !stuck.computers.length) break;
+      for (const id of stuck.groups) await api("POST", `/api/groups/${id}/interrupt`, {}).catch(() => undefined);
+      for (const id of stuck.bots) {
+        const busyThreads = bots.find((bot) => bot.id === id)?.tasks
+          ?.filter((task) => task.busy).map((task) => task.threadId) ?? [];
+        if (busyThreads.length) {
+          for (const threadId of busyThreads) {
+            await api("POST", `/api/bots/${id}/interrupt`, { threadId }).catch(() => undefined);
+          }
+        } else {
+          await api("POST", `/api/bots/${id}/interrupt`, {}).catch(() => undefined);
+        }
+      }
+      for (const id of stuck.computers) await api("POST", `/api/bots/${id}/computer/control`, { action: "release" }).catch(() => undefined);
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    if (stuck.bots.length || stuck.groups.length || stuck.computers.length) {
+      throw new Error(
+        "leaked busy holds past this test (drain timed out): " +
+        `bots=[${stuck.bots.join(", ")}] groups=[${stuck.groups.join(", ")}] computers=[${stuck.computers.join(", ")}]`,
+      );
+    }
+    // The same 409s also defeat the finally blocks that were supposed to
+    // reset config, leaving a pasted token behind for later tests to trip
+    // over, so scrub that residue here too.
+    const config = (await api("GET", "/api/config")).body;
+    if (config.box?.configured) await api("PUT", "/api/config", { box: { token: "" } }).catch(() => undefined);
+    if (config.vps?.configured) await api("PUT", "/api/config", { vps: { sshAlias: "" } }).catch(() => undefined);
+  });
+
+  it("restores a live unanswered provider question after a server restart", async () => {
+    const isolatedHome = mkdtempSync(join(tmpdir(), "omb-question-restart-"));
+    const isolatedData = join(isolatedHome, ".openmausbot");
+    const isolatedStatic = join(isolatedHome, "static");
+    const isolatedDump = join(isolatedHome, "fake-claude-dump.json");
+    const isolatedFinishGate = join(isolatedHome, "fake-claude-finish-gate");
+    const isolatedPort = await freePortBlock([0, 1]);
+    mkdirSync(join(isolatedStatic, "assets"), { recursive: true });
+    mkdirSync(isolatedData, { recursive: true });
+    writeFileSync(join(isolatedStatic, "index.html"), "<!doctype html><title>Question restart test</title>");
+    writeFileSync(join(isolatedStatic, "assets", "smoke.css"), "body{}");
+    writeFileSync(join(isolatedData, "config.json"), JSON.stringify({
+      instances: {
+        claude: { driver: "claudeAgent", displayName: "Fixture Claude", config: { cli: FAKE_CLAUDE_CLI } },
+      },
+    }));
+
+    let activeServer: { child: ChildProcess; stderr: () => string } | undefined;
+    const startServer = () => {
+      let capturedStderr = "";
+      const serverChild = spawn(process.execPath, [join(SERVER_DIR, "index.ts")], {
+        cwd: ROOT,
+        env: {
+          ...(process.env.PATH ? { PATH: process.env.PATH } : {}),
+          ...(process.env.PATHEXT ? { PATHEXT: process.env.PATHEXT } : {}),
+          ...(process.env.SystemRoot ? { SystemRoot: process.env.SystemRoot } : {}),
+          HOME: isolatedHome,
+          USERPROFILE: isolatedHome,
+          OMB_PORT: String(isolatedPort),
+          OMB_WEBHOOK_PORT: String(isolatedPort + 1),
+          OMB_STATIC_DIR: isolatedStatic,
+          FAKE_CLAUDE_MODE: "hang",
+          FAKE_CLAUDE_DUMP: isolatedDump,
+          FAKE_CLAUDE_FINISH_GATE: isolatedFinishGate,
+        },
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+      serverChild.stderr!.on("data", (chunk) => (capturedStderr += chunk));
+      activeServer = { child: serverChild, stderr: () => capturedStderr };
+      return activeServer;
+    };
+    const isolatedApi = async (method: string, path: string, body?: unknown): Promise<{ status: number; body: any }> => {
+      const response = await fetch(`http://127.0.0.1:${isolatedPort}${path}`, {
+        method,
+        headers: body ? { "content-type": "application/json" } : undefined,
+        body: body ? JSON.stringify(body) : undefined,
+      });
+      return { status: response.status, body: await response.json() };
+    };
+    let questionSocket: Socket | undefined;
+    let providerReply: Record<string, unknown> | undefined;
+    let socketBuffer = "";
+    let requestId = "";
+    let cardId = "";
+
+    try {
+      let server = startServer();
+      await waitForIsolatedServer(server.child, isolatedPort, server.stderr);
+      const created = await isolatedApi("POST", "/api/bots", {
+        name: "Restart question holder",
+        modelSelection: { instanceId: "claude", model: "claude-sonnet-5" },
+        requireAvailableModel: true,
+      });
+      expect(created.status).toBe(201);
+      const bot = created.body.bot;
+      requestId = randomUUID();
+      expect((await isolatedApi("POST", `/api/bots/${bot.id}/messages`, {
+        text: "Ask me one question, then finish without waiting for my answer.",
+      })).status).toBe(202);
+      await expect.poll(async () => (await isolatedApi("GET", "/api/bots?messages=40")).body.bots
+        .find((candidate: { id: string }) => candidate.id === bot.id)?.busy, { timeout: 5_000 }).toBe(true);
+
+      const dump = z.object({
+        mcpConfig: z.object({ mcpServers: z.object({ ogb: z.object({ args: z.array(z.string()) }) }) }),
+      }).parse(await readJsonFileWhenReady(isolatedDump));
+      questionSocket = connect(dump.mcpConfig.mcpServers.ogb.args[1]!);
+      questionSocket.on("data", (chunk) => {
+        socketBuffer += chunk.toString();
+        const newline = socketBuffer.indexOf("\n");
+        if (newline === -1) return;
+        try { providerReply = JSON.parse(socketBuffer.slice(0, newline)) as Record<string, unknown>; } catch {}
+      });
+      await new Promise<void>((resolve, reject) => {
+        questionSocket!.once("connect", resolve);
+        questionSocket!.once("error", reject);
+      });
+      questionSocket.write(JSON.stringify({
+        t: "ask",
+        kind: "question",
+        id: requestId,
+        tool: "AskUserQuestion",
+        input: { questions: [{ question: "Which file should I update?", options: [{ label: "README" }, { label: "Guide" }] }] },
+      }) + "\n");
+      await expect.poll(async () => {
+        const messages = (await isolatedApi("GET", `/api/threads/${bot.threadId}/messages`)).body.messages;
+        const message = messages.find((candidate: { card?: { requestId?: string } }) => candidate.card?.requestId === requestId);
+        if (message) cardId = message.id;
+        return Boolean(message);
+      }, { timeout: 5_000 }).toBe(true);
+      const opened = (await isolatedApi("GET", `/api/threads/${bot.threadId}/messages`)).body.messages
+        .find((message: { id: string }) => message.id === cardId);
+      expect(opened.card).toMatchObject({ requestType: "question", requestId });
+      expect(opened.card.answered).toBeUndefined();
+
+      writeFileSync(isolatedFinishGate, "finish");
+      await expect.poll(async () => (await isolatedApi("GET", "/api/bots?messages=0")).body.bots
+        .find((candidate: { id: string }) => candidate.id === bot.id)?.busy, { timeout: 5_000 }).toBe(false);
+      await expect.poll(() => providerReply, { timeout: 5_000 }).toMatchObject({ behavior: "answer" });
+      expect(providerReply?.message).toContain("turn is ending");
+      const settled = (await isolatedApi("GET", `/api/threads/${bot.threadId}/messages`)).body.messages
+        .find((message: { id: string }) => message.id === cardId)?.card;
+      expect(settled).toMatchObject({ requestType: "question", requestId });
+      expect(settled.answered).toBeUndefined();
+      expect(settled.dismissed).toBeUndefined();
+
+      await waitForExit(server.child, { signal: "SIGTERM" });
+      expectStoppedTestServerCleanly(server.child, server.stderr());
+      activeServer = undefined;
+      questionSocket.destroy();
+      questionSocket = undefined;
+
+      server = startServer();
+      await waitForIsolatedServer(server.child, isolatedPort, server.stderr);
+      const restored = (await isolatedApi("GET", `/api/threads/${bot.threadId}/messages`)).body.messages
+        .find((message: { id: string }) => message.id === cardId)?.card;
+      expect(restored).toMatchObject({ requestType: "question", requestId });
+      expect(restored.answered).toBeUndefined();
+      expect(restored.dismissed).toBeUndefined();
+
+      const completionsBeforeSubsequentTurn = (await isolatedApi("GET", `/api/threads/${bot.threadId}/messages`)).body.messages
+        .filter((message: { role?: string; kind?: string; text?: string }) =>
+          message.role === "bot" && message.kind === "text" && message.text === "fixture turn completed").length;
+      rmSync(isolatedFinishGate, { force: true });
+      const laterText = "A later turn while the earlier question is still unanswered.";
+      const laterSent = await isolatedApi("POST", `/api/bots/${bot.id}/messages`, { text: laterText });
+      expect(laterSent.status).toBe(202);
+      await expect.poll(async () => (await isolatedApi("GET", "/api/bots?messages=0")).body.bots
+        .find((candidate: { id: string }) => candidate.id === bot.id)?.busy, { timeout: 5_000 }).toBe(true);
+      writeFileSync(isolatedFinishGate, "finish");
+      await expect.poll(async () => (await isolatedApi("GET", "/api/bots?messages=0")).body.bots
+        .find((candidate: { id: string }) => candidate.id === bot.id)?.busy, { timeout: 5_000 }).toBe(false);
+      const afterSubsequentTurn = (await isolatedApi("GET", `/api/threads/${bot.threadId}/messages`)).body.messages;
+      const laterUserMessage = afterSubsequentTurn.find((message: { id: string }) => message.id === laterSent.body.message.id);
+      expect(laterUserMessage).toMatchObject({ role: "user", text: laterText });
+      expect(afterSubsequentTurn).toContainEqual(expect.objectContaining({
+        role: "bot",
+        kind: "text",
+        text: "fixture turn completed",
+        parentId: laterUserMessage.id,
+      }));
+      await expect.poll(async () => (await isolatedApi("GET", `/api/threads/${bot.threadId}/messages`)).body.messages
+        .filter((message: { role?: string; kind?: string; text?: string }) =>
+          message.role === "bot" && message.kind === "text" && message.text === "fixture turn completed").length,
+      { timeout: 5_000 }).toBe(completionsBeforeSubsequentTurn + 1);
+      const afterSubsequentQuestion = afterSubsequentTurn
+        .find((message: { id: string }) => message.id === cardId)?.card;
+      expect(afterSubsequentQuestion).toMatchObject({ requestType: "question", requestId });
+      expect(afterSubsequentQuestion.answered).toBeUndefined();
+      expect(afterSubsequentQuestion.dismissed).toBeUndefined();
+
+      const refusedDismiss = await isolatedApi("POST", `/api/bots/${bot.id}/respond`, {
+        requestId,
+        behavior: "answer",
+        dismiss: true,
+      });
+      expect(refusedDismiss).toMatchObject({
+        status: 409,
+        body: { error: "answer this question before dismissing it" },
+      });
+      const afterRefusedDismiss = (await isolatedApi("GET", `/api/threads/${bot.threadId}/messages`)).body.messages
+        .find((message: { id: string }) => message.id === cardId)?.card;
+      expect(afterRefusedDismiss).toMatchObject({ requestType: "question", requestId });
+      expect(afterRefusedDismiss.answered).toBeUndefined();
+      expect(afterRefusedDismiss.dismissed).toBeUndefined();
+
+      const completionsBeforeAnswer = (await isolatedApi("GET", `/api/threads/${bot.threadId}/messages`)).body.messages
+        .filter((message: { role?: string; kind?: string; text?: string }) =>
+          message.role === "bot" && message.kind === "text" && message.text === "fixture turn completed").length;
+      rmSync(isolatedFinishGate, { force: true });
+      const lateAnswer = await isolatedApi("POST", `/api/bots/${bot.id}/respond`, {
+        requestId,
+        behavior: "answer",
+        message: "README",
+      });
+      expect(lateAnswer).toMatchObject({
+        status: 200,
+        body: { ok: true, outcome: "answered", late: true },
+      });
+      expect(lateAnswer.body.queued).toBeUndefined();
+      await expect.poll(async () => (await isolatedApi("GET", "/api/bots?messages=0")).body.bots
+        .find((candidate: { id: string }) => candidate.id === bot.id)?.busy, { timeout: 5_000 }).toBe(true);
+      await expect.poll(async () => {
+        const messages = (await isolatedApi("GET", `/api/threads/${bot.threadId}/messages`)).body.messages;
+        const question = messages.find((message: { id: string }) => message.id === cardId)?.card;
+        const answerMessage = messages.find((message: { role?: string; text?: string; replyToId?: string }) =>
+          message.role === "user" && message.text === "README" && message.replyToId === cardId);
+        return { question: question && { answered: question.answered, answeredText: question.answeredText, dismissed: question.dismissed }, hasReply: Boolean(answerMessage) };
+      }, { timeout: 5_000 }).toEqual({
+        question: { answered: "answer", answeredText: "README", dismissed: false },
+        hasReply: true,
+      });
+
+      writeFileSync(isolatedFinishGate, "finish");
+      await expect.poll(async () => (await isolatedApi("GET", "/api/bots?messages=0")).body.bots
+        .find((candidate: { id: string }) => candidate.id === bot.id)?.busy, { timeout: 5_000 }).toBe(false);
+      await expect.poll(async () => (await isolatedApi("GET", `/api/threads/${bot.threadId}/messages`)).body.messages
+        .filter((message: { role?: string; kind?: string; text?: string }) =>
+          message.role === "bot" && message.kind === "text" && message.text === "fixture turn completed").length,
+      { timeout: 5_000 }).toBe(completionsBeforeAnswer + 1);
+      const afterAnsweredTurn = (await isolatedApi("GET", `/api/threads/${bot.threadId}/messages`)).body.messages
+        .find((message: { id: string }) => message.id === cardId)?.card;
+      expect(afterAnsweredTurn).toMatchObject({ answered: "answer", answeredText: "README", dismissed: false });
+    } finally {
+      writeFileSync(isolatedFinishGate, "finish");
+      questionSocket?.destroy();
+      try {
+        if (activeServer) {
+          await waitForExit(activeServer.child, { signal: "SIGTERM" });
+          expectStoppedTestServerCleanly(activeServer.child, activeServer.stderr());
+        }
+      } finally {
+        await removeTempDir(isolatedHome);
+      }
+    }
+  }, 30_000);
+
   it("reconciles durable working goal cards with scheduler truth after a restart", async () => {
     const state = await api("GET", "/api/bots?messages=30");
     const room = state.body.groups.find(
@@ -908,6 +1520,70 @@ describe("harness HTTP API", () => {
     });
   });
 
+  it("attributes a paired person's message to them, and leaves the owner's own sends unstamped", async () => {
+    // The server authenticates per person but used to label every user turn
+    // with the one Settings profile name, so on a shared or paired workspace
+    // every human collapsed into whoever that named: bots addressed the wrong
+    // person, and relayed their questions under someone else's name.
+    const created = await api("POST", "/api/bots", {
+      name: "Attribution",
+      modelSelection: { instanceId: "claude", model: "claude-sonnet-5" },
+      requireAvailableModel: true,
+    });
+    expect(created.status).toBe(201);
+    const bot = created.body.bot;
+    const person = await asPairedPerson("Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) Safari/605.1");
+    expect(person.label).toBe("Safari on Mac");
+    const cleanup: string[] = [bot.id];
+    try {
+
+    const theirs = await person.call("POST", `/api/bots/${bot.id}/messages`, { text: "from the paired person" });
+    expect(theirs.status).toBe(202);
+    expect(theirs.body.message).toMatchObject({ role: "user", sender: { name: "Safari on Mac" } });
+
+    // Steering into that still-running turn is the same person, still named.
+    const steered = await person.call("POST", `/api/bots/${bot.id}/messages`, { text: "and one more" });
+    expect(steered.status).toBe(202);
+    expect(steered.body.message).toMatchObject({ steered: true, sender: { name: "Safari on Mac" } });
+
+    // Loopback is the desktop owner by design: unstamped, so it still reads
+    // as the profile name everywhere and nothing changes for one person. Use
+    // a second bot so this send cannot be folded into the turn above — an
+    // owner message that merely got steered would pass whatever we assert.
+    const second = await api("POST", "/api/bots", {
+      name: "Attribution owner",
+      modelSelection: { instanceId: "claude", model: "claude-sonnet-5" },
+      requireAvailableModel: true,
+    });
+    expect(second.status).toBe(201);
+    cleanup.push(second.body.bot.id);
+    const mine = await api("POST", `/api/bots/${second.body.bot.id}/messages`, { text: "from the owner" });
+    expect(mine.status).toBe(202);
+    expect(mine.body.message.role).toBe("user");
+    expect(mine.body.message.steered).toBeUndefined();
+    expect(mine.body.message.sender).toBeUndefined();
+
+    const bots = (await api("GET", "/api/bots?messages=30")).body.bots;
+    const theirMessages = bots.find((b: any) => b.id === bot.id)?.messages ?? [];
+    const myMessages = bots.find((b: any) => b.id === second.body.bot.id)?.messages ?? [];
+    // The opaque person key is the same for both lines: one session, one person.
+    const personKey = theirMessages.find((m: any) => m.text === "from the paired person")?.sender?.id;
+    expect(personKey).toMatch(/^p_[\w-]{22}$/);
+    expect(theirMessages.find((m: any) => m.text === "from the paired person")?.sender).toEqual({ name: "Safari on Mac", id: personKey });
+    expect(theirMessages.find((m: any) => m.text === "and one more")?.sender).toEqual({ name: "Safari on Mac", id: personKey });
+    expect(myMessages.find((m: any) => m.text === "from the owner")?.sender).toBeUndefined();
+    } finally {
+      // Stop the fixture turns and take the bots and the paired session back
+      // out: this suite shares one isolated server, so anything left running
+      // here shows up as somebody else's failure much later.
+      for (const id of cleanup) {
+        await api("POST", `/api/bots/${id}/interrupt`).catch(() => undefined);
+        await api("DELETE", `/api/bots/${id}`).catch(() => undefined);
+      }
+      await person.call("DELETE", "/api/auth/session").catch(() => undefined);
+    }
+  });
+
   it("rejects non-loopback authorities while accepting IPv4 and IPv6 loopback forms", async () => {
     expect(await statusWithHeaders({ host: "example.com" })).toBe(403);
     // The one exception: the reachability probe answers strangers with the app name and nothing else
@@ -924,10 +1600,30 @@ describe("harness HTTP API", () => {
     });
     expect(probe.status).toBe(200);
     expect(probe.body).toEqual({ app: "openmausbot" });
+    // the brand is public too: the sign-in page is branded before anyone has a session
+    const brand = await new Promise<{ status: number; body: unknown }>((resolve, reject) => {
+      const req = request({ hostname: "127.0.0.1", port: PORT, path: "/api/brand", headers: { host: "example.com" } }, (res) => {
+        let raw = "";
+        res.on("data", (chunk) => (raw += chunk));
+        res.on("end", () => resolve({ status: res.statusCode ?? 0, body: JSON.parse(raw) }));
+      });
+      req.on("error", reject);
+      req.end();
+    });
+    expect(brand.status).toBe(200);
+    expect(Reflect.get(Object(Reflect.get(Object(brand.body), "brand")), "name")).toBe("OpenMausBot");
     expect(await statusWithHeaders({ origin: "https://example.com" })).toBe(403);
     expect(await statusWithHeaders({ host: `127.0.0.2:${PORT}` })).toBe(200);
     expect(await statusWithHeaders({ host: `[::1]:${PORT}` })).toBe(200);
     expect(await statusWithHeaders({ origin: `http://[::1]:${PORT}` })).toBe(200);
+  });
+
+  it("keeps the fleet screen behind the admin entitlement on the open-source edition", async () => {
+    const fleet = await api("GET", "/api/fleet");
+    expect(fleet.status).toBe(403);
+    expect(fleet.body.error).toContain("enterprise");
+    expect((await api("POST", "/api/fleet/workspaces", { slug: "acme", admins: ["a@b.test"] })).status).toBe(403);
+    expect((await api("DELETE", "/api/fleet/workspaces/acme")).status).toBe(403);
   });
 
   it("identifies itself on /api/health", async () => {
@@ -1100,6 +1796,13 @@ describe("harness HTTP API", () => {
     expect(created.status).toBe(201);
     const routineId = created.body.routine.id;
     try {
+      expect((await api("PATCH", `/api/bots/${other.id}`, { chiefOfStaff: true })).status).toBe(200);
+      const chiefToken = await mintTestCapability(BASE, other.id, other.threadId);
+      const internalBlocked = await chiefRoomRequest(BASE, chiefToken, "manage-room", {
+        roomId: room.id, action: "remove_members", memberIds: [lead.id],
+      });
+      expect(internalBlocked.status).toBe(409);
+      expect(internalBlocked.body.error).toMatch(/pause or reassign.*team-goal routine/i);
       const blocked = await api("PATCH", `/api/groups/${room.id}`, { memberIds: [other.id] });
       expect(blocked.status).toBe(409);
       expect(blocked.body.error).toMatch(/pause or reassign.*team-goal routine/i);
@@ -1294,8 +1997,11 @@ describe("harness HTTP API", () => {
       const afterDirect = (await api("GET", "/api/bots?messages=20")).body.bots.find(
         (candidate: { id: string }) => candidate.id === bot.id,
       );
+      // Admission returns the append receipt; the hanging fake turn adds its
+      // durable pending marker to that same stored message before this read.
+      expect(direct.body.message).not.toHaveProperty("requestPending");
       expect(afterDirect.messages.find((message: { id: string }) => message.id === direct.body.message.id))
-        .toEqual(direct.body.message);
+        .toEqual({ ...direct.body.message, requestPending: true });
 
       expect((await api("POST", `/api/bots/${bot.id}/interrupt`)).status).toBe(200);
       await expect.poll(async () => {
@@ -1354,7 +2060,9 @@ describe("harness HTTP API", () => {
 
       const duplicate = await api("POST", `/api/bots/${bot.id}/messages`, request);
       expect(duplicate.status).toBe(202);
-      expect(duplicate.body).toEqual(first.body);
+      expect(first.body.message).not.toHaveProperty("requestPending");
+      const pendingReceipt = { ...first.body, message: { ...first.body.message, requestPending: true } };
+      expect(duplicate.body).toEqual(pendingReceipt);
 
       const conflict = await api("POST", `/api/bots/${bot.id}/messages`, {
         ...request,
@@ -1393,7 +2101,11 @@ describe("harness HTTP API", () => {
 
       const inactiveRetry = await api("POST", `/api/bots/${bot.id}/messages`, request);
       expect(inactiveRetry.status).toBe(202);
-      expect(inactiveRetry.body).toEqual(first.body);
+      // A retry returns the existing message with its current lifecycle
+      // metadata; it neither starts another turn nor forgets the earlier Stop.
+      expect(inactiveRetry.body).toEqual({
+        ...pendingReceipt, message: { ...pendingReceipt.message, requestCancelled: true },
+      });
       const current = (await api("GET", "/api/bots?messages=0")).body.bots.find(
         (candidate: { id: string }) => candidate.id === bot.id,
       );
@@ -1401,6 +2113,150 @@ describe("harness HTTP API", () => {
     } finally {
       await api("POST", `/api/bots/${bot.id}/interrupt`, {}).catch(() => undefined);
       await api("DELETE", `/api/bots/${bot.id}`);
+    }
+  });
+
+  it("replaces a first-message snippet title with a generated one once the one-shot answers", async () => {
+    writeFileSync(oneShotTextFile, "Fix login timeout\n");
+    const created = await api("POST", "/api/bots", {
+      modelSelection: { instanceId: "claude", model: "claude-sonnet-5" },
+      requireAvailableModel: true,
+    });
+    expect(created.status).toBe(201);
+    const bot = created.body.bot;
+    try {
+      const sent = await api("POST", `/api/bots/${bot.id}/messages`, {
+        text: "every login hangs after the session expires",
+      });
+      expect(sent.status).toBe(202);
+      // the snippet (the first message itself, under 48 chars) names the
+      // row immediately; the generated title replaces it when it answers
+      await expect.poll(async () => {
+        const state = (await api("GET", "/api/bots?messages=0")).body.bots.find(
+          (candidate: { id: string }) => candidate.id === bot.id,
+        );
+        return state?.tasks?.find((task: { threadId: string }) => task.threadId === sent.body.threadId)?.title;
+      }, { timeout: 5_000 }).toBe("Fix login timeout");
+    } finally {
+      await api("POST", `/api/bots/${bot.id}/interrupt`).catch(() => undefined);
+      await api("DELETE", `/api/bots/${bot.id}`);
+      rmSync(oneShotTextFile, { force: true });
+    }
+  });
+
+  it("keeps the snippet title when the one-shot fails", async () => {
+    rmSync(oneShotTextFile, { force: true });
+    const created = await api("POST", "/api/bots", {
+      modelSelection: { instanceId: "claude", model: "claude-sonnet-5" },
+      requireAvailableModel: true,
+    });
+    expect(created.status).toBe(201);
+    const bot = created.body.bot;
+    try {
+      const firstMessage = "summarize the deploy notes";
+      rmSync(oneShotTextDump, { force: true });
+      const sent = await api("POST", `/api/bots/${bot.id}/messages`, { text: firstMessage });
+      expect(sent.status).toBe(202);
+      // the one-shot ran (its dump lands before the fake exits) and failed:
+      // its reply file is missing, exactly a CLI that cannot run
+      await expect.poll(() => existsSync(oneShotTextDump), { timeout: 5_000 }).toBe(true);
+      const seen = JSON.parse(readFileSync(oneShotTextDump, "utf8"));
+      const outputAt = seen.argv.indexOf("--output-format");
+      expect(outputAt).toBeGreaterThan(-1);
+      expect(seen.argv[outputAt + 1]).toBe("text");
+      expect(seen.prompt).toContain("Name the conversation");
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      const state = (await api("GET", "/api/bots?messages=0")).body.bots.find(
+        (candidate: { id: string }) => candidate.id === bot.id,
+      );
+      expect(state.tasks.find((task: { threadId: string }) => task.threadId === sent.body.threadId).title)
+        .toBe(firstMessage);
+    } finally {
+      await api("POST", `/api/bots/${bot.id}/interrupt`).catch(() => undefined);
+      await api("DELETE", `/api/bots/${bot.id}`);
+    }
+  });
+
+  it("replaces a channel task's first-message snippet with a generated title", async () => {
+    writeFileSync(oneShotTextFile, "Fix login timeout\n");
+    const created = await api("POST", "/api/bots", {
+      modelSelection: { instanceId: "claude", model: "claude-sonnet-5" },
+      requireAvailableModel: true,
+    });
+    expect(created.status).toBe(201);
+    const member = created.body.bot;
+    const room = (await api("POST", "/api/groups", {
+      name: "Titled channel",
+      memberIds: [member.id],
+      setup: { bulletin: "", defaultResponder: { kind: "member", botId: member.id } },
+    })).body.group;
+    try {
+      const sent = await api("POST", `/api/groups/${room.id}/messages`, {
+        text: "every login hangs after the session expires",
+      });
+      expect(sent.status).toBe(202);
+      // the snippet names the channel task immediately; the generated
+      // title replaces it when the member's one-shot answers
+      await expect.poll(async () => {
+        const state = (await api("GET", "/api/bots?messages=0")).body.groups.find(
+          (candidate: { id: string }) => candidate.id === room.id,
+        );
+        return state?.tasks?.find((task: { threadId: string }) => task.threadId === room.threadId)?.title;
+      }, { timeout: 5_000 }).toBe("Fix login timeout");
+    } finally {
+      await api("POST", `/api/groups/${room.id}/interrupt`, {}).catch(() => undefined);
+      await api("DELETE", `/api/groups/${room.id}`);
+      await api("DELETE", `/api/bots/${member.id}`);
+      rmSync(oneShotTextFile, { force: true });
+    }
+  });
+
+  it("keeps a channel task's snippet title when the one-shot fails", async () => {
+    rmSync(oneShotTextFile, { force: true });
+    const created = await api("POST", "/api/bots", {
+      modelSelection: { instanceId: "claude", model: "claude-sonnet-5" },
+      requireAvailableModel: true,
+    });
+    expect(created.status).toBe(201);
+    const member = created.body.bot;
+    const room = (await api("POST", "/api/groups", {
+      name: "Failing one-shot channel",
+      memberIds: [member.id],
+      setup: { bulletin: "", defaultResponder: { kind: "member", botId: member.id } },
+    })).body.group;
+    try {
+      const firstMessage = "summarize the deploy notes";
+      const png = Buffer.from(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==",
+        "base64",
+      );
+      const uploaded = await fetch(`${BASE}/api/attachments`, {
+        method: "POST",
+        headers: { "content-type": "image/png" },
+        body: new Uint8Array(png),
+      });
+      expect(uploaded.status).toBe(201);
+      const { path: imagePath } = await uploaded.json() as { path: string };
+      const text = `${firstMessage}\n\n<attached-image path="${imagePath}" name="tiny.png" />`;
+      rmSync(oneShotTextDump, { force: true });
+      const sent = await api("POST", `/api/groups/${room.id}/messages`, { text });
+      expect(sent.status).toBe(202);
+      // the member's one-shot ran and failed; the snippet stays
+      await expect.poll(() => existsSync(oneShotTextDump), { timeout: 5_000 }).toBe(true);
+      const seen = JSON.parse(readFileSync(oneShotTextDump, "utf8"));
+      // the title prompt carries the message, never the attachment tag
+      expect(seen.prompt).toContain(firstMessage);
+      expect(seen.prompt).not.toContain("attached-image");
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      const state = (await api("GET", "/api/bots?messages=0")).body.groups.find(
+        (candidate: { id: string }) => candidate.id === room.id,
+      );
+      expect(state.tasks.find((task: { threadId: string }) => task.threadId === room.threadId).title)
+        .toBe(firstMessage);
+    } finally {
+      await api("POST", `/api/groups/${room.id}/interrupt`, {}).catch(() => undefined);
+      await api("DELETE", `/api/groups/${room.id}`);
+      await api("DELETE", `/api/bots/${member.id}`);
     }
   });
 
@@ -1589,6 +2445,7 @@ describe("harness HTTP API", () => {
       });
       const state = (await api("GET", "/api/bots?messages=0")).body;
       expect(state.bots.some((bot: { name: string }) => bot.name === "Forbidden Operator")).toBe(false);
+
     } finally {
       await api("POST", `/api/bots/${chief.id}/interrupt`);
       if (outsiderChannel?.id) await api("DELETE", `/api/groups/${outsiderChannel.id}`);
@@ -1596,6 +2453,134 @@ describe("harness HTTP API", () => {
       for (const botId of createdBotIds) await api("DELETE", `/api/bots/${botId}`);
       await api("DELETE", `/api/bots/${outsider.id}`);
       await api("DELETE", `/api/bots/${chief.id}`);
+    }
+  });
+
+  it("scopes Chief room management to its section, allowed peers and explicit room fields", async () => {
+    const section = `Chief rooms ${Date.now()}`;
+    const bots = await Promise.all(["Chief", "Peer", "Second", "Excluded", "Foreign"].map(async (name, index) => {
+      const created = await api("POST", "/api/bots", { name, section: index === 4 ? `${section} foreign` : section });
+      expect(created.status).toBe(201);
+      return created.body.bot as { id: string; threadId: string };
+    }));
+    const [chief, peer, second, excluded, foreign] = bots;
+    const roomIds: string[] = [];
+    try {
+      expect((await api("PATCH", `/api/bots/${chief.id}`, { chiefOfStaff: true, peers: [peer.id, second.id] })).status).toBe(200);
+      const token = await mintTestCapability(BASE, chief.id, chief.threadId);
+      const create = (body: unknown) => chiefRoomRequest(BASE, token, "create-room", body);
+      const managed = await create({ name: "Managed room", memberIds: [peer.id, peer.id], bulletin: "A short brief." });
+      expect(managed.status).toBe(201);
+      const roomId = String(managed.body.id);
+      roomIds.push(roomId);
+      expect(managed.body).toMatchObject({ name: "Managed room", section, memberIds: [chief.id, peer.id], memberCount: 2 });
+      const manage = (body: Record<string, unknown>) => chiefRoomRequest(BASE, token, "manage-room", { roomId, ...body });
+      expect((await manage({ action: "rename", name: "Renamed room" })).status).toBe(200);
+      expect((await manage({ action: "add_members", memberIds: [second.id] })).body.memberIds).toEqual([chief.id, peer.id, second.id]);
+      expect((await manage({ action: "remove_members", memberIds: [peer.id] })).body.memberIds).toEqual([chief.id, second.id]);
+      expect((await manage({ action: "set_members", memberIds: [chief.id, peer.id] })).body.memberIds).toEqual([chief.id, peer.id]);
+      expect((await manage({ action: "set_bulletin", bulletin: "Updated brief ✓" })).status).toBe(200);
+      const readRoom = async () => (await api("GET", "/api/bots?messages=20")).body.groups.find((group: { id: string }) => group.id === roomId);
+      expect(await readRoom()).toMatchObject({ name: "Renamed room", bulletin: "Updated brief ✓", section, memberIds: [chief.id, peer.id], defaultResponder: { kind: "member", botId: chief.id }, messages: [] });
+      for (const memberId of [foreign.id, excluded.id, "missing-bot"]) {
+        expect((await create({ name: "Forbidden room", memberIds: [memberId] })).status).toBe(403);
+        expect((await manage({ action: "add_members", memberIds: [memberId] })).status).toBe(403);
+      }
+      expect((await create({ name: "Foreign section", memberIds: [peer.id], section: `${section} foreign` })).status).toBe(403);
+      expect((await manage({ action: "set_section", section: `${section} foreign` })).status).toBe(403);
+      expect((await manage({ action: "set_section" })).status).toBe(400);
+      expect((await manage({ action: "remove_members", memberIds: [chief.id] })).status).toBe(403);
+      for (const body of [null, [], { name: "Bad roster", memberIds: [] }, { name: "Bad roster", memberIds: [42] }, { name: "Wide brief", memberIds: [peer.id], bulletin: "x".repeat(12_001) }]) {
+        expect((await create(body)).status).toBe(400);
+      }
+      for (const body of [{ action: "set_members", memberIds: [] }, { action: "set_bulletin" }, { action: "set_bulletin", bulletin: "x".repeat(12_001) }, { action: "rename", name: "changed", cwd: "/tmp" }]) {
+        expect((await manage(body)).status).toBe(400);
+      }
+      for (const [memberIds, roomSection] of [[[foreign.id], `${section} foreign`], [[chief.id, foreign.id], section], [[peer.id], section]] as const) {
+        const otherRoom = (await api("POST", "/api/groups", { name: "Unmanaged room", memberIds, section: roomSection })).body.group;
+        roomIds.push(otherRoom.id);
+        expect((await manage({ roomId: otherRoom.id, action: "rename", name: "Forbidden" })).status).toBe(403);
+      }
+      expect(await readRoom()).toMatchObject({ name: "Renamed room", bulletin: "Updated brief ✓", memberIds: [chief.id, peer.id] });
+      expect((await api("PATCH", `/api/bots/${second.id}`, { hidden: true })).status).toBe(200);
+      expect((await create({ name: "Archived member", memberIds: [second.id] })).status).toBe(403);
+      expect((await manage({ action: "add_members", memberIds: [second.id] })).status).toBe(403);
+      expect((await api("PATCH", `/api/bots/${chief.id}`, { approvePeerComms: true })).status).toBe(200);
+      expect((await manage({ action: "rename", name: "No review" })).body.error).toMatch(/peer approval is required/);
+      expect((await create({ name: "No review", memberIds: [peer.id] })).status).toBe(403);
+      expect((await api("PATCH", `/api/bots/${chief.id}`, { approvePeerComms: false })).status).toBe(200);
+      for (let count = 1; count < 4; count += 1) {
+        const created = await create({ name: `Bounded room ${count}`, memberIds: [peer.id] });
+        expect(created.status).toBe(201);
+        roomIds.push(String(created.body.id));
+      }
+      expect((await create({ name: "Fifth room", memberIds: [peer.id] })).status).toBe(429);
+      expect((await api("GET", "/api/bots?messages=0")).body.bots.find((bot: { id: string }) => bot.id === foreign.id).section).toBe(`${section} foreign`);
+      expect((await api("PATCH", `/api/bots/${chief.id}`, { modelSelection: { instanceId: "claude", model: "claude-sonnet-5" } })).status).toBe(200);
+      const busyToken = await mintTestCapability(BASE, chief.id, chief.threadId);
+      expect((await api("POST", `/api/groups/${roomId}/messages`, { text: "Hold this room turn" })).status).toBe(202);
+      await expect.poll(async () => (await readRoom()).working).toBe(true);
+      for (const mutation of [{ action: "set_members", memberIds: [chief.id] }, { action: "set_bulletin", bulletin: "Changed mid-turn" }]) {
+        const blocked = await chiefRoomRequest(BASE, busyToken, "manage-room", { roomId, ...mutation });
+        expect(blocked.status).toBe(409);
+        expect(blocked.body.error).toMatch(/working or waiting/);
+      }
+      expect(await readRoom()).toMatchObject({ bulletin: "Updated brief ✓", memberIds: [chief.id, peer.id] });
+    } finally {
+      for (const id of roomIds) {
+        expect((await api("POST", `/api/groups/${id}/interrupt`, {})).status).toBe(200);
+        // Interruption is asynchronous; deletion while the turn is retiring
+        // returns 409 and would leak the room and its Chief into later tests.
+        await expect.poll(async () =>
+          (await api("GET", "/api/bots?messages=0")).body.groups.find((group: { id: string }) => group.id === id)?.working === true,
+        { timeout: 15_000 }).toBe(false);
+        expect((await api("DELETE", `/api/groups/${id}`)).status).toBe(200);
+      }
+      for (const bot of bots) expect((await api("DELETE", `/api/bots/${bot.id}`)).status).toBe(200);
+    }
+  });
+
+  it("binds Chief room management to the bearer and rechecks it after a slow body", async () => {
+    const chief = (await api("POST", "/api/bots")).body.bot;
+    const peer = (await api("POST", "/api/bots")).body.bot;
+    const room = (await api("POST", "/api/groups", { name: "Guarded room", memberIds: [chief.id, peer.id] })).body.group;
+    let held: Awaited<ReturnType<typeof delayedJsonBody>> | undefined;
+    try {
+      await api("PATCH", `/api/bots/${chief.id}`, { chiefOfStaff: true });
+      const nonChiefToken = await mintTestCapability(BASE, peer.id, peer.threadId);
+      for (const route of ["create-room", "manage-room"] as const) {
+        const body = route === "create-room" ? { name: "Must not exist", memberIds: [peer.id] }
+          : { roomId: room.id, action: "rename", name: "Must not change" };
+        expect((await chiefRoomRequest(BASE, "", route, body)).status).toBe(401);
+        expect((await chiefRoomRequest(BASE, nonChiefToken, route, body)).status).toBe(403);
+        const forged = await chiefRoomRequest(BASE, nonChiefToken, route, { ...body, fromBotId: chief.id, fromThreadId: chief.threadId });
+        expect(forged.status).toBe(403);
+        expect(forged.body.error).toMatch(/different bot/);
+        let token = await mintTestCapability(BASE, chief.id, chief.threadId);
+        expect((await chiefRoomRequest(BASE, token, route, { ...body, fromThreadId: peer.threadId })).status).toBe(403);
+        held = await delayedJsonBody("POST", `/api/internal/${route}`, body, { authorization: `Bearer ${token}` });
+        await mintTestCapability(BASE, chief.id, chief.threadId);
+        const expired = await held.finish();
+        expect(expired.status).toBe(401);
+        expect(expired.body.error).toMatch(/expired/);
+        held.close();
+        held = undefined;
+        token = await mintTestCapability(BASE, chief.id, chief.threadId, { kind: "connectors" });
+        expect((await chiefRoomRequest(BASE, token, route, body)).status).toBe(403);
+      }
+      const token = await mintTestCapability(BASE, chief.id, chief.threadId);
+      held = await delayedJsonBody("POST", "/api/internal/manage-room", { roomId: room.id, action: "rename", name: "Demoted" }, { authorization: `Bearer ${token}` });
+      await api("PATCH", `/api/bots/${chief.id}`, { chiefOfStaff: false });
+      expect((await held.finish()).status).toBe(403);
+      const groups = (await api("GET", "/api/bots?messages=0")).body.groups;
+      expect(groups.find((group: { id: string }) => group.id === room.id).name).toBe("Guarded room");
+      expect(groups.some((group: { name: string }) => group.name === "Must not exist")).toBe(false);
+      expect((await fetch(`${BASE}/api/internal/move-bot`, { method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": "application/json" }, body: JSON.stringify({ targetBotId: peer.id, section: "Elsewhere" }) })).status).toBe(404);
+    } finally {
+      held?.close();
+      await api("DELETE", `/api/groups/${room.id}`);
+      await api("DELETE", `/api/bots/${chief.id}`);
+      await api("DELETE", `/api/bots/${peer.id}`);
     }
   });
 
@@ -1641,6 +2626,37 @@ describe("harness HTTP API", () => {
     }
   });
 
+  it("lands a created operator in a requested working folder or refuses it with the profile copy", async () => {
+    const chief = (await api("POST", "/api/bots")).body.bot;
+    let createdId: string | undefined;
+    try {
+      expect((await api("PATCH", `/api/bots/${chief.id}`, { chiefOfStaff: true })).status).toBe(200);
+      const token = await mintTestCapability(BASE, chief.id, chief.threadId);
+      const create = async (name: string, cwd: unknown) => {
+        const response = await fetch(`${BASE}/api/internal/create-bot`, {
+          method: "POST",
+          headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+          body: JSON.stringify({ fromBotId: chief.id, fromThreadId: chief.threadId, name, role: "Ops", instructions: "Work.", cwd }),
+        });
+        return { status: response.status, body: await response.json() as { id?: string; error?: string } };
+      };
+      const folder = mkdtempSync(join(tmpdir(), "omb-create-cwd-"));
+      const landed = await create(`Folder operator ${chief.id}`, folder);
+      expect(landed.status).toBe(201);
+      createdId = landed.body.id;
+      const state = (await api("GET", "/api/bots?messages=0")).body;
+      expect(state.bots.find((bot: { id?: string }) => bot.id === createdId)?.cwd).toBe(folder);
+      const relative = await create(`Relative operator ${chief.id}`, "relative/path");
+      expect(relative).toMatchObject({ status: 400, body: { error: "working folder must be an absolute path" } });
+      const missing = await create(`Missing operator ${chief.id}`, join(folder, "missing"));
+      expect(missing.status).toBe(400);
+      expect(missing.body.error).toBe(`that folder doesn't exist: ${join(folder, "missing")}`);
+    } finally {
+      if (createdId) await api("DELETE", `/api/bots/${createdId}`);
+      await api("DELETE", `/api/bots/${chief.id}`);
+    }
+  });
+
   it("rejects null and array task, channel, and bot mutation bodies", async () => {
     const bot = (await api("POST", "/api/bots")).body.bot;
     const room = (await api("POST", "/api/groups", { name: "Object bodies", memberIds: [bot.id] })).body.group;
@@ -1676,6 +2692,31 @@ describe("harness HTTP API", () => {
     const blocked = await api("POST", "/api/groups/test-stranded-room/tasks", {});
     expect(blocked.status).toBe(409);
     expect(blocked.body.error).toMatch(/waiting on you/i);
+  });
+
+  it("keeps Chief room changes behind pending user approvals", async () => {
+    const bot = (await api("POST", "/api/bots", { name: "Pending Chief", section: "Pending room" })).body.bot;
+    await api("PATCH", `/api/bots/${bot.id}`, { chiefOfStaff: true });
+    const room = (await api("POST", "/api/groups", { name: "Pending room", memberIds: [bot.id], section: "Pending room" })).body.group;
+    try {
+      const roomToken = await mintTestCapability(BASE, bot.id, room.threadId);
+      const proposed = await fetch(`${BASE}/api/internal/profile-requests`, {
+        method: "POST", headers: { authorization: `Bearer ${roomToken}`, "content-type": "application/json" },
+        body: JSON.stringify({ fromBotId: bot.id, fromThreadId: room.threadId, changes: { description: "Only after approval" }, reason: "Fixture check" }),
+      });
+      expect(proposed.status).toBe(201);
+      await proposed.json();
+      const token = await mintTestCapability(BASE, bot.id, bot.threadId);
+      const changed = await chiefRoomRequest(BASE, token, "manage-room", {
+        roomId: room.id, action: "set_bulletin", bulletin: "Changed during approval",
+      });
+      expect(changed.status).toBe(409);
+      expect(changed.body.error).toMatch(/waiting on you/);
+      expect((await chiefRoomRequest(BASE, token, "manage-room", { roomId: "test-dm", action: "rename", name: "A room" })).status).toBe(403);
+    } finally {
+      await api("DELETE", `/api/groups/${room.id}`);
+      await api("DELETE", `/api/bots/${bot.id}`);
+    }
   });
 
   it("keeps direct-message channels folderless at the API boundary", async () => {
@@ -1857,6 +2898,22 @@ describe("harness HTTP API", () => {
     const gated = await api("PATCH", `/api/bots/${bot.id}`, { composio: false });
     expect(gated.status).toBe(200);
 
+    // connector tool grants: valid shapes canonicalize and round-trip,
+    // malformed slugs/tools and extra grant fields are refused, and null
+    // returns the bot to boolean-only legacy behavior
+    const granted = await api("PATCH", `/api/bots/${bot.id}`, {
+      connectorTools: { gmail: { tools: ["GMAIL_SEND_EMAIL", "GMAIL_SEND_EMAIL"] }, github: { tools: "*" } },
+    });
+    expect(granted.status).toBe(200);
+    expect(granted.body.bot.connectorTools).toEqual({ gmail: { tools: ["GMAIL_SEND_EMAIL"] }, github: { tools: "*" } });
+    expect((await api("PATCH", `/api/bots/${bot.id}`, { connectorTools: { gmail: { tools: [] } } })).status).toBe(400);
+    expect((await api("PATCH", `/api/bots/${bot.id}`, { connectorTools: { Gmail: { tools: "*" } } })).status).toBe(400);
+    expect((await api("PATCH", `/api/bots/${bot.id}`, { connectorTools: { gmail: { tools: "*", accountId: "x" } } })).status).toBe(400);
+    expect((await api("PATCH", `/api/bots/${bot.id}`, { connectorTools: "gmail" })).status).toBe(400);
+    const grantsCleared = await api("PATCH", `/api/bots/${bot.id}`, { connectorTools: null });
+    expect(grantsCleared.status).toBe(200);
+    expect(grantsCleared.body.bot.connectorTools).toBeUndefined();
+
     // sidebar sections: assign, round-trip, trim, clear — and the field
     // drops off the record entirely once cleared rather than lingering
     // as an empty string through exports and wire frames
@@ -1974,7 +3031,7 @@ describe("harness HTTP API", () => {
     if (target === "profile") expect((await api("DELETE", `/api/bots/${bot.id}`)).status).toBe(200);
   });
 
-  it("clears an explicit computer to Auto and refuses passive Auto Box provisioning", async () => {
+  it("clears an explicit computer to Auto and refuses passive Auto Boat provisioning", async () => {
     let botId: string | undefined;
     try {
       expect((await api("PUT", "/api/config", { box: { token: "box_route" } })).status).toBe(200);
@@ -1993,35 +3050,877 @@ describe("harness HTTP API", () => {
       )).not.toHaveProperty("computer");
 
       // Reading the panel status may inspect the provider, but it is GET-only.
-      boxRouteCalls.length = 0;
+      boatRouteCalls.length = 0;
       const passiveStatus = await api("GET", `/api/bots/${bot.id}/computer`);
       expect(passiveStatus).toMatchObject({ status: 200, body: { backend: "box", configured: true } });
-      expect(boxRouteCalls).toEqual([{ method: "GET", path: "/boxes?limit=200" }]);
+      expect(boatRouteCalls).toEqual([{ method: "GET", path: "/boxes?limit=200" }]);
 
       // A stale renderer cannot turn that passive read into infrastructure:
-      // every Box verb is rejected before any provider mutation is attempted.
-      const before = [...boxRouteCalls];
+      // every Boat verb is rejected before any provider mutation is attempted.
+      const before = [...boatRouteCalls];
       for (const action of ["provision", "join", "sleep", "exec", "screenshot", "remove"]) {
         const blocked = await api("POST", `/api/bots/${bot.id}/computer/${action}`, {});
         expect(blocked.status, action).toBe(409);
         expect(blocked.body.error, action).toMatch(/Choose Cloud/);
       }
-      expect(boxRouteCalls).toEqual(before);
+      expect(boatRouteCalls).toEqual(before);
 
       // The same action is available after an explicit human Cloud choice.
       expect((await api("PATCH", `/api/bots/${bot.id}`, { computer: "cloud" })).status).toBe(200);
       const provisioned = await api("POST", `/api/bots/${bot.id}/computer/provision`, {});
       expect(provisioned.status).toBe(500);
       expect(provisioned.body.error).toMatch(/fixture refused create/);
-      expect(boxRouteCalls).toContainEqual({ method: "POST", path: "/boxes" });
+      expect(boatRouteCalls).toContainEqual({ method: "POST", path: "/boxes" });
     } finally {
       if (botId) await api("DELETE", `/api/bots/${botId}`);
       await api("PUT", "/api/config", { box: { token: "" } });
-      boxRouteCalls.length = 0;
+      boatRouteCalls.length = 0;
     }
   });
 
-  it("blocks bot-scoped Box lifecycle changes after a direct turn claims the bot", async () => {
+  it("refuses a Works-on This Computer turn for the box-native engine", async () => {
+    let botId: string | undefined;
+    try {
+      // The Computer engine executes on its cloud machine, so an explicit
+      // host-desktop destination is refused before anything is mounted.
+      const bot = (await api("POST", "/api/bots", {
+        name: "Local refusal",
+        modelSelection: { instanceId: "computer", model: "claude-fable-5" },
+      })).body.bot;
+      botId = bot.id;
+      expect((await api("PATCH", `/api/bots/${bot.id}`, { computer: "local" })).status).toBe(200);
+      expect((await api("POST", `/api/bots/${bot.id}/messages`, { text: "work on this desktop" })).status).toBe(202);
+      await expect.poll(async () => JSON.stringify((await api("GET", "/api/bots?messages=20")).body.bots.find(
+        (candidate: { id: string }) => candidate.id === bot.id,
+      )), { timeout: 5_000 }).toMatch(/the Computer engine works on the cloud computer/);
+    } finally {
+      if (botId) await api("POST", `/api/bots/${botId}/interrupt`, {}).catch(() => undefined);
+      if (botId) await api("DELETE", `/api/bots/${botId}`).catch(() => undefined);
+    }
+  });
+
+  it("refuses a room Works-on This Computer turn for the box-native engine", async () => {
+    let roomId: string | undefined;
+    let botId: string | undefined;
+    try {
+      const member = (await api("POST", "/api/bots", {
+        name: "Room local refusal",
+        modelSelection: { instanceId: "computer", model: "claude-fable-5" },
+      })).body.bot;
+      botId = member.id;
+      expect((await api("PATCH", `/api/bots/${member.id}`, { computer: "local" })).status).toBe(200);
+      const room = (await api("POST", "/api/groups", {
+        name: "Boat-native host refusal",
+        memberIds: [member.id],
+        setup: { bulletin: "", defaultResponder: { kind: "member", botId: member.id } },
+      })).body.group;
+      roomId = room.id;
+      expect((await api("POST", `/api/groups/${room.id}/messages`, { text: "work on this desktop" })).status).toBe(202);
+      await expect.poll(async () => JSON.stringify((await api("GET", `/api/threads/${room.threadId}/messages`)).body),
+        { timeout: 5_000 }).toMatch(/the Computer engine works on the cloud computer/);
+    } finally {
+      if (roomId) await api("POST", `/api/groups/${roomId}/interrupt`, {}).catch(() => undefined);
+      if (roomId) await api("DELETE", `/api/groups/${roomId}`).catch(() => undefined);
+      if (botId) await api("DELETE", `/api/bots/${botId}`).catch(() => undefined);
+    }
+  });
+
+  it("refuses a room Works-on Local VM turn for the box-native engine", async () => {
+    let roomId: string | undefined;
+    let botId: string | undefined;
+    try {
+      const member = (await api("POST", "/api/bots", {
+        name: "Room VM refusal",
+        modelSelection: { instanceId: "computer", model: "claude-fable-5" },
+      })).body.bot;
+      botId = member.id;
+      expect((await api("PATCH", `/api/bots/${member.id}`, { computer: "vm" })).status).toBe(200);
+      const room = (await api("POST", "/api/groups", {
+        name: "Boat-native VM refusal",
+        memberIds: [member.id],
+        setup: { bulletin: "", defaultResponder: { kind: "member", botId: member.id } },
+      })).body.group;
+      roomId = room.id;
+      expect((await api("POST", `/api/groups/${room.id}/messages`, { text: "work in the virtual machine" })).status).toBe(202);
+      await expect.poll(async () => JSON.stringify((await api("GET", `/api/threads/${room.threadId}/messages`)).body),
+        { timeout: 5_000 }).toMatch(/this model cannot use the Local VM/);
+    } finally {
+      if (roomId) await api("POST", `/api/groups/${roomId}/interrupt`, {}).catch(() => undefined);
+      if (roomId) await api("DELETE", `/api/groups/${roomId}`).catch(() => undefined);
+      if (botId) await api("DELETE", `/api/bots/${botId}`).catch(() => undefined);
+    }
+  });
+
+  it("creates team computers only with consent, retains failed creates, and assigns safely", async () => {
+    const requestId = randomUUID();
+    const section = `Computer fixture ${requestId.slice(0, 8)}`;
+    let botId = "";
+    let pendingCreate: Promise<{ status: number; body: any }> | undefined;
+    const record = async () => (await api("GET", "/api/team-computers")).body.computers.find(
+      (computer: { id: string }) => computer.id === requestId,
+    );
+    try {
+      expect((await api("PUT", "/api/config", { box: { token: "box_route" } })).status).toBe(200);
+      const bot = (await api("POST", "/api/bots", { name: "Computer fixture bot", section,
+        modelSelection: { instanceId: "claude", model: "claude-sonnet-5" } })).body.bot;
+      botId = bot.id;
+      expect((await api("PATCH", `/api/bots/${bot.id}`, { computer: "off" })).status).toBe(200);
+      boatRouteCalls.length = 0;
+      expect((await api("GET", "/api/team-computers")).body.configured).toBe(true);
+      expect(boatRouteCalls.every(call => call.method === "GET")).toBe(true);
+      for (const body of [
+        { requestId, name: "Build machine" },
+        { requestId, name: "Build machine", acknowledgeCost: false },
+        { requestId, name: "Build machine", acknowledgeCost: true, section },
+      ]) expect((await api("POST", "/api/team-computers", body)).status).toBe(400);
+      expect(await record()).toBeUndefined();
+      expect(boatRouteCalls.every(call => call.method === "GET")).toBe(true);
+
+      const denied = await fetch(`${BASE}/api/team-computers`, {
+        method: "POST", headers: { "content-type": "application/json", origin: "https://untrusted.invalid" },
+        body: JSON.stringify({ requestId, name: "Build machine", acknowledgeCost: true }),
+      });
+      expect(denied.status).toBe(403);
+      expect(await record()).toBeUndefined();
+      expect(boatRouteCalls.every(call => call.method === "GET")).toBe(true);
+
+      managedBoatCreateMode = "refuse";
+      managedBoatCreateId = "bx_pqrstuvw";
+      managedBoatCreateName = "";
+      managedBoatCreateBodies.length = 0;
+      const failed = await api("POST", "/api/team-computers", { requestId, name: "Build machine", acknowledgeCost: true });
+      expect(failed.status).toBe(500);
+      expect(failed.body.error).toMatch(/fixture refused create/);
+      expect(await record()).toMatchObject({ id: requestId, name: "Build machine", section: null, problem: expect.stringMatching(/fixture refused create/) });
+      expect(managedBoatCreateBodies).toHaveLength(1);
+      expect(managedBoatCreateBodies[0]).toMatchObject({ noEnv: true });
+      const persisted = JSON.parse(readFileSync(join(home, ".openmausbot", "team-computers.json"), "utf8"));
+      expect(persisted.computers).toContainEqual(expect.objectContaining({ id: requestId, name: "Build machine", section: null }));
+      expect((await api("POST", "/api/team-computers", { requestId, name: "Different machine", acknowledgeCost: true })).status).toBe(409);
+      expect((await api("POST", `/api/team-computers/${requestId}/provision`, {})).status).toBe(400);
+      expect(managedBoatCreateBodies).toHaveLength(1);
+
+      managedBoatCreateMode = "success";
+      managedBoatCreateGate = deferredGate();
+      pendingCreate = api("POST", `/api/team-computers/${requestId}/provision`, { acknowledgeCost: true });
+      await Promise.race([managedBoatCreateGate.entered, pendingCreate.then(({ status }) => {
+        throw new Error(`team computer retry returned ${status} before reaching the provider create gate`);
+      })]);
+      expect(await record()).toMatchObject({ id: requestId, name: "Build machine", section: null });
+      expect((await api("POST", `/api/team-computers/${requestId}/provision`, { acknowledgeCost: true })).status).toBe(409);
+      managedBoatCreateGate.release();
+      expect((await pendingCreate).status).toBe(200);
+      managedBoatCreateGate = null;
+      pendingCreate = undefined;
+      expect(await record()).toMatchObject({ id: requestId, name: "Build machine", section: null, state: "idle" });
+      expect((await record()).problem).toBeUndefined();
+      expect(managedBoatRows.find(row => row.id === managedBoatCreateId)?.name).toBe(managedBoatNameForFixture(`computer_${requestId}`));
+      const creates = managedBoatCreateBodies.length;
+      expect([200, 201]).toContain((await api("POST", "/api/team-computers", { requestId, name: "Build machine", acknowledgeCost: true })).status);
+      expect(managedBoatCreateBodies).toHaveLength(creates);
+
+      expect((await api("PATCH", `/api/team-computers/${requestId}`, { section })).status).toBe(400);
+      expect((await api("PATCH", `/api/team-computers/${requestId}`, { section: "No such fixture team", acknowledgeSharedAccess: true })).status).toBe(404);
+      expect((await record()).section).toBeNull();
+      rmSync(fakeClaudeDump, { force: true });
+      expect((await api("POST", `/api/bots/${bot.id}/messages`, { text: "hold assignment until this turn stops" })).status).toBe(202);
+      await readJsonFileWhenReady(fakeClaudeDump);
+      boatRouteCalls.length = 0;
+      expect((await api("PATCH", `/api/team-computers/${requestId}`, { section, acknowledgeSharedAccess: true })).status).toBe(409);
+      expect((await record()).section).toBeNull();
+      expect(boatRouteCalls.every(call => call.method === "GET")).toBe(true);
+      expect((await api("POST", `/api/bots/${bot.id}/interrupt`, {})).status).toBe(200);
+      await expect.poll(async () => (await api("GET", "/api/bots?messages=0")).body.bots.find((entry: { id: string }) => entry.id === bot.id)?.busy,
+        { timeout: 5_000 }).toBe(false);
+      expect((await api("PATCH", `/api/team-computers/${requestId}`, { section, acknowledgeSharedAccess: true })).status).toBe(200);
+      expect(await record()).toMatchObject({ id: requestId, section, state: "idle" });
+      expect((await api("GET", "/api/bots?messages=0")).body.bots.find((entry: { id: string }) => entry.id === bot.id)).toMatchObject({ computer: "off", section });
+      const saved = JSON.parse(readFileSync(join(home, ".openmausbot", "team-computers.json"), "utf8"));
+      expect(saved.computers).toContainEqual(expect.objectContaining({ id: requestId, section }));
+      expect((await api("POST", `/api/team-computers/${requestId}/join`, {})).status).toBe(409);
+      expect((await api("POST", `/api/team-computers/${requestId}/control`, { action: "take" })).status).toBe(200);
+      expect((await api("POST", `/api/team-computers/${requestId}/join`, {})).body.joinUrl).toBe(`https://desktop.invalid/${managedBoatCreateId}`);
+      expect((await api("POST", `/api/team-computers/${requestId}/control`, { action: "release" })).status).toBe(200);
+      expect((await api("POST", `/api/team-computers/${requestId}/sleep`, {})).status).toBe(200);
+      expect((await record()).state).toBe("archived");
+
+      // Deleting one member of the assigned team must never treat the shared
+      // computer as that bot's owned resource. The team record and paid Boat
+      // survive for the remaining (or future) members of the section.
+      const sharedBoatId = managedBoatCreateId;
+      expect((await api("DELETE", `/api/bots/${bot.id}`))).toMatchObject({ status: 200, body: { ok: true } });
+      botId = "";
+      expect(managedBoatDeleteConfirmations.some(({ boxId }) => boxId === sharedBoatId)).toBe(false);
+      expect(managedBoatRows).toContainEqual(expect.objectContaining({ id: sharedBoatId, state: "archived" }));
+      expect(await record()).toMatchObject({ id: requestId, section, state: "archived" });
+      expect((await api("GET", "/api/bots?messages=0")).body.bots.some(
+        (candidate: { id: string }) => candidate.id === bot.id,
+      )).toBe(false);
+    } finally {
+      managedBoatCreateGate?.release();
+      await pendingCreate?.catch(() => undefined);
+      managedBoatCreateGate = null;
+      if (botId) await api("POST", `/api/bots/${botId}/interrupt`, {}).catch(() => undefined);
+      await api("POST", `/api/team-computers/${requestId}/control`, { action: "release" }).catch(() => undefined);
+      await api("PATCH", `/api/team-computers/${requestId}`, { section: null, acknowledgeSharedAccess: true }).catch(() => undefined);
+      managedBoatRows = [];
+      managedBoatCreatedIds.clear();
+      if (botId) await api("DELETE", `/api/bots/${botId}`).catch(() => undefined);
+      await api("PUT", "/api/config", { box: { token: "" } }).catch(() => undefined);
+      managedBoatCreateMode = "refuse";
+      managedBoatCreateId = "bx_cdefghjk";
+      managedBoatCreateName = "";
+      managedBoatCreateBodies.length = 0;
+      boatRouteCalls.length = 0;
+      rmSync(fakeClaudeDump, { force: true });
+    }
+  }, 30_000);
+
+  it("shares one team computer across direct and room turns without overriding explicit destinations", async () => {
+    const requestId = randomUUID();
+    const section = `Shared machine ${requestId.slice(0, 8)}`;
+    const botIds: string[] = [];
+    let roomId = "";
+    const idle = async (botId: string) => {
+      try {
+        await expect.poll(async () =>
+          (await api("GET", "/api/bots?messages=0")).body.bots.find((bot: { id: string }) => bot.id === botId)?.busy,
+        { timeout: 10_000 }).toBe(false);
+      } catch (error) {
+        const bot = (await api("GET", "/api/bots?messages=6")).body.bots.find((candidate: { id: string }) => candidate.id === botId);
+        throw new Error(`${(error as Error).message}\nbox calls: ${JSON.stringify(boatRouteCalls.slice(-6))}\nthread: ${JSON.stringify(bot?.messages ?? null).slice(0, 1500)}`);
+      }
+    };
+    type ComputerDump = { mcpConfig: { mcpServers: { computer?: unknown } } };
+    // A turn on the team computer runs ON that box: the harness server posts
+    // the prompt to the boat instead of spawning a local engine.
+    const promptsOnBoat = () => boatRouteCalls.filter(call => call.method === "POST" && call.path === `/boxes/${managedBoatCreateId}/prompt`).length;
+    const promptedOnBoat = async (count: number, botId: string) => {
+      try {
+        await expect.poll(promptsOnBoat, { timeout: 5_000 }).toBe(count);
+      } catch (error) {
+        const bot = (await api("GET", "/api/bots?messages=5")).body.bots.find((candidate: { id: string }) => candidate.id === botId);
+        const kinds = (await api("GET", "/api/instances")).body.instances
+          .map((i: { instanceId: string; driverKind: string; snapshot: { state: string } }) => `${i.instanceId}:${i.driverKind}:${i.snapshot.state}`);
+        throw new Error(`${(error as Error).message}\nbox calls: ${JSON.stringify(boatRouteCalls.slice(-8))}\nthread: ${JSON.stringify(bot?.messages ?? null)}\ninstances: ${kinds.join(" ")}\nclaude dump: ${existsSync(fakeClaudeDump)}`);
+      }
+    };
+    try {
+      expect((await api("PUT", "/api/config", { box: { token: "box_route" } })).status).toBe(200);
+      for (const name of ["Direct shared", "Room shared", "Explicit off"]) {
+        const bot = (await api("POST", "/api/bots", { name, section,
+          modelSelection: { instanceId: "claude", model: "claude-sonnet-5" } })).body.bot;
+        botIds.push(bot.id);
+      }
+      expect((await api("PATCH", `/api/bots/${botIds[2]}`, { computer: "off" })).status).toBe(200);
+      managedBoatCreateMode = "success";
+      managedBoatCreateId = "bx_qrstuvwx";
+      managedBoatCreateName = "";
+      expect((await api("POST", "/api/team-computers", { requestId, name: "Shared desktop", acknowledgeCost: true })).status).toBe(201);
+      expect((await api("PATCH", `/api/team-computers/${requestId}`, { section, acknowledgeSharedAccess: true })).status).toBe(200);
+      expect((await api("GET", "/api/bots?messages=0")).body.bots.find((bot: { id: string }) => bot.id === botIds[0])).not.toHaveProperty("computer");
+      expect((await api("GET", "/api/bots?messages=0")).body.bots.find((bot: { id: string }) => bot.id === botIds[2]).computer).toBe("off");
+      const room = (await api("POST", "/api/groups", { name: "Shared computer room", memberIds: [botIds[1]], section,
+        setup: { bulletin: "", defaultResponder: { kind: "member", botId: botIds[1] } } })).body.group;
+      roomId = room.id;
+      const createCount = boatRouteCalls.filter(call => call.method === "POST" && call.path === "/boxes").length;
+
+      // An explicit Off bot gets no computer even inside the assigned team.
+      rmSync(fakeClaudeDump, { force: true });
+      expect((await api("POST", `/api/bots/${botIds[2]}/messages`, { text: "explicitly no desktop" })).status).toBe(202);
+      expect((await readJsonFileWhenReady<ComputerDump>(fakeClaudeDump)).mcpConfig.mcpServers.computer).toBeUndefined();
+      expect((await api("POST", `/api/bots/${botIds[2]}/interrupt`, {})).status).toBe(200);
+      await idle(botIds[2]);
+
+      expect((await api("POST", `/api/bots/${botIds[0]}/computer/control`, { action: "take" })).status).toBe(200);
+      expect((await api("GET", `/api/bots/${botIds[1]}/computer/control`)).body.held).toBe(true);
+      expect((await api("POST", `/api/team-computers/${requestId}/sleep`, {})).status).toBe(409);
+      expect((await api("PATCH", `/api/team-computers/${requestId}`, { section: null, acknowledgeSharedAccess: true })).status).toBe(409);
+      expect((await api("POST", `/api/bots/${botIds[0]}/computer/control`, { action: "release" })).status).toBe(200);
+
+      rmSync(fakeClaudeDump, { force: true });
+      expect((await api("POST", `/api/bots/${botIds[0]}/messages`, { text: "hold the shared desktop" })).status).toBe(202);
+      await promptedOnBoat(1, botIds[0]);
+      expect(existsSync(fakeClaudeDump)).toBe(false);
+      // A sibling thread can wait, and Stop must cancel that pending claim
+      // without interrupting the thread which already owns the desktop.
+      const firstThread = (await api("GET", "/api/bots?messages=0")).body.bots.find((b: { id: string }) => b.id === botIds[0]).threadId;
+      const sibling = (await api("POST", `/api/bots/${botIds[0]}/tasks`, { title: "Waiting sibling" })).body.task;
+      expect((await api("POST", `/api/bots/${botIds[0]}/messages`, { text: "wait then cancel", threadId: sibling.threadId })).status).toBe(202);
+      await expect.poll(async () => JSON.stringify((await api("GET", `/api/threads/${sibling.threadId}/messages`)).body),
+        { timeout: 5_000 }).toMatch(/Waiting for its turn on this computer/);
+      expect((await api("POST", `/api/bots/${botIds[0]}/interrupt`, { threadId: sibling.threadId })).status).toBe(200);
+      // The wait is history, not a placeholder: the waiting chip stays as
+      // written and the stop appends a resolution line beside it.
+      await expect.poll(async () => JSON.stringify((await api("GET", `/api/threads/${sibling.threadId}/messages`)).body),
+        { timeout: 5_000 }).toMatch(/Stopped waiting for the computer after /);
+      const siblingMessages: Array<{ tool?: { name?: string; ok?: boolean } }> =
+        (await api("GET", `/api/threads/${sibling.threadId}/messages`)).body.messages;
+      expect(siblingMessages.some((message) => (message.tool?.name ?? "").startsWith("Waiting for its turn on this computer"))).toBe(true);
+      const stoppedChip = siblingMessages.find((message) => (message.tool?.name ?? "").startsWith("Stopped waiting for the computer after "));
+      expect(stoppedChip?.tool?.ok).toBe(true);
+      const siblingEvents = ((await api("GET", `/api/threads/${sibling.threadId}/events`)).body.entries as Array<{ kind: string; data: any }>)
+        .filter((entry) => entry.kind === "runtime").map((entry) => entry.data);
+      expect(siblingEvents.find((event) => event.type === "turn.wait_started")).toMatchObject({
+        holder: { name: "Direct shared" },
+        resource: expect.stringMatching(/^computer:/),
+      });
+      expect(siblingEvents.find((event) => event.type === "turn.wait_ended")).toMatchObject({
+        holder: { name: "Direct shared" },
+        outcome: "stopped",
+      });
+      expect(siblingEvents.find((event) => event.type === "turn.wait_ended").waitedMs).toBeGreaterThanOrEqual(0);
+      expect(promptsOnBoat()).toBe(1);
+      expect((await api("POST", `/api/bots/${botIds[0]}/tasks/${firstThread}`, {})).status).toBe(200);
+      for (const action of ["sleep", "provision"]) {
+        expect((await api("POST", `/api/team-computers/${requestId}/${action}`, { acknowledgeCost: true })).status).toBe(409);
+      }
+      expect((await api("PATCH", `/api/team-computers/${requestId}`, { section: null, acknowledgeSharedAccess: true })).status).toBe(409);
+      expect((await api("PATCH", `/api/bots/${botIds[0]}`, { computer: "off" })).status).toBe(409);
+
+      // The room waits rather than failing or concurrently driving the Boat.
+      expect((await api("POST", `/api/groups/${roomId}/messages`, { text: "use the occupied shared desktop" })).status).toBe(202);
+      await expect.poll(async () => JSON.stringify((await api("GET", "/api/bots?messages=30")).body.groups.find(
+        (group: { id: string }) => group.id === roomId,
+      )), { timeout: 5_000 }).toMatch(/Waiting for its turn on this computer/);
+      expect(promptsOnBoat()).toBe(1);
+      expect((await api("POST", `/api/bots/${botIds[0]}/interrupt`, {})).status).toBe(200);
+      await idle(botIds[0]);
+
+      // No Retry or second user message: releasing the owner wakes the turn.
+      await promptedOnBoat(2, botIds[1]);
+      // The room's wait resolved as acquired: the waiting chip stays, the
+      // resolution names how long it waited, and the wait events carry both
+      // ends of the history.
+      await expect.poll(async () => JSON.stringify((await api("GET", "/api/bots?messages=30")).body.groups.find(
+        (group: { id: string }) => group.id === roomId,
+      )), { timeout: 5_000 }).toMatch(/Computer free — continuing after waiting /);
+      const roomMessages: Array<{ tool?: { name?: string } }> = (await api("GET", "/api/bots?messages=30")).body.groups.find(
+        (group: { id: string }) => group.id === roomId,
+      ).messages;
+      expect(roomMessages.some((message) => (message.tool?.name ?? "").startsWith("Waiting for its turn on this computer"))).toBe(true);
+      const roomEvents = ((await api("GET", `/api/threads/${room.threadId}/events`)).body.entries as Array<{ kind: string; data: any }>)
+        .filter((entry) => entry.kind === "runtime").map((entry) => entry.data);
+      expect(roomEvents.find((event) => event.type === "turn.wait_started")).toMatchObject({
+        resource: expect.stringMatching(/^computer:/),
+      });
+      expect(roomEvents.find((event) => event.type === "turn.wait_ended")).toMatchObject({
+        outcome: "acquired",
+      });
+      expect(existsSync(fakeClaudeDump)).toBe(false);
+      expect((await api("POST", `/api/team-computers/${requestId}/sleep`, {})).status).toBe(409);
+      expect((await api("POST", `/api/groups/${roomId}/interrupt`, {})).status).toBe(200);
+      await idle(botIds[1]);
+
+      // A missing paid resource must never be silently replaced by a turn.
+      managedBoatRows = [];
+      managedBoatCreatedIds.clear();
+      rmSync(fakeClaudeDump, { force: true });
+      expect((await api("POST", `/api/bots/${botIds[0]}/messages`, { text: "do not create a replacement" })).status).toBe(202);
+      await expect.poll(async () => JSON.stringify((await api("GET", "/api/bots?messages=30")).body.bots.find(
+        (bot: { id: string }) => bot.id === botIds[0],
+      )), { timeout: 5_000 }).toMatch(/team's Boat computer is missing/);
+      await idle(botIds[0]);
+      expect(existsSync(fakeClaudeDump)).toBe(false);
+      expect(boatRouteCalls.filter(call => call.method === "POST" && call.path === "/boxes")).toHaveLength(createCount);
+    } finally {
+      if (roomId) await api("POST", `/api/groups/${roomId}/interrupt`, {}).catch(() => undefined);
+      for (const botId of botIds) await api("POST", `/api/bots/${botId}/interrupt`, {}).catch(() => undefined);
+      await api("POST", `/api/team-computers/${requestId}/control`, { action: "release" }).catch(() => undefined);
+      await api("PATCH", `/api/team-computers/${requestId}`, { section: null, acknowledgeSharedAccess: true }).catch(() => undefined);
+      managedBoatRows = [];
+      managedBoatCreatedIds.clear();
+      if (roomId) await api("DELETE", `/api/groups/${roomId}`).catch(() => undefined);
+      for (const botId of botIds) await api("DELETE", `/api/bots/${botId}`).catch(() => undefined);
+      await api("PUT", "/api/config", { box: { token: "" } }).catch(() => undefined);
+      managedBoatCreateMode = "refuse";
+      managedBoatCreateId = "bx_cdefghjk";
+      managedBoatCreateName = "";
+      boatRouteCalls.length = 0;
+      rmSync(fakeClaudeDump, { force: true });
+    }
+  }, 30_000);
+
+  it("queues computer waiters in arrival order and estimates the wait only from history", async () => {
+    const requestId = randomUUID();
+    const section = `Queue machine ${requestId.slice(0, 8)}`;
+    let botId = "";
+    let holderThread = "";
+    const waiterThreads: string[] = [];
+    try {
+      expect((await api("PUT", "/api/config", { box: { token: "box_route" } })).status).toBe(200);
+      // The queue needs four live threads on this one bot — the holder plus
+      // three waiters. At the default cap of 3 the fourth message parks in
+      // the send queue off-transcript instead of waiting on the computer.
+      expect((await api("PUT", "/api/config", { threads: { maxConcurrentPerBot: 6 } })).status).toBe(200);
+      const bot = (await api("POST", "/api/bots", { name: "Queue probe", section,
+        modelSelection: { instanceId: "claude", model: "claude-sonnet-5" } })).body.bot;
+      botId = bot.id;
+      // Stop must name the holder's thread: each task message moves the
+      // bot's active-thread pointer, so a bare interrupt would hit the
+      // newest waiter instead of the turn holding the desktop.
+      holderThread = bot.threadId;
+      managedBoatCreateMode = "success";
+      managedBoatCreateId = "bx_queuedsk";
+      managedBoatCreateName = "";
+      expect((await api("POST", "/api/team-computers", { requestId, name: "Queue desktop", acknowledgeCost: true })).status).toBe(201);
+      expect((await api("PATCH", `/api/team-computers/${requestId}`, { section, acknowledgeSharedAccess: true })).status).toBe(200);
+      const promptsOnBox = () => boatRouteCalls.filter(call => call.method === "POST" && call.path === `/boxes/${managedBoatCreateId}/prompt`).length;
+      const threadMessages = async (threadId: string) =>
+        ((await api("GET", `/api/threads/${threadId}/messages`)).body.messages as Array<{ tool?: { name?: string } }>);
+      const threadEvents = async (threadId: string) =>
+        (((await api("GET", `/api/threads/${threadId}/events`)).body.entries as Array<{ kind: string; data: any }>)
+          .filter(entry => entry.kind === "runtime").map(entry => entry.data));
+
+      // The holder keeps the desktop until it is interrupted.
+      expect((await api("POST", `/api/bots/${botId}/messages`, { text: "hold the queue desktop" })).status).toBe(202);
+      await expect.poll(promptsOnBox, { timeout: 5_000 }).toBe(1);
+      const promptBaseline = boatPromptBodies.length;
+
+      // Three sibling tasks arrive one after another. Each chip names its
+      // stable position in arrival order, and no estimate exists yet.
+      for (const [index, title] of ["First waiter", "Second waiter", "Third waiter"].entries()) {
+        const task = (await api("POST", `/api/bots/${botId}/tasks`, { title })).body.task;
+        waiterThreads.push(task.threadId);
+        expect((await api("POST", `/api/bots/${botId}/messages`, { text: `arrival ${index + 1} of the queue`, threadId: task.threadId })).status).toBe(202);
+        await expect.poll(async () => JSON.stringify(await threadMessages(task.threadId)), { timeout: 5_000 })
+          .toMatch(new RegExp(`${index + 1}(st|nd|rd) in queue`));
+        expect((await threadMessages(task.threadId)).some(message => (message.tool?.name ?? "").includes("recent waits here"))).toBe(false);
+        expect((await threadEvents(task.threadId)).find(event => event.type === "turn.wait_started")).toMatchObject({ position: index + 1 });
+      }
+
+      // Releasing the holder grants the seat to position 1 alone: exactly
+      // one new provider prompt, carrying the first waiter's arrival text.
+      expect((await api("POST", `/api/bots/${botId}/interrupt`, { threadId: holderThread })).status).toBe(200);
+      await expect.poll(promptsOnBox, { timeout: 10_000 }).toBe(2);
+      expect(String(boatPromptBodies.slice(promptBaseline).at(-1)?.prompt)).toContain("arrival 1 of the queue");
+      await expect.poll(async () => JSON.stringify(await threadMessages(waiterThreads[0]!)), { timeout: 5_000 })
+        .toMatch(/Computer free — continuing after waiting /);
+      // Positions 2 and 3 keep waiting: nobody jumped the released seat.
+      expect(promptsOnBox()).toBe(2);
+
+      // The first waiter's completed wait is now history for this desktop:
+      // a fourth arrival's chip carries the estimate; the earlier chips,
+      // written before any wait had completed, never did.
+      const fourth = (await api("POST", `/api/bots/${botId}/tasks`, { title: "Fourth waiter" })).body.task;
+      waiterThreads.push(fourth.threadId);
+      expect((await api("POST", `/api/bots/${botId}/messages`, { text: "arrival 4 wants an estimate", threadId: fourth.threadId })).status).toBe(202);
+      await expect.poll(async () => JSON.stringify(await threadMessages(fourth.threadId)), { timeout: 5_000 }).toMatch(/3rd in queue/);
+      await expect.poll(async () => JSON.stringify(await threadMessages(fourth.threadId)), { timeout: 5_000 }).toMatch(/recent waits here have taken /);
+      for (const threadId of waiterThreads.slice(0, 3)) {
+        const chips = (await threadMessages(threadId)).map(message => message.tool?.name ?? "");
+        expect(chips.some(name => name.includes("recent waits here"))).toBe(false);
+      }
+
+      // FIFO keeps holding through the next release: position 2 is granted
+      // next, again by its own arrival text.
+      expect((await api("POST", `/api/bots/${botId}/interrupt`, { threadId: waiterThreads[0] })).status).toBe(200);
+      await expect.poll(promptsOnBox, { timeout: 10_000 }).toBe(3);
+      expect(String(boatPromptBodies.slice(promptBaseline).at(-1)?.prompt)).toContain("arrival 2 of the queue");
+    } finally {
+      if (holderThread) await api("POST", `/api/bots/${botId}/interrupt`, { threadId: holderThread }).catch(() => undefined);
+      for (const threadId of waiterThreads) await api("POST", `/api/bots/${botId}/interrupt`, { threadId }).catch(() => undefined);
+      await api("POST", `/api/bots/${botId}/interrupt`, {}).catch(() => undefined);
+      await api("POST", `/api/team-computers/${requestId}/control`, { action: "release" }).catch(() => undefined);
+      await api("PATCH", `/api/team-computers/${requestId}`, { section: null, acknowledgeSharedAccess: true }).catch(() => undefined);
+      managedBoatRows = [];
+      managedBoatCreatedIds.clear();
+      if (botId) await api("DELETE", `/api/bots/${botId}`).catch(() => undefined);
+      await api("PUT", "/api/config", { box: { token: "" } }).catch(() => undefined);
+      await api("PUT", "/api/config", { threads: { maxConcurrentPerBot: 3 } }).catch(() => undefined);
+      managedBoatCreateMode = "refuse";
+      managedBoatCreateId = "bx_cdefghjk";
+      managedBoatCreateName = "";
+      boatRouteCalls.length = 0;
+      rmSync(fakeClaudeDump, { force: true });
+    }
+  }, 60_000);
+
+  it("parks the turn at the wait ceiling and resumes when the computer frees", async () => {
+    const requestId = randomUUID();
+    const section = `Park machine ${requestId.slice(0, 8)}`;
+    // The main fixture server runs with the production ceiling (minutes); this
+    // test exists to make the ceiling fire, so it boots its own server with a
+    // seconds-scale cap against the same shared Boat stub.
+    const isolatedHome = mkdtempSync(join(tmpdir(), "omb-computer-wait-park-"));
+    const isolatedData = join(isolatedHome, ".openmausbot");
+    const isolatedStatic = join(isolatedHome, "static");
+    const isolatedPort = await freePortBlock([0, 1]);
+    mkdirSync(join(isolatedStatic, "assets"), { recursive: true });
+    mkdirSync(join(isolatedData), { recursive: true });
+    writeFileSync(join(isolatedStatic, "index.html"), "<!doctype html><title>Computer wait park test</title>");
+    writeFileSync(join(isolatedStatic, "assets", "smoke.css"), "body{}");
+    writeFileSync(join(isolatedData, "config.json"), JSON.stringify({
+      instances: {
+        claude: { driver: "claudeAgent", displayName: "Fixture Claude", config: { cli: FAKE_CLAUDE_CLI } },
+        computer: { driver: "boxAgent", displayName: "Computer" },
+      },
+    }));
+    let isolatedStderr = "";
+    const isolatedChild = spawn(process.execPath, [join(SERVER_DIR, "index.ts")], {
+      cwd: ROOT,
+      env: {
+        ...(process.env.PATH ? { PATH: process.env.PATH } : {}),
+        ...(process.env.SystemRoot ? { SystemRoot: process.env.SystemRoot } : {}),
+        HOME: isolatedHome,
+        USERPROFILE: isolatedHome,
+        OMB_PORT: String(isolatedPort),
+        OMB_WEBHOOK_PORT: String(isolatedPort + 1),
+        OMB_STATIC_DIR: isolatedStatic,
+        OMB_BOX_API: `http://127.0.0.1:${boatStubPort}`,
+        FAKE_CLAUDE_MODE: "hang",
+        // seconds, not minutes: the point of this file is the cap firing,
+        // on the computer cap itself — not the goal cap it used to share
+        OMB_COMPUTER_WAIT_MAX_MS: "2000",
+      },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    isolatedChild.stderr!.on("data", (chunk) => (isolatedStderr += chunk));
+    const isolatedApi = async (method: string, path: string, body?: unknown): Promise<{ status: number; body: any }> => {
+      const response = await fetch(`http://127.0.0.1:${isolatedPort}${path}`, {
+        method,
+        headers: body ? { "content-type": "application/json" } : undefined,
+        body: body ? JSON.stringify(body) : undefined,
+      });
+      return { status: response.status, body: await response.json() };
+    };
+    const promptsOnParkBox = () => boatRouteCalls.filter((call) => call.method === "POST" && call.path === "/boxes/bx_parkdskt/prompt").length;
+    let botId = "";
+    let holderThreadId = "";
+    let siblingThreadId = "";
+    let stoppedThreadId = "";
+    let roomBotId = "";
+    let roomId = "";
+    try {
+      await waitForIsolatedServer(isolatedChild, isolatedPort, () => isolatedStderr);
+      managedBoatCreateMode = "success";
+      managedBoatCreateId = "bx_parkdskt";
+      expect((await isolatedApi("PUT", "/api/config", { box: { token: "box_route" } })).status).toBe(200);
+      const bot = (await isolatedApi("POST", "/api/bots", {
+        name: "Park holder", section,
+        modelSelection: { instanceId: "claude", model: "claude-sonnet-5" },
+      })).body.bot;
+      botId = bot.id;
+      holderThreadId = bot.threadId;
+      expect((await isolatedApi("POST", "/api/team-computers", { requestId, name: "Park desktop", acknowledgeCost: true })).status).toBe(201);
+      expect((await isolatedApi("PATCH", `/api/team-computers/${requestId}`, { section, acknowledgeSharedAccess: true })).status).toBe(200);
+      expect((await isolatedApi("POST", `/api/bots/${botId}/messages`, { text: "hold the desktop forever" })).status).toBe(202);
+      await expect.poll(promptsOnParkBox, { timeout: 10_000 }).toBeGreaterThanOrEqual(1);
+      const sibling = (await isolatedApi("POST", `/api/bots/${botId}/tasks`, { title: "Waiting sibling" })).body.task;
+      siblingThreadId = sibling.threadId;
+      expect((await isolatedApi("POST", `/api/bots/${botId}/messages`, { text: "wait past the ceiling", threadId: sibling.threadId })).status).toBe(202);
+      await expect.poll(async () => JSON.stringify((await isolatedApi("GET", `/api/threads/${sibling.threadId}/messages`)).body),
+        { timeout: 5_000 }).toMatch(/Waiting for its turn on this computer/);
+      // The ceiling fires: the turn parks — settled, not failed — and keeps
+      // the wait it waited through in the transcript and the event log.
+      await expect.poll(async () => JSON.stringify((await isolatedApi("GET", `/api/threads/${sibling.threadId}/messages`)).body),
+        { timeout: 8_000 }).toMatch(/Parked — it continues automatically when the computer is free/);
+      const siblingMessages: Array<{ tool?: { name?: string; ok?: boolean } }> =
+        (await isolatedApi("GET", `/api/threads/${sibling.threadId}/messages`)).body.messages;
+      expect(siblingMessages.some((message) => (message.tool?.name ?? "").startsWith("Waiting for its turn on this computer"))).toBe(true);
+      const parkedChip = siblingMessages.find((message) => (message.tool?.name ?? "").startsWith("Computer still busy after "));
+      expect(parkedChip?.tool?.ok).toBe(true);
+      const waitEvents = ((await isolatedApi("GET", `/api/threads/${sibling.threadId}/events`)).body.entries as Array<{ kind: string; data: any }>)
+        .filter((entry) => entry.kind === "runtime").map((entry) => entry.data);
+      expect(waitEvents.find((event) => event.type === "turn.wait_started")).toMatchObject({
+        holder: { name: "Park holder" },
+        resource: expect.stringMatching(/^computer:/),
+      });
+      expect(waitEvents.find((event) => event.type === "turn.wait_ended")).toMatchObject({
+        holder: { name: "Park holder" },
+        outcome: "parked",
+      });
+      expect(waitEvents.find((event) => event.type === "turn.wait_ended").waitedMs).toBeGreaterThanOrEqual(0);
+      await expect.poll(async () => {
+        const task = (await isolatedApi("GET", "/api/bots?messages=0")).body.bots
+          .find((entry: any) => entry.id === botId)?.tasks.find((task: any) => task.threadId === sibling.threadId);
+        return task ? `${task.busy}:${task.activity}` : "";
+      }, { timeout: 5_000 }).toBe("false:parked.computer");
+      const settledMessages = (await isolatedApi("GET", `/api/threads/${sibling.threadId}/messages`)).body.messages;
+      expect(settledMessages.filter((message: any) => message.tool?.ok === false && /Computer still busy|Parked/.test(message.tool.name))).toHaveLength(0);
+
+      // Freeing the seat continues the parked sibling on its own: the resume
+      // turn takes the desktop and holds it (box prompts hang), which is
+      // exactly the contention the room below needs to park against.
+      expect((await isolatedApi("POST", `/api/bots/${botId}/interrupt`, { threadId: holderThreadId })).status).toBe(200);
+      await expect.poll(promptsOnParkBox, { timeout: 10_000 }).toBeGreaterThanOrEqual(2);
+
+      // A room speaker hits the same deadline against the sibling's resumed
+      // turn and parks the same way, while the room still settles its
+      // dispatch without a failure chip.
+      const roomBot = (await isolatedApi("POST", "/api/bots", {
+        name: "Park room speaker", section,
+        modelSelection: { instanceId: "claude", model: "claude-sonnet-5" },
+      })).body.bot;
+      roomBotId = roomBot.id;
+      const room = (await isolatedApi("POST", "/api/groups", {
+        name: "Park room", memberIds: [roomBot.id],
+        setup: { bulletin: "", defaultResponder: { kind: "member", botId: roomBot.id } },
+      })).body.group;
+      roomId = room.id;
+      expect((await isolatedApi("POST", `/api/groups/${room.id}/messages`, { text: "wait for the same occupied desktop" })).status).toBe(202);
+      await expect.poll(async () => JSON.stringify((await isolatedApi("GET", `/api/threads/${room.threadId}/messages`)).body),
+        { timeout: 8_000 }).toMatch(/Parked — it continues automatically when the computer is free/);
+      await expect.poll(async () => (await isolatedApi("GET", "/api/bots?messages=0")).body.groups
+        .find((group: any) => group.id === room.id)?.working, { timeout: 5_000 }).toBe(false);
+      const roomMessages = (await isolatedApi("GET", `/api/threads/${room.threadId}/messages`)).body.messages;
+      expect(roomMessages.filter((message: any) => message.tool?.ok === false && /Computer still busy|Parked/.test(message.tool.name))).toHaveLength(0);
+      const roomEvents = (await isolatedApi("GET", `/api/threads/${room.threadId}/events`)).body.entries;
+      expect(roomEvents.filter((entry: any) => entry.kind === "runtime" && entry.data.type === "turn.wait_ended"))
+        .toMatchObject([{ data: { outcome: "parked" } }]);
+
+      // Freeing the seat again continues the parked room the same way.
+      expect((await isolatedApi("POST", `/api/bots/${botId}/interrupt`, { threadId: sibling.threadId })).status).toBe(200);
+      await expect.poll(promptsOnParkBox, { timeout: 10_000 }).toBeGreaterThanOrEqual(3);
+
+      // Supersede (#1651): a newer user message replaces parked work, so
+      // the superseded park must never resume. The sibling parks behind the
+      // resumed room; a newer sibling ask arrives; freeing the seat then
+      // continues the NEWEST work, which takes the seat itself while the
+      // parked turn stays settled. Every turn that reaches this hanging Box
+      // prompt counts exactly once, so a stale resume would surface as a
+      // fifth prompt or as the parked thread waking instead of the newest
+      // ask still running.
+      expect((await isolatedApi("POST", `/api/bots/${botId}/messages`, { text: "wait past the ceiling a second time", threadId: siblingThreadId })).status).toBe(202);
+      await expect.poll(async () => JSON.stringify((await isolatedApi("GET", `/api/threads/${siblingThreadId}/messages`)).body),
+        { timeout: 8_000 }).toMatch(/wait past the ceiling a second time[\s\S]*Parked — it continues automatically when the computer is free/);
+      expect((await isolatedApi("POST", `/api/bots/${botId}/messages`, { text: "newer work replaces the parked wait", threadId: siblingThreadId })).status).toBe(202);
+      expect((await isolatedApi("POST", `/api/groups/${roomId}/interrupt`, {})).status).toBe(200);
+      await expect.poll(promptsOnParkBox, { timeout: 10_000 }).toBeGreaterThanOrEqual(4);
+      await new Promise((resolve) => setTimeout(resolve, 3_000));
+      expect(promptsOnParkBox()).toBe(4);
+      await expect.poll(async () => {
+        const task = (await isolatedApi("GET", "/api/bots?messages=0")).body.bots
+          .find((entry: any) => entry.id === botId)?.tasks.find((task: any) => task.threadId === siblingThreadId);
+        return task ? task.busy : "";
+      }, { timeout: 5_000 }).toBe(true);
+
+      // Stop also cancels settled, parked work: freeing its requested seat
+      // must not start another provider turn in either a direct task or room.
+      const stoppedTask = (await isolatedApi("POST", `/api/bots/${botId}/tasks`, { title: "Stopped parked wait" })).body.task;
+      stoppedThreadId = stoppedTask.threadId;
+      expect((await isolatedApi("POST", `/api/bots/${botId}/messages`, { text: "park then stop this direct task", threadId: stoppedThreadId })).status).toBe(202);
+      await expect.poll(async () => (await isolatedApi("GET", "/api/bots?messages=0")).body.bots
+        .find((entry: any) => entry.id === botId)?.tasks.find((task: any) => task.threadId === stoppedThreadId)?.activity,
+      { timeout: 8_000 }).toBe("parked.computer");
+      expect((await isolatedApi("POST", `/api/bots/${botId}/interrupt`, { threadId: stoppedThreadId })).status).toBe(200);
+      expect((await isolatedApi("GET", "/api/bots?messages=0")).body.bots
+        .find((entry: any) => entry.id === botId)?.tasks.find((task: any) => task.threadId === stoppedThreadId)?.activity).toBe("idle");
+      expect((await isolatedApi("POST", `/api/groups/${roomId}/messages`, { text: "park then stop this room" })).status).toBe(202);
+      await expect.poll(async () => JSON.stringify((await isolatedApi("GET", `/api/threads/${room.threadId}/messages`)).body),
+        { timeout: 8_000 }).toMatch(/park then stop this room[\s\S]*Parked — it continues automatically when the computer is free/);
+      expect((await isolatedApi("POST", `/api/groups/${roomId}/interrupt`, {})).status).toBe(200);
+      expect((await isolatedApi("POST", `/api/bots/${botId}/interrupt`, { threadId: siblingThreadId })).status).toBe(200);
+      await new Promise((resolve) => setTimeout(resolve, 3_000));
+      expect(promptsOnParkBox()).toBe(4);
+      expect((await isolatedApi("GET", "/api/bots?messages=0")).body.bots
+        .find((entry: any) => entry.id === botId)?.tasks.find((task: any) => task.threadId === stoppedThreadId)?.busy).toBe(false);
+
+    } finally {
+      await isolatedApi("POST", `/api/groups/${roomId}/interrupt`, {}).catch(() => undefined);
+      await isolatedApi("POST", `/api/bots/${roomBotId}/interrupt`, {}).catch(() => undefined);
+      await isolatedApi("POST", `/api/bots/${botId}/interrupt`, { threadId: holderThreadId }).catch(() => undefined);
+      await isolatedApi("POST", `/api/bots/${botId}/interrupt`, { threadId: siblingThreadId }).catch(() => undefined);
+      if (stoppedThreadId) await isolatedApi("POST", `/api/bots/${botId}/interrupt`, { threadId: stoppedThreadId }).catch(() => undefined);
+      await isolatedApi("DELETE", `/api/bots/${botId}`).catch(() => undefined);
+      await isolatedApi("PUT", "/api/config", { box: { token: "" } }).catch(() => undefined);
+      managedBoatRows = [];
+      managedBoatCreatedIds.clear();
+      managedBoatCreateMode = "refuse";
+      managedBoatCreateId = "bx_cdefghjk";
+      await waitForExit(isolatedChild, { signal: "SIGTERM" });
+      await removeTempDir(isolatedHome);
+    }
+    expectStoppedTestServerCleanly(isolatedChild, isolatedStderr);
+  }, 75_000);
+
+  it("routes a goal run around a member parked at the computer wait ceiling, then resumes it", async () => {
+    const requestId = randomUUID();
+    const section = `Park goal machine ${requestId.slice(0, 8)}`;
+    // Same shape as the park test above: an isolated server with a
+    // seconds-scale computer wait ceiling against the shared Box stub, plus
+    // scripted coordinator replies so a real goal run delegates to a member
+    // whose only computer is the one the holder already sits on.
+    const isolatedHome = mkdtempSync(join(tmpdir(), "omb-computer-wait-goal-"));
+    const isolatedData = join(isolatedHome, ".openmausbot");
+    const isolatedStatic = join(isolatedHome, "static");
+    const isolatedPort = await freePortBlock([0, 1]);
+    const leadReplies = [
+      [
+        "Parker should do the desktop work.",
+        '<openmaus-goal>{"status":"continue",',
+        '"next":"Parker","instruction":"Use the shared desktop","detail":"Delegated to Parker"}</openmaus-goal>',
+      ].join("\n"),
+      [
+        "The desktop stayed busy, so I finished without it.",
+        '<openmaus-goal>{"status":"completed",',
+        '"detail":"Parker parked at the computer; the lead finished the goal directly."}</openmaus-goal>',
+      ].join("\n"),
+    ];
+    mkdirSync(join(isolatedStatic, "assets"), { recursive: true });
+    mkdirSync(isolatedData, { recursive: true });
+    writeFileSync(join(isolatedStatic, "index.html"), "<!doctype html><title>Computer wait goal test</title>");
+    writeFileSync(join(isolatedStatic, "assets", "smoke.css"), "body{}");
+    writeFileSync(join(isolatedData, "config.json"), JSON.stringify({
+      instances: {
+        holder: {
+          driver: "claudeAgent",
+          displayName: "Fixture holder",
+          environment: { FAKE_CLAUDE_MODE: "hang" },
+          config: { cli: FAKE_CLAUDE_CLI },
+        },
+        lead: {
+          driver: "claudeAgent",
+          displayName: "Fixture lead",
+          environment: {
+            FAKE_CLAUDE_MODE: "happy",
+            FAKE_CLAUDE_REPLIES: JSON.stringify(leadReplies),
+            FAKE_CLAUDE_REPLY_STATE: join(isolatedHome, "lead-replies.txt"),
+          },
+          config: { cli: FAKE_CLAUDE_CLI },
+        },
+        worker: {
+          driver: "claudeAgent",
+          displayName: "Fixture worker",
+          environment: {
+            FAKE_CLAUDE_MODE: "happy",
+            FAKE_CLAUDE_REPLIES: JSON.stringify(["The parked computer work is complete."]),
+            FAKE_CLAUDE_REPLY_STATE: join(isolatedHome, "worker-replies.txt"),
+          },
+          config: { cli: FAKE_CLAUDE_CLI },
+        },
+        computer: { driver: "boxAgent", displayName: "Computer" },
+      },
+    }));
+    let isolatedStderr = "";
+    const isolatedChild = spawn(process.execPath, [join(SERVER_DIR, "index.ts")], {
+      cwd: ROOT,
+      env: {
+        ...(process.env.PATH ? { PATH: process.env.PATH } : {}),
+        ...(process.env.SystemRoot ? { SystemRoot: process.env.SystemRoot } : {}),
+        HOME: isolatedHome,
+        USERPROFILE: isolatedHome,
+        OMB_PORT: String(isolatedPort),
+        OMB_WEBHOOK_PORT: String(isolatedPort + 1),
+        OMB_STATIC_DIR: isolatedStatic,
+        OMB_BOX_API: `http://127.0.0.1:${boatStubPort}`,
+        OMB_COMPUTER_WAIT_MAX_MS: "2000",
+      },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    isolatedChild.stderr!.on("data", (chunk) => (isolatedStderr += chunk));
+    const isolatedApi = async (method: string, path: string, body?: unknown): Promise<{ status: number; body: any }> => {
+      const response = await fetch(`http://127.0.0.1:${isolatedPort}${path}`, {
+        method,
+        headers: body ? { "content-type": "application/json" } : undefined,
+        body: body ? JSON.stringify(body) : undefined,
+      });
+      return { status: response.status, body: await response.json() };
+    };
+    const promptsOnGoalBox = () => boatRouteCalls.filter((call) => call.method === "POST" && call.path === "/boxes/bx_parkedsk/prompt").length;
+    const goalCard = async () => {
+      const state = (await isolatedApi("GET", "/api/bots?messages=40")).body;
+      const room = state.groups.find((group: any) => group.id === roomId);
+      const card = room?.messages.find((message: any) => message.kind === "goal.run");
+      return { working: room?.working, card };
+    };
+    const parkedChips = async () => {
+      const state = (await isolatedApi("GET", "/api/bots?messages=40")).body;
+      const room = state.groups.find((group: any) => group.id === roomId);
+      return (room?.messages ?? []).filter((message: any) =>
+        typeof message.tool?.name === "string" && message.tool.name.startsWith("Computer still busy after "),
+      );
+    };
+    let holderBotId = "";
+    let holderThreadId = "";
+    let leadId = "";
+    let workerId = "";
+    let roomId = "";
+    try {
+      await waitForIsolatedServer(isolatedChild, isolatedPort, () => isolatedStderr);
+      managedBoatCreateMode = "success";
+      managedBoatCreateId = "bx_parkedsk";
+      expect((await isolatedApi("PUT", "/api/config", { box: { token: "box_route" } })).status).toBe(200);
+      const holder = (await isolatedApi("POST", "/api/bots", {
+        name: "Goal park holder", section,
+        modelSelection: { instanceId: "holder", model: "claude-sonnet-5" },
+      })).body.bot;
+      holderBotId = holder.id;
+      holderThreadId = holder.threadId;
+      const lead = (await isolatedApi("POST", "/api/bots", {
+        name: "Goal lead", section,
+        modelSelection: { instanceId: "lead", model: "claude-sonnet-5" },
+      })).body.bot;
+      leadId = lead.id;
+      // The lead never touches the desktop: only the delegated member parks.
+      // Patched before the section gains the team computer, which otherwise
+      // locks computer changes for every bot in the section.
+      expect((await isolatedApi("PATCH", `/api/bots/${leadId}`, { computer: "off" })).status).toBe(200);
+      expect((await isolatedApi("POST", "/api/team-computers", { requestId, name: "Goal park desktop", acknowledgeCost: true })).status).toBe(201);
+      expect((await isolatedApi("PATCH", `/api/team-computers/${requestId}`, { section, acknowledgeSharedAccess: true })).status).toBe(200);
+      expect((await isolatedApi("POST", `/api/bots/${holderBotId}/messages`, { text: "hold the desktop forever" })).status).toBe(202);
+      await expect.poll(promptsOnGoalBox, { timeout: 10_000 }).toBeGreaterThanOrEqual(1);
+      const worker = (await isolatedApi("POST", "/api/bots", {
+        name: "Parker", section,
+        modelSelection: { instanceId: "worker", model: "claude-sonnet-5" },
+      })).body.bot;
+      workerId = worker.id;
+      const room = (await isolatedApi("POST", "/api/groups", {
+        name: "Goal park room", memberIds: [leadId, workerId], section,
+        setup: { bulletin: "", defaultResponder: { kind: "member", botId: leadId } },
+      })).body.group;
+      roomId = room.id;
+      expect((await isolatedApi("POST", `/api/groups/${roomId}/messages`, {
+        text: "Finish the report using the shared desktop",
+        mode: "goal",
+      })).status).toBe(202);
+
+      // The run delegates, the member parks exactly once, and the lead gets
+      // the park as reassignment data — never as an in-step retry that would
+      // wait the ceiling out again for every goal turn left in the budget.
+      // On that bug this completion poll times out: the worker re-parks
+      // every ceiling until the turn budget is gone and the lead never gets
+      // the note.
+      await expect.poll(async () => {
+        const { working, card } = await goalCard();
+        return { working, status: card?.goalRun?.status, detail: card?.goalRun?.detail, turnCount: card?.goalRun?.turnCount };
+      }, { timeout: 15_000 }).toEqual({
+        working: false,
+        status: "completed",
+        detail: "Parker parked at the computer; the lead finished the goal directly.",
+        turnCount: 3,
+      });
+      expect((await parkedChips()).length).toBe(1);
+      expect((await parkedChips()).every((message: any) => message.tool?.ok === true)).toBe(true);
+      // A retry loop would park again roughly every ceiling; give it room to
+      // fail and then hold the line at one park.
+      await new Promise((resolve) => setTimeout(resolve, 3_000));
+      expect((await parkedChips()).length).toBe(1);
+
+      // Freeing the seat resumes the parked member on its own through the
+      // registered entry: the resumed turn takes the desktop (its Box prompt
+      // hangs, holding the seat) without any new user message.
+      expect((await isolatedApi("POST", `/api/bots/${holderBotId}/interrupt`, { threadId: holderThreadId })).status).toBe(200);
+      await expect.poll(promptsOnGoalBox, { timeout: 10_000 }).toBeGreaterThanOrEqual(2);
+    } finally {
+      await isolatedApi("POST", `/api/groups/${roomId}/interrupt`, {}).catch(() => undefined);
+      await isolatedApi("POST", `/api/bots/${holderBotId}/interrupt`, {}).catch(() => undefined);
+      await isolatedApi("POST", `/api/bots/${leadId}/interrupt`, {}).catch(() => undefined);
+      await isolatedApi("POST", `/api/bots/${workerId}/interrupt`, {}).catch(() => undefined);
+      await isolatedApi("DELETE", `/api/groups/${roomId}`).catch(() => undefined);
+      for (const botId of [holderBotId, leadId, workerId]) await isolatedApi("DELETE", `/api/bots/${botId}`).catch(() => undefined);
+      await isolatedApi("PUT", "/api/config", { box: { token: "" } }).catch(() => undefined);
+      managedBoatRows = [];
+      managedBoatCreatedIds.clear();
+      managedBoatCreateMode = "refuse";
+      managedBoatCreateId = "bx_cdefghjk";
+      await waitForExit(isolatedChild, { signal: "SIGTERM" });
+      await removeTempDir(isolatedHome);
+    }
+    expectStoppedTestServerCleanly(isolatedChild, isolatedStderr);
+  }, 75_000);
+
+  it("blocks bot-scoped Boat lifecycle changes after a direct turn claims the bot", async () => {
     let botId = "";
     try {
       expect((await api("PUT", "/api/config", { box: { token: "box_route" } })).status).toBe(200);
@@ -2037,35 +3936,35 @@ describe("harness HTTP API", () => {
       expect((await api("POST", `/api/bots/${bot.id}/messages`, { text: "hold the direct turn" })).status).toBe(202);
       await readJsonFileWhenReady(fakeClaudeDump);
       expect((await api("PATCH", `/api/bots/${bot.id}`, { computer: "cloud" })).status).toBe(200);
-      managedBoxRows = [{
+      managedBoatRows = [{
         id: "bx_3456789a",
-        name: managedBoxNameForFixture(bot.id),
+        name: managedBoatNameForFixture(bot.id),
         state: "idle",
       }];
 
-      boxRouteCalls.length = 0;
+      boatRouteCalls.length = 0;
       for (const action of ["provision", "sleep"]) {
         const blocked = await api("POST", `/api/bots/${bot.id}/computer/${action}`, {});
         expect(blocked.status, action).toBe(409);
         expect(blocked.body.error, action).toMatch(/active turn.*interrupt/i);
       }
-      expect(boxRouteCalls).toEqual([]);
+      expect(boatRouteCalls).toEqual([]);
 
       const joined = await api("POST", `/api/bots/${bot.id}/computer/join`, {});
       expect(joined).toMatchObject({
         status: 200,
         body: { joinUrl: "https://desktop.invalid/bx_3456789a", state: "idle" },
       });
-      expect(boxRouteCalls.some((call) => call.path.endsWith("/resume"))).toBe(false);
-      expect(boxRouteCalls.some((call) => call.path.endsWith("/commands"))).toBe(false);
+      expect(boatRouteCalls.some((call) => call.path.endsWith("/resume"))).toBe(false);
+      expect(boatRouteCalls.some((call) => call.path.endsWith("/commands"))).toBe(false);
 
-      managedBoxRows = managedBoxRows.map((row) => ({ ...row, state: "archived" }));
-      boxRouteCalls.length = 0;
+      managedBoatRows = managedBoatRows.map((row) => ({ ...row, state: "archived" }));
+      boatRouteCalls.length = 0;
       const sleepingJoin = await api("POST", `/api/bots/${bot.id}/computer/join`, {});
       expect(sleepingJoin.status).toBe(409);
       expect(sleepingJoin.body.error).toMatch(/sleeping or starting.*interrupt/i);
-      expect(boxRouteCalls.some((call) => call.path.endsWith("/resume"))).toBe(false);
-      expect(boxRouteCalls.some((call) => call.path.includes("/desktop"))).toBe(false);
+      expect(boatRouteCalls.some((call) => call.path.endsWith("/resume"))).toBe(false);
+      expect(boatRouteCalls.some((call) => call.path.includes("/desktop"))).toBe(false);
 
       expect((await api("POST", `/api/bots/${bot.id}/interrupt`, { threadId: bot.threadId })).status).toBe(200);
       await expect.poll(async () => {
@@ -2076,15 +3975,15 @@ describe("harness HTTP API", () => {
       }, { timeout: 5_000 }).toBe(false);
     } finally {
       if (botId) await api("POST", `/api/bots/${botId}/interrupt`, {}).catch(() => undefined);
-      managedBoxRows = [];
+      managedBoatRows = [];
       if (botId) await api("DELETE", `/api/bots/${botId}`).catch(() => undefined);
       await api("PUT", "/api/config", { box: { token: "" } });
-      boxRouteCalls.length = 0;
+      boatRouteCalls.length = 0;
       rmSync(fakeClaudeDump, { force: true });
     }
   });
 
-  it("blocks bot-scoped Box lifecycle changes while the bot owns a room turn", async () => {
+  it("blocks bot-scoped Boat lifecycle changes while the bot owns a room turn", async () => {
     let botId = "";
     let roomId = "";
     try {
@@ -2097,7 +3996,7 @@ describe("harness HTTP API", () => {
         modelSelection: { instanceId: "claude", model: "claude-sonnet-5" },
       })).status).toBe(200);
       const room = (await api("POST", "/api/groups", {
-        name: "Box lifecycle race",
+        name: "Boat lifecycle race",
         memberIds: [bot.id],
       })).body.group;
       roomId = room.id;
@@ -2114,13 +4013,13 @@ describe("harness HTTP API", () => {
       }, { timeout: 5_000 }).toBe(bot.id);
       expect((await api("PATCH", `/api/bots/${bot.id}`, { computer: "cloud" })).status).toBe(200);
 
-      boxRouteCalls.length = 0;
+      boatRouteCalls.length = 0;
       for (const action of ["provision", "sleep"]) {
         const blocked = await api("POST", `/api/bots/${bot.id}/computer/${action}`, {});
         expect(blocked.status, action).toBe(409);
         expect(blocked.body.error, action).toMatch(/active turn.*interrupt/i);
       }
-      expect(boxRouteCalls).toEqual([]);
+      expect(boatRouteCalls).toEqual([]);
 
       expect((await api("POST", `/api/groups/${room.id}/interrupt`, {})).status).toBe(200);
       await expect.poll(async () => {
@@ -2132,11 +4031,11 @@ describe("harness HTTP API", () => {
       }, { timeout: 5_000 }).toEqual({ botBusy: false, roomBusyBotId: null });
     } finally {
       if (roomId) await api("POST", `/api/groups/${roomId}/interrupt`, {}).catch(() => undefined);
-      managedBoxRows = [];
+      managedBoatRows = [];
       if (roomId) await api("DELETE", `/api/groups/${roomId}`).catch(() => undefined);
       if (botId) await api("DELETE", `/api/bots/${botId}`).catch(() => undefined);
       await api("PUT", "/api/config", { box: { token: "" } });
-      boxRouteCalls.length = 0;
+      boatRouteCalls.length = 0;
       rmSync(fakeClaudeDump, { force: true });
     }
   });
@@ -2147,9 +4046,9 @@ describe("harness HTTP API", () => {
       expect((await api("PUT", "/api/config", { box: { token: "box_route" } })).status).toBe(200);
       const bot = (await api("POST", "/api/bots")).body.bot;
       botId = bot.id;
-      const managedName = managedBoxNameForFixture(bot.id);
-      const orphanName = managedBoxNameForFixture("deleted-orphan-bot");
-      managedBoxRows = [
+      const managedName = managedBoatNameForFixture(bot.id);
+      const orphanName = managedBoatNameForFixture("deleted-orphan-bot");
+      managedBoatRows = [
         {
           id: "bx_23456789",
           name: managedName,
@@ -2199,10 +4098,10 @@ describe("harness HTTP API", () => {
         body: "null",
       });
       expect(nullConfirmation.status).toBe(400);
-      boxRouteCalls.length = 0;
-      managedBoxStopDelayMs = 1_000;
+      boatRouteCalls.length = 0;
+      managedBoatStopDelayMs = 1_000;
       const sleeping = api("POST", "/api/computers/boxes/bx_23456789/sleep", {});
-      await expect.poll(() => boxRouteCalls.some(
+      await expect.poll(() => boatRouteCalls.some(
         (call) => call.method === "POST" && call.path === "/boxes/bx_23456789/stop",
       )).toBe(true);
       const racedTurn = await api("POST", `/api/bots/${bot.id}/messages`, { text: "do not race deletion" });
@@ -2212,16 +4111,16 @@ describe("harness HTTP API", () => {
       expect((await api("POST", `/api/bots/${bot.id}/computer/control`, { action: "take" })).status).toBe(409);
       expect((await api("DELETE", `/api/bots/${bot.id}`)).status).toBe(409);
       expect((await sleeping).status).toBe(200);
-      managedBoxStopDelayMs = 0;
-      expect(boxRouteCalls).toContainEqual({ method: "POST", path: "/boxes/bx_23456789/stop" });
+      managedBoatStopDelayMs = 0;
+      expect(boatRouteCalls).toContainEqual({ method: "POST", path: "/boxes/bx_23456789/stop" });
 
       // Orphans have no bot id for the shared lifecycle lane. Serialize their
       // Settings actions by provider id so two paired clients cannot Sleep and
       // Delete the same durable computer at once.
-      boxRouteCalls.length = 0;
-      managedBoxStopDelayMs = 1_000;
+      boatRouteCalls.length = 0;
+      managedBoatStopDelayMs = 1_000;
       const orphanSleep = api("POST", "/api/computers/boxes/bx_abcdefgh/sleep", {});
-      await expect.poll(() => boxRouteCalls.some(
+      await expect.poll(() => boatRouteCalls.some(
         (call) => call.method === "POST" && call.path === "/boxes/bx_abcdefgh/stop",
       )).toBe(true);
       const racedOrphanDelete = await api("POST", "/api/computers/boxes/bx_abcdefgh/delete", {
@@ -2229,47 +4128,227 @@ describe("harness HTTP API", () => {
       });
       expect(racedOrphanDelete.status).toBe(409);
       expect(racedOrphanDelete.body.error).toMatch(/cloud computer is being changed/i);
-      expect(managedBoxDeleteConfirmations.some(({ boxId }) => boxId === "bx_abcdefgh")).toBe(false);
+      expect(managedBoatDeleteConfirmations.some(({ boxId }) => boxId === "bx_abcdefgh")).toBe(false);
       expect((await orphanSleep).status).toBe(200);
-      managedBoxStopDelayMs = 0;
+      managedBoatStopDelayMs = 0;
 
       // The same lifecycle lane works in the other direction: an already
       // running bot-scoped provider action excludes a Settings deletion.
       expect((await api("PATCH", `/api/bots/${bot.id}`, { computer: "cloud", cloudBackend: "box" })).status).toBe(200);
-      managedBoxRows = managedBoxRows.map((row) => row.id === "bx_23456789" ? { ...row, state: "idle" } : row);
-      managedBoxStopDelayMs = 1_000;
-      boxRouteCalls.length = 0;
+      managedBoatRows = managedBoatRows.map((row) => row.id === "bx_23456789" ? { ...row, state: "idle" } : row);
+      managedBoatStopDelayMs = 1_000;
+      boatRouteCalls.length = 0;
       const botScopedSleep = api("POST", `/api/bots/${bot.id}/computer/sleep`, {});
-      await expect.poll(() => boxRouteCalls.some(
+      await expect.poll(() => boatRouteCalls.some(
         (call) => call.method === "POST" && call.path === "/boxes/bx_23456789/stop",
       )).toBe(true);
       expect((await api("POST", "/api/computers/boxes/bx_23456789/delete", {
         confirmName: managedName,
       })).status).toBe(409);
       expect((await botScopedSleep).status).toBe(200);
-      managedBoxStopDelayMs = 0;
+      managedBoatStopDelayMs = 0;
 
       const removed = await api("POST", "/api/computers/boxes/bx_23456789/delete", { confirmName: managedName });
       expect(removed.status).toBe(202);
-      expect(managedBoxDeleteConfirmations).toContainEqual({
+      expect(managedBoatDeleteConfirmations).toContainEqual({
         boxId: "bx_23456789",
         confirmation: "bx_23456789",
       });
-      expect(managedBoxRows.some((row) => row.id === "bx_23456789")).toBe(false);
+      expect(managedBoatRows.some((row) => row.id === "bx_23456789")).toBe(false);
     } finally {
-      managedBoxListStatus = 200;
-      managedBoxListGate?.release();
-      managedBoxListGate = null;
-      managedBoxStopDelayMs = 0;
-      managedBoxRows = [];
-      managedBoxDeleteConfirmations.length = 0;
+      managedBoatListStatus = 200;
+      managedBoatListGate?.release();
+      managedBoatListGate = null;
+      managedBoatStopDelayMs = 0;
+      managedBoatRows = [];
+      managedBoatDeleteConfirmations.length = 0;
       if (botId) await api("DELETE", `/api/bots/${botId}`).catch(() => undefined);
       await api("PUT", "/api/config", { box: { token: "" } });
-      boxRouteCalls.length = 0;
+      boatRouteCalls.length = 0;
     }
   });
 
-  it("keeps a bot when its hidden Box exists or the provider cannot prove it absent", async () => {
+  it("deletes a bot-owned Boat automatically even after the bot changes destination", async () => {
+    let botId = "";
+    try {
+      expect((await api("PUT", "/api/config", { box: { token: "box_route" } })).status).toBe(200);
+      const bot = (await api("POST", "/api/bots")).body.bot;
+      botId = bot.id;
+      const managedName = managedBoatNameForFixture(bot.id);
+      managedBoatRows = [{ id: "bx_23456789", name: managedName, state: "archived" }];
+      expect((await api("PATCH", `/api/bots/${bot.id}`, { computer: null, cloudBackend: "vps" })).status).toBe(200);
+
+      const deleted = await api("DELETE", `/api/bots/${bot.id}`);
+
+      expect(deleted).toMatchObject({ status: 200, body: { ok: true } });
+      expect(managedBoatDeleteConfirmations).toContainEqual({
+        boxId: "bx_23456789",
+        confirmation: "bx_23456789",
+      });
+      expect(managedBoatRows).toEqual([]);
+      expect((await api("GET", "/api/bots?messages=0")).body.bots.some(
+        (candidate: { id: string }) => candidate.id === bot.id,
+      )).toBe(false);
+      botId = "";
+    } finally {
+      managedBoatListStatus = 200;
+      managedBoatRows = [];
+      managedBoatDeleteConfirmations.length = 0;
+      if (botId) await api("DELETE", `/api/bots/${botId}`).catch(() => undefined);
+      await api("PUT", "/api/config", { box: { token: "" } }).catch(() => undefined);
+      boatRouteCalls.length = 0;
+    }
+  });
+
+  it("keeps a reviewed deletion target that changes during slow cloud cleanup", async () => {
+    const chief = (await api("POST", "/api/bots", { name: "Deletion Chief", section: "Deletion race" })).body.bot;
+    const target = (await api("POST", "/api/bots", { name: "Deletion Target", section: "Deletion race" })).body.bot;
+    let targetDeleted = false;
+    try {
+      expect((await api("PATCH", `/api/bots/${chief.id}`, { chiefOfStaff: true })).status).toBe(200);
+      expect((await api("PUT", "/api/config", { box: { token: "box_route" } })).status).toBe(200);
+      managedBoatRows = [{
+        id: "bx_456789ab",
+        name: managedBoatNameForFixture(target.id),
+        state: "archived",
+      }];
+
+      const token = await mintTestCapability(BASE, chief.id, chief.threadId);
+      const proposedResponse = await fetch(`${BASE}/api/internal/bot-deletion-requests`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+        body: JSON.stringify({
+          fromBotId: chief.id,
+          fromThreadId: chief.threadId,
+          targetBotId: target.id,
+          reason: "Verify a reviewed deletion stays bound to the exact target profile",
+        }),
+      });
+      expect(proposedResponse.status).toBe(201);
+      const proposed = z.object({ requestId: z.string() }).passthrough().parse(await proposedResponse.json());
+
+      managedBoatDeleteGate = deferredGate();
+      const resolving = fetch(`${BASE}/api/threads/${chief.threadId}/respond`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          origin: BASE,
+        },
+        body: JSON.stringify({ requestId: proposed.requestId, behavior: "allow" }),
+      });
+      await managedBoatDeleteGate.entered;
+      const changed = await api("PATCH", `/api/bots/${target.id}`, {
+        title: "Changed while cloud cleanup was pending",
+      });
+      expect(changed.status).toBe(200);
+      managedBoatDeleteGate.release();
+      managedBoatDeleteGate = null;
+
+      const response = await resolving;
+      expect(response.status).toBe(200);
+      expect(await response.json()).toMatchObject({
+        ok: true,
+        outcome: "rejected",
+        result: { state: "cancelled", error: expect.stringMatching(/deletion target changed/i) },
+      });
+      const fleet = (await api("GET", "/api/bots?messages=0")).body.bots;
+      expect(fleet.find((candidate: { id: string }) => candidate.id === target.id)).toMatchObject({
+        title: "Changed while cloud cleanup was pending",
+      });
+      expect(managedBoatDeleteConfirmations).toHaveLength(1);
+    } finally {
+      managedBoatDeleteGate?.release();
+      managedBoatDeleteGate = null;
+      managedBoatRows = [];
+      managedBoatDeleteConfirmations.length = 0;
+      await api("POST", `/api/bots/${chief.id}/interrupt`, {}).catch(() => undefined);
+      const removed = await api("DELETE", `/api/bots/${target.id}`).catch(() => undefined);
+      targetDeleted = removed?.status === 200 || removed?.status === 404;
+      if (!targetDeleted) await api("DELETE", `/api/bots/${target.id}`).catch(() => undefined);
+      // Clear the Boat token BEFORE deleting the Chief. interruptTurn is
+      // asynchronous, so the Chief can still be busy here, and while a token
+      // is configured a busy bot's delete is refused with 409 (index.ts:6673).
+      // That refusal was swallowed by the catch below, leaving this Chief in
+      // the store for the rest of the file — and because setChiefOfStaff is
+      // per-section (store.ts:2020), electing a Chief in the default section
+      // never cleared it, so the team-import test's store-wide count saw two.
+      await api("PUT", "/api/config", { box: { token: "" } }).catch(() => undefined);
+      // interruptTurn is asynchronous, so wait for the Chief to actually
+      // settle before deleting it: several delete guards refuse a busy bot
+      // (index.ts:6650-6674), and swallowing that 409 is what leaked.
+      await expect.poll(async () =>
+        (await api("GET", "/api/bots?messages=0")).body.bots.find((bot: { id: string }) => bot.id === chief.id)?.busy !== true,
+      { timeout: 15_000 }).toBe(true);
+      await api("DELETE", `/api/bots/${chief.id}`).catch(() => undefined);
+      // Assert the cleanup actually happened rather than trusting the catch.
+      expect((await api("GET", "/api/bots")).body.bots.some((bot: { id: string }) => bot.id === chief.id)).toBe(false);
+      boatRouteCalls.length = 0;
+    }
+  });
+
+  it("keeps the bot while an owned Boat deletion is pending and finishes on retry", async () => {
+    let botId = "";
+    try {
+      expect((await api("PUT", "/api/config", { box: { token: "box_route" } })).status).toBe(200);
+      const bot = (await api("POST", "/api/bots")).body.bot;
+      botId = bot.id;
+      const managedName = managedBoatNameForFixture(bot.id);
+      expect((await api("PATCH", `/api/bots/${bot.id}`, {
+        computer: "cloud",
+        cloudBackend: "box",
+      })).status).toBe(200);
+      managedBoatCreateMode = "success";
+      managedBoatCreateId = "bx_3456789a";
+      managedBoatCreateName = managedName;
+      expect((await api("POST", `/api/bots/${bot.id}/computer/provision`, {})).status).toBe(200);
+      managedBoatDeleteRemovesRow = false;
+      managedBoatDeletionStatuses = ["pending"];
+
+      const pending = await api("DELETE", `/api/bots/${bot.id}`);
+      expect(pending.status).toBe(409);
+      expect(pending.body.error).toMatch(/deletion has started.*bot was kept/i);
+      expect((await api("GET", "/api/bots?messages=0")).body.bots.some(
+        (candidate: { id: string }) => candidate.id === bot.id,
+      )).toBe(true);
+      expect(managedBoatDeleteConfirmations).toHaveLength(1);
+
+      // Losing the old token must not strand the exact deletion receipt.
+      // A replacement that can read that target-bound operation proves
+      // account continuity and may be saved; a second DELETE is never sent.
+      managedBoatRejectedTokens.add("Bearer box_route");
+      managedBoatDeletionStatuses = ["completed"];
+      const tokenChange = await api("PUT", "/api/config", { box: { token: "box_route_rotated" } });
+      expect(tokenChange.status).toBe(200);
+      expect(managedBoatDeleteConfirmations).toHaveLength(1);
+
+      // A later provider completion is reconciled from the durable operation
+      // receipt. No second DELETE is sent, and only then may the owner vanish.
+      const completed = await api("DELETE", `/api/bots/${bot.id}`);
+      expect(completed).toMatchObject({ status: 200, body: { ok: true } });
+      expect(managedBoatDeleteConfirmations).toHaveLength(1);
+      expect((await api("GET", "/api/bots?messages=0")).body.bots.some(
+        (candidate: { id: string }) => candidate.id === bot.id,
+      )).toBe(false);
+      botId = "";
+    } finally {
+      managedBoatDeleteRemovesRow = true;
+      managedBoatCreateMode = "refuse";
+      managedBoatCreateId = "bx_cdefghjk";
+      managedBoatCreateName = "";
+      managedBoatCreatedIds.clear();
+      managedBoatDeletionStatuses = [];
+      managedBoatLastDeletionStatus = "completed";
+      managedBoatDeletionTarget = "";
+      managedBoatRejectedTokens.clear();
+      managedBoatRows = [];
+      managedBoatDeleteConfirmations.length = 0;
+      if (botId) await api("DELETE", `/api/bots/${botId}`).catch(() => undefined);
+      await api("PUT", "/api/config", { box: { token: "" } }).catch(() => undefined);
+      boatRouteCalls.length = 0;
+    }
+  });
+
+  it("keeps a bot when its Boat provider is unavailable and fences deletion races", async () => {
     let botId = "";
     let guardBotId = "";
     let roomId = "";
@@ -2277,28 +4356,16 @@ describe("harness HTTP API", () => {
       expect((await api("PUT", "/api/config", { box: { token: "box_route" } })).status).toBe(200);
       const bot = (await api("POST", "/api/bots")).body.bot;
       botId = bot.id;
-      const managedName = managedBoxNameForFixture(bot.id);
-      managedBoxRows = [{ id: "bx_23456789", name: managedName, state: "archived" }];
-
-      // Ownership follows the bot id, not its current destination/backend.
-      const moved = await api("PATCH", `/api/bots/${bot.id}`, { computer: null, cloudBackend: "vps" });
-      expect(moved.status).toBe(200);
-      const guarded = await api("DELETE", `/api/bots/${bot.id}`);
-      expect(guarded.status).toBe(409);
-      expect(guarded.body.error).toMatch(/cloud computer.*Settings.*Computers/i);
-      expect((await api("GET", "/api/bots?messages=0")).body.bots.some(
-        (candidate: { id: string }) => candidate.id === bot.id,
-      )).toBe(true);
-
-      managedBoxListStatus = 503;
+      managedBoatRows = [{ id: "bx_23456789", name: managedBoatNameForFixture(bot.id), state: "archived" }];
+      managedBoatListStatus = 503;
       const unavailable = await api("DELETE", `/api/bots/${bot.id}`);
       expect(unavailable.status).toBe(503);
       expect((await api("GET", "/api/bots?messages=0")).body.bots.some(
         (candidate: { id: string }) => candidate.id === bot.id,
       )).toBe(true);
 
-      managedBoxListStatus = 200;
-      managedBoxRows = [];
+      managedBoatListStatus = 200;
+      managedBoatRows = [];
       expect((await api("PATCH", `/api/bots/${bot.id}`, {
         name: "Target",
         modelSelection: { instanceId: "claude", model: "claude-sonnet-5" },
@@ -2320,10 +4387,18 @@ describe("harness HTTP API", () => {
         localVm: { mode: "per-bot", maxInstances: 2 },
       })).status).toBe(200);
       const listGate = deferredGate();
-      managedBoxListGate = listGate;
-      boxRouteCalls.length = 0;
+      managedBoatListGate = listGate;
+      boatRouteCalls.length = 0;
       const deletion = api("DELETE", `/api/bots/${bot.id}`);
-      await expect.poll(() => boxRouteCalls.some(
+      // Deletion first probes local runtimes, which can outlast poll's 1s
+      // default on CI. Race only after the provider actually holds the LIST.
+      await Promise.race([
+        listGate.entered,
+        deletion.then(({ status }) => {
+          throw new Error(`bot deletion returned ${status} before reaching the Boat list gate`);
+        }),
+      ]);
+      expect(boatRouteCalls.some(
         (call) => call.method === "GET" && call.path.startsWith("/boxes?limit="),
       )).toBe(true);
       const racedTurn = await api("POST", `/api/bots/${bot.id}/messages`, { text: "do not provision during deletion" });
@@ -2342,23 +4417,23 @@ describe("harness HTTP API", () => {
       }, { timeout: 5_000 }).toBe(true);
       listGate.release();
       expect((await deletion).status).toBe(200);
-      managedBoxListGate = null;
+      managedBoatListGate = null;
       botId = "";
     } finally {
-      managedBoxListStatus = 200;
-      managedBoxListGate?.release();
-      managedBoxListGate = null;
-      managedBoxRows = [];
+      managedBoatListStatus = 200;
+      managedBoatListGate?.release();
+      managedBoatListGate = null;
+      managedBoatRows = [];
       if (roomId) await api("DELETE", `/api/groups/${roomId}`).catch(() => undefined);
       if (botId) await api("DELETE", `/api/bots/${botId}`).catch(() => undefined);
       if (guardBotId) await api("DELETE", `/api/bots/${guardBotId}`).catch(() => undefined);
       await api("PATCH", "/api/config", { localVm: { mode: "shared", maxInstances: 2 } }).catch(() => undefined);
       await api("PUT", "/api/config", { box: { token: "" } });
-      boxRouteCalls.length = 0;
+      boatRouteCalls.length = 0;
     }
   });
 
-  it("keeps the bot owner while Box creation recovery is unresolved", async () => {
+  it("keeps the bot owner while Boat creation recovery is unresolved", async () => {
     let ambiguousBotId = "";
     let rememberedBotId = "";
     try {
@@ -2370,22 +4445,22 @@ describe("harness HTTP API", () => {
         computer: "cloud",
         cloudBackend: "box",
       })).status).toBe(200);
-      managedBoxCreateId = "bx_cdefghjk";
-      managedBoxCreateName = managedBoxNameForFixture(ambiguousBot.id);
-      managedBoxCreateMode = "ambiguous";
+      managedBoatCreateId = "bx_cdefghjk";
+      managedBoatCreateName = managedBoatNameForFixture(ambiguousBot.id);
+      managedBoatCreateMode = "ambiguous";
       const ambiguousCreate = await api("POST", `/api/bots/${ambiguousBot.id}/computer/provision`, {});
       expect(ambiguousCreate.status).toBe(500);
       expect(ambiguousCreate.body.error).toMatch(/provider outcome is unknown/i);
       const ambiguousDelete = await api("DELETE", `/api/bots/${ambiguousBot.id}`);
       expect(ambiguousDelete.status).toBe(409);
-      expect(ambiguousDelete.body.error).toMatch(/pending cloud computer creation.*ascii\.dev/i);
+      expect(ambiguousDelete.body.error).toMatch(/pending cloud computer creation.*boat\.dev/i);
 
       // Recover with the original key, finish the deterministic rename, then
-      // remove the durable Box before deleting its bot.
-      managedBoxCreateMode = "success";
+      // remove the durable Boat before deleting its bot.
+      managedBoatCreateMode = "success";
       expect((await api("POST", `/api/bots/${ambiguousBot.id}/computer/provision`, {})).status).toBe(200);
-      expect((await api("POST", `/api/computers/boxes/${managedBoxCreateId}/delete`, {
-        confirmName: managedBoxCreateName,
+      expect((await api("POST", `/api/computers/boxes/${managedBoatCreateId}/delete`, {
+        confirmName: managedBoatCreateName,
       })).status).toBe(202);
       expect((await api("DELETE", `/api/bots/${ambiguousBot.id}`)).status).toBe(200);
       ambiguousBotId = "";
@@ -2396,73 +4471,91 @@ describe("harness HTTP API", () => {
         computer: "cloud",
         cloudBackend: "box",
       })).status).toBe(200);
-      managedBoxCreateId = "bx_defghjkm";
-      managedBoxCreateName = managedBoxNameForFixture(rememberedBot.id);
-      managedBoxCreateMode = "fail-rename";
+      managedBoatCreateId = "bx_defghjkm";
+      managedBoatCreateName = managedBoatNameForFixture(rememberedBot.id);
+      managedBoatCreateMode = "fail-rename";
       const rememberedCreate = await api("POST", `/api/bots/${rememberedBot.id}/computer/provision`, {});
       expect(rememberedCreate.status).toBe(500);
       expect(rememberedCreate.body.error).toMatch(/rename unavailable/i);
       const rememberedDelete = await api("DELETE", `/api/bots/${rememberedBot.id}`);
       expect(rememberedDelete.status).toBe(409);
-      expect(rememberedDelete.body.error).toMatch(/pending cloud computer creation.*ascii\.dev/i);
+      expect(rememberedDelete.body.error).toMatch(/pending cloud computer creation.*boat\.dev/i);
 
-      managedBoxCreateMode = "success";
+      // The Boat created successfully even though deterministic naming failed.
+      // If the original credential expires, the target-bound deletion fence
+      // is sufficient proof for a valid replacement; the unresolved create
+      // receipt must not deadlock Settings or require the failed name.
+      managedBoatRejectedTokens.add("Bearer box_route");
+      expect((await api("PUT", "/api/config", {
+        box: { token: "box_route_rotated" },
+      })).status).toBe(200);
+
+      managedBoatCreateMode = "success";
+      const cleanupRetry = await api("POST", `/api/bots/${rememberedBot.id}/computer/provision`, {});
+      expect(cleanupRetry.status).toBe(409);
+      expect(cleanupRetry.body.error).toMatch(/previous cloud computer deletion finished.*retry/i);
       expect((await api("POST", `/api/bots/${rememberedBot.id}/computer/provision`, {})).status).toBe(200);
-      expect((await api("POST", `/api/computers/boxes/${managedBoxCreateId}/delete`, {
-        confirmName: managedBoxCreateName,
+      expect((await api("POST", `/api/computers/boxes/${managedBoatCreateId}/delete`, {
+        confirmName: managedBoatCreateName,
       })).status).toBe(202);
       expect((await api("DELETE", `/api/bots/${rememberedBot.id}`)).status).toBe(200);
       rememberedBotId = "";
     } finally {
-      managedBoxCreateMode = "success";
-      managedBoxRows = [];
-      managedBoxCreatedIds.clear();
+      managedBoatCreateMode = "success";
+      managedBoatRows = [];
+      managedBoatCreatedIds.clear();
       if (ambiguousBotId) await api("DELETE", `/api/bots/${ambiguousBotId}`).catch(() => undefined);
       if (rememberedBotId) await api("DELETE", `/api/bots/${rememberedBotId}`).catch(() => undefined);
-      managedBoxCreateMode = "refuse";
-      managedBoxCreateId = "bx_cdefghjk";
-      managedBoxCreateName = "";
+      managedBoatCreateMode = "refuse";
+      managedBoatCreateId = "bx_cdefghjk";
+      managedBoatCreateName = "";
+      managedBoatRejectedTokens.clear();
       await api("PUT", "/api/config", { box: { token: "" } });
-      boxRouteCalls.length = 0;
+      boatRouteCalls.length = 0;
     }
   });
 
-  it("keeps a bot owner when a resolved journal Box is missing from an eventually-consistent LIST", async () => {
+  it("finds and deletes a remembered Boat even while account LIST omits it", async () => {
     let botId = "";
     try {
-      managedBoxRows = [];
+      managedBoatRows = [];
       expect((await api("PUT", "/api/config", { box: { token: "box_route" } })).status).toBe(200);
       const bot = (await api("POST", "/api/bots")).body.bot;
       botId = bot.id;
       expect((await api("PATCH", `/api/bots/${bot.id}`, { computer: "cloud", cloudBackend: "box" })).status).toBe(200);
-      managedBoxCreateMode = "success";
-      managedBoxCreateId = "bx_ghjkmnpq";
-      managedBoxCreateName = managedBoxNameForFixture(bot.id);
+      managedBoatCreateMode = "success";
+      managedBoatCreateId = "bx_ghjkmnpq";
+      managedBoatCreateName = managedBoatNameForFixture(bot.id);
       expect((await api("POST", `/api/bots/${bot.id}/computer/provision`, {})).status).toBe(200);
 
-      managedBoxListRowsOverride = [];
-      boxRouteCalls.length = 0;
-      const deletion = await api("DELETE", `/api/bots/${bot.id}`);
-      expect(deletion.status).toBe(409);
-      expect(deletion.body.error).toMatch(/remembered cloud computer.*Settings.*Computers/i);
-      expect(boxRouteCalls).toContainEqual({ method: "GET", path: `/boxes/${managedBoxCreateId}` });
+      managedBoatListRowsOverride = [];
+      boatRouteCalls.length = 0;
+      const inventory = await api("GET", "/api/computers/boxes");
+      expect(inventory.status).toBe(200);
+      expect(inventory.body.instances).toContainEqual(expect.objectContaining({
+        boxId: managedBoatCreateId,
+        name: managedBoatCreateName,
+        ownerBotId: bot.id,
+      }));
 
-      managedBoxListRowsOverride = null;
-      expect((await api("POST", `/api/computers/boxes/${managedBoxCreateId}/delete`, {
-        confirmName: managedBoxCreateName,
-      })).status).toBe(202);
-      expect((await api("DELETE", `/api/bots/${bot.id}`)).status).toBe(200);
+      const deletion = await api("DELETE", `/api/bots/${bot.id}`);
+      expect(deletion).toMatchObject({ status: 200, body: { ok: true } });
+      expect(boatRouteCalls).toContainEqual({ method: "GET", path: `/boxes/${managedBoatCreateId}` });
+      expect(managedBoatDeleteConfirmations).toContainEqual({
+        boxId: managedBoatCreateId,
+        confirmation: managedBoatCreateId,
+      });
       botId = "";
     } finally {
-      managedBoxListRowsOverride = null;
-      managedBoxCreateMode = "refuse";
-      managedBoxCreateId = "bx_cdefghjk";
-      managedBoxCreateName = "";
-      managedBoxRows = [];
-      managedBoxCreatedIds.clear();
+      managedBoatListRowsOverride = null;
+      managedBoatCreateMode = "refuse";
+      managedBoatCreateId = "bx_cdefghjk";
+      managedBoatCreateName = "";
+      managedBoatRows = [];
+      managedBoatCreatedIds.clear();
       if (botId) await api("DELETE", `/api/bots/${botId}`).catch(() => undefined);
       await api("PUT", "/api/config", { box: { token: "" } }).catch(() => undefined);
-      boxRouteCalls.length = 0;
+      boatRouteCalls.length = 0;
     }
   });
 
@@ -2556,7 +4649,7 @@ describe("harness HTTP API", () => {
       expect(response).toEqual({
         status: 409,
         body: {
-          error: "A section can have only one Chief of Staff. Choose one Chief or use a section without one.",
+          error: "A team can have only one Chief of Staff. Choose one Chief or use a team without one.",
         },
       });
 
@@ -2583,7 +4676,7 @@ describe("harness HTTP API", () => {
 
       for (const body of [
         { name: "S".repeat(61), botIds: [visible.id] },
-        { name: "Work", botIds: [] },
+        { name: "", botIds: [] },
         { name: "Work", botIds: ["not/an/id"] },
         { name: "Work", botIds: [visible.id], extra: true },
       ]) {
@@ -2765,6 +4858,65 @@ describe("harness HTTP API", () => {
       body: new Uint8Array(png),
     });
     expect(malformedId.status).toBe(400);
+  });
+
+  it("serves audio attachments with single-range 206s and keeps images full", async () => {
+    // Voice notes land in the attachments dir via saveAudio; seed one the
+    // same way the voice-note route does, under a generated-style name.
+    const audio = Buffer.from("0123456789abcdefghij");
+    const audioName = "voice-note-range-fixture.mp3";
+    mkdirSync(join(home, ".openmausbot", "attachments"), { recursive: true });
+    writeFileSync(join(home, ".openmausbot", "attachments", audioName), audio);
+    const size = audio.byteLength;
+
+    const bounded = await fetch(`${BASE}/api/attachments/${audioName}`, { headers: { range: "bytes=2-7" } });
+    expect(bounded.status).toBe(206);
+    expect(bounded.headers.get("content-type")).toBe("audio/mpeg");
+    expect(bounded.headers.get("content-range")).toBe(`bytes 2-7/${size}`);
+    expect(bounded.headers.get("content-length")).toBe("6");
+    expect(Buffer.from(await bounded.arrayBuffer()).equals(audio.subarray(2, 8))).toBe(true);
+
+    const openEnded = await fetch(`${BASE}/api/attachments/${audioName}`, { headers: { range: "bytes=12-" } });
+    expect(openEnded.status).toBe(206);
+    expect(openEnded.headers.get("content-range")).toBe(`bytes 12-${size - 1}/${size}`);
+    expect(Buffer.from(await openEnded.arrayBuffer()).equals(audio.subarray(12))).toBe(true);
+
+    const suffix = await fetch(`${BASE}/api/attachments/${audioName}`, { headers: { range: "bytes=-4" } });
+    expect(suffix.status).toBe(206);
+    expect(suffix.headers.get("content-range")).toBe(`bytes ${size - 4}-${size - 1}/${size}`);
+    expect(Buffer.from(await suffix.arrayBuffer()).equals(audio.subarray(size - 4))).toBe(true);
+
+    const pastEof = await fetch(`${BASE}/api/attachments/${audioName}`, { headers: { range: `bytes=${size}-` } });
+    expect(pastEof.status).toBe(416);
+    expect(pastEof.headers.get("content-range")).toBe(`bytes */${size}`);
+
+    // multi-range and malformed headers read as absent: full 200, one body
+    for (const bad of ["bytes=0-1,3-4", "bytes=x-y", "chunks=0-9"]) {
+      const ignored = await fetch(`${BASE}/api/attachments/${audioName}`, { headers: { range: bad } });
+      expect(ignored.status).toBe(200);
+      expect(Buffer.from(await ignored.arrayBuffer()).equals(audio)).toBe(true);
+    }
+
+    // a no-range audio GET is unchanged
+    const plain = await fetch(`${BASE}/api/attachments/${audioName}`);
+    expect(plain.status).toBe(200);
+    expect(Buffer.from(await plain.arrayBuffer()).equals(audio)).toBe(true);
+
+    // images keep the pre-Range behavior: a Range header is ignored
+    const png = Buffer.from(
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==",
+      "base64",
+    );
+    const saved = await fetch(`${BASE}/api/attachments`, {
+      method: "POST",
+      headers: { "content-type": "image/png" },
+      body: new Uint8Array(png),
+    });
+    const imageName = ((await saved.json()) as { path: string }).path.split(/[\\/]/).pop()!;
+    const imageWithRange = await fetch(`${BASE}/api/attachments/${imageName}`, { headers: { range: "bytes=0-4" } });
+    expect(imageWithRange.status).toBe(200);
+    expect(imageWithRange.headers.get("content-range")).toBeNull();
+    expect(Buffer.from(await imageWithRange.arrayBuffer()).equals(png)).toBe(true);
   });
 
   it("keeps a channel image in its transcript while sending native pixels to the responder", async () => {
@@ -2999,6 +5151,35 @@ describe("harness HTTP API", () => {
     }
   });
 
+  it("starts new bots with the workspace's new-bot effort unless they choose their own", async () => {
+    const instances = (await api("GET", "/api/instances")).body.instances;
+    const claude = instances.find((instance: { instanceId: string }) => instance.instanceId === "claude");
+    expect(claude.capabilities.effortLevels).toEqual(expect.arrayContaining(["low", "high"]));
+    const selection = { instanceId: claude.instanceId, model: claude.models.default };
+    const created: string[] = [];
+    try {
+      const saved = await api("PATCH", "/api/config", { newBots: { effort: "high" } });
+      expect(saved.status).toBe(200);
+      expect(saved.body.newBots).toEqual({ effort: "high" });
+      expect((await api("GET", "/api/config")).body.newBots).toEqual({ effort: "high" });
+      const defaulted = (await api("POST", "/api/bots", { modelSelection: selection })).body.bot;
+      const chosen = (await api("POST", "/api/bots", { modelSelection: { ...selection, effort: "low" } })).body.bot;
+      created.push(defaulted.id, chosen.id);
+      expect(defaulted.modelSelection).toEqual({ ...selection, effort: "high" });
+      expect(chosen.modelSelection).toEqual({ ...selection, effort: "low" });
+      const thread = await api("POST", `/api/bots/${defaulted.id}/tasks`, { title: "Next" });
+      expect(thread.body.task.modelSelection).toEqual({ ...selection, effort: "high" });
+
+      expect((await api("PATCH", "/api/config", { newBots: { effort: null } })).body.newBots).toEqual({});
+      const plain = (await api("POST", "/api/bots", { modelSelection: selection })).body.bot;
+      created.push(plain.id);
+      expect(plain.modelSelection).toEqual(selection);
+    } finally {
+      await api("PATCH", "/api/config", { newBots: { effort: null } });
+      for (const id of created) await api("DELETE", `/api/bots/${id}`);
+    }
+  });
+
   it("updates a paired bot's model, persists it, broadcasts it, and clears effort", async () => {
     const instances = (await api("GET", "/api/instances")).body.instances;
     const claude = instances.find((instance: { instanceId: string }) => instance.instanceId === "claude");
@@ -3092,7 +5273,7 @@ describe("harness HTTP API", () => {
         (candidate: { id: string }) => candidate.id === bot.id,
       );
       expect(after.modelSelection).toEqual(selection);
-      expect(after.autoApprove).toBeUndefined();
+      expect(after.autoApprove).toBe(bot.autoApprove);
     } finally {
       await api("DELETE", `/api/bots/${bot.id}`);
     }
@@ -3209,6 +5390,11 @@ describe("harness HTTP API", () => {
         const rejected = await isolatedApi("PATCH", `/api/bots/${seeded.id}/model`, targetSelection);
         expect(rejected.status, seeded.approvalMode).toBe(400);
         expect(rejected.body.error).toMatch(/requires choosing Ask first/i);
+        const scoped = await isolatedApi("PATCH", `/api/bots/${seeded.id}/tasks/${seeded.threadId}`, {
+          modelSelection: targetSelection, updateBotDefault: true, approvalMode: "ask",
+        });
+        expect(scoped.status, seeded.approvalMode).toBe(seeded.approvalMode === "custom" ? 403 : 400);
+        expect(scoped.body.error).toMatch(/Custom approval|resetApprovalToAsk/i);
         const unchanged = (await isolatedApi("GET", "/api/bots?messages=0")).body.bots.find(
           (candidate: { id: string }) => candidate.id === seeded.id,
         );
@@ -3216,7 +5402,39 @@ describe("harness HTTP API", () => {
           approvalMode: seeded.approvalMode,
           modelSelection: seeded.modelSelection,
         });
+        expect(unchanged.tasks.find((task: { threadId: string }) => task.threadId === seeded.threadId).modelSelection).toEqual(seeded.modelSelection);
       }
+
+      const full = trustedBots.find(candidate => candidate.approvalMode === "full")!;
+      const sibling = (await isolatedApi("POST", `/api/bots/${full.id}/tasks`, { title: "Untouched" })).body.task;
+      for (const body of [
+        { resetApprovalToAsk: true },
+        { modelSelection: targetSelection, resetApprovalToAsk: "yes" },
+        { modelSelection: targetSelection, resetApprovalToAsk: true, approvalMode: "auto" },
+        { modelSelection: targetSelection, resetApprovalToAsk: true, updateBotDefault: "yes" },
+        { modelSelection: { ...targetSelection, effort: "turbo" }, resetApprovalToAsk: true },
+      ]) {
+        expect((await isolatedApi("PATCH", `/api/bots/${full.id}/tasks/${full.threadId}`, body)).status).toBe(400);
+      }
+      const sameProvider = await isolatedApi("PATCH", `/api/bots/${full.id}/tasks/${full.threadId}`, {
+        modelSelection: { ...full.modelSelection, model: "another-model" },
+      });
+      expect(sameProvider.status).toBe(200);
+      expect(sameProvider.body.task.approvalMode ?? sameProvider.body.bot.approvalMode).toBe("full");
+      const switched = await isolatedApi("PATCH", `/api/bots/${full.id}/tasks/${full.threadId}`, {
+        modelSelection: targetSelection, updateBotDefault: true, resetApprovalToAsk: true,
+      });
+      expect(switched.status).toBe(200);
+      expect(switched.body.bot).toMatchObject({ modelSelection: targetSelection, approvalMode: "ask", autoApprove: false });
+      expect(switched.body.task).toMatchObject({ modelSelection: targetSelection, approvalMode: "ask", alwaysAllow: [] });
+      expect(switched.body.bot.tasks.find((task: { threadId: string }) => task.threadId === sibling.threadId))
+        .toMatchObject({ modelSelection: full.modelSelection, approvalMode: "full" });
+      const created = await isolatedApi("POST", `/api/bots/${full.id}/tasks`, { title: "New defaults" });
+      expect(created.body.task).toMatchObject({ modelSelection: targetSelection, approvalMode: "ask" });
+      const refusedCustom = trustedBots.find(candidate => candidate.approvalMode === "custom")!;
+      expect((await isolatedApi("PATCH", `/api/bots/${refusedCustom.id}/tasks/${refusedCustom.threadId}`, {
+        modelSelection: targetSelection, resetApprovalToAsk: true,
+      })).status).toBe(403);
 
       // A loopback-capable bot must not escape a restrictive Custom config
       // by changing another idle bot to Ask/Auto. Leaving Custom is a trusted
@@ -3348,6 +5566,7 @@ describe("harness HTTP API", () => {
     }
   });
 
+
   it("imports a team as a project: one room, on a folder", async () => {
     // The manifest still describes only people. Room name and folder come
     // from the CALLER, so a manifest fetched from the library cannot create
@@ -3371,7 +5590,8 @@ describe("harness HTTP API", () => {
 
       const created = await api("POST", `/api/teams/import?mode=project&cwd=${encodeURIComponent(folder)}`, exported.body);
       expect(created.status).toBe(201);
-      expect(created.body.group).toMatchObject({ name: "Client XY", cwd: folder });
+      expect(created.body.group).toMatchObject({ name: "Client XY", cwd: folder, section: "Client XY" });
+      expect(created.body.bots.every((bot: { section?: string }) => bot.section === "Client XY")).toBe(true);
       // the room is made of exactly the bots this import created
       expect(created.body.group.memberIds.sort()).toEqual(created.body.bots.map((bot: { id: string }) => bot.id).sort());
       // the folder is the room's WISH; the store pins it on the first turn
@@ -3381,7 +5601,8 @@ describe("harness HTTP API", () => {
 
       // an explicit name wins over the team name, and the folder is optional
       const named = await api("POST", "/api/teams/import?mode=project&room=Client%20XY%20-%20Ads", exported.body);
-      expect(named.body.group).toMatchObject({ name: "Client XY - Ads" });
+      expect(named.body.group).toMatchObject({ name: "Client XY - Ads", section: "Client XY 2" });
+      expect(named.body.bots.every((bot: { section?: string }) => bot.section === "Client XY 2")).toBe(true);
       expect(named.body.group.cwd).toBeUndefined();
 
       for (const room of [created.body.group, named.body.group]) {
@@ -3392,6 +5613,38 @@ describe("harness HTTP API", () => {
       }
     } finally {
       stream.close();
+    }
+  });
+
+  it("allocates editable template sections without colliding with rooms or archived bots", async () => {
+    const stem = "X".repeat(60);
+    const seed = await api("POST", "/api/bots", { name: "Existing section owner", color: "blue", section: `${stem.slice(0, 58)} 2` });
+    expect(seed.status).toBe(201);
+    const original = seed.body.bot;
+    const createdRoom = await api("POST", "/api/groups", { name: "Existing section room", memberIds: [original.id], section: stem.toLowerCase() });
+    expect(createdRoom.status).toBe(201);
+    const room = createdRoom.body.group;
+    expect((await api("PATCH", `/api/bots/${original.id}`, { hidden: true })).status).toBe(200);
+    const before = (await api("GET", "/api/bots")).body;
+    const copies: string[] = [];
+    try {
+      for (const suffix of [3, 4]) {
+        const imported = await api("POST", "/api/teams/import", {
+          format: "openmaus.team", version: 2,
+          team: { name: `${stem} long template name`, members: [{ key: "helper", name: "Template helper", section: "Must not choose destination", appearance: { color: "blue" } }] },
+        });
+        expect(imported.status).toBe(201);
+        copies.push(...imported.body.bots.map((bot: { id: string }) => bot.id));
+        expect(imported.body.bots[0].section).toBe(`${stem.slice(0, 58)} ${suffix}`);
+        // The normal profile API accepts the allocated section unchanged.
+        expect((await api("PATCH", `/api/bots/${copies.at(-1)}`, { section: imported.body.bots[0].section })).status).toBe(200);
+      }
+      const after = (await api("GET", "/api/bots")).body;
+      for (const bot of before.bots) expect(after.bots.find((value: { id: string }) => value.id === bot.id)).toEqual(bot);
+      expect(after.groups).toEqual(before.groups);
+    } finally {
+      await api("DELETE", `/api/groups/${room.id}`);
+      for (const id of [original.id, ...copies]) await api("DELETE", `/api/bots/${id}`);
     }
   });
 
@@ -3422,6 +5675,7 @@ describe("harness HTTP API", () => {
             description: "Find evidence.",
             appearance: { color: "cyan" },
             playbooks: ["signal-check"],
+            skills: ["source-check"],
             autoApprove: true,
           },
           {
@@ -3457,6 +5711,15 @@ describe("harness HTTP API", () => {
           triggers: ["signal brief"],
           instructions: "Keep the source URL and confidence.",
         }],
+        skills: {
+          version: 1,
+          entries: [{
+            name: "source-check",
+            description: "Check sources before writing.",
+            source: "package:signal-desk",
+            instructions: "---\nname: source-check\ndescription: Check sources before writing.\n---\n\n# Source check\n",
+          }],
+        },
       },
     };
 
@@ -3465,12 +5728,15 @@ describe("harness HTTP API", () => {
     expect(installed.body.bots).toHaveLength(2);
     expect(installed.body.groups).toHaveLength(1);
     expect(installed.body.routines).toHaveLength(1);
+    expect(installed.body.bots.every((bot: { section?: string }) => bot.section === packageFile.package.name)).toBe(true);
+    expect(installed.body.groups[0].section).toBe(packageFile.package.name);
 
     const scout = installed.body.bots.find((bot: { name: string }) => bot.name.startsWith("Package Scout"));
     const editor = installed.body.bots.find((bot: { name: string }) => bot.name.startsWith("Package Editor"));
     expect(scout).toMatchObject({
       chiefOfStaff: true,
       composio: false,
+      connectorTools: {},
       playbooks: [{ key: "signal-check", instructions: "Keep the source URL and confidence." }],
       installedPackage: {
         id: "signal-desk",
@@ -3479,6 +5745,26 @@ describe("harness HTTP API", () => {
       },
     });
     expect(scout).not.toHaveProperty("autoApprove");
+    const importedSkills = await api("GET", `/api/bots/${scout.id}/skills`);
+    expect(importedSkills.body.skills).toMatchObject([{
+      name: "source-check",
+      enabled: false,
+      source: "package:signal-desk",
+    }]);
+    expect(await api("GET", `/api/bots/${scout.id}/skills/source-check`)).toMatchObject({
+      status: 200,
+      body: { text: expect.stringContaining("name: source-check") },
+    });
+    const exportedWithSkill = await api("POST", "/api/teams/export", {
+      format: "package",
+      name: "Signal Skill Package",
+      skillIds: ["source-check"],
+    });
+    expect(exportedWithSkill.status).toBe(200);
+    expect(exportedWithSkill.body.markdown).toContain("name: source-check");
+    const exportedWithoutSkills = await api("POST", "/api/teams/export", { format: "package" });
+    expect(exportedWithoutSkills.status).toBe(200);
+    expect(exportedWithoutSkills.body.markdown).not.toContain("name: source-check");
     expect(editor.playbooks).toBeUndefined();
     expect(scout.section).toBe(editor.section);
     expect(installed.body.groups[0]).toMatchObject({
@@ -3550,14 +5836,15 @@ describe("harness HTTP API", () => {
       name: "Mira",
       title: "Project Lead",
       autoApprove: true,
-      autoReview: "enforce",
       alwaysAllow: ["Bash:git"],
       approvePeerComms: true,
       chiefOfStaff: true,
       composio: true,
       computer: "off",
     });
-    const groupsBefore = (await api("GET", "/api/bots")).body.groups.length;
+    const beforeImport = (await api("GET", "/api/bots")).body;
+    const groupsBefore = beforeImport.groups.length;
+    const chiefsBefore = beforeImport.bots.filter((bot: { chiefOfStaff?: boolean }) => bot.chiefOfStaff).map((bot: { id: string }) => bot.id).sort();
     const room = (await api("POST", "/api/groups", { memberIds: [trusted.id], name: "War Room" })).body.group;
 
     const smuggled = {
@@ -3577,8 +5864,7 @@ describe("harness HTTP API", () => {
             id: trusted.id,
             threadId: trusted.threadId,
             autoApprove: true,
-            autoReview: "enforce",
-            alwaysAllow: ["Bash"],
+                  alwaysAllow: ["Bash"],
             chiefOfStaff: true,
             approvePeerComms: false,
             composio: true,
@@ -3601,7 +5887,6 @@ describe("harness HTTP API", () => {
     expect(impostor.name).toBe("Mira 2");
     // EVERY privilege-bearing field lands at its safe default
     expect(impostor.autoApprove).toBeUndefined();
-    expect(impostor.autoReview).toBeUndefined();
     expect(impostor.alwaysAllow).toBeUndefined();
     expect(impostor.chiefOfStaff).toBeUndefined();
     expect(impostor.approvePeerComms).toBeUndefined();
@@ -3619,17 +5904,14 @@ describe("harness HTTP API", () => {
       title: "Project Lead",
       threadId: trusted.threadId,
       autoApprove: true,
-      autoReview: "enforce",
       alwaysAllow: ["Bash:git"],
       approvePeerComms: true,
       chiefOfStaff: true,
       composio: true,
       computer: "off",
     });
-    // the single-Chief invariant survives the manifest's chiefOfStaff claim
-    expect(after.bots.filter((bot: { chiefOfStaff?: boolean }) => bot.chiefOfStaff).map((bot: { id: string }) => bot.id)).toEqual([
-      trusted.id,
-    ]);
+    // Import must not create or replace any Chief, including Chiefs of other teams.
+    expect(after.bots.filter((bot: { chiefOfStaff?: boolean }) => bot.chiefOfStaff).map((bot: { id: string }) => bot.id).sort()).toEqual(chiefsBefore);
 
     // a legacy v1 file carries a room block; import ignores it entirely —
     // it neither creates a room nor touches the existing one sharing its name
@@ -3714,7 +5996,7 @@ describe("harness HTTP API", () => {
     // is usually a setting, so no retry can clear it on its own. A routine
     // failure already buzzes; an interactive turn should behave the same.
     //
-    // The cloud destination with no Box configured fails inside dispatch
+    // The cloud destination with no Boat configured fails inside dispatch
     // without touching the network, which keeps this deterministic wherever
     // it runs in the file.
     let botId: string | undefined;
@@ -3748,7 +6030,7 @@ describe("harness HTTP API", () => {
       stream?.close();
       if (botId) await api("DELETE", `/api/bots/${botId}`);
       // the token is write-only, so there is no prior value to restore —
-      // leave the box unconfigured rather than half-set for whatever runs next
+      // leave the boat unconfigured rather than half-set for whatever runs next
       await api("PUT", "/api/config", { box: { token: "" } });
     }
   });
@@ -3883,6 +6165,108 @@ describe("harness HTTP API", () => {
     }
   });
 
+  it("supersedes an earlier pending credential card when the same key is asked for again", async () => {
+    let botId: string | undefined;
+    try {
+      expect((await api("PUT", "/api/config", { box: { token: "" } })).status).toBe(200);
+      const bot = (await api("POST", "/api/bots")).body.bot;
+      botId = bot.id;
+      const token = await mintTestCapability(BASE, bot.id, bot.threadId);
+      const request = (reason: string) => fetch(`${BASE}/api/internal/request-credential`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+        body: JSON.stringify({
+          fromBotId: bot.id,
+          fromThreadId: bot.threadId,
+          credentialId: "openaiImageApiKey",
+          reason,
+        }),
+      });
+
+      const first = await request("needed for the first task");
+      expect(first.status).toBe(201);
+      const firstCard = (await first.json()) as { messageId: string };
+      const second = await request("needed for the second task");
+      expect(second.status).toBe(201);
+      const secondCard = (await second.json()) as { messageId: string };
+      expect(secondCard.messageId).not.toBe(firstCard.messageId);
+
+      const state = (await api("GET", "/api/bots?messages=20")).body.bots
+        .find((candidate: { id: string }) => candidate.id === bot.id);
+      const card = (id: string) => state?.messages
+        .find((message: { id: string }) => message.id === id);
+      expect(card(firstCard.messageId)?.secret).toMatchObject({ superseded: true });
+      expect(card(secondCard.messageId)?.secret?.superseded).toBeUndefined();
+
+      // The replaced card is dead everywhere: dismissing it must not answer
+      // the newer request or resurrect the old one's continuation.
+      const stale = await api("POST", `/api/bots/${bot.id}/secret-cards/${firstCard.messageId}/dismiss`, {
+        threadId: bot.threadId,
+      });
+      expect(stale.status).toBe(409);
+      expect(stale.body.error).toMatch(/superseded by a newer one/i);
+      const fresh = await api("POST", `/api/bots/${bot.id}/secret-cards/${secondCard.messageId}/dismiss`, {
+        threadId: bot.threadId,
+      });
+      expect(fresh).toMatchObject({ status: 200, body: { dismissed: true } });
+    } finally {
+      if (botId) await api("DELETE", `/api/bots/${botId}`);
+      await api("PUT", "/api/config", { box: { token: "" } });
+    }
+  });
+
+  it("leaves the earlier pending credential card actionable when the fresh card append fails", async () => {
+    let botId: string | undefined;
+    try {
+      expect((await api("PUT", "/api/config", { box: { token: "" } })).status).toBe(200);
+      const bot = (await api("POST", "/api/bots")).body.bot;
+      botId = bot.id;
+      const token = await mintTestCapability(BASE, bot.id, bot.threadId);
+      const request = (reason: string) => fetch(`${BASE}/api/internal/request-credential`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+        body: JSON.stringify({
+          fromBotId: bot.id,
+          fromThreadId: bot.threadId,
+          credentialId: "openaiImageApiKey",
+          reason,
+        }),
+      });
+
+      const first = await request("needed for the first task");
+      expect(first.status).toBe(201);
+      const firstCard = (await first.json()) as { messageId: string };
+
+      // Break persistence for the fresh card: a second connection holds the
+      // database write lock, so the append fails mid-request. The fresh card
+      // is appended before any supersede write, so this failure must leave
+      // the first card pending and actionable.
+      const lockDb = new DatabaseSync(join(home, ".openmausbot", "messages.db"));
+      lockDb.exec("BEGIN IMMEDIATE");
+      try {
+        const failed = await request("needed for the second task");
+        expect(failed.status).toBeGreaterThanOrEqual(500);
+      } finally {
+        lockDb.exec("COMMIT");
+        lockDb.close();
+      }
+
+      const card = async (id: string) => (await api("GET", "/api/bots?messages=20")).body.bots
+        .find((candidate: { id: string }) => candidate.id === bot.id)?.messages
+        .find((message: { id: string }) => message.id === id);
+      expect((await card(firstCard.messageId))?.secret?.superseded).toBeUndefined();
+
+      const third = await request("needed for the third task");
+      expect(third.status).toBe(201);
+      const thirdCard = (await third.json()) as { messageId: string };
+      expect((await card(firstCard.messageId))?.secret).toMatchObject({ superseded: true });
+      expect((await card(thirdCard.messageId))?.secret?.superseded).toBeUndefined();
+    } finally {
+      if (botId) await api("DELETE", `/api/bots/${botId}`);
+      await api("PUT", "/api/config", { box: { token: "" } });
+    }
+  });
+
   it("keeps credential-card ownership stable while an encrypted phone save is in flight", async () => {
     const isolatedHome = mkdtempSync(join(tmpdir(), "omb-phone-secret-races-"));
     const isolatedData = join(isolatedHome, ".openmausbot");
@@ -3911,15 +6295,16 @@ describe("harness HTTP API", () => {
       const identity = ${JSON.stringify(PHONE_SECRET_TEST_IDENTITY)};
       const gate = ${JSON.stringify(isolatedGate)};
       const release = ${JSON.stringify(releaseFile)};
-      let listener;
+      const { EventEmitter } = await import("node:events");
+      const messages = new EventEmitter();
       let saves = Promise.resolve();
       const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
       Object.defineProperty(process, "parentPort", {
         value: {
           on(event, callback) {
             if (event !== "message") return;
-            listener = callback;
-            queueMicrotask(() => listener?.({ data: identity }));
+            messages.on(event, callback);
+            queueMicrotask(() => callback({ data: identity }));
           },
           postMessage(message) {
             if (message?.type !== "openmausbot:phone-secret-save") return;
@@ -3941,13 +6326,13 @@ describe("harness HTTP API", () => {
                 );
                 const body = await response.json().catch(() => null);
                 if (!response.ok) throw new Error(body?.error || "credential config failed");
-                listener?.({ data: {
+                messages.emit("message", { data: {
                   type: "openmausbot:phone-secret-save-result",
                   requestId: message.requestId,
                   ok: true,
                 } });
               } catch (error) {
-                listener?.({ data: {
+                messages.emit("message", { data: {
                   type: "openmausbot:phone-secret-save-result",
                   requestId: message.requestId,
                   ok: false,
@@ -4025,6 +6410,8 @@ describe("harness HTTP API", () => {
       const direct = await createBot();
       const channelOwner = await createBot();
       const channelPeer = await createBot();
+      expect((await isolatedApi("PATCH", `/api/bots/${channelPeer.id}`, { chiefOfStaff: true })).status).toBe(200);
+      const roomChiefToken = await mintTestCapability(`http://127.0.0.1:${isolatedPort}`, channelPeer.id, channelPeer.threadId);
 
       const directOriginalThread = direct.threadId as string;
       const directAlternate = await isolatedApi("POST", `/api/bots/${direct.id}/tasks`, { title: "Alternate" });
@@ -4111,6 +6498,53 @@ describe("harness HTTP API", () => {
           )),
         },
       );
+      // A newer request can supersede the card while its encrypted phone
+      // save is still in flight. The completing save must reject instead of
+      // marking the superseded card provided and dispatching its
+      // continuation; only the fresh card can still resolve. This runs on a
+      // third bot, before any credential is configured, so the ownership
+      // fixtures below keep their own cards untouched.
+      const raceBot = await createBot();
+      const raceThread = raceBot.threadId as string;
+      const supersededRequest = await requestCredential(raceBot.id, raceThread);
+      const raceCard = async (messageId: string) => (await isolatedApi("GET", "/api/bots?messages=20")).body.bots
+        .find((bot: { id: string }) => bot.id === raceBot.id).messages
+        .find((message: { id: string }) => message.id === messageId);
+      const supersededEnvelope = await sealPhoneSecretForTest({
+        version: 1,
+        keyId: PHONE_SECRET_TEST_IDENTITY.keyId,
+        deviceId,
+        botId: raceBot.id,
+        threadId: raceThread,
+        messageId: supersededRequest.messageId,
+        target: "openaiImageApiKey",
+        requestKey: (await raceCard(supersededRequest.messageId)).secret.requestKey,
+      }, "sk-test-superseded");
+      const supersededProvide = provide(raceBot.id, supersededRequest.messageId, supersededEnvelope);
+      await expect.poll(() => readdirSync(isolatedGate).filter((name) => name.endsWith(".started")).length).toBe(1);
+      const freshRequest = await requestCredential(raceBot.id, raceThread);
+      writeFileSync(releaseFile, "release");
+      const rejected = await supersededProvide;
+      expect(rejected.status).toBe(409);
+      expect(await rejected.json()).toMatchObject({ error: expect.stringMatching(/superseded by a newer one/i) });
+      expect((await raceCard(supersededRequest.messageId)).secret).toMatchObject({ superseded: true });
+      expect((await raceCard(supersededRequest.messageId)).secret.provided).not.toBe(true);
+      const freshEnvelope = await sealPhoneSecretForTest({
+        version: 1,
+        keyId: PHONE_SECRET_TEST_IDENTITY.keyId,
+        deviceId,
+        botId: raceBot.id,
+        threadId: raceThread,
+        messageId: freshRequest.messageId,
+        target: "openaiImageApiKey",
+        requestKey: (await raceCard(freshRequest.messageId)).secret.requestKey,
+      }, "sk-test-fresh-card");
+      const freshProvide = await provide(raceBot.id, freshRequest.messageId, freshEnvelope);
+      expect(freshProvide.status).toBe(200);
+      expect(await freshProvide.json()).toEqual({ provided: true, resumed: true });
+      // Hand the gate back to the ownership fixtures below: their saves must
+      // start held, with a clean slate of started markers.
+      for (const name of readdirSync(isolatedGate)) rmSync(join(isolatedGate, name));
       provideRequests.push(...[
         provide(direct.id, directRequest.messageId, directEnvelope),
         provide(channelOwner.id, groupRequest.messageId, groupEnvelope),
@@ -4154,6 +6588,11 @@ describe("harness HTTP API", () => {
       await expectLocked(isolatedApi("PATCH", `/api/groups/${group.id}`, {
         memberIds: [channelPeer.id],
       }));
+      const chiefRosterChange = await chiefRoomRequest(`http://127.0.0.1:${isolatedPort}`, roomChiefToken, "manage-room", {
+        roomId: group.id, action: "set_members", memberIds: [channelOwner.id, channelPeer.id],
+      });
+      expect(chiefRosterChange.status).toBe(409);
+      expect(chiefRosterChange.body.error).toMatch(/securely saving a credential/i);
       await expectLocked(isolatedApi("DELETE", `/api/groups/${group.id}`));
       await expectLocked(isolatedApi("DELETE", `/api/bots/${channelOwner.id}`));
       await expectLocked(isolatedApi("DELETE", `/api/bots/${channelPeer.id}`));
@@ -4337,8 +6776,9 @@ describe("harness HTTP API", () => {
     }
   });
 
-  it("refuses to switch a bot's active task while its turn is running", async () => {
+  it("switches a bot's selected task without stopping its running task", async () => {
     const bot = (await api("POST", "/api/bots")).body.bot;
+    let runningTask = bot.threadId;
     try {
       const instances = (await api("GET", "/api/instances")).body.instances;
       const claude = instances.find((instance: { instanceId: string }) => instance.instanceId === "claude");
@@ -4350,7 +6790,7 @@ describe("harness HTTP API", () => {
       const originalTask = bot.threadId;
       const created = await api("POST", `/api/bots/${bot.id}/tasks`, { title: "Running task" });
       expect(created.status).toBe(201);
-      const runningTask = created.body.task.threadId;
+      runningTask = created.body.task.threadId;
       expect((await api("POST", `/api/bots/${bot.id}/messages`, { text: "keep running" })).status).toBe(202);
 
       await expect.poll(async () => {
@@ -4360,15 +6800,20 @@ describe("harness HTTP API", () => {
         return state?.busy;
       }).toBe(true);
 
-      const blocked = await api("POST", `/api/bots/${bot.id}/tasks/${originalTask}`);
-      expect(blocked.status).toBe(409);
-      expect(blocked.body.error).toMatch(/stop it before switching tasks/i);
+      const switched = await api("POST", `/api/bots/${bot.id}/tasks/${originalTask}`);
+      expect(switched.status).toBe(200);
       const current = (await api("GET", "/api/bots?messages=0")).body.bots.find(
         (candidate: { id: string }) => candidate.id === bot.id,
       );
-      expect(current.threadId).toBe(runningTask);
+      expect(current.threadId).toBe(originalTask);
+      expect(current.tasks.find((task: { threadId: string }) => task.threadId === runningTask)?.busy).toBe(true);
+      expect(current.tasks.find((task: { threadId: string }) => task.threadId === originalTask)?.busy).toBe(false);
+      expect((await api("POST", `/api/bots/${bot.id}/interrupt`, { threadId: runningTask })).status).toBe(200);
+      await expect.poll(async () => (await api("GET", "/api/bots?messages=0")).body.bots.find(
+        (candidate: { id: string }) => candidate.id === bot.id,
+      )?.tasks.find((task: { threadId: string }) => task.threadId === runningTask)?.busy).toBe(false);
     } finally {
-      await api("POST", `/api/bots/${bot.id}/interrupt`, {});
+      await api("POST", `/api/bots/${bot.id}/interrupt`, { threadId: runningTask });
       await api("DELETE", `/api/bots/${bot.id}`);
     }
   });
@@ -4391,19 +6836,30 @@ describe("harness HTTP API", () => {
       await expect.poll(async () => (await api("GET", "/api/bots?messages=0")).body.bots.find(
         (candidate: { id: string }) => candidate.id === bot.id,
       )?.busy).toBe(true);
-      const rejected = await held.finish();
-      expect(rejected.status).toBe(409);
-      expect(rejected.body.error).toMatch(/working/i);
+      const completed = await held.finish();
       const current = (await api("GET", "/api/bots")).body.bots.find(
         (candidate: { id: string }) => candidate.id === bot.id,
       );
-      expect(current.threadId).toBe(before.threadId);
-      expect(current.tasks).toHaveLength(before.tasks.length);
-      expect(current.activeLeafId).not.toBe(before.messages[0].id);
-      expect(current.messages.some((message: { text?: string }) => message.text === "keep running")).toBe(true);
+      if (operation === "tasks") {
+        expect(completed.status).toBe(201);
+        expect(current.threadId).toBe(completed.body.task.threadId);
+        expect(current.tasks).toHaveLength(before.tasks.length + 1);
+        expect(completed.body.bot.modelSelection).toEqual(before.modelSelection);
+        expect(completed.body.task.modelSelection).toEqual(before.modelSelection);
+        expect(completed.body.task.busy).toBe(false);
+      } else {
+        expect(completed.status).toBe(409);
+        expect(completed.body.error).toMatch(/working/i);
+        expect(current.threadId).toBe(before.threadId);
+        expect(current.tasks).toHaveLength(before.tasks.length);
+      }
+      expect(current.tasks.find((task: { threadId: string }) => task.threadId === before.threadId)?.busy).toBe(true);
+      const running = (await api("GET", `/api/threads/${before.threadId}/messages`)).body;
+      expect(running.activeLeafId).not.toBe(before.messages[0].id);
+      expect(running.messages.some((message: { text?: string }) => message.text === "keep running")).toBe(true);
     } finally {
       held.close();
-      await api("POST", `/api/bots/${bot.id}/interrupt`, {});
+      await api("POST", `/api/bots/${bot.id}/interrupt`, { threadId: before.threadId });
       await api("DELETE", `/api/bots/${bot.id}`);
     }
   });
@@ -4562,6 +7018,23 @@ describe("harness HTTP API", () => {
     expect(after.modelSelection.effort).toBeUndefined();
   });
 
+  it("preserves an opaque variant separately from effort and rejects ambiguous or malformed selections", async () => {
+    const bot = (await api("POST", "/api/bots")).body.bot;
+    const selection = { instanceId: "ghost", model: "ghost-1" };
+    for (const variant of ["minimal", "none", "default", "custom-variant"]) {
+      const set = await api("PATCH", `/api/bots/${bot.id}`, { modelSelection: { ...selection, variant } });
+      expect(set.status).toBe(200);
+      expect(set.body.bot.modelSelection).toEqual({ ...selection, variant });
+    }
+    for (const variant of ["", " low", "a\nb", 42, null]) {
+      expect((await api("PATCH", `/api/bots/${bot.id}`, { modelSelection: { ...selection, variant } })).status).toBe(400);
+    }
+    expect((await api("PATCH", `/api/bots/${bot.id}`, { modelSelection: { ...selection, variant: "low", effort: "high" } })).status).toBe(400);
+    const cleared = await api("PATCH", `/api/bots/${bot.id}`, { modelSelection: selection });
+    expect(cleared.status).toBe(200);
+    expect(cleared.body.bot.modelSelection).toEqual(selection);
+  });
+
   it("grants Auto on this computer only through the warning acknowledgement", async () => {
     const created = await api("POST", "/api/bots");
     const bot = created.body.bot;
@@ -4666,6 +7139,51 @@ describe("harness HTTP API", () => {
     }
   });
 
+  it("pins provider approval support at the thread settings gate", async () => {
+    const codex = (await api("POST", "/api/bots", {
+      modelSelection: { instanceId: "codex", model: "fixture-codex-model" },
+    })).body.bot;
+    try {
+      // Codex has no auto-accept-edits mode, so the thread-level PATCH must
+      // refuse Edits before any store write.
+      const refused = await api("PATCH", `/api/bots/${codex.id}/tasks/${codex.threadId}`, { approvalMode: "edits" });
+      expect(refused.status).toBe(400);
+      expect(refused.body.error).toMatch(/This provider does not support the selected approval level/);
+    } finally {
+      await api("DELETE", `/api/bots/${codex.id}`);
+    }
+    const claude = (await api("POST", "/api/bots", {
+      modelSelection: { instanceId: "claude", model: "fixture-claude-model" },
+    })).body.bot;
+    try {
+      // Claude's engine implements acceptEdits, so the same PATCH applies.
+      const applied = await api("PATCH", `/api/bots/${claude.id}/tasks/${claude.threadId}`, { approvalMode: "edits" });
+      expect(applied.status).toBe(200);
+      expect(applied.body.task).toMatchObject({ approvalMode: "edits", autoApprove: false });
+    } finally {
+      await api("DELETE", `/api/bots/${claude.id}`);
+    }
+  });
+
+  it("pins provider approval support at the bot settings gate", async () => {
+    const bot = (await api("POST", "/api/bots", {
+      modelSelection: { instanceId: "computer", model: "claude-fable-5" },
+    })).body.bot;
+    try {
+      // The Boat-native agent has no Full mapping, so the bot-level PATCH
+      // must refuse Full before the trusted-desktop transition.
+      const refused = await api("PATCH", `/api/bots/${bot.id}`, { approvalMode: "full" });
+      expect(refused.status).toBe(400);
+      expect(refused.body.error).toMatch(/does not support the selected approval level, or changing providers requires choosing Ask first/);
+      const stored = (await api("GET", "/api/bots")).body.bots.find(
+        (candidate: { id: string }) => candidate.id === bot.id,
+      );
+      expect(stored.approvalMode).toBeUndefined();
+    } finally {
+      await api("DELETE", `/api/bots/${bot.id}`);
+    }
+  });
+
   it("maps legacy autoApprove PATCHes to safe Auto or Ask", async () => {
     const bot = (await api("POST", "/api/bots")).body.bot;
     const auto = await api("PATCH", `/api/bots/${bot.id}`, { autoApprove: true });
@@ -4699,8 +7217,8 @@ describe("harness HTTP API", () => {
         (candidate: { id: string }) => candidate.id === bot.id,
       );
       expect(stored.busy).toBe(true);
-      expect(stored).not.toHaveProperty("approvalMode");
-      expect(stored).not.toHaveProperty("autoApprove");
+      expect(stored.approvalMode).toBe(bot.approvalMode);
+      expect(stored.autoApprove).toBe(bot.autoApprove);
     } finally {
       await api("POST", `/api/bots/${bot.id}/interrupt`, {}).catch(() => undefined);
       await expect.poll(async () => {
@@ -4709,18 +7227,6 @@ describe("harness HTTP API", () => {
       }, { timeout: 5_000 }).toBeFalsy();
       await api("DELETE", `/api/bots/${bot.id}`).catch(() => undefined);
     }
-  });
-
-  it("stores only known approval-review modes", async () => {
-    const bot = (await api("POST", "/api/bots")).body.bot;
-    for (const autoReview of ["off", "shadow", "enforce"]) {
-      const response = await api("PATCH", `/api/bots/${bot.id}`, { autoReview });
-      expect(response.status).toBe(200);
-      expect(response.body.bot.autoReview).toBe(autoReview);
-    }
-    expect((await api("PATCH", `/api/bots/${bot.id}`, { autoReview: "always" })).status).toBe(400);
-    expect((await api("PATCH", `/api/bots/${bot.id}`, { autoReview: true })).status).toBe(400);
-    await api("DELETE", `/api/bots/${bot.id}`);
   });
 
   it("offers an idempotent stop boundary for active local turns", async () => {
@@ -4793,10 +7299,7 @@ describe("harness HTTP API", () => {
     expect(nothing.status).toBe(404);
   });
 
-  it("closes the approvals a cancelled turn can no longer answer", async () => {
-    // "Cancel turn" is a button ON the approval card, and a pending approval
-    // owns the composer. Stopping the turn without closing its card leaves the
-    // room blocked by a question whose asker is already gone.
+  it("closes cancelled approvals but preserves unanswered questions", async () => {
     const stopped = await api("POST", "/api/groups/test-cancel-room/interrupt");
     expect(stopped.status).toBe(200);
 
@@ -4806,6 +7309,57 @@ describe("harness HTTP API", () => {
     const card = room.messages.find((message: { id: string }) => message.id === "cancel-card").card;
     expect(card.dismissed).toBe(true);
     expect(card.answered).toBe("unavailable");
+
+    const question = room.messages.find((message: { id: string }) => message.id === "cancel-question-card").card;
+    expect(question).toMatchObject({ requestType: "question", requestId: "cancel-question-request" });
+    expect(question.answered).toBeUndefined();
+    expect(question.dismissed).toBeUndefined();
+
+    const dismissed = await api("POST", "/api/threads/test-cancel-room-thread/respond", {
+      requestId: "cancel-question-request",
+      behavior: "answer",
+      message: "The user closed this question without answering. Use your best judgment and continue.",
+      dismiss: true,
+    });
+    expect(dismissed.status).toBe(409);
+
+    const reread = (await api("GET", "/api/bots")).body.groups.find(
+      (group: { id: string }) => group.id === "test-cancel-room",
+    );
+    const stillOpen = reread.messages.find((message: { id: string }) => message.id === "cancel-question-card").card;
+    expect(stillOpen.answered).toBeUndefined();
+    expect(stillOpen.dismissed).toBeUndefined();
+
+    try {
+      const answered = await api("POST", "/api/threads/test-cancel-room-thread/respond", {
+        requestId: "cancel-question-request",
+        behavior: "answer",
+        message: "README",
+      });
+      expect(answered.status, JSON.stringify(answered.body)).toBe(200);
+      expect(answered.body).toMatchObject({ ok: true, outcome: "answered", late: true });
+      await expect.poll(async () => {
+        const groups = (await api("GET", "/api/bots")).body.groups;
+        return groups.find((group: { id: string }) => group.id === "test-cancel-room")?.working;
+      }, { timeout: 5_000 }).toBe(true);
+      const afterAnswer = (await api("GET", "/api/bots")).body.groups.find(
+        (group: { id: string }) => group.id === "test-cancel-room",
+      );
+      const settled = afterAnswer.messages.find((message: { id: string }) => message.id === "cancel-question-card");
+      expect(settled.card).toMatchObject({ answered: "answer", answeredText: "README", dismissed: false });
+      expect(afterAnswer.messages).toContainEqual(expect.objectContaining({
+        role: "user",
+        kind: "text",
+        text: "@Test bot A: README",
+        replyToId: "cancel-question-card",
+      }));
+    } finally {
+      expect((await api("POST", "/api/groups/test-cancel-room/interrupt")).status).toBe(200);
+      await expect.poll(async () => {
+        const groups = (await api("GET", "/api/bots")).body.groups;
+        return groups.find((group: { id: string }) => group.id === "test-cancel-room")?.working;
+      }, { timeout: 5_000 }).toBe(false);
+    }
   });
 
   it("rejects an empty message and explains an unavailable provider", async () => {
@@ -4883,15 +7437,100 @@ describe("harness HTTP API", () => {
     expect(nothing.status).toBe(400);
   });
 
-  it("keeps Box resources attached while allowing a proven same-account token rotation", async () => {
+  it.each(["fish", "xai"])("clears incompatible default and per-agent voices when switching to %s", async (provider) => {
     let botId = "";
     try {
-      managedBoxRows = [];
+      expect((await api("PUT", "/api/config", {
+        tts: { provider: "elevenlabs", voice: "eleven-default" },
+      })).status).toBe(200);
+      const created = await api("POST", "/api/bots");
+      botId = created.body.bot.id;
+      expect((await api("PATCH", `/api/bots/${botId}/profile`, {
+        voice: "eleven-agent",
+      })).status).toBe(200);
+
+      const changed = await api("PUT", "/api/config", { tts: { provider } });
+      expect(changed.status).toBe(200);
+      expect(changed.body.tts).toMatchObject({ provider, voice: "", ready: false });
+      const bot = (await api("GET", "/api/bots?messages=0")).body.bots.find(
+        (candidate: { id: string }) => candidate.id === botId,
+      );
+      expect(bot).not.toHaveProperty("voice");
+      const disk = JSON.parse(readFileSync(join(home, ".openmausbot", "config.json"), "utf8"));
+      expect(disk.tts).toMatchObject({ provider, voice: "" });
+    } finally {
+      if (botId) await api("DELETE", `/api/bots/${botId}`).catch(() => undefined);
+      await api("PUT", "/api/config", { tts: { provider: "elevenlabs", voice: "" } }).catch(() => undefined);
+    }
+  });
+
+  it("saves the Fish Audio model and keeps it across provider switches", async () => {
+    try {
+      const fish = await api("PUT", "/api/config", { tts: { provider: "fish" } });
+      expect(fish.status).toBe(200);
+      expect(fish.body.tts).toMatchObject({ provider: "fish", fishModel: "s2.1-pro" });
+
+      const free = await api("PUT", "/api/config", { tts: { fishModel: "s2.1-pro-free" } });
+      expect(free.status).toBe(200);
+      expect(free.body.tts).toMatchObject({ provider: "fish", fishModel: "s2.1-pro-free" });
+      expect((await api("PUT", "/api/config", { tts: { fishModel: "s1" } })).status).toBe(400);
+
+      const away = await api("PUT", "/api/config", { tts: { provider: "elevenlabs" } });
+      expect(away.body.tts).not.toHaveProperty("fishModel");
+      const back = await api("PUT", "/api/config", { tts: { provider: "fish" } });
+      expect(back.body.tts).toMatchObject({ provider: "fish", fishModel: "s2.1-pro-free" });
+      const disk = JSON.parse(readFileSync(join(home, ".openmausbot", "config.json"), "utf8"));
+      expect(disk.tts).toMatchObject({ provider: "fish", fishModel: "s2.1-pro-free" });
+    } finally {
+      await api("PUT", "/api/config", { tts: { provider: "elevenlabs", voice: "", fishModel: "s2.1-pro" } }).catch(() => undefined);
+    }
+  });
+
+  it("does not switch voice providers when per-agent voices cannot be cleared", async () => {
+    let botId = "";
+    const botsPath = join(home, ".openmausbot", "bots.json");
+    const backupPath = `${botsPath}.voice-switch-test`;
+    let blocked = false;
+    try {
+      expect((await api("PUT", "/api/config", {
+        tts: { provider: "elevenlabs", voice: "eleven-default" },
+      })).status).toBe(200);
+      const created = await api("POST", "/api/bots");
+      botId = created.body.bot.id;
+      expect((await api("PATCH", `/api/bots/${botId}/profile`, {
+        voice: "eleven-agent",
+      })).status).toBe(200);
+
+      renameSync(botsPath, backupPath);
+      mkdirSync(botsPath);
+      blocked = true;
+      const changed = await api("PUT", "/api/config", { tts: { provider: "fish" } });
+      expect(changed.status).toBe(500);
+      const config = await api("GET", "/api/config");
+      expect(config.body.tts).toMatchObject({ provider: "elevenlabs", voice: "eleven-default" });
+      const bot = (await api("GET", "/api/bots?messages=0")).body.bots.find(
+        (candidate: { id: string }) => candidate.id === botId,
+      );
+      expect(bot).toMatchObject({ voice: "eleven-agent" });
+    } finally {
+      if (blocked) {
+        rmSync(botsPath, { recursive: true, force: true });
+        renameSync(backupPath, botsPath);
+      }
+      if (botId) await api("DELETE", `/api/bots/${botId}`).catch(() => undefined);
+      await api("PUT", "/api/config", { tts: { provider: "elevenlabs", voice: "" } }).catch(() => undefined);
+    }
+  });
+
+  it("keeps Boat resources attached while allowing a proven same-account token rotation", async () => {
+    let botId = "";
+    try {
+      managedBoatRows = [];
       expect((await api("PUT", "/api/config", { box: { token: "box_route" } })).status).toBe(200);
       const bot = (await api("POST", "/api/bots")).body.bot;
       botId = bot.id;
-      const name = managedBoxNameForFixture(bot.id);
-      managedBoxRows = [{ id: "bx_23456789", name, state: "idle" }];
+      const name = managedBoatNameForFixture(bot.id);
+      managedBoatRows = [{ id: "bx_23456789", name, state: "idle" }];
 
       const cleared = await api("PUT", "/api/config", { box: { token: "" } });
       expect(cleared.status).toBe(409);
@@ -4910,51 +7549,178 @@ describe("harness HTTP API", () => {
       botId = "";
       expect((await api("PUT", "/api/config", { box: { token: "" } })).status).toBe(200);
     } finally {
-      managedBoxRows = [];
+      managedBoatRows = [];
       if (botId) await api("DELETE", `/api/bots/${botId}`).catch(() => undefined);
       await api("PUT", "/api/config", { box: { token: "" } }).catch(() => undefined);
     }
   });
 
-  it("retires a journaled Box proven gone before clearing and later restoring credentials", async () => {
+  it.each([false, true])("replaces a rejected Boat key without losing remembered computers (provisioned=%s)", async (provisioned) => {
     let botId = "";
     try {
-      managedBoxRows = [];
+      managedBoatRows = [];
+      expect((await api("PUT", "/api/config", { box: { token: "box_route" } })).status).toBe(200);
+      const bot = (await api("POST", "/api/bots")).body.bot;
+      botId = bot.id;
+      if (provisioned) {
+        await api("PATCH", `/api/bots/${bot.id}`, { computer: "cloud", cloudBackend: "box" });
+        managedBoatCreateMode = "success";
+        managedBoatCreateId = "bx_hjkmnpqr";
+        managedBoatCreateName = managedBoatNameForFixture(bot.id);
+        expect((await api("POST", `/api/bots/${bot.id}/computer/provision`, {})).status).toBe(200);
+      }
+      managedBoatRejectedTokens.add("Bearer box_route");
+      if (provisioned) {
+        // A valid key for another account must not detach a remembered Boat.
+        expect((await api("PUT", "/api/config", { box: { token: "box_good" } })).status).toBe(409);
+      }
+      managedBoatRejectedTokens.add("Bearer box_route_rotated");
+      expect((await api("PUT", "/api/config", { box: { token: "box_route_rotated" } })).status).toBe(400);
+      managedBoatRejectedTokens.delete("Bearer box_route_rotated");
+      const rotated = await api("PUT", "/api/config", { box: { token: "box_route_rotated" } });
+      expect(rotated.status).toBe(200);
+      expect(rotated.body.box).toEqual({ configured: true });
+      if (provisioned) {
+        const journal = readFileSync(join(home, ".openmausbot", "box-create-requests.json"), "utf8");
+        expect(journal).toContain(managedBoatCreateId);
+      }
+    } finally {
+      managedBoatRejectedTokens.clear();
+      if (botId) await api("DELETE", `/api/bots/${botId}`).catch(() => undefined);
+      managedBoatCreateMode = "refuse";
+      managedBoatCreateId = "bx_cdefghjk";
+      managedBoatCreateName = "";
+      managedBoatRows = [];
+      managedBoatCreatedIds.clear();
+      await api("PUT", "/api/config", { box: { token: "" } }).catch(() => undefined);
+    }
+  });
+
+  it("retires a journaled Boat proven gone before clearing and later restoring credentials", async () => {
+    let botId = "";
+    try {
+      managedBoatRows = [];
       expect((await api("PUT", "/api/config", { box: { token: "box_route" } })).status).toBe(200);
       const bot = (await api("POST", "/api/bots")).body.bot;
       botId = bot.id;
       expect((await api("PATCH", `/api/bots/${bot.id}`, { computer: "cloud", cloudBackend: "box" })).status).toBe(200);
-      managedBoxCreateMode = "success";
-      managedBoxCreateId = "bx_hjkmnpqr";
-      managedBoxCreateName = managedBoxNameForFixture(bot.id);
+      managedBoatCreateMode = "success";
+      managedBoatCreateId = "bx_hjkmnpqr";
+      managedBoatCreateName = managedBoatNameForFixture(bot.id);
       expect((await api("POST", `/api/bots/${bot.id}/computer/provision`, {})).status).toBe(200);
 
-      // The person removed it in ascii.dev. LIST and direct GET now both prove
+      // The person removed it in boat.dev. LIST and direct GET now both prove
       // absence while the owning credential is still active.
-      managedBoxRows = [];
-      managedBoxCreatedIds.delete(managedBoxCreateId);
+      managedBoatRows = [];
+      managedBoatCreatedIds.delete(managedBoatCreateId);
       expect((await api("PUT", "/api/config", { box: { token: "" } })).status).toBe(200);
       const journal = JSON.parse(readFileSync(join(home, ".openmausbot", "box-create-requests.json"), "utf8"));
       expect(journal.requests.some((entry: { botId?: string }) => entry.botId === bot.id)).toBe(false);
 
       // A stale receipt used to make this impossible: the new token was asked
-      // to expose an already-deleted Box forever.
+      // to expose an already-deleted Boat forever.
       expect((await api("PUT", "/api/config", { box: { token: "box_route" } })).status).toBe(200);
       expect((await api("DELETE", `/api/bots/${bot.id}`)).status).toBe(200);
       botId = "";
     } finally {
-      managedBoxCreateMode = "refuse";
-      managedBoxCreateId = "bx_cdefghjk";
-      managedBoxCreateName = "";
-      managedBoxRows = [];
-      managedBoxCreatedIds.clear();
+      managedBoatCreateMode = "refuse";
+      managedBoatCreateId = "bx_cdefghjk";
+      managedBoatCreateName = "";
+      managedBoatRows = [];
+      managedBoatCreatedIds.clear();
       if (botId) await api("DELETE", `/api/bots/${botId}`).catch(() => undefined);
       await api("PUT", "/api/config", { box: { token: "" } }).catch(() => undefined);
-      boxRouteCalls.length = 0;
+      boatRouteCalls.length = 0;
     }
   });
 
-  it("excludes new Box turns, lifecycle actions, and bot deletion while a token change validates", async () => {
+  it("pins where a conversation works from the composer, validates the place, and lets it follow the bot again", async () => {
+    const created = await api("POST", "/api/bots", {
+      modelSelection: { instanceId: "claude", model: "claude-sonnet-5" },
+      requireAvailableModel: true,
+    });
+    expect(created.status).toBe(201);
+    const bot = created.body.bot;
+    const pinned = await api("PATCH", `/api/bots/${bot.id}/tasks/${bot.threadId}`, { surface: "browser" });
+    expect(pinned.status).toBe(200);
+    expect(pinned.body.task.surface).toBe("browser");
+    // the pin rides the ordinary bot snapshot, so every client sees it
+    const listed = (await api("GET", "/api/bots?messages=0")).body.bots.find((candidate: { id: string }) => candidate.id === bot.id);
+    expect(listed.tasks.find((task: { threadId: string }) => task.threadId === bot.threadId).surface).toBe("browser");
+    for (const surface of ["box", "desktop", 42, true]) {
+      const rejected = await api("PATCH", `/api/bots/${bot.id}/tasks/${bot.threadId}`, { surface });
+      expect(rejected.status, String(surface)).toBe(400);
+      expect(rejected.body.error).toMatch(/surface must be cloud, vm, local, browser, or null/);
+    }
+    const cleared = await api("PATCH", `/api/bots/${bot.id}/tasks/${bot.threadId}`, { surface: null });
+    expect(cleared.status).toBe(200);
+    expect(cleared.body.task.surface).toBeUndefined();
+  });
+
+  it("dispatches the conversation's pinned computer, never advertises a phantom Auto Boat, and previews that same surface", async () => {
+    const bot = (await api("POST", "/api/bots", {
+      name: "Surface routing fixture", modelSelection: { instanceId: "claude", model: "claude-sonnet-5" },
+    })).body.bot;
+    const idle = () => expect.poll(async () =>
+      (await api("GET", "/api/bots?messages=0")).body.bots.find((b: { id: string }) => b.id === bot.id)?.busy,
+    { timeout: 10_000 }).toBe(false);
+    try {
+      expect((await api("PUT", "/api/config", { box: { token: "box_route" } })).status).toBe(200);
+      await api("PATCH", `/api/bots/${bot.id}`, { browser: false, computer: null, cloudBackend: "box" });
+      managedBoatRows = [{ id: "bx_3456789a", name: managedBoatNameForFixture(bot.id), state: "idle" }];
+      boatRouteCalls.length = 0;
+      boatPromptBodies.length = 0;
+      rmSync(fakeClaudeDump, { force: true });
+      expect((await api("POST", `/api/bots/${bot.id}/messages`, { text: "Describe your available computer tools" })).status).toBe(202);
+      const local = await readJsonFileWhenReady<{ mcpConfig: { mcpServers: Record<string, unknown> }; systemPrompt: string }>(fakeClaudeDump);
+      expect(local.mcpConfig.mcpServers.computer).toBeUndefined();
+      expect(boatPromptBodies).toHaveLength(0);
+      expect(boatRouteCalls.some(call => call.method === "POST" && call.path === "/boxes")).toBe(false);
+      await api("POST", `/api/bots/${bot.id}/interrupt`, {}); await idle();
+
+      // A Local VM pin must win even when the bot default says Cloud. The
+      // fixture has no ready Local VM: fail there, never click the host/Box.
+      await api("PATCH", `/api/bots/${bot.id}`, { computer: "cloud" });
+      await api("PATCH", `/api/bots/${bot.id}/tasks/${bot.threadId}`, { surface: "vm" });
+      rmSync(fakeClaudeDump, { force: true });
+      expect((await api("POST", `/api/bots/${bot.id}/messages`, { text: "Open Chrome on the Local VM" })).status).toBe(202);
+      await idle();
+      expect(existsSync(fakeClaudeDump)).toBe(false);
+      expect(boatPromptBodies).toHaveLength(0);
+      const saved = (await api("GET", "/api/bots?messages=0")).body.bots.find((b: { id: string }) => b.id === bot.id);
+      expect(saved.tasks.find((task: { threadId: string }) => task.threadId === bot.threadId).surface).toBe("vm");
+      expect((await api("GET", `/api/bots/${bot.id}/computer?threadId=${bot.threadId}`)).body.surface).toBe("vm");
+      expect((await api("POST", `/api/bots/${bot.id}/computer/join?threadId=${bot.threadId}`, {})).status).toBe(409);
+
+      // The inverse pin dispatches the Boat runner with its own model, not
+      // the local provider's model alias/effort. Preview opens the same Boat.
+      await api("PATCH", `/api/bots/${bot.id}`, { computer: "vm" });
+      await api("PATCH", `/api/bots/${bot.id}/tasks/${bot.threadId}`, { surface: "cloud" });
+      expect((await api("POST", `/api/bots/${bot.id}/messages`, { text: "Open Chrome on the cloud VM" })).status).toBe(202);
+      await expect.poll(() => boatPromptBodies.length, { timeout: 10_000 }).toBe(1);
+      expect(boatPromptBodies[0]).toMatchObject({ model: "claude-fable-5", provider: "claude-code" });
+      expect(boatPromptBodies[0]!.prompt).toContain("assigned cloud computer");
+      expect(existsSync(fakeClaudeDump)).toBe(false);
+      expect((await api("GET", `/api/bots/${bot.id}/computer?threadId=${bot.threadId}`)).body.surface).toBe("cloud");
+      const joined = await api("POST", `/api/bots/${bot.id}/computer/join?threadId=${bot.threadId}`, {});
+      expect(joined).toMatchObject({ status: 200, body: { joinUrl: "https://desktop.invalid/bx_3456789a" } });
+      await api("POST", `/api/bots/${bot.id}/interrupt`, {}); await idle();
+      const before = boatRouteCalls.length;
+      expect((await api("POST", `/api/bots/${bot.id}/computer/provision?threadId=${bot.threadId}`, {})).status).toBe(409);
+      expect((await api("GET", `/api/bots/${bot.id}/computer?threadId=not-owned`)).status).toBe(404);
+      expect(boatRouteCalls).toHaveLength(before);
+    } finally {
+      await api("POST", `/api/bots/${bot.id}/interrupt`, {}).catch(() => {});
+      await idle();
+      managedBoatRows = [];
+      await api("DELETE", `/api/bots/${bot.id}`).catch(() => {});
+      await api("PUT", "/api/config", { box: { token: "" } }).catch(() => {});
+      rmSync(fakeClaudeDump, { force: true });
+      boatPromptBodies.length = 0;
+    }
+  }, 45_000);
+
+  it("excludes new Boat turns, lifecycle actions, and bot deletion while a token change validates", async () => {
     let botId = "";
     try {
       expect((await api("PUT", "/api/config", { box: { token: "" } })).status).toBe(200);
@@ -4962,15 +7728,15 @@ describe("harness HTTP API", () => {
       botId = bot.id;
       expect((await api("PATCH", `/api/bots/${bot.id}`, { computer: "cloud", cloudBackend: "box" })).status).toBe(200);
 
-      const beforeSlow = boxSlowRequestCount;
+      const beforeSlow = boatSlowRequestCount;
       const changing = api("PUT", "/api/config", { box: { token: "box_slow" } });
-      await expect.poll(() => boxSlowRequestCount).toBeGreaterThan(beforeSlow);
+      await expect.poll(() => boatSlowRequestCount).toBeGreaterThan(beforeSlow);
       const lifecycle = await api("POST", `/api/bots/${bot.id}/computer/provision`, {});
       expect(lifecycle.status).toBe(409);
-      expect(lifecycle.body.error).toMatch(/Box account settings are being updated/i);
+      expect(lifecycle.body.error).toMatch(/Boat account settings are being updated/i);
       const turn = await api("POST", `/api/bots/${bot.id}/messages`, { text: "do not cross the account change" });
       expect(turn.status).toBe(409);
-      expect(turn.body.error).toMatch(/Box account settings are being updated/i);
+      expect(turn.body.error).toMatch(/Boat account settings are being updated/i);
       expect((await api("DELETE", `/api/bots/${bot.id}`)).status).toBe(409);
       expect((await changing).status).toBe(200);
 
@@ -4982,45 +7748,45 @@ describe("harness HTTP API", () => {
     }
   });
 
-  it("rejects a Box token change while create and rename own the lifecycle lane", async () => {
+  it("rejects a Boat token change while create and rename own the lifecycle lane", async () => {
     let botId = "";
     try {
-      managedBoxRows = [];
+      managedBoatRows = [];
       expect((await api("PUT", "/api/config", { box: { token: "box_route" } })).status).toBe(200);
       const bot = (await api("POST", "/api/bots")).body.bot;
       botId = bot.id;
       expect((await api("PATCH", `/api/bots/${bot.id}`, { computer: "cloud", cloudBackend: "box" })).status).toBe(200);
-      managedBoxCreateMode = "success";
-      managedBoxCreateId = "bx_fghjkmnp";
-      managedBoxCreateName = managedBoxNameForFixture(bot.id);
-      managedBoxRenameDelayMs = 1_000;
-      boxRouteCalls.length = 0;
+      managedBoatCreateMode = "success";
+      managedBoatCreateId = "bx_fghjkmnp";
+      managedBoatCreateName = managedBoatNameForFixture(bot.id);
+      managedBoatRenameDelayMs = 1_000;
+      boatRouteCalls.length = 0;
 
       const provisioning = api("POST", `/api/bots/${bot.id}/computer/provision`, {});
-      await expect.poll(() => boxRouteCalls.some(
-        (call) => call.method === "PATCH" && call.path === `/boxes/${managedBoxCreateId}`,
+      await expect.poll(() => boatRouteCalls.some(
+        (call) => call.method === "PATCH" && call.path === `/boxes/${managedBoatCreateId}`,
       )).toBe(true);
       const racedChange = await api("PUT", "/api/config", { box: { token: "box_good" } });
       expect(racedChange.status).toBe(409);
       expect(racedChange.body.error).toMatch(/cloud computer actions/i);
       expect((await provisioning).status).toBe(200);
-      managedBoxRenameDelayMs = 0;
+      managedBoatRenameDelayMs = 0;
 
-      expect((await api("POST", `/api/computers/boxes/${managedBoxCreateId}/delete`, {
-        confirmName: managedBoxCreateName,
+      expect((await api("POST", `/api/computers/boxes/${managedBoatCreateId}/delete`, {
+        confirmName: managedBoatCreateName,
       })).status).toBe(202);
       expect((await api("DELETE", `/api/bots/${bot.id}`)).status).toBe(200);
       botId = "";
     } finally {
-      managedBoxRenameDelayMs = 0;
-      managedBoxCreateMode = "refuse";
-      managedBoxCreateId = "bx_cdefghjk";
-      managedBoxCreateName = "";
-      managedBoxRows = [];
-      managedBoxCreatedIds.clear();
+      managedBoatRenameDelayMs = 0;
+      managedBoatCreateMode = "refuse";
+      managedBoatCreateId = "bx_cdefghjk";
+      managedBoatCreateName = "";
+      managedBoatRows = [];
+      managedBoatCreatedIds.clear();
       if (botId) await api("DELETE", `/api/bots/${botId}`).catch(() => undefined);
       await api("PUT", "/api/config", { box: { token: "" } }).catch(() => undefined);
-      boxRouteCalls.length = 0;
+      boatRouteCalls.length = 0;
     }
   });
 
@@ -5068,6 +7834,231 @@ describe("harness HTTP API", () => {
     expect(removed).toEqual({ status: 200, body: { servers: [] } });
     const after = await api("GET", "/api/mcp/servers");
     expect(after).toEqual({ status: 200, body: { servers: [] } });
+  });
+
+  it("manages and probes a url MCP server, and the Claude Code servers switch", async () => {
+    const secret = "Bearer mcp-header-that-must-never-render";
+    const fake = await startFakeHttpMcp({ requireHeader: { name: "Authorization", value: secret } });
+    try {
+      const created = await api("POST", "/api/mcp/servers", { name: "docs", url: fake.url, headers: { Authorization: secret } });
+      expect(created.status).toBe(201);
+      expect(created.body.servers).toEqual([{ name: "docs", type: "http", url: fake.url, headerKeys: ["Authorization"], enabled: false }]);
+      expect(JSON.stringify(created.body)).not.toContain(secret);
+
+      const tested = await api("POST", "/api/mcp/servers/docs/test");
+      expect(tested).toEqual({
+        status: 200,
+        body: { ok: true, tools: [{ name: "read_notes", description: "Read saved notes" }] },
+      });
+
+      const updated = await api("PUT", "/api/mcp/servers/docs", {
+        type: "sse",
+        url: fake.url,
+        headers: { Authorization: true, "X-Org": "acme" },
+        enabled: true,
+      });
+      expect(updated.status).toBe(200);
+      expect(updated.body.servers[0]).toMatchObject({ type: "sse", headerKeys: ["Authorization", "X-Org"], enabled: true });
+      expect(JSON.stringify(updated.body)).not.toContain(secret);
+      const disk = JSON.parse(readFileSync(join(home, ".openmausbot", "config.json"), "utf8"));
+      expect(disk.mcpServers.docs).toEqual({ type: "sse", url: fake.url, headers: { Authorization: secret, "X-Org": "acme" }, enabled: true });
+
+      const bad = await api("POST", "/api/mcp/servers", { name: "nowhere", url: "docs.example/mcp" });
+      expect(bad.status).toBe(400);
+      expect(bad.body.error).toMatch(/full address/);
+
+      // the switch that lets Claude bots also see this machine's own servers
+      const on = await api("PUT", "/api/config", { features: { claudeUserMcp: true } });
+      expect(on.status).toBe(200);
+      expect(on.body.features.claudeUserMcp).toBe(true);
+      const off = await api("PUT", "/api/config", { features: { claudeUserMcp: false } });
+      expect(off.body.features.claudeUserMcp).toBe(false);
+    } finally {
+      await fake.close();
+      await api("DELETE", "/api/mcp/servers/docs").catch(() => undefined);
+    }
+  });
+
+  it("signs in to an OAuth URL MCP server, and keeps its token out of every response", async () => {
+    const oauth = await startFakeOAuth();
+    const fake = await startFakeHttpMcp({ acceptBearer: oauth.isValid, wwwAuthenticate: oauth.challenge });
+    try {
+      expect((await api("POST", "/api/mcp/servers", { name: "hf", url: fake.url })).status).toBe(201);
+      const first = await api("POST", "/api/mcp/servers/hf/test");
+      expect(first.body).toEqual({ ok: false, auth: "required", error: "This server needs you to sign in." });
+      expect((await api("GET", "/api/mcp/servers")).body.servers).toEqual([
+        { name: "hf", type: "http", url: fake.url, headerKeys: [], enabled: false, auth: "needs-sign-in" },
+      ]);
+
+      const started = await api("POST", "/api/mcp/servers/hf/sign-in");
+      expect(started.status).toBe(200);
+      expect(started.body.auth.phase).toBe("waiting");
+      await fetch(started.body.auth.authorizationUrl, { redirect: "follow" });
+      let auth = started.body.auth;
+      for (let i = 0; i < 50 && auth.phase === "waiting"; i++) {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        auth = (await api("GET", `/api/mcp/servers/hf/sign-in/${auth.flowId}`)).body.auth;
+      }
+      expect(auth.phase).toBe("succeeded");
+
+      const listed = await api("GET", "/api/mcp/servers");
+      expect(listed.body.servers[0]).toMatchObject({ name: "hf", auth: "signed-in", headerKeys: [] });
+      const tested = await api("POST", "/api/mcp/servers/hf/test");
+      expect(tested.body).toEqual({ ok: true, tools: [{ name: "read_notes", description: "Read saved notes" }] });
+
+      const file = join(home, ".openmausbot", "mcp-oauth.json");
+      // Windows has no POSIX permission bits; stat reports 0o666 there.
+      if (process.platform !== "win32") expect(statSync(file).mode & 0o777).toBe(0o600);
+      const stored = JSON.parse(readFileSync(file, "utf8")).servers.hf.tokens.access as string;
+      expect(oauth.isValid(`Bearer ${stored}`)).toBe(true);
+      for (const response of [started, listed, tested]) expect(JSON.stringify(response.body)).not.toContain(stored);
+      const disk = JSON.parse(readFileSync(join(home, ".openmausbot", "config.json"), "utf8"));
+      expect(JSON.stringify(disk)).not.toContain(stored);
+
+      const out = await api("POST", "/api/mcp/servers/hf/sign-out");
+      expect(out.status).toBe(200);
+      expect(out.body.servers[0].auth).toBeUndefined();
+      expect(oauth.counts.revoke).toBe(1);
+
+      // a server that needs sign-in, pointed at another address, starts clean
+      await api("POST", "/api/mcp/servers/hf/test");
+      expect((await api("GET", "/api/mcp/servers")).body.servers[0].auth).toBe("needs-sign-in");
+      const moved = await api("PUT", "/api/mcp/servers/hf", { type: "http", url: `${fake.url}?v=2`, headers: {} });
+      expect(moved.status).toBe(200);
+      expect(moved.body.servers[0].auth).toBeUndefined();
+
+      // a personal token pasted as a header, same address: it is used again
+      await api("POST", "/api/mcp/servers/hf/test");
+      expect((await api("GET", "/api/mcp/servers")).body.servers[0].auth).toBe("needs-sign-in");
+      const pasted = await api("PUT", "/api/mcp/servers/hf", { type: "http", url: `${fake.url}?v=2`, headers: { Authorization: `Bearer ${oauth.mint()}` } });
+      expect(pasted.body.servers[0].auth).toBeUndefined();
+      expect((await api("POST", "/api/mcp/servers/hf/test")).body.ok).toBe(true);
+
+      const local = await api("POST", "/api/mcp/servers/nope/sign-in");
+      expect(local.status).toBe(404);
+    } finally {
+      await api("DELETE", "/api/mcp/servers/hf").catch(() => undefined);
+      await fake.close();
+      await oauth.close();
+    }
+  });
+
+  it("signs in as a pre-registered app where self-registration is off, keeping its secret write-only", async () => {
+    const secret = "corp-app-secret-that-must-never-render";
+    const oauth = await startFakeOAuth({ noRegistration: true, preRegistered: { "corp-app": secret } });
+    const fake = await startFakeHttpMcp({ acceptBearer: oauth.isValid, wwwAuthenticate: oauth.challenge });
+    const configFile = join(home, ".openmausbot", "config.json");
+    try {
+      const created = await api("POST", "/api/mcp/servers", { name: "corp", url: fake.url, oauth: { clientId: "corp-app", clientSecret: secret, scopes: ["mcp", "offline_access"] } });
+      expect(created.status).toBe(201);
+      expect(created.body.servers).toEqual([{
+        name: "corp", type: "http", url: fake.url, headerKeys: [], enabled: false,
+        oauth: { clientId: "corp-app", scopes: ["mcp", "offline_access"], clientSecretConfigured: true, redirectUri: expect.stringMatching(/^http:\/\/127\.0\.0\.1:\d+\/mcp-oauth\/callback$/) },
+      }]);
+
+      expect((await api("POST", "/api/mcp/servers/corp/test")).body.auth).toBe("required");
+      const started = await api("POST", "/api/mcp/servers/corp/sign-in");
+      expect(started.status).toBe(200);
+      expect(new URL(started.body.auth.authorizationUrl).searchParams.get("redirect_uri")).toBe(created.body.servers[0].oauth.redirectUri);
+      await fetch(started.body.auth.authorizationUrl, { redirect: "follow" });
+      let auth = started.body.auth;
+      for (let i = 0; i < 50 && auth.phase === "waiting"; i++) {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        auth = (await api("GET", `/api/mcp/servers/corp/sign-in/${auth.flowId}`)).body.auth;
+      }
+      expect(auth.phase).toBe("succeeded");
+      expect(oauth.counts.register).toBe(0);
+      const tested = await api("POST", "/api/mcp/servers/corp/test");
+      expect(tested.body.ok).toBe(true);
+
+      // an edit that keeps the app keeps the secret and the sign-in
+      const kept = await api("PUT", "/api/mcp/servers/corp", { type: "http", url: fake.url, headers: {}, oauth: { clientId: "corp-app", clientSecret: true, scopes: ["mcp", "offline_access"] } });
+      expect(kept.status).toBe(200);
+      expect(kept.body.servers[0]).toMatchObject({ auth: "signed-in", oauth: { clientSecretConfigured: true } });
+      expect(JSON.parse(readFileSync(configFile, "utf8")).mcpServers.corp.oauth.clientSecret).toBe(secret);
+
+      for (const response of [created, started, tested, kept]) expect(JSON.stringify(response.body)).not.toContain(secret);
+      expect(readFileSync(join(home, ".openmausbot", "mcp-oauth.json"), "utf8")).not.toContain(secret);
+
+      // another app: the old app's tokens and secret go
+      const other = await api("PUT", "/api/mcp/servers/corp", { type: "http", url: fake.url, headers: {}, oauth: { clientId: "other-app", clientSecret: true } });
+      expect(other.status).toBe(400);
+      const moved = await api("PUT", "/api/mcp/servers/corp", { type: "http", url: fake.url, headers: {}, oauth: { clientId: "other-app" } });
+      expect(moved.body.servers[0].auth).toBeUndefined();
+      expect(moved.body.servers[0].oauth.clientSecretConfigured).toBe(false);
+      expect(readFileSync(configFile, "utf8")).not.toContain(secret);
+    } finally {
+      await api("DELETE", "/api/mcp/servers/corp").catch(() => undefined);
+      await fake.close();
+      await oauth.close();
+    }
+  });
+
+  it.each([false, true])("completes remote MCP OAuth only in its initiating admin session (pre-registered: %s)", async (registered) => {
+    const client = { clientId: "headless-corp", clientSecret: "headless-private-secret", scopes: ["mcp", "offline_access"] };
+    const oauth = await startFakeOAuth(registered ? { noRegistration: true, preRegistered: { [client.clientId]: client.clientSecret } } : {});
+    const fake = await startFakeHttpMcp({ acceptBearer: oauth.isValid, wwwAuthenticate: oauth.challenge });
+    const pair = async (scopes: string[]) => {
+      const opened = await api("POST", "/api/auth/pairing", { scopes });
+      const paired = await api("POST", "/api/auth/pair", { code: opened.body.code });
+      expect(paired.status).toBe(200);
+      return paired.body.token as string;
+    };
+    const alice = await pair(["admin", "client"]);
+    const bob = await pair(["admin", "client"]);
+    const member = await pair(["client"]);
+    const remote = async (token: string, method: string, path: string, body?: unknown) => {
+      const response = await fetch(`${BASE}${path}`, {
+        method,
+        headers: { authorization: `Bearer ${token}`, "x-forwarded-for": "192.0.2.10", "content-type": "application/json" },
+        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+      });
+      return { status: response.status, body: await response.json() as any, cache: response.headers.get("cache-control") };
+    };
+    const base = "/api/mcp/servers/headless/sign-in";
+    try {
+      expect((await api("POST", "/api/mcp/servers", { name: "headless", url: fake.url, ...(registered ? { oauth: client } : {}) })).status).toBe(201);
+      expect((await remote(member, "POST", base)).status).toBe(403);
+      const unauthenticated = await fetch(`${BASE}${base}`, { method: "POST", headers: { "x-forwarded-for": "192.0.2.11" } });
+      expect([401, 403]).toContain(unauthenticated.status);
+      const started = await remote(alice, "POST", base);
+      expect(started.status).toBe(200);
+      expect(started.cache).toBe("no-store");
+      const path = `${base}/${started.body.auth.flowId}`;
+      const approval = await fetch(started.body.auth.authorizationUrl, { redirect: "manual" });
+      const callbackUrl = approval.headers.get("location")!;
+      expect((await remote(bob, "POST", base)).status).toBe(409);
+      expect((await remote(bob, "GET", path)).status).toBe(404);
+      expect((await remote(bob, "DELETE", path)).status).toBe(404);
+      expect((await remote(bob, "POST", path, { callbackUrl })).status).toBe(404);
+      expect((await remote(alice, "POST", path, { callbackUrl: callbackUrl + "&state=duplicate" })).status).toBe(400);
+      expect((await remote(alice, "GET", path)).body.auth.phase).toBe("waiting");
+      const wrongContentType = await fetch(`${BASE}${path}`, {
+        method: "POST", headers: { authorization: `Bearer ${alice}`, "content-type": "text/plain" }, body: JSON.stringify({ callbackUrl }),
+      });
+      expect(wrongContentType.status).toBe(415);
+      const completed = await remote(alice, "POST", path, { callbackUrl });
+      expect(completed.status).toBe(200);
+      expect(completed.body.auth.phase).toBe("succeeded");
+      expect(JSON.stringify(completed.body)).not.toContain(new URL(callbackUrl).searchParams.get("code"));
+      expect((await remote(alice, "POST", path, { callbackUrl })).status).toBe(409);
+      expect(oauth.counts.token).toBe(1);
+      expect((await remote(alice, "POST", "/api/mcp/servers/headless/test")).body.ok).toBe(true);
+      await remote(alice, "POST", "/api/mcp/servers/headless/sign-out");
+      const second = await remote(alice, "POST", base);
+      const pending = await fetch(second.body.auth.authorizationUrl, { redirect: "manual" });
+      const pendingCallback = pending.headers.get("location")!;
+      expect((await remote(alice, "POST", "/api/auth/logout")).status).toBe(200);
+      expect((await remote(alice, "POST", `${base}/${second.body.auth.flowId}`, { callbackUrl: pendingCallback })).status).toBe(401);
+      // The independent loopback callback is also closed when its session ends.
+      await expect(fetch(pendingCallback)).rejects.toThrow();
+      expect(oauth.counts.token).toBe(1);
+    } finally {
+      await api("DELETE", "/api/mcp/servers/headless");
+      for (const token of [alice, bob, member]) await remote(token, "POST", "/api/auth/logout");
+      await fake.close();
+      await oauth.close();
+    }
   });
 
   it("round-trips the UI language and clears it back to system", async () => {
@@ -5138,12 +8129,87 @@ describe("harness HTTP API", () => {
     await api("PUT", "/api/config", { rooms: { turnTimeoutMinutes: 5 } });
   });
 
+  it("cards every ask when Claude's reviewer never started, says so once, and can hand the allow to Claude for the session", async () => {
+    // A bot on Approve for me with Haiku 4.5: the CLI takes `auto`, runs
+    // Manual, and asks about everything. OpenMausBot passes that through —
+    // no rule of its own answers — and says why, once.
+    const bot = (await api("POST", "/api/bots", { name: "Quill" })).body.bot;
+    const conns: Socket[] = [];
+    try {
+      expect((await api("PATCH", `/api/bots/${bot.id}`, {
+        modelSelection: { instanceId: "claude", model: "claude-haiku-4-5" },
+        approvalMode: "auto",
+      })).status).toBe(200);
+      rmSync(fakeClaudeDump, { force: true });
+      expect((await api("POST", `/api/bots/${bot.id}/messages`, { text: "count my notes" })).status).toBe(202);
+      // the permission socket the driver handed its proxy, from the MCP
+      // config the fake read back
+      const dump = z.object({
+        mcpConfig: z.object({ mcpServers: z.object({ ogb: z.object({ args: z.array(z.string()) }) }) }),
+      }).parse(await readJsonFileWhenReady(fakeClaudeDump));
+      const socketPath = dump.mcpConfig.mcpServers.ogb.args[1];
+      const raise = async (id: string, command: string) => {
+        const conn = connect(socketPath);
+        conns.push(conn);
+        const answered = new Promise<{ behavior: string; always?: boolean }>((resolve) => {
+          let buf = "";
+          conn.on("data", (chunk) => {
+            buf += chunk;
+            const nl = buf.indexOf("\n");
+            if (nl !== -1) resolve(JSON.parse(buf.slice(0, nl)));
+          });
+        });
+        await new Promise<void>((resolve, reject) => {
+          conn.on("connect", resolve);
+          conn.on("error", reject);
+        });
+        conn.write(JSON.stringify({ t: "ask", id, tool: "Bash", input: { command } }) + "\n");
+        return answered;
+      };
+      type Msg = { kind: string; tool?: { name: string }; card?: { title: string; subtitle: string; requestId?: string; held?: string; heldCode?: string; allowKey?: string; allowSession?: boolean; answered?: string } };
+      const messages = async (): Promise<Msg[]> =>
+        (await api("GET", "/api/bots?messages=40")).body.bots.find((candidate: { id: string }) => candidate.id === bot.id).messages;
+
+      const first = raise("ask-wc", "wc -l notes.md");
+      const card = await expect.poll(async () => (await messages()).find((m) => m.card?.subtitle === "wc -l notes.md")?.card).toBeTruthy()
+        .then(async () => (await messages()).find((m) => m.card?.subtitle === "wc -l notes.md")!.card!);
+      expect(card.title).toBe("Approval needed");
+      expect(card.heldCode).toBe("approval.held.native");
+      // no app-side grant is offered for a provider's tool; the provider's
+      // own session-wide allow is
+      expect(card.allowKey).toBeUndefined();
+      expect(card.allowSession).toBe(true);
+      expect((await messages()).some((m) => m.tool?.name.startsWith("auto-approved"))).toBe(false);
+      // the person is told once who is asking and why, naming the model
+      await expect.poll(async () => (await messages()).filter((m) => m.tool?.name.startsWith("Approve for me: Claude's automatic reviewer is not available")).length).toBe(1);
+      const notices = (await messages()).filter((m) => m.tool?.name.startsWith("Approve for me: Claude's automatic reviewer is not available"));
+      expect(notices).toHaveLength(1);
+      expect(notices[0].tool!.name).toContain("claude-haiku-4-5");
+      expect(notices[0].tool!.name).toContain("asks before each action");
+
+      // "Always allow this session" rides to Claude as `always`
+      expect((await api("POST", `/api/bots/${bot.id}/respond`, { requestId: card.requestId, behavior: "allow", always: true })).status).toBe(200);
+      await expect(first).resolves.toMatchObject({ behavior: "allow", always: true });
+
+      const second = raise("ask-ls", "ls memory");
+      await expect.poll(async () => (await messages()).find((m) => m.card?.subtitle === "ls memory")?.card?.title).toBe("Approval needed");
+      expect((await messages()).filter((m) => m.tool?.name.startsWith("Approve for me: Claude's automatic reviewer"))).toHaveLength(1);
+      const secondCard = (await messages()).find((m) => m.card?.subtitle === "ls memory")!.card!;
+      expect((await api("POST", `/api/bots/${bot.id}/respond`, { requestId: secondCard.requestId, behavior: "allow" })).status).toBe(200);
+      const plain = await second;
+      expect(plain).toMatchObject({ behavior: "allow" });
+      expect(plain).not.toHaveProperty("always");
+    } finally {
+      for (const conn of conns) conn.destroy();
+      await api("POST", `/api/bots/${bot.id}/interrupt`);
+      await api("DELETE", `/api/bots/${bot.id}`);
+    }
+  });
+
   it("mounts the verification skill into a real turn when its trigger appears", async () => {
+    // skill authoring is on by default: no opt-in is needed for the turn
     const bot = (await api("POST", "/api/bots", {})).body.bot;
     try {
-      expect((await api("PATCH", "/api/config", {
-        features: { skillRecorder: true },
-      })).status).toBe(200);
       expect((await api("PATCH", `/api/bots/${bot.id}`, {
         modelSelection: { instanceId: "claude", model: "claude-sonnet-5" },
       })).status).toBe(200);
@@ -5151,8 +8217,7 @@ describe("harness HTTP API", () => {
       expect((await api("POST", `/api/bots/${bot.id}/messages`, {
         text: "/create-verification-skill for my notes app",
       })).status).toBe(202);
-      await expect.poll(() => existsSync(fakeClaudeDump), { timeout: 5_000 }).toBe(true);
-      const seen = JSON.parse(readFileSync(fakeClaudeDump, "utf8"));
+      const seen = await readJsonFileWhenReady<{ systemPrompt?: string }>(fakeClaudeDump, 15_000);
       const system = seen.systemPrompt ?? "";
       // the skill's instructions ride the system prompt the agent receives
       expect(system).toContain('<openmaus-skill id="create-verification-skill"');
@@ -5160,7 +8225,6 @@ describe("harness HTTP API", () => {
     } finally {
       await api("POST", `/api/bots/${bot.id}/interrupt`);
       await api("DELETE", `/api/bots/${bot.id}`);
-      await api("PATCH", "/api/config", { features: { skillRecorder: false } });
     }
   });
 
@@ -5173,8 +8237,7 @@ describe("harness HTTP API", () => {
       })).status).toBe(200);
       rmSync(fakeClaudeDump, { force: true });
       expect((await api("POST", `/api/bots/${bot.id}/messages`, { text: "hello" })).status).toBe(202);
-      await expect.poll(() => existsSync(fakeClaudeDump), { timeout: 5_000 }).toBe(true);
-      const seen = JSON.parse(readFileSync(fakeClaudeDump, "utf8"));
+      const seen = await readJsonFileWhenReady<{ systemPrompt?: string }>(fakeClaudeDump, 15_000);
       const system: string = seen.systemPrompt ?? "";
       expect(system.startsWith("You are Kiwi, a personal bot in OpenMausBot. Role: Tracker.")).toBe(true);
       const persona = "You are Kiwi, a personal bot in OpenMausBot. Role: Tracker.";
@@ -5187,7 +8250,50 @@ describe("harness HTTP API", () => {
     }
   });
 
-  it("coaches a blank bot to set itself up, and stops once it has a description", async () => {
+  it("Works on: Off withholds the browser and tells the model why", async () => {
+    // The report behind this: a bot set to Off reached for a browser anyway,
+    // because Off withheld only the computer. The dispatched prompt is the
+    // proof the model was told, and the settings preview must say the same.
+    const bot = (await api("POST", "/api/bots", { name: "Orbit" })).body.bot;
+    try {
+      expect((await api("PATCH", "/api/config", { features: { browser: true } })).status).toBe(200);
+      expect((await api("PATCH", `/api/bots/${bot.id}`, {
+        modelSelection: { instanceId: "claude", model: "claude-sonnet-5" },
+      })).status).toBe(200);
+
+      const previewIds = async () =>
+        (await api("GET", `/api/bots/${bot.id}/system-prompt`)).body.sections
+          .map((section: { id: string }) => section.id);
+      const previewText = async () =>
+        (await api("GET", `/api/bots/${bot.id}/system-prompt`)).body.sections
+          .map((section: { text: string }) => section.text).join("");
+
+      // Auto says nothing about Works on; the section is only there when the
+      // setting actually withholds something.
+      expect(await previewIds()).not.toContain("plan");
+
+      expect((await api("PATCH", `/api/bots/${bot.id}`, { computer: "off" })).status).toBe(200);
+      const ids = await previewIds();
+      expect(ids).toContain("plan");
+      expect(ids).not.toContain("browser");
+      const text = await previewText();
+      expect(text).toContain("\"Works on\" setting is Off");
+      expect(text).toContain("no computer and no built-in browser");
+
+      // and the same sentence reaches a real turn, not only the preview
+      rmSync(fakeClaudeDump, { force: true });
+      expect((await api("POST", `/api/bots/${bot.id}/messages`, { text: "open a browser and check my calendar" })).status).toBe(202);
+      const dispatched = (await readJsonFileWhenReady<{ systemPrompt: string }>(fakeClaudeDump, 15_000)).systemPrompt;
+      expect(dispatched).toContain("\"Works on\" setting is Off");
+      expect(dispatched).not.toContain("browser_navigate");
+    } finally {
+      await api("POST", `/api/bots/${bot.id}/interrupt`);
+      await api("DELETE", `/api/bots/${bot.id}`);
+      await api("PATCH", "/api/config", { features: { browser: false } });
+    }
+  });
+
+  it("does not coach an ordinary request even when the bot profile is blank", async () => {
     const bot = (await api("POST", "/api/bots", { name: "Blank" })).body.bot;
     try {
       expect((await api("PATCH", `/api/bots/${bot.id}`, {
@@ -5197,11 +8303,11 @@ describe("harness HTTP API", () => {
       expect((await api("POST", `/api/bots/${bot.id}/messages`, { text: "hello" })).status).toBe(202);
       let system = (await readJsonFileWhenReady<{ systemPrompt: string }>(fakeClaudeDump, 15_000)).systemPrompt;
       expect(system.startsWith("You are Blank, a personal bot in OpenMausBot.")).toBe(true);
-      expect(system).toContain("This bot has not been set up yet");
+      expect(system).not.toContain("at most four questions");
       expect(system).toContain("propose_profile");
 
       const preview = await api("GET", `/api/bots/${bot.id}/system-prompt`);
-      expect(preview.body.sections.map((s: { id: string }) => s.id)).toContain("setup");
+      expect(preview.body.sections.map((s: { id: string }) => s.id)).not.toContain("setup");
 
       expect((await api("POST", `/api/bots/${bot.id}/interrupt`)).status).toBe(200);
       // Interrupt requests a stop; the child can still be shutting down.
@@ -5214,7 +8320,7 @@ describe("harness HTTP API", () => {
       rmSync(fakeClaudeDump, { force: true });
       expect((await api("POST", `/api/bots/${bot.id}/messages`, { text: "hello again" })).status).toBe(202);
       system = (await readJsonFileWhenReady<{ systemPrompt: string }>(fakeClaudeDump, 15_000)).systemPrompt;
-      expect(system).not.toContain("This bot has not been set up yet");
+      expect(system).not.toContain("at most four questions");
       expect((await api("GET", `/api/bots/${bot.id}/system-prompt`)).body.sections.map((s: { id: string }) => s.id)).not.toContain("setup");
     } finally {
       await api("POST", `/api/bots/${bot.id}/interrupt`);
@@ -5231,13 +8337,12 @@ describe("harness HTTP API", () => {
       })).status).toBe(200);
       rmSync(fakeClaudeDump, { force: true });
       expect((await api("POST", `/api/bots/${bot.id}/messages`, { text: "/setup watch Discord too" })).status).toBe(202);
-      await expect.poll(() => existsSync(fakeClaudeDump), { timeout: 5_000 }).toBe(true);
-      const seen = JSON.parse(readFileSync(fakeClaudeDump, "utf8"));
+      const seen = await readJsonFileWhenReady<{ systemPrompt?: string; prompt?: { message?: { content?: unknown } } }>(fakeClaudeDump, 15_000);
       const system: string = seen.systemPrompt ?? "";
       // soul first, setup block right after it
       const soulEnd = system.indexOf("--- END STANDING INSTRUCTIONS ---") + "--- END STANDING INSTRUCTIONS ---".length;
       expect(soulEnd).toBeGreaterThan(0);
-      expect(system.slice(soulEnd).startsWith("\n\nThis bot has not been set up yet")).toBe(true);
+      expect(system.slice(soulEnd).startsWith("\n\nThe user explicitly asked you to set yourself up")).toBe(true);
       // the literal /setup never reaches the model — extract the user text the
       // way promptText() in fake-claude-cli.ts does, joining text parts if the
       // content is an array of blocks rather than a plain string
@@ -5269,8 +8374,7 @@ describe("harness HTTP API", () => {
       writeFileSync(join(home, ".openmausbot", "bots", bot.id, "SOUL.md"), "File text.");
       rmSync(fakeClaudeDump, { force: true });
       expect((await api("POST", `/api/bots/${bot.id}/messages`, { text: "hello" })).status).toBe(202);
-      await expect.poll(() => existsSync(fakeClaudeDump), { timeout: 5_000 }).toBe(true);
-      const seen = JSON.parse(readFileSync(fakeClaudeDump, "utf8"));
+      const seen = await readJsonFileWhenReady<{ systemPrompt?: string }>(fakeClaudeDump, 15_000);
       const systemPrompt: string = seen.systemPrompt ?? "";
       expect(systemPrompt).toContain("Record text.");
       expect(systemPrompt).not.toContain("File text.");
@@ -5289,9 +8393,6 @@ describe("harness HTTP API", () => {
     })).body.bot;
     let room: any;
     try {
-      expect((await api("PATCH", "/api/config", {
-        features: { skillRecorder: true },
-      })).status).toBe(200);
       room = (await api("POST", "/api/groups", {
         name: "Verification skill room",
         memberIds: [bot.id],
@@ -5336,29 +8437,51 @@ describe("harness HTTP API", () => {
         expect((await api("DELETE", `/api/groups/${room.id}`)).status).toBe(200);
       }
       expect((await api("DELETE", `/api/bots/${bot.id}`)).status).toBe(200);
-      expect((await api("PATCH", "/api/config", { features: { skillRecorder: false } })).status).toBe(200);
     }
   });
 
-  it("keeps Teach a skill off by default and persists an explicit opt-in", async () => {
+  it("keeps skill authoring on by default and persists an explicit opt-out", async () => {
     const before = await api("GET", "/api/config");
     expect(before.status).toBe(200);
-    expect(before.body.features).toEqual({ browser: false, skillRecorder: false, showToolCalls: false });
+    expect(before.body.features).toEqual({ browser: false, skillAuthoring: true, skillsLibrary: false, showToolCalls: false, routinesInConversation: false, sharedComputers: false, claudeUserMcp: false, autoRecall: true, llmThreadTitles: true });
+    // the default is the absence of the key: nothing is written until the toggle is used
+    const untouched = JSON.parse(readFileSync(join(home, ".openmausbot", "config.json"), "utf8"));
+    expect(untouched.features?.skillAuthoring).toBeUndefined();
+    // computer sharing has no toggle at all: only a hand-edited config.json
+    // can set it, so the shipped default is reported off and never written
+    expect(untouched.features?.sharedComputers).toBeUndefined();
 
     const saved = await api("PATCH", "/api/config", {
-      features: { skillRecorder: true },
+      features: { skillAuthoring: false },
     });
     expect(saved.status).toBe(200);
-    expect(saved.body.features).toEqual({ browser: false, skillRecorder: true, showToolCalls: false });
+    expect(saved.body.features).toEqual({ browser: false, skillAuthoring: false, skillsLibrary: false, showToolCalls: false, routinesInConversation: false, sharedComputers: false, claudeUserMcp: false, autoRecall: true, llmThreadTitles: true });
 
     const disk = JSON.parse(readFileSync(join(home, ".openmausbot", "config.json"), "utf8"));
-    expect(disk.features).toEqual({ skillRecorder: true });
+    // Earlier browser coverage may have persisted its own toggle. Opting out
+    // of skill authoring must preserve those sibling settings, not erase them.
+    expect(disk.features).toEqual({ ...untouched.features, skillAuthoring: false });
 
+    // the opt-out survives patches to sibling flags
     const tools = await api("PATCH", "/api/config", { features: { showToolCalls: true } });
     expect(tools.status).toBe(200);
-    expect(tools.body.features).toEqual({ browser: false, skillRecorder: true, showToolCalls: true });
+    expect(tools.body.features).toEqual({ browser: false, skillAuthoring: false, skillsLibrary: false, showToolCalls: true, routinesInConversation: false, sharedComputers: false, claudeUserMcp: false, autoRecall: true, llmThreadTitles: true });
 
-    await api("PATCH", "/api/config", { features: { skillRecorder: false, showToolCalls: false } });
+    // an opted-out workspace refuses the skill routes a turn would otherwise reach
+    const bot = (await api("POST", "/api/bots", {})).body.bot;
+    try {
+      const token = await mintTestCapability(BASE, bot.id, bot.threadId, { skillAuthoring: true });
+      const listing = await fetch(
+        `${BASE}/api/internal/skills?fromBotId=${encodeURIComponent(bot.id)}&fromThreadId=${encodeURIComponent(bot.threadId)}`,
+        { headers: { authorization: `Bearer ${token}` } },
+      );
+      expect(listing.status).toBe(403);
+      expect((await listing.json() as { error: string }).error).toBe("skill authoring is not enabled in Settings");
+    } finally {
+      await api("DELETE", `/api/bots/${bot.id}`);
+    }
+
+    await api("PATCH", "/api/config", { features: { skillAuthoring: true, showToolCalls: false } });
   });
 
   it("refuses to delete a bot while it owns an active channel turn", async () => {
@@ -5617,7 +8740,63 @@ describe("harness HTTP API", () => {
     }
   });
 
-  it("mounts the browser engine's MCP server and the safety prompt in room turns", async () => {
+  it("releases a room bot when preparing its saved browser fails, then allows retry", async () => {
+    const bot = (await api("POST", "/api/bots")).body.bot;
+    const failureMarker = join(home, "browser-clear-fails");
+    let room: any;
+    try {
+      expect((await api("PATCH", "/api/config", {
+        features: { browser: true }, browserProfiles: [{ id: "prep-failure", name: "Preparation failure" }],
+      })).status).toBe(200);
+      expect((await api("PATCH", `/api/bots/${bot.id}`, {
+        browserProfile: "prep-failure", modelSelection: { instanceId: "claude", model: "claude-sonnet-5" },
+      })).status).toBe(200);
+      room = (await api("POST", "/api/groups", {
+        name: "Browser setup failure", memberIds: [bot.id],
+        setup: { bulletin: "", defaultResponder: { kind: "member", botId: bot.id } },
+      })).body.group;
+      writeFileSync(failureMarker, "fail only this fixture's browser close");
+      rmSync(fakeClaudeDump, { force: true });
+      expect((await api("POST", `/api/groups/${room.id}/messages`, { text: "Check the website" })).status).toBe(202);
+      await expect.poll(() => readFileSync(join(home, "browser-calls.jsonl"), "utf8").includes('"session":"prep-failure"')).toBe(true);
+      await expect.poll(async () => {
+        const current = (await api("GET", "/api/bots?messages=20")).body;
+        const member = current.bots.find((candidate: { id: string }) => candidate.id === bot.id);
+        const group = current.groups.find((candidate: { id: string }) => candidate.id === room.id);
+        return { busy: member?.busy, working: group?.working, failed: group?.messages.some(
+          (message: { tool?: { name?: string } }) => message.tool?.name?.includes("Could not safely prepare saved browser logins"),
+        ) };
+      }, { timeout: 5_000 }).toEqual({ busy: false, working: false, failed: true });
+      expect(existsSync(fakeClaudeDump)).toBe(false);
+      rmSync(failureMarker, { force: true });
+      expect((await api("POST", `/api/groups/${room.id}/messages`, { text: "Retry the website" })).status).toBe(202);
+      await expect.poll(async () => existsSync(fakeClaudeDump) ? "dispatched" : (await api("GET", "/api/bots?messages=20")).body.groups
+        .find((candidate: { id: string }) => candidate.id === room.id)?.messages
+        .filter((message: { tool?: unknown }) => message.tool).map((message: { tool: { name: string } }) => message.tool.name),
+      { timeout: 5_000 }).toBe("dispatched");
+    } finally {
+      rmSync(failureMarker, { force: true });
+      try {
+        if (room) {
+          await api("POST", `/api/groups/${room.id}/interrupt`, {}).catch(() => undefined);
+          await expect.poll(async () => {
+            const current = (await api("GET", "/api/bots?messages=20")).body;
+            const member = current.bots.find((candidate: { id: string }) => candidate.id === bot.id);
+            const group = current.groups.find((candidate: { id: string }) => candidate.id === room.id);
+            return { busy: member?.busy, working: group?.working };
+          }, { timeout: 5_000 }).toEqual({ busy: false, working: false });
+        }
+      } finally {
+        const configCleanup = await api("PATCH", "/api/config", { features: { browser: false }, browserProfiles: [] });
+        if (room) await api("DELETE", `/api/groups/${room.id}`).catch(() => undefined);
+        const botCleanup = await api("DELETE", `/api/bots/${bot.id}`);
+        expect(configCleanup.status, JSON.stringify(configCleanup.body)).toBe(200);
+        expect(botCleanup.status, JSON.stringify(botCleanup.body)).toBe(200);
+      }
+    }
+  });
+
+  it.each(["direct", "room"] as const)("mounts the browser engine's MCP server and the sign-in policy in %s turns and preview", async (target) => {
     const bot = (await api("POST", "/api/bots")).body.bot;
     let room: any;
     try {
@@ -5627,13 +8806,22 @@ describe("harness HTTP API", () => {
       })).status).toBe(200);
       expect((await api("PATCH", `/api/bots/${bot.id}`, {
         browserProfile: "work",
+        approvalMode: "auto",
         modelSelection: { instanceId: "claude", model: "claude-sonnet-5" },
       })).status).toBe(200);
-      room = (await api("POST", "/api/groups", { name: "Browser safety", memberIds: [bot.id] })).body.group;
-      expect((await api("PATCH", `/api/groups/${room.id}/setup`, { action: "skip" })).status).toBe(200);
+      const preview = await api("GET", `/api/bots/${bot.id}/system-prompt`);
+      expect(preview.status).toBe(200);
+      const browserSection = preview.body.sections.find((section: { id: string }) => section.id === "browser");
+      expect(browserSection.text).toContain(SIGN_IN_PROMPT);
+      expect(browserSection.text).not.toMatch(/never type their (?:credentials|password)/i);
+      if (target === "room") {
+        room = (await api("POST", "/api/groups", { name: "Browser safety", memberIds: [bot.id] })).body.group;
+        expect((await api("PATCH", `/api/groups/${room.id}/setup`, { action: "skip" })).status).toBe(200);
+      }
 
       rmSync(fakeClaudeDump, { force: true });
-      expect((await api("POST", `/api/groups/${room.id}/messages`, { text: "Check the website" })).status).toBe(202);
+      const messagesPath = room ? `/api/groups/${room.id}/messages` : `/api/bots/${bot.id}/messages`;
+      expect((await api("POST", messagesPath, { text: "Use my authorized test account to check the website." })).status).toBe(202);
       const dump = z.object({
         env: z.record(z.string(), z.string()),
         systemPrompt: z.string(),
@@ -5648,27 +8836,127 @@ describe("harness HTTP API", () => {
         }),
       }).parse(await readJsonFileWhenReady(fakeClaudeDump));
       const browser = dump.mcpConfig.mcpServers.browser;
-      expect(browser.command).toBe(join(home, "fake-agent-browser"));
-      expect(browser.args).toEqual(["mcp", "--tools", "core", "--no-webmcp"]);
-      // the shared "work" profile is one session, isolated and restored across turns
-      expect(browser.env.AGENT_BROWSER_SESSION).toMatch(/^[A-Za-z0-9_.-]{1,96}$/);
-      expect(browser.env.AGENT_BROWSER_SESSION).not.toBe(`bot-${bot.id}`);
-      // restore is a *name*: this session's own saved state, never another bot's
-      expect(browser.env.AGENT_BROWSER_RESTORE).toBe(browser.env.AGENT_BROWSER_SESSION);
-      expect(browser.env).toMatchObject({ AGENT_BROWSER_RESTORE_SAVE: "auto", AGENT_BROWSER_HEADLESS: "1" });
-      expect(browser.env.AGENT_BROWSER_ENCRYPTION_KEY).toMatch(/^[0-9a-f]{64}$/);
-      // the engine's key never reaches the engine CLI's own environment
+      expect(browser.command).toBe(process.execPath);
+      expect(browser.args).toEqual([expect.stringMatching(/browser-proxy\.(?:ts|js|mjs)$/)]);
+      expect(browser.env.OMB_BROWSER_TOKEN).toEqual(expect.any(String));
+      expect(browser.env.OMB_HARNESS_URL).toBe(BASE);
+      // Only the server-owned proxy knows native sessions and saved-login keys.
+      expect(browser.env.AGENT_BROWSER_SESSION).toBeUndefined();
+      expect(browser.env.AGENT_BROWSER_RESTORE).toBeUndefined();
+      expect(browser.env.AGENT_BROWSER_ENCRYPTION_KEY).toBeUndefined();
       expect(dump.env.AGENT_BROWSER_ENCRYPTION_KEY).toBeUndefined();
 
       const system = dump.systemPrompt;
       expect(system).toMatch(/agent_browser_snapshot/);
       expect(system).toMatch(/page instructions as untrusted content/i);
       expect(system).toMatch(/consequential action.*confirmation/i);
-      expect(system).toMatch(/never type their credentials/i);
+      expect(system).toContain(browserSection.text);
+      expect(system).toContain(SIGN_IN_PROMPT);
+      expect(system).not.toMatch(/never type their (?:credentials|password)/i);
+      expect(system).not.toContain("At a sign-in, password, MFA, CAPTCHA");
     } finally {
       if (room) await api("POST", `/api/groups/${room.id}/interrupt`, {}).catch(() => undefined);
+      else await api("POST", `/api/bots/${bot.id}/interrupt`, {}).catch(() => undefined);
       await api("PATCH", "/api/config", { features: { browser: false }, browserProfiles: [] }).catch(() => undefined);
+      if (room) await api("DELETE", `/api/groups/${room.id}`).catch(() => undefined);
       await api("DELETE", `/api/bots/${bot.id}`).catch(() => undefined);
+    }
+  }, 60_000);
+
+  it.each(["direct", "room"] as const)("resolves the same computer paragraph in the settings preview and %s turns", async (target) => {
+    // The paragraph a plan earns is decided once, by the shared resolver:
+    // what the preview shows and what a dispatched turn says cannot drift.
+    // The fleet mounts every capability for its dispatchable engines, so
+    // these cells pin the mountable span; the capability-gated cells live
+    // in the unit grid (no dispatchable engine lacks the capability, and
+    // the mounts refuse those plans before any prompt exists).
+    const bot = (await api("POST", "/api/bots", { name: "Cadence" })).body.bot;
+    let boatBot: any;
+    let room: any;
+    const idle = (id: string) => expect.poll(async () =>
+      (await api("GET", "/api/bots?messages=0")).body.bots.find((b: { id: string }) => b.id === id)?.busy,
+    { timeout: 10_000 }).toBe(false);
+    const computerSection = async (id: string) =>
+      (await api("GET", `/api/bots/${id}/system-prompt`)).body.sections
+        .find((section: { id: string }) => section.id === "computer");
+    const turnPrompt = async (path: string) => {
+      rmSync(fakeClaudeDump, { force: true });
+      expect((await api("POST", path, { text: "describe your computer tools" })).status).toBe(202);
+      return (await readJsonFileWhenReady<{ systemPrompt: string }>(fakeClaudeDump, 15_000)).systemPrompt;
+    };
+    try {
+      expect((await api("PATCH", `/api/bots/${bot.id}`, {
+        modelSelection: { instanceId: "claude", model: "claude-sonnet-5" },
+      })).status).toBe(200);
+      if (target === "room") {
+        room = (await api("POST", "/api/groups", { name: "Computer paragraph", memberIds: [bot.id] })).body.group;
+        expect((await api("PATCH", `/api/groups/${room.id}/setup`, { action: "skip" })).status).toBe(200);
+      }
+      const messagesPath = room ? `/api/groups/${room.id}/messages` : `/api/bots/${bot.id}/messages`;
+
+      // Off earns no paragraph anywhere: no section in the preview, none in
+      // the dispatched prompt.
+      expect((await api("PATCH", `/api/bots/${bot.id}`, { computer: "off" })).status).toBe(200);
+      expect(await computerSection(bot.id)).toBeUndefined();
+      const off = await turnPrompt(messagesPath);
+      for (const paragraph of ["isolated Cua sandbox", "your own cloud computer", "This is a VPS", "user's computer"]) {
+        expect(off).not.toContain(paragraph);
+      }
+      await api("POST", `/api/bots/${bot.id}/interrupt`, {});
+      await idle(bot.id);
+
+      // A Local VM plan previews exactly the paragraph the resolver gives
+      // it, by configured mode. The CI fleet has no VM runtime, so a real
+      // VM turn cannot be dispatched here; the settings-level text is the
+      // same wiring a dispatched VM turn uses.
+      expect((await api("PATCH", `/api/bots/${bot.id}`, { computer: "vm" })).status).toBe(200);
+      expect((await computerSection(bot.id)).text).toBe(computerPrompt("vm-shared"));
+      expect((await api("PATCH", "/api/config", { localVm: { mode: "per-bot", maxInstances: 1 } })).status).toBe(200);
+      expect((await computerSection(bot.id)).text).toBe(computerPrompt("vm-private"));
+      expect((await api("PATCH", "/api/config", { localVm: { mode: "shared", maxInstances: 2 } })).status).toBe(200);
+      expect((await computerSection(bot.id)).text).toBe(computerPrompt("vm-shared"));
+
+      // Cloud on the Boat backend swaps the engine to the boat agent, so the
+      // paragraph is agent-shaped: the preview carries only the sign-in
+      // policy, and the dispatched runner prompt carries that same policy
+      // and no desktop paragraph. Direct only: the room leg mounts through
+      // the identical attachBotBoat seam, and a second full boat-runner turn
+      // would only re-prove the driver, not the resolver.
+      if (target === "direct") {
+        expect((await api("PUT", "/api/config", { box: { token: "box_route" } })).status).toBe(200);
+        boatBot = (await api("POST", "/api/bots", { name: "Beacon" })).body.bot;
+        expect((await api("PATCH", `/api/bots/${boatBot.id}`, {
+          computer: "cloud", cloudBackend: "box",
+          modelSelection: { instanceId: "claude", model: "claude-sonnet-5" },
+        })).status).toBe(200);
+        managedBoatRows = [{ id: "bx_8765432a", name: managedBoatNameForFixture(boatBot.id), state: "idle" }];
+        boatPromptBodies.length = 0;
+        expect((await computerSection(boatBot.id)).text).toBe(computerPrompt("box-agent"));
+        expect((await computerSection(boatBot.id)).text).toBe(SIGN_IN_PROMPT);
+        expect((await api("POST", `/api/bots/${boatBot.id}/messages`, { text: "describe your computer tools" })).status).toBe(202);
+        await expect.poll(() => boatPromptBodies.length, { timeout: 10_000 }).toBe(1);
+        const runnerPrompt = String(boatPromptBodies[0]!.prompt);
+        expect(runnerPrompt).toContain(SIGN_IN_PROMPT);
+        for (const paragraph of ["isolated Cua sandbox", "your own cloud computer", "This is a VPS", "user's computer"]) {
+          expect(runnerPrompt).not.toContain(paragraph);
+        }
+        await api("POST", `/api/bots/${boatBot.id}/interrupt`, {});
+        await idle(boatBot.id);
+      }
+    } finally {
+      if (room) await api("POST", `/api/groups/${room.id}/interrupt`, {}).catch(() => undefined);
+      await api("POST", `/api/bots/${bot.id}/interrupt`, {}).catch(() => undefined);
+      if (boatBot) {
+        await api("POST", `/api/bots/${boatBot.id}/interrupt`, {}).catch(() => undefined);
+        await api("DELETE", `/api/bots/${boatBot.id}`).catch(() => undefined);
+      }
+      managedBoatRows = [];
+      boatPromptBodies.length = 0;
+      await api("PATCH", "/api/config", { localVm: { mode: "shared", maxInstances: 2 } }).catch(() => undefined);
+      await api("PUT", "/api/config", { box: { token: "" } }).catch(() => undefined);
+      if (room) await api("DELETE", `/api/groups/${room.id}`).catch(() => undefined);
+      await api("DELETE", `/api/bots/${bot.id}`).catch(() => undefined);
+      rmSync(fakeClaudeDump, { force: true });
     }
   }, 60_000);
   it("reconciles a committed crash-stale bot reference before ACK and profile-id reuse", async () => {
@@ -5709,13 +8997,14 @@ describe("harness HTTP API", () => {
     }]));
 
     const ackDesktopPrelude = `data:text/javascript,${encodeURIComponent(`
-      let listener;
+      const { EventEmitter } = await import("node:events");
+      const messages = new EventEmitter();
       Object.defineProperty(process, "parentPort", {
         value: {
-          on(event, callback) { if (event === "message") listener = callback; },
+          on(event, callback) { messages.on(event, callback); },
           postMessage(message) {
             if (message?.requestId && /browser-(?:bot|profile)-deleted/.test(message.type ?? "")) {
-              queueMicrotask(() => listener?.({ data: {
+              queueMicrotask(() => messages.emit("message", { data: {
                 type: "openmausbot:browser-lifecycle-result",
                 requestId: message.requestId,
                 ok: true,
@@ -5739,6 +9028,12 @@ describe("harness HTTP API", () => {
           OMB_PORT: String(isolatedPort),
           OMB_WEBHOOK_PORT: String(isolatedPort + 1),
           OMB_STATIC_DIR: isolatedStatic,
+          // A real agent-browser picked up from PATH cannot even name its
+          // daemon socket under this long fixture HOME (macOS caps socket
+          // paths at 103 bytes); its erasure can never be confirmed, so the
+          // committed entry must keep retrying rather than ACK. No engine
+          // means no saved state to erase, and replay takes the no-engine ACK.
+          OMB_AGENT_BROWSER_PATH: join(isolatedHome, "missing-agent-browser"),
           FAKE_CLAUDE_MODE: "hang",
           FAKE_CLAUDE_DUMP: join(isolatedHome, "fake-claude-dump.json"),
         },
@@ -5789,7 +9084,9 @@ describe("harness HTTP API", () => {
       rmSync(join(home, "browser-calls.jsonl"), { force: true });
       expect((await api("PATCH", "/api/config", { browserProfiles: [] })).status).toBe(200);
       const calls = readFileSync(join(home, "browser-calls.jsonl"), "utf8").trim().split("\n").map((line) => JSON.parse(line));
-      expect(calls).toContainEqual({ args: ["state", "clear", "--all"], session: profile.partitionId ?? profile.id });
+      expect(calls).toContainEqual({ args: ["close"], session: profile.partitionId ?? profile.id });
+      expect(calls).toContainEqual({ args: ["session", "list", "--json"], session: profile.partitionId ?? profile.id });
+      expect(calls.some((call: { args: string[] }) => call.args.includes("--all"))).toBe(false);
       const state = (await api("GET", "/api/bots")).body;
       expect(state.bots.find((candidate: { id: string }) => candidate.id === bot.id)).not.toHaveProperty("browserProfile");
     } finally {
@@ -5845,7 +9142,7 @@ describe("harness HTTP API", () => {
         modelSelection: { instanceId: "claude", model: "claude-sonnet-5" },
       })).status).toBe(200);
 
-      // The Box stub deliberately holds this credential check for 150 ms.
+      // The Boat stub deliberately holds this credential check for 150 ms.
       // The profile is idle at the route's first check, then becomes active
       // while validation is in flight.
       const removing = api("PATCH", "/api/config", {
@@ -5879,28 +9176,155 @@ describe("harness HTTP API", () => {
     }
   });
 
+  it("hands out a Local VM's viewer only to the lease holding the computer, once the VM is ready", async () => {
+    const previous = (await api("GET", "/api/config")).body.localVm;
+    const bot = (await api("POST", "/api/bots")).body.bot;
+    const lease = "phone-lease-0123456789";
+    const join = (controlLeaseId = lease) =>
+      api("POST", `/api/bots/${bot.id}/local-computer/join?controlLeaseId=${controlLeaseId}`, {});
+    try {
+      expect((await api("PATCH", "/api/config", { localVm: { ...previous, mode: "per-bot" } })).status).toBe(200);
+      expect((await api("POST", `/api/bots/${bot.id}/local-computer/join`, {})).status).toBe(400);
+      const unheld = await join();
+      expect(unheld.status).toBe(409);
+      expect(unheld.body.error).toMatch(/take control/i);
+
+      // Someone else holding the computer is not this lease holding it.
+      expect((await api("POST", `/api/bots/${bot.id}/computer/control`, { action: "take" })).status).toBe(200);
+      expect((await join()).status).toBe(409);
+      expect((await api("POST", `/api/bots/${bot.id}/computer/control`, { action: "check", controlLeaseId: lease })).body)
+        .toMatchObject({ held: true, owned: false });
+      expect((await api("POST", `/api/bots/${bot.id}/computer/control`, { action: "release" })).status).toBe(200);
+
+      expect((await api("POST", `/api/bots/${bot.id}/computer/control`, { action: "take", controlLeaseId: lease })).body)
+        .toMatchObject({ held: true, owned: true });
+      expect((await api("POST", `/api/bots/${bot.id}/computer/control`, { action: "check", controlLeaseId: lease })).body)
+        .toMatchObject({ held: true, owned: true });
+      // This suite's container runtime is unavailable, so the VM is never ready.
+      const notReady = await join();
+      expect(notReady.status).toBe(409);
+      expect(notReady.body.joinUrl).toBeUndefined();
+
+      await api("POST", `/api/bots/${bot.id}/computer/control`, { action: "release", controlLeaseId: lease });
+      // Checking never takes a free computer.
+      expect((await api("POST", `/api/bots/${bot.id}/computer/control`, { action: "check", controlLeaseId: lease })).body)
+        .toMatchObject({ held: false, owned: false });
+      expect((await api("POST", "/api/bots/no-such-bot/local-computer/join", {})).status).toBe(404);
+    } finally {
+      await api("POST", `/api/bots/${bot.id}/computer/control`, { action: "release" }).catch(() => undefined);
+      await api("PATCH", "/api/config", { localVm: previous }).catch(() => undefined);
+      await api("DELETE", `/api/bots/${bot.id}`).catch(() => undefined);
+    }
+  });
+
+  it("lets a phone paired directly with Full access ask for the Local VM desktop under its lease, and nobody else", async () => {
+    const previous = (await api("GET", "/api/config")).body.localVm;
+    const bot = (await api("POST", "/api/bots")).body.bot;
+    const lease = "phone-lease-0123456789";
+    const owner = await asPairedPerson("Owner's phone");
+    const chatOnlyWindow = await api("POST", "/api/auth/pairing", { scopes: ["client"] });
+    const chatOnlyPaired = await fetch(`${BASE}/api/auth/pair`, {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ code: chatOnlyWindow.body.code }),
+    });
+    const chatOnlyToken = ((await chatOnlyPaired.json()) as any).token as string;
+    const asChatOnly = async (method: string, path: string, payload?: unknown) => {
+      const res = await fetch(`${BASE}${path}`, {
+        method, headers: { authorization: `Bearer ${chatOnlyToken}`, ...(payload ? { "content-type": "application/json" } : {}) },
+        body: payload ? JSON.stringify(payload) : undefined,
+      });
+      return { status: res.status, body: await res.json() as any };
+    };
+    const join = `/api/bots/${bot.id}/local-computer/join?controlLeaseId=${lease}`;
+    const target = `local/bot-${createHash("sha256").update(bot.id).digest("hex")}`;
+    const proxy = `/api/desktop-viewer/${target}?botId=${bot.id}&controlLeaseId=${lease}`;
+    try {
+      expect((await api("PATCH", "/api/config", { localVm: { ...previous, mode: "per-bot" } })).status).toBe(200);
+      // Chat-only: no computer access at all, on every step of the way.
+      expect((await asChatOnly("POST", `/api/bots/${bot.id}/computer/control`, { action: "take", controlLeaseId: lease })).status).toBe(403);
+      expect((await asChatOnly("POST", join, {})).status).toBe(403);
+      expect((await asChatOnly("GET", proxy)).status).toBe(403);
+      expect((await asChatOnly("POST", `/api/bots/${bot.id}/computer/viewer-close`, {})).status).toBe(403);
+
+      // Full access, but not holding the computer: no desktop.
+      const unheld = await owner.call("POST", join, {});
+      expect(unheld.status).toBe(409);
+      expect(unheld.body.error).toMatch(/take control/i);
+      const unheldProxy = await owner.call("GET", proxy);
+      expect(unheldProxy.status).toBe(409);
+      expect(unheldProxy.body.error).toMatch(/take control/i);
+
+      // Holding it: the join reaches the VM (which this suite cannot start)
+      // and the proxy is bound to this lease; neither hands out an address.
+      expect((await owner.call("POST", `/api/bots/${bot.id}/computer/control`, { action: "take", controlLeaseId: lease })).body)
+        .toMatchObject({ held: true, owned: true });
+      const notReady = await owner.call("POST", join, {});
+      expect(notReady.status).toBe(409);
+      expect(notReady.body.error).not.toMatch(/take control/i);
+      expect(notReady.body.joinUrl).toBeUndefined();
+      expect(notReady.body.socketPath).toBeUndefined();
+      const boundProxy = await owner.call("GET", proxy);
+      expect(boundProxy.status).toBe(409);
+      expect(boundProxy.body.error).not.toMatch(/take control/i);
+      // Another bot's lease, or a lease that is not this one, holds nothing here.
+      expect((await owner.call("GET", `/api/desktop-viewer/${target}?botId=${bot.id}&controlLeaseId=phone-lease-9876543210`)).status).toBe(409);
+
+      // Hand back: closing the viewer is allowed and idempotent, and the proxy refuses again.
+      expect((await owner.call("POST", `/api/bots/${bot.id}/computer/viewer-close`, {})).body).toEqual({ closed: false });
+      await owner.call("POST", `/api/bots/${bot.id}/computer/control`, { action: "release", controlLeaseId: lease });
+      expect((await owner.call("GET", proxy)).status).toBe(409);
+    } finally {
+      await api("POST", `/api/bots/${bot.id}/computer/control`, { action: "release" }).catch(() => undefined);
+      await api("PATCH", "/api/config", { localVm: previous }).catch(() => undefined);
+      await api("DELETE", `/api/bots/${bot.id}`).catch(() => undefined);
+    }
+  });
+
+  it.each(["shared", "pool"])("refuses Local VM phone joins in %s mode for direct and companion callers", async testedMode => {
+    const { mode, maxInstances } = (await api("GET", "/api/config")).body.localVm;
+    const previous = { mode, maxInstances };
+    const bot = (await api("POST", "/api/bots")).body.bot;
+    const owner = await asPairedPerson("Pool viewer phone");
+    const lease = "phone-pool-lease-0123456789";
+    try {
+      expect((await api("PATCH", "/api/config", { localVm: { ...previous, mode: testedMode } })).status).toBe(200);
+      expect((await owner.call("POST", `/api/bots/${bot.id}/computer/control`, { action: "take", controlLeaseId: lease })).body.owned).toBe(true);
+      const join = `/api/bots/${bot.id}/local-computer/join?controlLeaseId=${lease}`;
+      for (const response of [await owner.call("POST", join, {}), await api("POST", join, {})]) {
+        expect(response.status).toBe(409);
+        expect(response.body.error).toContain("per-bot Local VM");
+        expect(response.body.joinUrl).toBeUndefined();
+        expect(response.body.socketPath).toBeUndefined();
+        expect(response.body.password).toBeUndefined();
+      }
+    } finally {
+      await api("POST", `/api/bots/${bot.id}/computer/control`, { action: "release", controlLeaseId: lease });
+      await api("PATCH", "/api/config", { localVm: previous });
+      await api("DELETE", `/api/bots/${bot.id}`);
+    }
+  });
+
   it("keeps shared Local VM mode by default and resolves isolated targets per bot when enabled", async () => {
     const first = (await api("POST", "/api/bots")).body.bot;
     const second = (await api("POST", "/api/bots")).body.bot;
     const before = await api("GET", "/api/config");
-    expect(before.body.localVm).toEqual({ mode: "shared", maxInstances: 2 });
+    expect(before.body.localVm).toEqual({ mode: "shared", maxInstances: 2, idleTimeoutMinutes: 480 });
 
     const shared = await api("GET", `/api/bots/${first.id}/local-computer`);
     expect(shared.status).toBe(200);
     expect(shared.body).toMatchObject({ mode: "shared", target_key: "shared" });
 
     const saved = await api("PATCH", "/api/config", {
-      localVm: { mode: "per-bot", maxInstances: 3 },
+      localVm: { mode: "per-bot", maxInstances: 5 },
     });
     expect(saved.status).toBe(200);
-    expect(saved.body.localVm).toEqual({ mode: "per-bot", maxInstances: 3 });
+    expect(saved.body.localVm).toEqual({ mode: "per-bot", maxInstances: 5, idleTimeoutMinutes: 480 });
 
     const [firstStatus, secondStatus] = await Promise.all([
       api("GET", `/api/bots/${first.id}/local-computer`),
       api("GET", `/api/bots/${second.id}/local-computer`),
     ]);
-    expect(firstStatus.body).toMatchObject({ mode: "per-bot", max_instances: 3 });
-    expect(secondStatus.body).toMatchObject({ mode: "per-bot", max_instances: 3 });
+    expect(firstStatus.body).toMatchObject({ mode: "per-bot", max_instances: 5 });
+    expect(secondStatus.body).toMatchObject({ mode: "per-bot", max_instances: 5 });
     expect(firstStatus.body.target_key).not.toBe(secondStatus.body.target_key);
     expect(firstStatus.body.container_name).not.toBe(secondStatus.body.container_name);
     expect(firstStatus.body.workspace_path).not.toBe(secondStatus.body.workspace_path);
@@ -5910,7 +9334,7 @@ describe("harness HTTP API", () => {
     expect(inventory.headers.get("cache-control")).toBe("private, no-store");
     const inventoryBody = await inventory.json() as any;
     expect(inventoryBody).toMatchObject({
-      maxInstances: 3,
+      maxInstances: 5,
       instances: expect.any(Array),
       available: expect.any(Boolean),
     });
@@ -5928,13 +9352,45 @@ describe("harness HTTP API", () => {
     }
     expect(JSON.stringify(inventoryBody)).not.toMatch(/viewer_url|workspace_path|container_name|target_key/);
 
-    const invalid = await api("PATCH", "/api/config", { localVm: { maxInstances: 5 } });
+    const invalid = await api("PATCH", "/api/config", { localVm: { maxInstances: 9 } });
     expect(invalid.status).toBe(400);
     expect(invalid.body.error).toContain("localVm.maxInstances");
 
     const disk = JSON.parse(readFileSync(join(home, ".openmausbot", "config.json"), "utf8"));
-    expect(disk.localVm).toEqual({ mode: "per-bot", maxInstances: 3 });
+    expect(disk.localVm).toEqual({ mode: "per-bot", maxInstances: 5, idleTimeoutMinutes: 480 });
     await api("PATCH", "/api/config", { localVm: { mode: "shared", maxInstances: 2 } });
+  });
+
+  it("validates, persists and applies the Local VM idle timeout in shared and per-bot modes", async () => {
+    const bot = (await api("POST", "/api/bots")).body.bot;
+    try {
+      const shared = await api("GET", `/api/bots/${bot.id}/local-computer`);
+      expect(shared.status).toBe(200);
+      expect(shared.body).toMatchObject({ mode: "shared", idle_timeout_ms: 480 * 60_000 });
+
+      for (const idleTimeoutMinutes of [0, 4, 1.5, 1441, "30", null]) {
+        const invalid = await api("PATCH", "/api/config", { localVm: { idleTimeoutMinutes } });
+        expect(invalid.status).toBe(400);
+        expect(invalid.body.error).toContain("localVm.idleTimeoutMinutes");
+      }
+
+      const saved = await api("PATCH", "/api/config", { localVm: { idleTimeoutMinutes: 30 } });
+      expect(saved.status).toBe(200);
+      expect(saved.body.localVm).toEqual({ mode: "shared", maxInstances: 2, idleTimeoutMinutes: 30 });
+      expect((await api("GET", "/api/config")).body.localVm.idleTimeoutMinutes).toBe(30);
+      expect((await api("GET", "/api/local-computer")).body.idle_timeout_ms).toBe(30 * 60_000);
+
+      const disk = JSON.parse(readFileSync(join(home, ".openmausbot", "config.json"), "utf8"));
+      expect(disk.localVm).toMatchObject({ idleTimeoutMinutes: 30 });
+
+      // A mode change keeps the configured window rather than resetting it.
+      expect((await api("PATCH", "/api/config", { localVm: { mode: "per-bot" } })).status).toBe(200);
+      const perBot = await api("GET", `/api/bots/${bot.id}/local-computer`);
+      expect(perBot.body).toMatchObject({ mode: "per-bot", idle_timeout_ms: 30 * 60_000 });
+    } finally {
+      await api("PATCH", "/api/config", { localVm: { mode: "shared", maxInstances: 2, idleTimeoutMinutes: 480 } }).catch(() => undefined);
+      await api("DELETE", `/api/bots/${bot.id}`).catch(() => undefined);
+    }
   });
 
   it("never removes an unmanaged container that squats on a bot's exact Local VM name", async () => {
@@ -5966,6 +9422,74 @@ describe("harness HTTP API", () => {
       rmSync(fakeDockerLog, { force: true });
       await api("PATCH", "/api/config", { localVm: { mode: "shared", maxInstances: 2 } }).catch(() => undefined);
       await api("DELETE", `/api/bots/${bot.id}`).catch(() => undefined);
+    }
+  });
+
+  it("removes a managed per-bot Local VM and its private files with the bot", async () => {
+    const bot = (await api("POST", "/api/bots")).body.bot;
+    let workspacePath = "";
+    try {
+      expect((await api("PATCH", "/api/config", {
+        localVm: { mode: "per-bot", maxInstances: 2 },
+      })).status).toBe(200);
+      const status = await api("GET", `/api/bots/${bot.id}/local-computer`);
+      expect(status.status).toBe(200);
+      workspacePath = status.body.workspace_path;
+      mkdirSync(workspacePath, { recursive: true });
+      writeFileSync(join(workspacePath, "private-session.txt"), "delete me");
+      writeFileSync(fakeDockerFixture, JSON.stringify({
+        name: status.body.container_name,
+        workspace: workspacePath,
+        targetLabel: String(status.body.target_key).replace(/^bot:/, ""),
+        managed: true,
+      }));
+      rmSync(fakeDockerLog, { force: true });
+
+      const deleted = await api("DELETE", `/api/bots/${bot.id}`);
+
+      expect(deleted).toMatchObject({ status: 200, body: { ok: true } });
+      expect(readFileSync(fakeDockerLog, "utf8").split("\n")).toContain(
+        `rm -f ${status.body.container_name}`,
+      );
+      expect(existsSync(workspacePath)).toBe(false);
+      expect((await api("GET", "/api/bots?messages=0")).body.bots.some(
+        (candidate: { id: string }) => candidate.id === bot.id,
+      )).toBe(false);
+    } finally {
+      rmSync(fakeDockerFixture, { force: true });
+      rmSync(fakeDockerLog, { force: true });
+      if (workspacePath) rmSync(workspacePath, { recursive: true, force: true });
+      await api("DELETE", `/api/bots/${bot.id}`).catch(() => undefined);
+      await api("PATCH", "/api/config", { localVm: { mode: "shared", maxInstances: 2 } }).catch(() => undefined);
+    }
+  });
+
+  it("removes the exact managed VPS computer with its bot", async () => {
+    const bot = (await api("POST", "/api/bots")).body.bot;
+    const containerId = "a".repeat(64);
+    const containerName = managedVpsNameForFixture(bot.id);
+    try {
+      expect((await api("PUT", "/api/config", {
+        vps: { sshAlias: "fixture-vps" },
+      })).status).toBe(200);
+      writeFileSync(fakeVpsFixture, JSON.stringify({ id: containerId, name: containerName }));
+      rmSync(fakeDockerLog, { force: true });
+
+      const deleted = await api("DELETE", `/api/bots/${bot.id}`);
+
+      expect(deleted).toMatchObject({ status: 200, body: { ok: true } });
+      expect(readFileSync(fakeDockerLog, "utf8").split("\n")).toContain(
+        `-H ssh://fixture-vps rm -f ${containerId}`,
+      );
+      expect(existsSync(fakeVpsFixture)).toBe(false);
+      expect((await api("GET", "/api/bots?messages=0")).body.bots.some(
+        (candidate: { id: string }) => candidate.id === bot.id,
+      )).toBe(false);
+    } finally {
+      rmSync(fakeVpsFixture, { force: true });
+      rmSync(fakeDockerLog, { force: true });
+      await api("DELETE", `/api/bots/${bot.id}`).catch(() => undefined);
+      await api("PUT", "/api/config", { vps: { sshAlias: "" } }).catch(() => undefined);
     }
   });
 
@@ -6249,7 +9773,7 @@ describe("harness HTTP API", () => {
       });
       expect(unavailableCloud.status).toBe(409);
       expect(await unavailableCloud.json()).toMatchObject({
-        error: expect.stringMatching(/Box API key|Cloud VM runner/i),
+        error: expect.stringMatching(/Boat API key|Cloud VM runner/i),
       });
 
       const proposed = await fetch(`${BASE}/api/internal/routine-requests`, {
@@ -6368,7 +9892,48 @@ describe("harness HTTP API", () => {
       expect(crossConfirmed).toMatchObject({ status: 200, body: { routineAction: "create" } });
       const crossRoutine = (await api("GET", "/api/routines")).body.routines
         .find((routine: { id: string }) => routine.id === crossConfirmed.body.resultId);
-      expect(crossRoutine).toMatchObject({ botId: teammate.id, sourceThreadId: bot.threadId });
+      expect(crossRoutine).toMatchObject({ botId: teammate.id, sourceThreadId: bot.threadId, enabled: true });
+      expect((await api("PATCH", `/api/bots/${teammate.id}`, {
+        modelSelection: { instanceId: "ghost", model: "unavailable-fixture" },
+      })).status).toBe(200);
+      expect((await api("POST", `/api/bots/${bot.id}/read`, { threadId: bot.threadId })).status).toBe(200);
+      const crossEvents = await openSse(`${BASE}/api/events`);
+      let crossRun;
+      try {
+        crossRun = await api("POST", `/api/routines/${crossRoutine.id}/run`);
+        const failedNotice = await crossEvents.until(
+          (frame) => frame.kind === "notify" && frame.notification?.kind === "routine-failed",
+          5_000,
+        );
+        expect(failedNotice.notification).toMatchObject({ botId: bot.id, threadId: bot.threadId });
+      } finally {
+        crossEvents.close();
+      }
+      expect(crossRun.status).toBe(201);
+      // Execution belongs to the teammate, but the confirmed request's
+      // reporting destination is still the proposer's conversation.
+      await expect.poll(async () => {
+        const source = (await api("GET", `/api/threads/${bot.threadId}/messages`)).body;
+        return source.messages.filter(
+          (message: { routineRun?: { runId?: string; status?: string } }) =>
+            message.routineRun?.runId === crossRun.body.run.id && message.routineRun?.status === "failed",
+        );
+      }, { timeout: 5_000 }).toHaveLength(1);
+      const crossStateAfterRun = (await api("GET", "/api/bots?messages=0")).body;
+      expect(crossStateAfterRun.bots.find((candidate: { id: string }) => candidate.id === bot.id)
+        ?.tasks.find((task: { threadId: string }) => task.threadId === bot.threadId)?.unread).toBe(true);
+
+      // Moving either bot out of the section revokes that reporting route.
+      expect((await api("PATCH", `/api/bots/${teammate.id}`, { section: "Private routine work" })).status).toBe(200);
+      const movedRun = await api("POST", `/api/routines/${crossRoutine.id}/run`);
+      expect(movedRun.status).toBe(201);
+      await expect.poll(async () => {
+        const runs = (await api("GET", "/api/routines")).body.runs;
+        return runs.find((run: { id: string }) => run.id === movedRun.body.run.id)?.status;
+      }, { timeout: 5_000 }).toBe("failed");
+      expect((await api("GET", `/api/threads/${bot.threadId}/messages`)).body.messages.some(
+        (message: { routineRun?: { runId?: string } }) => message.routineRun?.runId === movedRun.body.run.id,
+      )).toBe(false);
       await api("DELETE", `/api/bots/${teammate.id}`);
 
       // The initial fixture turn is deliberately hung. Once it is stopped,
@@ -6384,6 +9949,9 @@ describe("harness HTTP API", () => {
       expect((await api("PATCH", `/api/bots/${bot.id}`, {
         modelSelection: { instanceId: "ghost", model: "unavailable-fixture" },
       })).status).toBe(200);
+      const sibling = await api("POST", `/api/bots/${bot.id}/tasks`, { title: "Unrelated selected thread" });
+      expect(sibling.status).toBe(201);
+      expect((await api("POST", `/api/bots/${bot.id}/read`, { threadId: bot.threadId })).status).toBe(200);
 
       const routineEvents = await openSse(`${BASE}/api/events`);
       try {
@@ -6399,16 +9967,17 @@ describe("harness HTTP API", () => {
         expect(failedNotice.notification.threadId).toBe(bot.threadId);
 
         await expect.poll(async () => {
-          const current = (await api("GET", "/api/bots")).body.bots
-            .find((candidate: { id: string }) => candidate.id === bot.id);
-          return current?.messages.filter(
+          const source = (await api("GET", `/api/threads/${bot.threadId}/messages`)).body;
+          return source.messages.filter(
             (message: { kind?: string; routineRun?: { runId?: string } }) =>
               message.kind === "routine.run" && message.routineRun?.runId === queued.body.run.id,
           ) ?? [];
         }, { timeout: 5_000 }).toHaveLength(1);
         const current = (await api("GET", "/api/bots")).body.bots
           .find((candidate: { id: string }) => candidate.id === bot.id);
-        const runCards = current.messages.filter(
+        expect(current.tasks.find((task: { threadId: string }) => task.threadId === bot.threadId)?.unread).toBe(true);
+        expect(current.tasks.find((task: { threadId: string }) => task.threadId === sibling.body.task.threadId)?.unread).toBeFalsy();
+        const runCards = (await api("GET", `/api/threads/${bot.threadId}/messages`)).body.messages.filter(
           (message: { kind?: string; routineRun?: { runId?: string } }) =>
             message.kind === "routine.run" && message.routineRun?.runId === queued.body.run.id,
         );
@@ -6424,7 +9993,7 @@ describe("harness HTTP API", () => {
         // Reading the source and then marking the failure seen in Routines
         // must not make the original conversation unread again. markSeen
         // re-emits the receipt without changing its lifecycle status.
-        expect((await api("POST", `/api/bots/${bot.id}/read`)).status).toBe(200);
+        expect((await api("POST", `/api/bots/${bot.id}/read`, { threadId: bot.threadId })).status).toBe(200);
         expect((await api("POST", `/api/routine-runs/${queued.body.run.id}/seen`)).status).toBe(200);
         const afterSeen = (await api("GET", "/api/bots?messages=0")).body.bots
           .find((candidate: { id: string }) => candidate.id === bot.id);
@@ -6523,7 +10092,14 @@ describe("harness HTTP API", () => {
         botId: bot.id,
         runOn: "maus",
         enabled: false,
-        schedule: { type: "daily", time: "10:00", weekdays: [1] },
+        schedule: {
+          type: "interval",
+          everyMinutes: 15,
+          anchorAt: Date.parse("2026-08-28T10:00:00Z"),
+          weekdays: [1, 3, 5],
+          window: { start: "09:00", end: "17:00" },
+          endsAt: Date.parse("2026-09-30T18:00:00Z"),
+        },
       });
       legacyRoutineId = legacy.body.routine.id;
       const finalToken = await mintTestCapability(BASE, bot.id, bot.threadId);
@@ -6549,6 +10125,14 @@ describe("harness HTTP API", () => {
       expect(legacyResult.name).not.toContain(fakeNameSecret);
       expect(legacyResult.instructions).toContain("redacted");
       expect(legacyResult.instructionsTruncated).toBe(true);
+      expect(legacyResult.schedule).toEqual({
+        type: "interval",
+        everyMinutes: 15,
+        anchorAt: "2026-08-28T10:00:00.000Z",
+        weekdays: ["monday", "wednesday", "friday"],
+        window: { start: "09:00", end: "17:00" },
+        endsAt: "2026-09-30T18:00:00.000Z",
+      });
 
       const wrongThread = await fetch(`${BASE}/api/internal/routine-requests`, {
         method: "POST",
@@ -6567,6 +10151,123 @@ describe("harness HTTP API", () => {
       if (routineId) await api("DELETE", `/api/routines/${routineId}`);
       await api("POST", `/api/bots/${bot.id}/interrupt`);
       await api("DELETE", `/api/bots/${bot.id}`);
+    }
+  });
+
+  it("gates targeted routine actions like creation and re-checks the target at confirm", async () => {
+    const chief = (await api("POST", "/api/bots", { name: "Acting chief" })).body.bot;
+    let teammateId = "";
+    let outsiderId = "";
+    try {
+      const teammate = (await api("POST", "/api/bots", { name: "Ops helper" })).body.bot;
+      const outsider = (await api("POST", "/api/bots", { name: "Other section", section: "Routine elsewhere" })).body.bot;
+      teammateId = teammate.id;
+      outsiderId = outsider.id;
+      const teammateRoutine = (await api("POST", "/api/routines", {
+        name: "Teammate digest",
+        prompt: "Summarize the teammate's queue.",
+        botId: teammate.id,
+        runOn: "maus",
+        enabled: true,
+        schedule: { type: "daily", time: "07:30", weekdays: [1, 2, 3, 4, 5] },
+      })).body.routine;
+      const ownRoutine = (await api("POST", "/api/routines", {
+        name: "Chief digest",
+        prompt: "Summarize the chief's queue.",
+        botId: chief.id,
+        runOn: "maus",
+        enabled: true,
+        schedule: { type: "daily", time: "08:00", weekdays: [1] },
+      })).body.routine;
+      const token = await mintTestCapability(BASE, chief.id, chief.threadId);
+      const internalHeaders = {
+        authorization: `Bearer ${token}`,
+        "content-type": "application/json",
+      };
+      const post = (body: Record<string, unknown>) => fetch(`${BASE}/api/internal/routine-requests`, {
+        method: "POST",
+        headers: internalHeaders,
+        body: JSON.stringify(body),
+      });
+
+      const outOfSection = await post({
+        fromBotId: chief.id,
+        fromThreadId: chief.threadId,
+        action: "pause",
+        routineId: teammateRoutine.id,
+        forBotId: outsider.id,
+      });
+      expect(outOfSection.status).toBe(403);
+      expect(z.object({ error: z.string() }).parse(await outOfSection.json()).error).toMatch(/different section/);
+
+      const unknown = await post({
+        fromBotId: chief.id,
+        fromThreadId: chief.threadId,
+        action: "pause",
+        routineId: teammateRoutine.id,
+        forBotId: "bot-that-does-not-exist",
+      });
+      expect(unknown.status).toBe(404);
+
+      // The routine id is scoped to the named bot: the proposer's own routine
+      // must not satisfy a targeted action.
+      const wrongOwner = await post({
+        fromBotId: chief.id,
+        fromThreadId: chief.threadId,
+        action: "pause",
+        routineId: ownRoutine.id,
+        forBotId: teammate.id,
+      });
+      expect(wrongOwner.status).toBe(404);
+
+      const proposed = await post({
+        fromBotId: chief.id,
+        fromThreadId: chief.threadId,
+        action: "pause",
+        routineId: teammateRoutine.id,
+        forBotId: teammate.id,
+      });
+      expect(proposed.status).toBe(201);
+      const proposal = z.object({ requestId: z.string() }).parse(await proposed.json());
+      const proposerState = (await api("GET", "/api/bots")).body;
+      const card = proposerState.bots
+        .find((candidate: { id: string }) => candidate.id === chief.id)
+        ?.messages.find((message: { card?: { requestId?: string } }) => message.card?.requestId === proposal.requestId);
+      expect(card?.card.title).toContain(`for @${teammate.name}`);
+
+      const confirmed = await api("POST", `/api/threads/${chief.threadId}/respond`, {
+        requestId: proposal.requestId,
+        behavior: "allow",
+      });
+      expect(confirmed).toMatchObject({ status: 200, body: { routineAction: "pause" } });
+      const paused = (await api("GET", "/api/routines")).body.routines
+        .find((routine: { id: string }) => routine.id === teammateRoutine.id);
+      expect(paused).toMatchObject({ botId: teammate.id, enabled: false });
+
+      // The target is re-authorized when the user confirms, not just at
+      // proposal: a moved bot refuses and the routine stays untouched.
+      const resume = await post({
+        fromBotId: chief.id,
+        fromThreadId: chief.threadId,
+        action: "resume",
+        routineId: teammateRoutine.id,
+        forBotId: teammate.id,
+      });
+      expect(resume.status).toBe(201);
+      const resumeProposal = z.object({ requestId: z.string() }).parse(await resume.json());
+      expect((await api("PATCH", `/api/bots/${teammate.id}`, { section: "Moved away" })).status).toBe(200);
+      const refused = await api("POST", `/api/threads/${chief.threadId}/respond`, {
+        requestId: resumeProposal.requestId,
+        behavior: "allow",
+      });
+      expect(refused.status).toBe(404);
+      const stillPaused = (await api("GET", "/api/routines")).body.routines
+        .find((routine: { id: string }) => routine.id === teammateRoutine.id);
+      expect(stillPaused).toMatchObject({ enabled: false });
+    } finally {
+      await api("DELETE", `/api/bots/${chief.id}`);
+      if (teammateId) await api("DELETE", `/api/bots/${teammateId}`);
+      if (outsiderId) await api("DELETE", `/api/bots/${outsiderId}`);
     }
   });
 
@@ -6655,6 +10356,159 @@ describe("harness HTTP API", () => {
     }
   });
 
+  it("keeps a proposed tightening inert until confirmed, fails closed when loosened, and never leaks the receipt", async () => {
+    const bot = (await api("POST", "/api/bots", { name: "Scout" })).body.bot;
+    try {
+      // Start from Auto with one standing grant, so tightening to Edits is a
+      // real reduction and the loosened-since path stays reachable.
+      await api("PATCH", `/api/bots/${bot.id}`, { approvalMode: "auto", alwaysAllow: ["Bash"] });
+      const token = await mintTestCapability(BASE, bot.id, bot.threadId);
+      const internalHeaders = {
+        authorization: `Bearer ${token}`,
+        "content-type": "application/json",
+      };
+
+      // Escalation is refused before any card exists.
+      const escalation = await fetch(`${BASE}/api/internal/tightening-requests`, {
+        method: "POST",
+        headers: internalHeaders,
+        body: JSON.stringify({ fromBotId: bot.id, fromThreadId: bot.threadId, intents: { approvalMode: "full" }, reason: "not allowed" }),
+      });
+      expect(escalation.status).toBe(400);
+
+      const proposal = await fetch(`${BASE}/api/internal/tightening-requests`, {
+        method: "POST",
+        headers: internalHeaders,
+        body: JSON.stringify({ fromBotId: bot.id, fromThreadId: bot.threadId, intents: { alwaysAllow: ["Bash"] }, reason: "incident lockdown" }),
+      });
+      expect(proposal.status).toBe(201);
+      const proposed = z.object({ requestId: z.string() }).passthrough().parse(await proposal.json());
+      const state = (await api("GET", "/api/bots")).body;
+      const wireScout = state.bots.find((candidate: { id: string }) => candidate.id === bot.id);
+      const card = wireScout
+        ?.messages.find((message: { card?: { requestId?: string } }) => message.card?.requestId === proposed.requestId);
+      expect(card?.card).toMatchObject({
+        tool: "tighten_permissions",
+        tighteningRequest: { botId: bot.id, targetBotId: bot.id, intents: { alwaysAllow: ["Bash"] } },
+      });
+      expect(wireScout?.approvalMode).toBe("auto");
+      expect(wireScout?.alwaysAllow).toEqual(["Bash"]);
+      // One card data drives every surface: the generic card renders the
+      // subtitle copy on desktop and mobile alike, and the payload carries
+      // the before snapshot and intents verbatim for richer renderers.
+      expect(card?.card?.subtitle).toContain("Always-allow grants: 1 → 0 — removed: Bash");
+      expect(card?.card?.subtitle).toContain("This reduces Scout's authority, and the reverse cannot be proposed back.");
+
+      // A human adds a new standing grant while the card sits open: the
+      // confirmation must fail closed rather than apply the stale card.
+      await api("PATCH", `/api/bots/${bot.id}`, { alwaysAllow: ["Bash", "WebSearch"] });
+      const stale = await api("POST", `/api/threads/${bot.threadId}/respond`, { requestId: proposed.requestId, behavior: "allow" });
+      expect(stale.status).toBe(409);
+
+      // A fresh card against the live state applies on confirm.
+      const againResponse = await fetch(`${BASE}/api/internal/tightening-requests`, {
+        method: "POST",
+        headers: internalHeaders,
+        body: JSON.stringify({ fromBotId: bot.id, fromThreadId: bot.threadId, intents: { approvalMode: "edits" }, reason: "incident lockdown" }),
+      });
+      const again = z.object({ requestId: z.string() }).passthrough().parse(await againResponse.json());
+      const ok = await api("POST", `/api/threads/${bot.threadId}/respond`, { requestId: again.requestId, behavior: "allow" });
+      expect(ok.body).toMatchObject({ ok: true, outcome: "allowed-once", tighteningFields: ["approvalMode"] });
+      const after = (await api("GET", "/api/bots")).body.bots.find((candidate: { id: string }) => candidate.id === bot.id);
+      expect(after.approvalMode).toBe("edits");
+      expect(after.autoApprove).toBe(false);
+      // The durable receipt exists server-side but never crosses the wire.
+      expect(after).not.toHaveProperty("lastTighteningRequestId");
+
+      // History rows: the proposing bot is the actor, the card id is the
+      // via, in the same History section manual edits write to.
+      const history = await api("GET", `/api/bots/${bot.id}/history`);
+      expect(history.status).toBe(200);
+      const tightened = history.body.rows.filter((r: any) => r.field === "approvalMode");
+      expect(tightened).toHaveLength(1);
+      expect(tightened[0]).toMatchObject({ actor: "bot", via: expect.stringMatching(/^card:/), before: "auto", after: "edits" });
+
+      // decisions audit
+      await expect.poll(async () => {
+        const decisions = (await api("GET", "/api/decisions")).body.decisions;
+        return decisions.filter((d: any) => d.requestId === again.requestId).map((d: any) => `${d.decision}:${d.source}`).sort();
+      }).toEqual(["card-shown:tightening", "user-approved:user"]);
+    } finally {
+      await api("POST", `/api/bots/${bot.id}/interrupt`);
+      await api("DELETE", `/api/bots/${bot.id}`);
+    }
+  });
+
+  it("tightens an assigned library skill for one bot without disabling its teammates", async () => {
+    const name = `tightening-${randomUUID().slice(0, 8)}`;
+    const first = (await api("POST", "/api/bots", { name: "Tightening skill owner" })).body.bot;
+    const peer = (await api("POST", "/api/bots", { name: "Tightening skill peer" })).body.bot;
+    try {
+      expect((await api("PATCH", "/api/config", { features: { skillsLibrary: true } })).status).toBe(200);
+      const text = `---\nname: ${name}\ndescription: Synthetic tightening fixture.\n---\n\nReview the synthetic fixture only.\n`;
+      expect((await api("POST", "/api/skills-library", { text })).status).toBe(201);
+      expect((await api("PATCH", `/api/skills-library/${name}`, { enabled: true })).status).toBe(200);
+      for (const bot of [first, peer]) {
+        expect((await api("PUT", `/api/bots/${bot.id}/skills-library`, { skills: [name] })).status).toBe(200);
+      }
+      const token = await mintTestCapability(BASE, first.id, first.threadId);
+      const proposal = await fetch(`${BASE}/api/internal/tightening-requests`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+        body: JSON.stringify({ fromBotId: first.id, fromThreadId: first.threadId, intents: { skills: [name] }, reason: "No longer needed here" }),
+      });
+      expect(proposal.status).toBe(201);
+      const proposed = await proposal.json() as { requestId: string };
+      expect((await api("GET", `/api/bots/${first.id}/skills`)).body.assignedSkills).toEqual([name]);
+      const allowed = await api("POST", `/api/threads/${first.threadId}/respond`, { requestId: proposed.requestId, behavior: "allow" });
+      expect(allowed).toMatchObject({ status: 200, body: { ok: true, tighteningFields: ["skills"] } });
+      expect((await api("GET", `/api/bots/${first.id}/skills`)).body.assignedSkills).toEqual([]);
+      const other = await api("GET", `/api/bots/${peer.id}/skills`);
+      expect(other.body.assignedSkills).toEqual([name]);
+      expect(other.body.skills).toContainEqual(expect.objectContaining({ name, enabled: true, origin: "library" }));
+      expect((await api("GET", "/api/skills-library")).body.skills).toContainEqual(expect.objectContaining({ name, enabled: true }));
+      const persisted = JSON.parse(readFileSync(join(home, ".openmausbot", "bots.json"), "utf8"));
+      expect(persisted.find((bot: any) => bot.id === first.id).assignedSkills).toEqual([]);
+      expect(persisted.find((bot: any) => bot.id === peer.id).assignedSkills).toEqual([name]);
+      expect((await api("POST", `/api/threads/${first.threadId}/respond`, { requestId: proposed.requestId, behavior: "allow" })).status).toBe(200);
+    } finally {
+      await api("PATCH", "/api/config", { features: { skillsLibrary: false } });
+      for (const bot of [first, peer]) await api("DELETE", `/api/bots/${bot.id}`).catch(() => undefined);
+    }
+  });
+
+  it("counts tightening cards against the shared proposal budget", async () => {
+    const bot = (await api("POST", "/api/bots", { name: "Scout" })).body.bot;
+    try {
+      // A standing grant keeps every tightening proposal a real reduction,
+      // so eight cards can pile up without touching live authority.
+      await api("PATCH", `/api/bots/${bot.id}`, { approvalMode: "auto", alwaysAllow: ["Bash"] });
+      const token = await mintTestCapability(BASE, bot.id, bot.threadId);
+      const internalHeaders = {
+        authorization: `Bearer ${token}`,
+        "content-type": "application/json",
+      };
+      const proposeTightening = () =>
+        fetch(`${BASE}/api/internal/tightening-requests`, {
+          method: "POST",
+          headers: internalHeaders,
+          body: JSON.stringify({ fromBotId: bot.id, fromThreadId: bot.threadId, intents: { alwaysAllow: ["Bash"] }, reason: "incident lockdown" }),
+        });
+
+      // Tightening cards consume the same per-thread budget as the other
+      // proposal kinds; eight open cards fill it.
+      for (let index = 0; index < 8; index += 1) {
+        expect((await proposeTightening()).status).toBe(201);
+      }
+      const ninth = await proposeTightening();
+      expect(ninth.status).toBe(429);
+      expect(await ninth.json()).toMatchObject({ error: "confirm or cancel an existing proposal first" });
+    } finally {
+      await api("POST", `/api/bots/${bot.id}/interrupt`);
+      await api("DELETE", `/api/bots/${bot.id}`);
+    }
+  });
+
   it("only lets a section's Chief of Staff propose (and hold) a change to another bot's profile", async () => {
     const a = (await api("POST", "/api/bots", { name: "Ari" })).body.bot;
     const b = (await api("POST", "/api/bots", { name: "Bo" })).body.bot;
@@ -6708,10 +10562,30 @@ describe("harness HTTP API", () => {
       expect(refusedConfirm.status).toBeGreaterThanOrEqual(400);
       expect(await botTitle(b.id)).toBe("");
 
-      // Re-promote A: the still-open card now confirms and applies.
+      // Re-promote A: expiry is terminal, so the old card still refuses.
+      // The Chief rule is re-checked at confirm time, and a card that
+      // expired while A was demoted can never apply, even once A is a
+      // Chief again. A fresh proposal carries the restored authority.
       expect((await api("PATCH", `/api/bots/${a.id}`, { chiefOfStaff: true })).status).toBe(200);
-      const okConfirm = await api("POST", `/api/threads/${a.threadId}/respond`, {
+      const expiredConfirm = await api("POST", `/api/threads/${a.threadId}/respond`, {
         requestId: proposed.requestId, behavior: "allow",
+      });
+      expect(expiredConfirm.status).toBe(409);
+      expect(await botTitle(b.id)).toBe("");
+
+      // A fresh proposal from the restored Chief confirms and applies.
+      const freshResponse = await fetch(`${BASE}/api/internal/profile-requests`, {
+        method: "POST",
+        headers: internalHeaders,
+        body: JSON.stringify({
+          fromBotId: a.id, fromThreadId: a.threadId, forBotId: b.id,
+          changes: { title: "Lead scout" }, reason: "testing the Chief rule",
+        }),
+      });
+      expect(freshResponse.status).toBe(201);
+      const fresh = z.object({ requestId: z.string() }).passthrough().parse(await freshResponse.json());
+      const okConfirm = await api("POST", `/api/threads/${a.threadId}/respond`, {
+        requestId: fresh.requestId, behavior: "allow",
       });
       expect(okConfirm.status).toBe(200);
       expect(await botTitle(b.id)).toBe("Lead scout");
@@ -6761,7 +10635,6 @@ describe("harness HTTP API", () => {
   it("only enables the exact learned-skill proposal a current client reviewed", async () => {
     const bot = (await api("POST", "/api/bots", {})).body.bot;
     try {
-      expect((await api("PATCH", "/api/config", { features: { skillRecorder: true } })).status).toBe(200);
       expect((await api("PATCH", `/api/bots/${bot.id}`, {
         modelSelection: { instanceId: "claude", model: "claude-sonnet-5" },
       })).status).toBe(200);
@@ -7004,13 +10877,12 @@ describe("harness HTTP API", () => {
       expect(inventory.skills.some((skill) => skill.name === "reviewed-skill-denied")).toBe(false);
       expect(inventory.staged).toEqual([]);
     } finally {
-      await api("PATCH", "/api/config", { features: { skillRecorder: false } });
       await api("POST", `/api/bots/${bot.id}/interrupt`);
       await api("DELETE", `/api/bots/${bot.id}`);
     }
   });
 
-  it("rejects oversized Box console commands instead of executing a truncated prefix", async () => {
+  it("rejects oversized Boat console commands instead of executing a truncated prefix", async () => {
     const bot = (await api("GET", "/api/bots?messages=0")).body.bots[0];
     const response = await api("POST", `/api/bots/${bot.id}/computer/exec`, {
       command: "x".repeat(4001),
@@ -7020,7 +10892,7 @@ describe("harness HTTP API", () => {
     expect(response.body.error).toContain("maximum 4000 characters");
   });
 
-  it("validates the non-secret VPS alias and keeps old bots on Box by default", async () => {
+  it("validates the non-secret VPS alias and keeps old bots on Boat by default", async () => {
     const before = await api("GET", "/api/bots");
     const bot = before.body.bots[0];
     expect(bot.cloudBackend).toBeUndefined();
@@ -7062,7 +10934,7 @@ describe("harness HTTP API", () => {
     expect(saved.status).toBe(200);
     expect(saved.body.composio).toEqual({ configured: true, mode: "self-hosted" });
     expect(saved.body.opencodeGo).toEqual({ configured: true });
-    expect(saved.body.profile).toEqual({ name: "External Store", email: "" });
+    expect(saved.body.profile).toEqual({ name: "External Store", email: "", aboutMe: "" });
     expect(JSON.stringify(saved.body)).not.toContain("ak_good");
 
     const disk = JSON.parse(readFileSync(join(home, ".openmausbot", "config.json"), "utf8"));
@@ -7163,6 +11035,298 @@ describe("harness HTTP API", () => {
     }
   });
 
+  /** Wait until the decision log carries a connector-scope row matching
+   * the predicate (rows are appended fire-and-forget). */
+  const waitForConnectorRows = async (pred: (row: any) => boolean, ms = 15_000) => {
+    const deadline = Date.now() + ms;
+    for (;;) {
+      const rows: any[] = (await api("GET", "/api/decisions?limit=500")).body.decisions ?? [];
+      if (rows.some(pred)) return rows;
+      if (Date.now() > deadline) return rows;
+      await new Promise((resolve) => setTimeout(resolve, 200));
+    }
+  };
+
+  it("enforces per-bot connector tool grants on relayed tool calls", async () => {
+    // Clear any project key an earlier test left behind, so the relay uses
+    // the stubbed managed broker for the whole test.
+    expect((await api("PUT", "/api/config", { composio: { apiKey: "" } })).status).toBe(200);
+    const bot = (await api("POST", "/api/bots")).body.bot;
+    connectorRelayCalls.length = 0;
+    const relayed = () => connectorRelayCalls.map((entry) => entry.body);
+    try {
+      expect((await api("PATCH", `/api/bots/${bot.id}`, {
+        composio: true,
+        connectorTools: { gmail: { tools: ["GMAIL_SEND_EMAIL"] } },
+      })).status).toBe(200);
+      const token = await mintTestCapability(BASE, bot.id, bot.threadId, { kind: "connectors" });
+      const call = async (frame: unknown, bearer = token) => {
+        const response = await fetch(`${BASE}/api/internal/connectors/mcp`, {
+          method: "POST",
+          headers: { "content-type": "application/json", authorization: `Bearer ${bearer}` },
+          body: JSON.stringify(frame),
+        });
+        return { status: response.status, body: await response.json() as any };
+      };
+      const direct = (name: string) => call({ jsonrpc: "2.0", id: 11, method: "tools/call", params: { name, arguments: {} } });
+      const multi = (tools: unknown[]) => call({
+        jsonrpc: "2.0",
+        id: 12,
+        method: "tools/call",
+        params: { name: "COMPOSIO_MULTI_EXECUTE_TOOL", arguments: { tools, sync_response_to_workbench: false } },
+      });
+
+      // The granted exact tool relays verbatim and the upstream answer passes through.
+      const allowed = await direct("GMAIL_SEND_EMAIL");
+      expect(allowed.status).toBe(200);
+      expect(allowed.body.result.content[0].text).toBe("relay-ok");
+      expect(relayed().at(-1)).toEqual({
+        jsonrpc: "2.0",
+        id: 11,
+        method: "tools/call",
+        params: { name: "GMAIL_SEND_EMAIL", arguments: {} },
+      });
+
+      // A MULTI_EXECUTE batch whose names are all granted relays as one call.
+      const batched = await multi([{ tool_slug: "GMAIL_SEND_EMAIL", arguments: {} }]);
+      expect(batched.body.result.content[0].text).toBe("relay-ok");
+
+      // An ungranted tool on the granted service is refused and never relayed.
+      const held = relayed().length;
+      const refused = await direct("GMAIL_FETCH_EMAILS");
+      expect(refused.status).toBe(200);
+      expect(refused.body.id).toBe(11);
+      expect(refused.body.result.isError).toBe(true);
+      expect(refused.body.result.content[0].text).toContain("GMAIL_FETCH_EMAILS");
+      expect(refused.body.result.content[0].text).toContain("Ask the person");
+      expect(relayed().length).toBe(held);
+
+      // An ungranted service is refused the same way.
+      const other = await direct("SLACK_POST_MESSAGE");
+      expect(other.body.result.isError).toBe(true);
+      expect(other.body.result.content[0].text).toContain("SLACK_POST_MESSAGE");
+
+      // One ungranted name refuses the whole batch.
+      const mixed = await multi([
+        { tool_slug: "GMAIL_SEND_EMAIL", arguments: {} },
+        { tool_slug: "SLACK_POST_MESSAGE", arguments: {} },
+      ]);
+      expect(mixed.body.result.isError).toBe(true);
+      expect(mixed.body.result.content[0].text).toContain("SLACK_POST_MESSAGE");
+      expect(relayed().length).toBe(held);
+
+      // Discovery and connection meta-tools keep their existing flows.
+      await direct("COMPOSIO_SEARCH_TOOLS");
+      await direct("GMAIL_MANAGE_CONNECTIONS");
+      expect(relayed().length).toBe(held + 2);
+
+      // The refusal never enumerates what the bot could have called instead.
+      expect(JSON.stringify(refused.body)).not.toContain("GMAIL_SEND_EMAIL");
+
+      // A legacy bot with no grants record keeps today's behavior: everything relays.
+      const legacy = (await api("POST", "/api/bots")).body.bot;
+      try {
+        expect((await api("PATCH", `/api/bots/${legacy.id}`, { composio: true })).status).toBe(200);
+        const legacyToken = await mintTestCapability(BASE, legacy.id, legacy.threadId, { kind: "connectors" });
+        const legacyCall = await call(
+          { jsonrpc: "2.0", id: 21, method: "tools/call", params: { name: "SLACK_POST_MESSAGE", arguments: {} } },
+          legacyToken,
+        );
+        expect(legacyCall.body.result.content[0].text).toBe("relay-ok");
+        // Legacy bots keep the pre-grants relay for unreadable frames too:
+        // a malformed MULTI_EXECUTE batch passes through untouched.
+        const legacyMalformed = await call(
+          { jsonrpc: "2.0", id: 22, method: "tools/call", params: { name: "COMPOSIO_MULTI_EXECUTE_TOOL", arguments: { tools: [{ arguments: {} }] } } },
+          legacyToken,
+        );
+        expect(legacyMalformed.body.result.content[0].text).toBe("relay-ok");
+      } finally {
+        await api("DELETE", `/api/bots/${legacy.id}`);
+      }
+
+      // Allow rows: one per call, naming the first target and the grant key.
+      const rows = await waitForConnectorRows(
+        (row) => row.botId === legacy.id && row.source === "connector-scope" && row.decision === "auto-approved",
+      );
+      const allowRows = rows.filter((row) => row.source === "connector-scope" && row.decision === "auto-approved");
+      expect(allowRows.some((row) => row.botId === bot.id && row.tool === "GMAIL_SEND_EMAIL" && row.rule === "connectorTools.gmail")).toBe(true);
+      expect(allowRows.some((row) => row.botId === legacy.id && row.tool === "SLACK_POST_MESSAGE" && row.rule === "composio")).toBe(true);
+    } finally {
+      await api("DELETE", `/api/bots/${bot.id}`);
+    }
+  });
+
+  it("refuses MULTI_EXECUTE shapes it cannot read and writes connector-scope denial rows", async () => {
+    expect((await api("PUT", "/api/config", { composio: { apiKey: "" } })).status).toBe(200);
+    const bot = (await api("POST", "/api/bots")).body.bot;
+    connectorRelayCalls.length = 0;
+    try {
+      expect((await api("PATCH", `/api/bots/${bot.id}`, {
+        composio: true,
+        connectorTools: { gmail: { tools: "*" } },
+      })).status).toBe(200);
+      const token = await mintTestCapability(BASE, bot.id, bot.threadId, { kind: "connectors" });
+      const call = async (frame: unknown) => {
+        const response = await fetch(`${BASE}/api/internal/connectors/mcp`, {
+          method: "POST",
+          headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
+          body: JSON.stringify(frame),
+        });
+        return { status: response.status, body: await response.json() as any };
+      };
+
+      // A batch entry that names no tool_slug cannot be checked, so the call is denied whole.
+      const malformed = await call({
+        jsonrpc: "2.0",
+        id: 31,
+        method: "tools/call",
+        params: { name: "COMPOSIO_MULTI_EXECUTE_TOOL", arguments: { tools: [{ arguments: {} }], sync_response_to_workbench: false } },
+      });
+      expect(malformed.status).toBe(200);
+      expect(malformed.body.result.isError).toBe(true);
+      expect(malformed.body.result.content[0].text).toContain("COMPOSIO_MULTI_EXECUTE_TOOL");
+
+      // No tools list at all, and a direct name that is not a Composio tool name.
+      const missing = await call({
+        jsonrpc: "2.0",
+        id: 32,
+        method: "tools/call",
+        params: { name: "COMPOSIO_MULTI_EXECUTE_TOOL", arguments: { sync_response_to_workbench: true } },
+      });
+      expect(missing.body.result.isError).toBe(true);
+      const lowercase = await call({ jsonrpc: "2.0", id: 33, method: "tools/call", params: { name: "gmail_send_email", arguments: {} } });
+      expect(lowercase.body.result.isError).toBe(true);
+
+      // None of the refused shapes reached the relay.
+      expect(connectorRelayCalls).toHaveLength(0);
+      // The refusal stays safe to hand to a model: it points at the person.
+      expect(malformed.body.result.content[0].text).toContain("Ask the person");
+
+      // Every refusal wrote a connector-scope denial row.
+      const rows = await waitForConnectorRows(
+        (row) => row.botId === bot.id && row.source === "connector-scope" && row.decision === "auto-denied" && row.tool === "gmail_send_email",
+      );
+      const denyRows = rows.filter((row) => row.botId === bot.id && row.source === "connector-scope" && row.decision === "auto-denied");
+      expect(denyRows.some((row) => row.tool === "COMPOSIO_MULTI_EXECUTE_TOOL" && (row.summary ?? "").includes("tool_slug"))).toBe(true);
+      expect(denyRows.some((row) => row.tool === "COMPOSIO_MULTI_EXECUTE_TOOL" && (row.summary ?? "").includes("no tools"))).toBe(true);
+      expect(denyRows.some((row) => row.tool === "gmail_send_email")).toBe(true);
+    } finally {
+      await api("DELETE", `/api/bots/${bot.id}`);
+    }
+  });
+
+  it("validates connector grant patches against connected services and the catalog", async () => {
+    // Project mode: the stub serves gmail (session toolkits plus an active
+    // account), slack (active account) and a catalog of exactly those two.
+    expect((await api("PUT", "/api/config", { composio: { apiKey: "ak_good" } })).status).toBe(200);
+    const bot = (await api("POST", "/api/bots")).body.bot;
+    connectorAccounts = [
+      { id: "ca_gmail", status: "ACTIVE", toolkit: { slug: "gmail" } },
+      { id: "ca_slack", status: "ACTIVE", toolkit: { slug: "slack" } },
+      { id: "ca_customcrm", status: "ACTIVE", toolkit: { slug: "customcrm" } },
+    ];
+    connectorCatalogToolkits = [
+      { slug: "gmail", name: "Gmail" },
+      { slug: "slack", name: "Slack" },
+    ];
+    const patch = (connectorTools: unknown) => api("PATCH", "/api/bots/" + bot.id, { connectorTools });
+    try {
+      expect((await patch({ gmail: { tools: ["GMAIL_SEND_EMAIL"] }, slack: { tools: "*" } })).status).toBe(200);
+      expect((await patch({ notion: { tools: ["NOTION_CREATE_PAGE"] } })).body.error).toMatch(/not connected: notion/);
+      expect((await patch({ gmail: { tools: ["SLACK_POST_MESSAGE"] } })).body.error).toMatch(
+        /another service: SLACK_POST_MESSAGE/,
+      );
+      // customcrm is connected but absent from the live catalog walk.
+      expect((await patch({ customcrm: { tools: ["CUSTOMCRM_LOG_CALL"] } })).body.error).toMatch(
+        /missing from the connected-apps catalog: customcrm/,
+      );
+      // An unreachable inventory never blocks the patch: with no project key
+      // and no managed broker the semantic checks step aside entirely.
+      expect((await api("PUT", "/api/config", { composio: { apiKey: "" } })).status).toBe(200);
+      expect((await patch({ linear: { tools: ["LINEAR_CREATE_TICKET"] } })).status).toBe(200);
+    } finally {
+      connectorAccounts = [];
+      connectorCatalogToolkits = [];
+      await api("PUT", "/api/config", { composio: { apiKey: "" } });
+      await api("DELETE", "/api/bots/" + bot.id);
+    }
+  });
+
+  it.each([
+    ["direct", false], ["room", false], ["direct", true], ["room", true],
+  ] as const)("rechecks memory policy after connector validation when a %s turn starts (enabled=%s)", async (kind, enabled) => {
+    const gate = deferredGate();
+    let botId = "";
+    let roomId = "";
+    let pending: ReturnType<typeof api> | undefined;
+    try {
+      expect((await api("PUT", "/api/config", { composio: { apiKey: "ak_good" } })).status).toBe(200);
+      const created = await api("POST", "/api/bots", { name: "Memory policy race", modelSelection: { instanceId: "claude", model: "claude-sonnet-5" } });
+      expect(created.status).toBe(201);
+      botId = created.body.bot.id;
+      expect((await api("PATCH", `/api/bots/${botId}`, { computer: "off", composio: false, memoryEnabled: !enabled })).status).toBe(200);
+      if (kind === "room") {
+        const room = await api("POST", "/api/groups", { name: "Memory policy race", memberIds: [botId] });
+        expect(room.status).toBe(201);
+        roomId = room.body.group.id;
+        expect((await api("PATCH", `/api/groups/${roomId}/setup`, { action: "skip" })).status).toBe(200);
+      }
+      connectorAccountsGate = gate;
+      pending = api("PATCH", `/api/bots/${botId}`, { memoryEnabled: enabled, connectorTools: { gmail: { tools: "*" } } });
+      await Promise.race([
+        gate.entered,
+        pending.then(({ status }) => { throw new Error(`memory patch returned ${status} before connector validation was held`); }),
+      ]);
+      rmSync(fakeClaudeDump, { force: true });
+      const route = kind === "room" ? `/api/groups/${roomId}/messages` : `/api/bots/${botId}/messages`;
+      expect((await api("POST", route, { text: "hold the memory policy turn" })).status).toBe(202);
+      await readJsonFileWhenReady(fakeClaudeDump);
+      gate.release();
+      const blocked = await pending;
+      pending = undefined;
+      expect(blocked.status).toBe(409);
+      expect(blocked.body.error).toMatch(/stop this bot's turn before changing its memory setting/);
+      const current = (await api("GET", "/api/bots?messages=0")).body.bots.find((bot: { id: string }) => bot.id === botId);
+      expect(current.memoryEnabled).toBe(!enabled);
+      expect(current.connectorTools).toBeUndefined();
+      // Re-saving the effective policy while busy is still allowed.
+      expect((await api("PATCH", `/api/bots/${botId}`, { memoryEnabled: !enabled })).status).toBe(200);
+    } finally {
+      gate.release();
+      connectorAccountsGate = null;
+      await pending?.catch(() => undefined);
+      if (roomId) await api("POST", `/api/groups/${roomId}/interrupt`, {}).catch(() => undefined);
+      if (botId) {
+        await api("POST", `/api/bots/${botId}/interrupt`, {}).catch(() => undefined);
+        await expect.poll(async () => (await api("GET", "/api/bots?messages=0")).body.bots.find((bot: { id: string }) => bot.id === botId)?.busy,
+          { timeout: 5_000 }).toBe(false).catch(() => undefined);
+      }
+      if (roomId) await api("DELETE", `/api/groups/${roomId}`).catch(() => undefined);
+      if (botId) await api("DELETE", `/api/bots/${botId}`).catch(() => undefined);
+      await api("PUT", "/api/config", { composio: { apiKey: "" } });
+      rmSync(fakeClaudeDump, { force: true });
+    }
+  });
+
+  it("serves the grant editor's tool inventory grouped by service", async () => {
+    // Broker mode: clear any project key an earlier test left behind so the
+    // inventory walks the same stubbed managed relay a bot without a project
+    // key mounts through.
+    expect((await api("PUT", "/api/config", { composio: { apiKey: "" } })).status).toBe(200);
+    const response = await api("GET", "/api/connectors/tools");
+    expect(response.status).toBe(200);
+    expect(response.body).toEqual({
+      configured: true,
+      services: {
+        gmail: [
+          { name: "GMAIL_FETCH_EMAILS", description: "Fetch emails" },
+          { name: "GMAIL_SEND_EMAIL", description: "Send an email" },
+        ],
+        slack: [{ name: "SLACK_POST_MESSAGE", description: "a".repeat(240) }],
+      },
+    });
+  });
+
   it.skipIf(process.platform === "win32")("stores the credentials file with owner-only permissions", () => {
     expect(statSync(join(home, ".openmausbot", "config.json")).mode & 0o777).toBe(0o600);
   });
@@ -7170,10 +11334,10 @@ describe("harness HTTP API", () => {
   it("stores and echoes the user profile (not write-only, unlike keys)", async () => {
     const put = await api("PUT", "/api/config", { profile: { name: "Ada Lovelace", email: "Ada@Example.com" } });
     expect(put.status).toBe(200);
-    expect(put.body.profile).toEqual({ name: "Ada Lovelace", email: "Ada@Example.com" });
+    expect(put.body.profile).toEqual({ name: "Ada Lovelace", email: "Ada@Example.com", aboutMe: "" });
 
     const after = await api("GET", "/api/config");
-    expect(after.body.profile).toEqual({ name: "Ada Lovelace", email: "Ada@Example.com" });
+    expect(after.body.profile).toEqual({ name: "Ada Lovelace", email: "Ada@Example.com", aboutMe: "" });
   });
 
   it("creates an independent webhook, accepts a delivery, deduplicates it, and rotates its secret", async () => {
@@ -7243,14 +11407,46 @@ describe("harness HTTP API", () => {
     try {
       const put = await api("PUT", "/api/config", { imageGen: { key: "sk-image-secret" } });
       expect(put.status).toBe(200);
-      expect(put.body.imageGen).toEqual({ configured: true });
+      expect(put.body.imageGen).toMatchObject({ provider: "openai", configured: true, openaiConfigured: true });
       expect(JSON.stringify(put.body)).not.toContain("sk-image-secret");
 
       const after = await api("GET", "/api/config");
-      expect(after.body.imageGen).toEqual({ configured: true });
+      expect(after.body.imageGen).toMatchObject({ provider: "openai", configured: true, openaiConfigured: true });
       expect(JSON.stringify(after.body)).not.toContain("sk-image-secret");
     } finally {
       await api("PUT", "/api/config", { imageGen: { key: "" } });
+    }
+  });
+
+  it("keeps avatar providers and externally stored image credentials separate", async () => {
+    try {
+      const saved = await api("PUT", "/api/config?secretStorage=external", {
+        imageGen: { provider: "custom", key: "openai-avatar-fixture", customApiKey: "custom-avatar-fixture",
+          customUrl: "http://127.0.0.1:4321/v1/images/generations", customModel: "local/image" },
+      });
+      expect(saved.status).toBe(200);
+      expect(saved.body.imageGen).toEqual({ provider: "custom", configured: true, model: "local/image",
+        customUrl: "http://127.0.0.1:4321/v1", customModel: "local/image",
+        openaiConfigured: true, xaiConfigured: false, customKeyConfigured: true });
+      for (const secret of ["openai-avatar-fixture", "custom-avatar-fixture"]) {
+        expect(JSON.stringify(saved.body)).not.toContain(secret);
+        expect(readFileSync(join(home, ".openmausbot", "config.json"), "utf8")).not.toContain(secret);
+      }
+      const disk = JSON.parse(readFileSync(join(home, ".openmausbot", "config.json"), "utf8"));
+      expect(disk.imageGen).toMatchObject({ key: "", customApiKey: "", provider: "custom" });
+
+      const preset = await api("PUT", "/api/config", { imageGen: { provider: "openai" } });
+      expect(preset.body.imageGen).toMatchObject({ provider: "openai", configured: true, customKeyConfigured: true });
+      const keyless = await api("PUT", "/api/config", { imageGen: { provider: "custom", customApiKey: "" } });
+      expect(keyless.body.imageGen).toMatchObject({ provider: "custom", configured: true, customKeyConfigured: false,
+        customUrl: "http://127.0.0.1:4321/v1", customModel: "local/image" });
+
+      const invalid = await api("PUT", "/api/config", { imageGen: { customUrl: "https://user:private@router.example/v1" } });
+      expect(invalid.status).toBe(400);
+      expect(JSON.stringify(invalid.body)).not.toContain("private");
+      expect((await api("GET", "/api/config")).body.imageGen).toMatchObject({ configured: true, customUrl: "http://127.0.0.1:4321/v1" });
+    } finally {
+      await api("PUT", "/api/config", { imageGen: { provider: "openai", key: "", customApiKey: "", customUrl: "", customModel: "" } });
     }
   });
 
@@ -7383,9 +11579,232 @@ describe("bot memory API", () => {
 
   const workspaceOf = (botId: string) => join(home, ".openmausbot", "workspaces", botId);
 
+  it("lets a bot attach a file it made, and serves it only through that message", async () => {
+    const bot = (await api("POST", "/api/bots", {})).body.bot;
+    try {
+      const workspace = workspaceOf(bot.id);
+      mkdirSync(workspace, { recursive: true });
+      const xlsx = Buffer.from("PK-fake-workbook-bytes");
+      writeFileSync(join(workspace, "budget.xlsx"), xlsx);
+      writeFileSync(join(workspace, "song.mp3"), "ID3-fake-audio");
+      writeFileSync(join(workspace, "page.html"), "<script>alert(1)</script>");
+      const token = await mintTestCapability(BASE, bot.id, bot.threadId);
+      const attach = (body: unknown) => fetch(`${BASE}/api/internal/attach-file`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+        body: JSON.stringify(body),
+      });
+
+      const attached = await attach({ path: "budget.xlsx", name: "Q3 budget.xlsx" });
+      expect(attached.status).toBe(200);
+      expect(await attached.json()).toMatchObject({ ok: true, name: "Q3 budget.xlsx", bytes: xlsx.byteLength });
+      expect((await attach({ path: "song.mp3" })).status).toBe(200);
+
+      const dump = await api("GET", `/api/threads/${bot.threadId}/export?format=json`);
+      const messages = (dump.body.messages as Array<{ id: string; role: string; kind: string; text?: string; attachments?: Array<{ kind: string; path: string; mime: string; name?: string }> }>)
+        .filter((message) => message.attachments?.length);
+      expect(messages).toHaveLength(2);
+      expect(messages[0]).toMatchObject({
+        role: "bot",
+        kind: "text",
+        attachments: [{
+          kind: "file",
+          name: "Q3 budget.xlsx",
+          mime: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        }],
+      });
+      expect(messages[1]!.attachments![0]).toMatchObject({ kind: "file", name: "song.mp3", mime: "audio/mpeg" });
+
+      const serve = (messageId: string, path: string) => fetch(`${BASE}/api/threads/${bot.threadId}/messages/${messageId}/file`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ path }),
+      });
+      const first = messages[0]!;
+      const served = await serve(first.id, first.attachments![0]!.path);
+      expect(served.status).toBe(200);
+      expect(served.headers.get("content-type")).toBe("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+      expect(served.headers.get("content-disposition")).toContain("Q3 budget.xlsx");
+      expect(Buffer.from(await served.arrayBuffer())).toEqual(xlsx);
+      const audio = await serve(messages[1]!.id, messages[1]!.attachments![0]!.path);
+      expect(audio.status).toBe(200);
+      expect(audio.headers.get("content-type")).toBe("audio/mpeg");
+
+      // The message is the grant: another message, or the bot's own file path, is not.
+      expect((await serve(messages[1]!.id, first.attachments![0]!.path)).status).toBe(403);
+      expect((await serve(first.id, join(workspace, "budget.xlsx"))).status).toBe(403);
+
+      // Refusals say what to do instead.
+      const missing = await attach({ path: "/home/cua/workspace/none.pdf" });
+      expect(missing.status).toBe(404);
+      expect(((await missing.json()) as { error: string }).error).toContain("/home/cua/workspace");
+      const unsupported = await attach({ path: "page.html" });
+      expect(unsupported.status).toBe(415);
+      expect(((await unsupported.json()) as { error: string }).error).toContain("Supported:");
+      expect((await attach({ path: "" })).status).toBe(400);
+      expect((await attach({ path: join(home, "outside.pdf") })).status).toBeGreaterThanOrEqual(403);
+
+      // A real file outside the bot's roots stays out of reach by ../ and through a link placed inside them
+      // (a junction on Windows, which needs no privilege; a symlink elsewhere).
+      mkdirSync(join(home, "outside-dir"), { recursive: true });
+      writeFileSync(join(home, "outside.pdf"), "%PDF-outside");
+      writeFileSync(join(home, "outside-dir", "secret.pdf"), "%PDF-secret");
+      expect((await attach({ path: "../../../outside.pdf" })).status).toBeGreaterThanOrEqual(403);
+      symlinkSync(join(home, "outside-dir"), join(workspace, "escape"), "junction");
+      expect(readFileSync(join(workspace, "escape", "secret.pdf"), "utf8")).toBe("%PDF-secret");
+      expect((await attach({ path: "escape/secret.pdf" })).status).toBeGreaterThanOrEqual(403);
+      const afterRefusals = await api("GET", `/api/threads/${bot.threadId}/export?format=json`);
+      expect((afterRefusals.body.messages as Array<{ attachments?: unknown[] }>).filter((message) => message.attachments?.length)).toHaveLength(2);
+
+      // Running a command needs a Local VM this turn; a bot without one is told so.
+      const exec = await fetch(`${BASE}/api/internal/vm-exec`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+        body: JSON.stringify({ command: "ls" }),
+      });
+      expect(exec.status).toBe(409);
+      expect(((await exec.json()) as { error: string }).error).toContain("no Local VM desktop");
+
+      // A turn cannot flood the chat.
+      for (let count = 2; count < 10; count += 1) expect((await attach({ path: "song.mp3" })).status).toBe(200);
+      const flooded = await attach({ path: "song.mp3" });
+      expect(flooded.status).toBe(429);
+    } finally {
+      await api("DELETE", `/api/bots/${bot.id}`);
+    }
+  });
+
+  it("keeps a turn to its attachment limit when the calls arrive at the same time", async () => {
+    const bot = (await api("POST", "/api/bots", {})).body.bot;
+    try {
+      const workspace = workspaceOf(bot.id);
+      mkdirSync(workspace, { recursive: true });
+      writeFileSync(join(workspace, "song.mp3"), "ID3-fake-audio");
+      const token = await mintTestCapability(BASE, bot.id, bot.threadId);
+      const attach = () => fetch(`${BASE}/api/internal/attach-file`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+        body: JSON.stringify({ path: "song.mp3" }),
+      });
+      const statuses = (await Promise.all(Array.from({ length: 16 }, attach))).map((response) => response.status);
+      expect(statuses.filter((status) => status === 200)).toHaveLength(10);
+      expect(statuses.filter((status) => status === 429)).toHaveLength(6);
+      const dump = await api("GET", `/api/threads/${bot.threadId}/export?format=json`);
+      expect((dump.body.messages as Array<{ attachments?: unknown[] }>).filter((message) => message.attachments?.length)).toHaveLength(10);
+    } finally {
+      await api("DELETE", `/api/bots/${bot.id}`);
+    }
+  });
+
+  it("serves an image the bot attached through its message, and only that message's own attachments", async () => {
+    const bot = (await api("POST", "/api/bots", {})).body.bot;
+    try {
+      const workspace = workspaceOf(bot.id);
+      mkdirSync(workspace, { recursive: true });
+      const png = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.from("chart-pixels")]);
+      writeFileSync(join(workspace, "chart.png"), png);
+      writeFileSync(join(workspace, "notes.txt"), "not an attachment of that message");
+      const token = await mintTestCapability(BASE, bot.id, bot.threadId);
+      const attached = await fetch(`${BASE}/api/internal/attach-file`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+        body: JSON.stringify({ path: "chart.png" }),
+      });
+      expect(attached.status).toBe(200);
+      const dump = await api("GET", `/api/threads/${bot.threadId}/export?format=json`);
+      const message = (dump.body.messages as Array<{ id: string; attachments?: Array<{ kind: string; path: string; mime: string }> }>)
+        .find((candidate) => candidate.attachments?.length)!;
+      const image = message.attachments![0]!;
+      expect(image).toMatchObject({ kind: "image", mime: "image/png" });
+
+      const serve = (path: string) => fetch(`${BASE}/api/threads/${bot.threadId}/messages/${message.id}/file`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ path }),
+      });
+      const served = await serve(image.path);
+      expect(served.status).toBe(200);
+      expect(served.headers.get("content-type")).toBe("image/png");
+      expect(Buffer.from(await served.arrayBuffer())).toEqual(png);
+      // The attachment is the grant; the bot's other files and stored files of other messages are not.
+      expect((await serve(join(workspace, "chart.png"))).status).toBe(403);
+      expect((await serve(join(workspace, "notes.txt"))).status).toBe(403);
+    } finally {
+      await api("DELETE", `/api/bots/${bot.id}`);
+    }
+  });
+
   // The recall eval from docs/memory-comparison.md: a bot that did work in
   // an earlier task can find it from a later one, without the user pasting
   // it back — and never sees another bot's threads.
+  it("tells a room when a bot recalls from its private chat, once per source thread", async () => {
+    const bot = (await api("POST", "/api/bots", {})).body.bot;
+    const room = (await api("POST", "/api/groups", { name: "Ops", memberIds: [bot.id] })).body.group;
+    try {
+      expect((await api("PATCH", `/api/bots/${bot.id}`, {
+        modelSelection: { instanceId: "claude", model: "claude-sonnet-5" },
+      })).status).toBe(200);
+      const privateThreadId = bot.threadId as string;
+      const roomThreadId = room.threadId as string;
+
+      // something said privately, which the room never saw
+      expect((await api("POST", `/api/bots/${bot.id}/messages`, {
+        text: "The pricing page audit found three broken links",
+      })).status).toBe(202);
+      await api("POST", `/api/bots/${bot.id}/interrupt`);
+      await expect.poll(async () => {
+        const state = (await api("GET", "/api/bots?messages=0")).body;
+        return state.bots.find((candidate: { id: string }) => candidate.id === bot.id)?.busy;
+      }, { timeout: 5_000 }).toBe(false);
+
+      const searchFrom = async (fromThreadId: string, q = "audit broken links") =>
+        fetch(
+          `${BASE}/api/internal/session-search?fromBotId=${encodeURIComponent(bot.id)}&fromThreadId=${encodeURIComponent(fromThreadId)}&q=${encodeURIComponent(q)}`,
+          { headers: { authorization: `Bearer ${await mintTestCapability(BASE, bot.id, fromThreadId)}` } },
+        );
+      const roomActivity = async () => {
+        const dump = await api("GET", `/api/threads/${roomThreadId}/export?format=json`);
+        const messages = (dump.body.messages ?? []) as Array<{ kind?: string; tool?: { name?: string } }>;
+        return messages.filter((message) => message.kind === "activity" && /recalled/.test(message.tool?.name ?? ""));
+      };
+
+      // recalled into the room: the room is told, and the model is told it crossed
+      const first = await searchFrom(roomThreadId);
+      expect(first.status).toBe(200);
+      const firstHits = ((await first.json()) as { hits: Array<Record<string, unknown>> }).hits;
+      expect(firstHits).toHaveLength(1);
+      expect(firstHits[0]).toMatchObject({ threadId: privateThreadId, current: false, crossed: true });
+
+      const announced = await roomActivity();
+      expect(announced).toHaveLength(1);
+      expect(announced[0]!.tool?.name).toContain("recalled 1 message from its private chat with you");
+
+      // searching the same source again in the same room says nothing further
+      expect((await searchFrom(roomThreadId)).status).toBe(200);
+      expect(await roomActivity()).toHaveLength(1);
+
+      // reading the whole message is also a crossing, and is already announced
+      const read = await fetch(
+        `${BASE}/api/internal/session-read?fromBotId=${encodeURIComponent(bot.id)}&fromThreadId=${encodeURIComponent(roomThreadId)}&threadId=${encodeURIComponent(privateThreadId)}&messageId=${encodeURIComponent(String(firstHits[0]!.messageId))}`,
+        { headers: { authorization: `Bearer ${await mintTestCapability(BASE, bot.id, roomThreadId)}` } },
+      );
+      expect(read.status).toBe(200);
+      expect(await read.json()).toMatchObject({ crossed: true });
+      expect(await roomActivity()).toHaveLength(1);
+
+      // the same recall in a one-to-one is not a disclosure and stays silent
+      const own = await searchFrom(privateThreadId);
+      expect(own.status).toBe(200);
+      const ownHits = ((await own.json()) as { hits: Array<Record<string, unknown>> }).hits;
+      expect(ownHits[0]).toMatchObject({ current: true, crossed: false });
+      expect(await roomActivity()).toHaveLength(1);
+    } finally {
+      await api("POST", `/api/bots/${bot.id}/interrupt`);
+      await api("DELETE", `/api/groups/${room.id}`);
+      await api("DELETE", `/api/bots/${bot.id}`);
+    }
+  });
+
   it("session_search recalls the bot's own earlier task from a later one, and only its own", async () => {
     const bot = (await api("POST", "/api/bots", {})).body.bot;
     const other = (await api("POST", "/api/bots", {})).body.bot;
@@ -7473,12 +11892,167 @@ describe("bot memory API", () => {
     }
   });
 
+  it("tells the desktop whether to hold the computer awake for a routine due within the hour", async () => {
+    const bot = (await api("POST", "/api/bots", {})).body.bot;
+    let routineId: string | null = null;
+    try {
+      const idle = await api("GET", "/api/routines/wake");
+      expect(idle.status).toBe(200);
+      expect(typeof idle.body.hold).toBe("boolean");
+      const at = Date.now() + 10 * 60_000;
+      const created = await api("POST", "/api/routines", {
+        name: "Inbox digest", prompt: "Summarise the inbox", botId: bot.id,
+        schedule: { type: "once", at },
+      });
+      expect(created.status).toBe(201);
+      routineId = created.body.routine.id as string;
+      const soon = await api("GET", "/api/routines/wake");
+      expect(soon.body).toEqual({ hold: true, reason: "due", at });
+    } finally {
+      if (routineId) await api("DELETE", `/api/routines/${routineId}`).catch(() => undefined);
+      await api("DELETE", `/api/bots/${bot.id}`);
+    }
+  });
+
+  it("marks every unseen routine failure seen through one client endpoint", async () => {
+    const bot = (await api("POST", "/api/bots", {})).body.bot;
+    let missedRoutineId: string | null = null;
+    let failingRoutineId: string | null = null;
+    const mine = (snapshot: { runs: Array<{ id: string; routineId: string; status: string; seenAt?: number }> }, id: string | null) =>
+      id ? snapshot.runs.filter((run) => run.routineId === id) : [];
+    try {
+      expect((await api("PATCH", `/api/bots/${bot.id}`, {
+        modelSelection: { instanceId: "ghost", model: "unavailable-fixture" },
+      })).status).toBe(200);
+      const missed = await api("POST", "/api/routines", {
+        name: "Long-stale digest", prompt: "Summarise the week", botId: bot.id,
+        schedule: { type: "once", at: Date.now() - 13 * 3_600_000 },
+      });
+      expect(missed.status).toBe(201);
+      missedRoutineId = missed.body.routine.id as string;
+      const failing = await api("POST", "/api/routines", {
+        name: "Doomed brief", prompt: "Try the work", botId: bot.id,
+        schedule: { type: "once", at: Date.now() + 3_600_000 },
+      });
+      expect(failing.status).toBe(201);
+      failingRoutineId = failing.body.routine.id as string;
+      expect((await api("POST", `/api/routines/${failingRoutineId}/run`)).status).toBe(201);
+
+      await expect.poll(async () => {
+        const snapshot = (await api("GET", "/api/routines")).body;
+        return [mine(snapshot, missedRoutineId).some((run) => run.status === "missed"),
+          mine(snapshot, failingRoutineId).some((run) => run.status === "failed")];
+      }, { timeout: 20_000 }).toEqual([true, true]);
+
+      const sweep = await api("POST", "/api/routine-runs/seen-all");
+      expect(sweep.status).toBe(200);
+      const stampedIds = new Set<string>();
+      for (const run of sweep.body.runs as Array<{ id: string; routineId: string; seenAt?: number }>) {
+        if ([missedRoutineId, failingRoutineId].includes(run.routineId)) {
+          stampedIds.add(run.id);
+          expect(run.seenAt).toBeTypeOf("number");
+        }
+      }
+      const snapshot = (await api("GET", "/api/routines")).body;
+      const problems = [...mine(snapshot, missedRoutineId), ...mine(snapshot, failingRoutineId)]
+        .filter((run) => ["failed", "missed"].includes(run.status));
+      expect(problems).toHaveLength(2);
+      for (const run of problems) expect(stampedIds.has(run.id)).toBe(true);
+
+      const again = await api("POST", "/api/routine-runs/seen-all");
+      expect(again.status).toBe(200);
+      expect((again.body.runs as Array<{ id: string }>).filter((run) => stampedIds.has(run.id))).toEqual([]);
+    } finally {
+      if (missedRoutineId) await api("DELETE", `/api/routines/${missedRoutineId}`).catch(() => undefined);
+      if (failingRoutineId) await api("DELETE", `/api/routines/${failingRoutineId}`).catch(() => undefined);
+      await api("DELETE", `/api/bots/${bot.id}`);
+    }
+  });
+
+  it("session_search by time lists the bot's recent messages, its rooms included, and only its own", async () => {
+    const bot = (await api("POST", "/api/bots", {})).body.bot;
+    const other = (await api("POST", "/api/bots", {})).body.bot;
+    let groupId: string | null = null;
+    try {
+      for (const b of [bot, other]) {
+        expect((await api("PATCH", `/api/bots/${b.id}`, {
+          modelSelection: { instanceId: "claude", model: "claude-sonnet-5" },
+        })).status).toBe(200);
+      }
+      // something said in a 1:1, something said in another bot's 1:1, and a
+      // room the bot belongs to
+      expect((await api("POST", `/api/bots/${bot.id}/messages`, { text: "Please reconcile the September invoices" })).status).toBe(202);
+      await api("POST", `/api/bots/${bot.id}/interrupt`);
+      expect((await api("POST", `/api/bots/${other.id}/messages`, { text: "Not this bot's business" })).status).toBe(202);
+      await api("POST", `/api/bots/${other.id}/interrupt`);
+      // mentions-only: the room line is stored without starting a turn
+      const created = await api("POST", "/api/groups", {
+        name: "Standup", memberIds: [bot.id, other.id],
+        setup: { bulletin: "", defaultResponder: { kind: "mentions" } },
+      });
+      expect(created.status).toBe(201);
+      groupId = created.body.group.id as string;
+      const roomThreadId = created.body.group.threadId as string;
+      expect((await api("POST", `/api/groups/${groupId}/messages`, { text: "Standup: what did everyone do yesterday?" })).status).toBe(202);
+      await expect.poll(async () => {
+        const state = (await api("GET", "/api/bots?messages=0")).body;
+        return state.bots.some((candidate: { id: string; busy?: boolean }) => [bot.id, other.id].includes(candidate.id) && candidate.busy);
+      }, { timeout: 5_000 }).toBe(false);
+
+      const search = async (params: Record<string, string>, fromBotId = bot.id, fromThreadId = bot.threadId) =>
+        fetch(
+          `${BASE}/api/internal/session-search?${new URLSearchParams({ fromBotId, fromThreadId, ...params })}`,
+          { headers: { authorization: `Bearer ${await mintTestCapability(BASE, fromBotId, fromThreadId)}` } },
+        );
+
+      // no words, a window: newest first, the room and the 1:1 both, the other bot's chat never
+      const recent = await search({ since: "1d" });
+      expect(recent.status).toBe(200);
+      const { hits } = (await recent.json()) as { hits: Array<Record<string, unknown>> };
+      const texts = hits.map((hit) => String(hit.snippet));
+      expect(texts.some((text) => text.includes("Standup: what did everyone do yesterday?"))).toBe(true);
+      expect(texts.some((text) => text.includes("Please reconcile the September invoices"))).toBe(true);
+      expect(texts.some((text) => text.includes("Not this bot's business"))).toBe(false);
+      const roomHit = hits.find((hit) => hit.threadId === roomThreadId)!;
+      expect(roomHit).toMatchObject({ room: "Standup", crossed: false, current: false });
+      expect(hits.find((hit) => hit.threadId === bot.threadId)).toMatchObject({ current: true });
+      for (let index = 1; index < hits.length; index += 1) expect(Number(hits[index - 1]!.at)).toBeGreaterThanOrEqual(Number(hits[index]!.at));
+
+      // words plus a window; a window nothing falls in
+      const worded = (await (await search({ q: "reconcile invoices", since: "1d" })).json()) as { hits: Array<{ threadId: string }> };
+      expect(worded.hits.map((hit) => hit.threadId)).toEqual([bot.threadId]);
+      const future = (await (await search({ since: String(Date.now() + 60_000) })).json()) as { hits: unknown[] };
+      expect(future.hits).toEqual([]);
+
+      // one named day at both ends is that whole day, not the instant it starts
+      const oneDay = (await (await search({ since: "today", until: "today" })).json()) as { hits: Array<{ snippet: string }> };
+      expect(oneDay.hits.map((hit) => String(hit.snippet)).some((text) => text.includes("Please reconcile the September invoices"))).toBe(true);
+
+      // from inside the room, a 1:1 hit is a crossing; a room hit is not
+      const fromRoom = (await (await search({ since: "1d" }, bot.id, roomThreadId)).json()) as { hits: Array<Record<string, unknown>> };
+      expect(fromRoom.hits.find((hit) => hit.threadId === bot.threadId)).toMatchObject({ crossed: true });
+      expect(fromRoom.hits.find((hit) => hit.threadId === roomThreadId)).toMatchObject({ crossed: false, current: true });
+
+      // the window has to parse; words or a window has to be there
+      expect((await search({ since: "soon" })).status).toBe(400);
+      expect((await search({ q: "x", until: "later" })).status).toBe(400);
+      expect((await search({})).status).toBe(400);
+    } finally {
+      await api("POST", `/api/bots/${bot.id}/interrupt`);
+      await api("POST", `/api/bots/${other.id}/interrupt`);
+      if (groupId) await api("DELETE", `/api/groups/${groupId}`).catch(() => undefined);
+      await api("DELETE", `/api/bots/${bot.id}`);
+      await api("DELETE", `/api/bots/${other.id}`);
+    }
+  });
+
   it("reads empty memory for a fresh bot and 404s a bot that does not exist", async () => {
     const bot = (await api("POST", "/api/bots")).body.bot;
     try {
       const fresh = await api("GET", `/api/bots/${bot.id}/memory`);
       expect(fresh.status).toBe(200);
-      expect(fresh.body).toEqual({ text: "", truncated: false, topics: [] });
+      // the overview grew (gauge, logs, folder) but the whole-file fields stay for one release
+      expect(fresh.body).toMatchObject({ text: "", truncated: false, topics: [], logs: [] });
       expect((await api("GET", "/api/bots/does-not-exist/memory")).status).toBe(404);
     } finally {
       await api("DELETE", `/api/bots/${bot.id}`);
@@ -7518,9 +12092,10 @@ describe("bot memory API", () => {
       writeFileSync(join(memDir, "my notes.md"), "spaced");
       writeFileSync(join(memDir, "notes.txt"), "not a topic");
       const listed = await api("GET", `/api/bots/${bot.id}/memory`);
-      expect(listed.body.topics).toEqual([
-        { name: "deploys.md", bytes: 21 },
-        { name: "my notes.md", bytes: 6 },
+      // newest first now, and both were written in the same instant — compare as a set
+      expect(listed.body.topics.map((t: { name: string; bytes: number }) => [t.name, t.bytes]).sort()).toEqual([
+        ["deploys.md", 21],
+        ["my notes.md", 6],
       ]);
 
       const topic = await api("GET", `/api/bots/${bot.id}/memory/topics/deploys.md`);
@@ -7790,6 +12365,9 @@ describe("bot memory API", () => {
       });
       expect(before.body.sections.map((s: { id: string }) => s.id)).not.toContain("soul");
       expect(before.body.sections.map((s: { id: string }) => s.id)).toContain("memory");
+      // Only an OMB Cloud home tells its bots they run in the cloud.
+      expect(before.body.sections.map((s: { id: string }) => s.id)).not.toContain("cloud-home");
+      expect((await api("GET", "/api/config")).body).not.toHaveProperty("cloudHome");
       expect(before.body.totalBytes).toBe(
         before.body.sections.reduce((n: number, s: { bytes: number }) => n + s.bytes, 0),
       );
@@ -7801,6 +12379,17 @@ describe("bot memory API", () => {
       expect(after.body.sections[1].id).toBe("soul");
       expect(after.body.sections[1].text).toContain("Never file noise.");
       expect(after.body.sections[1].bytes).toBe(Buffer.byteLength(after.body.sections[1].text, "utf8"));
+      // Preview is settings-only: advertising a VM does not provision one.
+      expect((await api("PATCH", `/api/bots/${bot.id}`, {
+        computer: "vm",
+        modelSelection: { instanceId: "claude", model: "claude-sonnet-5" },
+      })).status).toBe(200);
+      const withComputer = await api("GET", `/api/bots/${bot.id}/system-prompt`);
+      expect(withComputer.body.sections.find((section: { id: string }) => section.id === "plan").text).toContain("Local VM is an isolated desktop");
+      const computerSection = withComputer.body.sections.find((section: { id: string }) => section.id === "computer");
+      expect(computerSection.text).toContain(SIGN_IN_PROMPT);
+      expect(computerSection.text).not.toMatch(/never type their (?:credentials|password)/i);
+      expect(computerSection.text).not.toContain("At a sign-in, password, MFA, CAPTCHA");
       expect((await api("GET", "/api/bots/does-not-exist/system-prompt")).status).toBe(404);
     } finally {
       await api("DELETE", `/api/bots/${bot.id}`);
@@ -7932,6 +12521,91 @@ describe("message pages", () => {
     expect((await api("GET", `/api/threads/${full.threadId}/messages?limit=1.5`)).status).toBe(400);
   });
 
+  it("bounds a channel task switch the same way as a snapshot", async () => {
+    const full = await seedRoom(6);
+    const created = await api("POST", `/api/groups/${full.id}/tasks`, { title: "Second" });
+    expect(created.status).toBe(201);
+
+    // switching back with a page bounds the transcript it answers with
+    const paged = await api("POST", `/api/groups/${full.id}/tasks/${full.threadId}?messages=2`);
+    expect(paged.status).toBe(200);
+    expect(paged.body.group.threadId).toBe(full.threadId);
+    expect(paged.body.group.messages).toHaveLength(2);
+    expect(paged.body.group.hasMore).toBe(true);
+    expect(paged.body.group.tasks).toHaveLength(2);
+
+    // "0" predates paging: settings only, no transcript key at all
+    await api("POST", `/api/groups/${full.id}/tasks/${created.body.task.threadId}`);
+    const settings = await api("POST", `/api/groups/${full.id}/tasks/${full.threadId}?messages=0`);
+    expect(settings.status).toBe(200);
+    expect(settings.body.group).not.toHaveProperty("messages");
+
+    // and no parameter still answers with the whole thread
+    await api("POST", `/api/groups/${full.id}/tasks/${created.body.task.threadId}`);
+    const whole = await api("POST", `/api/groups/${full.id}/tasks/${full.threadId}`);
+    expect(whole.body.group.messages).toHaveLength(6);
+    expect(whole.body.group).not.toHaveProperty("hasMore");
+
+    // A rejected parameter must not move the channel first: park it on the
+    // other thread and ask for this one with a value the server refuses.
+    await api("POST", `/api/groups/${full.id}/tasks/${created.body.task.threadId}`);
+    const parked = (await api("GET", "/api/bots?messages=0")).body.groups.find((g: { id: string }) => g.id === full.id).threadId;
+    expect(parked).toBe(created.body.task.threadId);
+    expect((await api("POST", `/api/groups/${full.id}/tasks/${full.threadId}?messages=lots`)).status).toBe(400);
+    expect((await api("GET", "/api/bots?messages=0")).body.groups.find((g: { id: string }) => g.id === full.id).threadId).toBe(parked);
+    await api("DELETE", `/api/groups/${full.id}`);
+  });
+
+  it("bounds a bot thread switch the same way as a snapshot", async () => {
+    const { body } = await api("GET", "/api/bots?messages=0");
+    const bot = body.bots[0];
+    const created = await api("POST", `/api/bots/${bot.id}/tasks`, { title: "Second" });
+    expect(created.status).toBe(201);
+
+    const paged = await api("POST", `/api/bots/${bot.id}/tasks/${bot.threadId}?messages=1`);
+    expect(paged.status).toBe(200);
+    expect(paged.body.bot.threadId).toBe(bot.threadId);
+    expect(paged.body.bot.messages.length).toBeLessThanOrEqual(1);
+    expect(paged.body.bot).toHaveProperty("hasMore");
+
+    await api("POST", `/api/bots/${bot.id}/tasks/${created.body.task.threadId}`);
+    const settings = await api("POST", `/api/bots/${bot.id}/tasks/${bot.threadId}?messages=0`);
+    expect(settings.body.bot).not.toHaveProperty("messages");
+
+    await api("DELETE", `/api/bots/${bot.id}/tasks/${created.body.task.threadId}`);
+  });
+
+  it("keeps the switch frame bounded, so a paged switch never emits the whole thread", async () => {
+    // Longer than one default page: a frame carrying the lot would be exactly
+    // the payload the bounded HTTP page exists to avoid.
+    const full = await seedRoom(60);
+    const created = await api("POST", `/api/groups/${full.id}/tasks`, { title: "Second" });
+    await api("POST", `/api/groups/${full.id}/tasks/${created.body.task.threadId}`);
+
+    const stream = await openSse(`${BASE}/api/events`);
+    try {
+      const paged = await api("POST", `/api/groups/${full.id}/tasks/${full.threadId}?messages=5`);
+      expect(paged.status).toBe(200);
+      expect(paged.body.group.messages).toHaveLength(5);
+
+      // The switch emits a settings-only frame too; this is the one that
+      // carries a transcript, and it is the one that has to stay bounded.
+      const frame = await stream.until((f) => f.kind === "group"
+        && f.group?.id === full.id
+        && f.group?.threadId === full.threadId
+        && Array.isArray(f.group?.messages));
+      expect(frame.group.messages.length).toBeLessThanOrEqual(50);
+      expect(frame.group.messages.length).toBeLessThan(full.messages.length);
+      expect(frame.group.hasMore).toBe(true);
+      // the newest page, so a client that only folds frames stays current
+      expect(frame.group.messages.at(-1).id).toBe(full.messages.at(-1).id);
+      expect(stream.frames.every((f: any) => (f.group?.messages?.length ?? 0) < full.messages.length)).toBe(true);
+    } finally {
+      stream.close();
+      await api("DELETE", `/api/groups/${full.id}`);
+    }
+  });
+
   it("404s an image on a message that has none", async () => {
     const full = await seedRoom(1);
     const res = await fetch(`${BASE}/api/threads/${full.threadId}/messages/${full.messages[0].id}/image`);
@@ -7974,6 +12648,25 @@ describe("message pages", () => {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ path: linkedFile }),
     })).status).toBe(404);
+  });
+
+  it("downloads a structured generated image from an image-only reply", async () => {
+    const image = join(home, ".openmausbot", "attachments", "generated.png");
+    const response = await fetch(`${BASE}/api/threads/test-linked-file-room-thread/messages/generated-image-message/file`, {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ path: image }),
+    });
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toBe("image/png");
+    expect(await response.text()).toBe("generated image bytes");
+  });
+
+  it("confines structured generated images to their message and private image files", async () => {
+    const image = join(home, ".openmausbot", "attachments", "generated.png");
+    const route = (id: string) => `/api/threads/test-linked-file-room-thread/messages/${id}/file`;
+    expect((await api("POST", route("prose-file-message"), { path: image })).status).toBe(403);
+    expect((await api("POST", route("generated-image-message"), { path: join(home, ".openmausbot", "attachments", "other.png") })).status).toBe(403);
+    expect((await api("POST", route("outside-generated-image-message"), { path: join(home, ".openmausbot", "workspaces", "test-bot-a", "preview.png") })).status).toBe(403);
+    expect((await api("POST", route("not-image-attachment-message"), { path: join(home, ".openmausbot", "attachments", "shared-notes.pdf") })).status).toBe(415);
   });
 
   it("downloads an image rendered by the exact stored bot message", async () => {
@@ -8229,6 +12922,33 @@ describe("resumable event stream", () => {
 });
 
 describe("instance CLI override API", () => {
+  it("round-trips bounded per-instance icons without changing the driver", async () => {
+    const before = JSON.parse(readFileSync(join(home, ".openmausbot", "config.json"), "utf8"));
+    const preset = await api("PATCH", "/api/instances/ghost/icon", { icon: { kind: "preset", preset: "deepseek" } });
+    expect(preset.status).toBe(200);
+    expect(preset.body.instances.find((i: any) => i.instanceId === "ghost")).toMatchObject({
+      driverKind: "not-a-real-driver", icon: { kind: "preset", preset: "deepseek" },
+    });
+    const savedPreset = JSON.parse(readFileSync(join(home, ".openmausbot", "config.json"), "utf8"));
+    expect(savedPreset.instances.ghost.icon).toEqual({ kind: "preset", preset: "deepseek" });
+    expect(savedPreset.instances.claude).toEqual(before.instances.claude);
+
+    const png = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
+    const custom = await api("PATCH", "/api/instances/ghost/icon", { icon: { kind: "custom", dataUrl: png } });
+    expect(custom.status).toBe(200);
+    expect(custom.body.instances.find((i: any) => i.instanceId === "ghost").icon).toEqual({ kind: "custom", dataUrl: png });
+    expect((await api("GET", "/api/instances")).body.instances.find((i: any) => i.instanceId === "ghost").icon).toEqual({ kind: "custom", dataUrl: png });
+
+    expect((await api("PATCH", "/api/instances/ghost/icon", { icon: { kind: "custom", dataUrl: "https://example.test/icon.png" } })).status).toBe(400);
+    expect((await api("PATCH", "/api/instances/ghost/icon", { icon: { kind: "preset", preset: "unknown" } })).status).toBe(400);
+    expect((await api("PATCH", "/api/instances/nope/icon", { icon: null })).status).toBe(404);
+
+    const reset = await api("PATCH", "/api/instances/ghost/icon", { icon: null });
+    expect(reset.status).toBe(200);
+    expect(reset.body.instances.find((i: any) => i.instanceId === "ghost").icon).toBeUndefined();
+    expect(JSON.parse(readFileSync(join(home, ".openmausbot", "config.json"), "utf8")).instances.ghost.icon).toBeUndefined();
+  });
+
   it("round-trips a set, clear, and rejects bad input", async () => {
     // ghost is the fixture's one shadow instance (unknown driver)
     const set = await api("PATCH", "/api/instances/ghost", { cli: "/opt/ghost/wrapper sub" });
@@ -8401,415 +13121,5 @@ describe("computer control API (who is driving)", () => {
   it("keeps the internal who-is-driving endpoint behind the boot token", async () => {
     const res = await fetch(`${BASE}/api/internal/computer-control?botId=${botId}`);
     expect(res.status).toBe(401);
-  });
-});
-
-describe("bot activity API", () => {
-  // The receipt view: one read-only route over two logs that already exist.
-  // The reader itself is pinned in activity.test.ts; this covers the route's
-  // shape and its refusals.
-  it("returns an empty, well-formed page for a bot that has done nothing", async () => {
-    const bot = (await api("POST", "/api/bots")).body.bot;
-    const res = await api("GET", `/api/bots/${bot.id}/activity`);
-    expect(res.status).toBe(200);
-    expect(res.body).toEqual({ rows: [] });
-  });
-
-  it("refuses an unknown bot and a bad limit", async () => {
-    expect((await api("GET", "/api/bots/nope/activity")).status).toBe(404);
-    const bot = (await api("POST", "/api/bots")).body.bot;
-    expect((await api("GET", `/api/bots/${bot.id}/activity?limit=0`)).status).toBe(400);
-    expect((await api("GET", `/api/bots/${bot.id}/activity?limit=abc`)).status).toBe(400);
-  });
-});
-
-describe("outbound gate", () => {
-  // Sending on the person's behalf is its own confirmation in every approval
-  // mode, enforced where every connector call already passes: the relay.
-  type McpResult = { result: { isError?: boolean; content: Array<{ type: string; text: string }> } };
-  const relay = (token: string, id: number, name: string, args: Record<string, unknown> = {}) =>
-    fetch(`${BASE}/api/internal/connectors/mcp`, {
-      method: "POST",
-      headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
-      body: JSON.stringify({ jsonrpc: "2.0", id, method: "tools/call", params: { name, arguments: args } }),
-    });
-  const openCardFor = async (botId: string, tool: string) => {
-    const state = await api("GET", "/api/bots");
-    const bot = state.body.bots.find((candidate: { id: string }) => candidate.id === botId);
-    return bot?.messages.find(
-      (message: { card?: { outboundRequest?: { tool: string }; answered?: string } }) =>
-        message.card?.outboundRequest?.tool === tool && !message.card.answered,
-    );
-  };
-
-  it("holds a send behind a card, and refuses it when the person denies", async () => {
-    const configured = await api("PUT", "/api/config", { composio: { apiKey: "ak_good" } });
-    expect(configured.body.error ?? "").toBe("");
-    const bot = (await api("POST", "/api/bots", { name: "Sender" })).body.bot;
-    try {
-      const token = await mintTestCapability(BASE, bot.id, bot.threadId, { kind: "connectors" });
-      const pending = relay(token, 7, "GMAIL_SEND_EMAIL", { to: "finance@example.com", subject: "Invoice 42" });
-      let card: any;
-      await expect.poll(async () => {
-        card = await openCardFor(bot.id, "GMAIL_SEND_EMAIL");
-        return Boolean(card);
-      }).toBe(true);
-      expect(card.card.title).toMatch(/send/i);
-      expect(card.card.subtitle).toContain("finance@example.com");
-      expect(card.card.heldCode).toBe("approval.held.outbound");
-      expect(card.card.outboundRequest).toEqual({ tool: "GMAIL_SEND_EMAIL", app: "Gmail" });
-
-      const answered = await api("POST", `/api/threads/${bot.threadId}/respond`, { requestId: card.card.requestId, behavior: "deny" });
-      expect(answered.body).toMatchObject({ ok: true, outcome: "rejected" });
-      const response = await pending;
-      expect(response.status).toBe(200);
-      const body = (await response.json()) as McpResult;
-      expect(body.result.isError).toBe(true);
-      expect(body.result.content[0].text).toMatch(/declined/i);
-      expect(relayedMcpCalls.some((call) => call.params?.name === "GMAIL_SEND_EMAIL")).toBe(false);
-      expect((await openCardFor(bot.id, "GMAIL_SEND_EMAIL"))).toBeUndefined();
-      await expect.poll(async () =>
-        (await api("GET", "/api/decisions")).body.decisions
-          .filter((decision: { requestId?: string }) => decision.requestId === card.card.requestId)
-          .map((decision: { decision: string; source: string }) => `${decision.decision}:${decision.source}`)
-          .sort(),
-      ).toEqual(["card-shown:outbound", "user-denied:user"]);
-    } finally {
-      await api("DELETE", `/api/bots/${bot.id}`);
-    }
-  });
-
-  it("forwards an allowed send, counts it, and stops at the daily cap", async () => {
-    expect((await api("PUT", "/api/config", { composio: { apiKey: "ak_good" } })).status).toBe(200);
-    const bot = (await api("POST", "/api/bots", { name: "Poster" })).body.bot;
-    try {
-      const allowed = await api("PATCH", `/api/bots/${bot.id}`, { outbound: { policy: "allow", dailyCap: 1 } });
-      expect(allowed.status).toBe(200);
-      expect(allowed.body.bot.outbound).toEqual({ policy: "allow", dailyCap: 1 });
-      const token = await mintTestCapability(BASE, bot.id, bot.threadId, { kind: "connectors" });
-
-      const first = (await (await relay(token, 8, "SLACK_SEND_MESSAGE", { channel: "#general", text: "hi" })).json()) as McpResult;
-      expect(first.result.content[0].text).toBe("sent by stub");
-      expect(relayedMcpCalls.filter((call) => call.params?.name === "SLACK_SEND_MESSAGE")).toHaveLength(1);
-      expect((await api("GET", `/api/bots/${bot.id}/outbound`)).body).toEqual({ policy: { policy: "allow", dailyCap: 1 }, today: 1 });
-
-      const second = (await (await relay(token, 9, "SLACK_SEND_MESSAGE", { channel: "#general", text: "again" })).json()) as McpResult;
-      expect(second.result.isError).toBe(true);
-      expect(second.result.content[0].text).toMatch(/daily limit/i);
-      expect(relayedMcpCalls.filter((call) => call.params?.name === "SLACK_SEND_MESSAGE")).toHaveLength(1);
-
-      // Reading is not sending: the cap never touches it.
-      const read = (await (await relay(token, 10, "GMAIL_FETCH_EMAILS", { query: "is:unread" })).json()) as McpResult;
-      expect(read.result.content[0].text).toBe("sent by stub");
-      expect(await openCardFor(bot.id, "GMAIL_FETCH_EMAILS")).toBeUndefined();
-    } finally {
-      await api("DELETE", `/api/bots/${bot.id}`);
-    }
-  });
-
-  it("sees a send inside a multi-execute call, and lets a read-only batch through", async () => {
-    expect((await api("PUT", "/api/config", { composio: { apiKey: "ak_good" } })).status).toBe(200);
-    const bot = (await api("POST", "/api/bots", { name: "Batcher" })).body.bot;
-    try {
-      const token = await mintTestCapability(BASE, bot.id, bot.threadId, { kind: "connectors" });
-      const reads = (await (await relay(token, 11, "COMPOSIO_MULTI_EXECUTE_TOOL", {
-        tools: [{ tool_slug: "GMAIL_FETCH_EMAILS", arguments: { query: "is:unread" } }, { tool_slug: "SLACK_SEARCH_MESSAGES", arguments: {} }],
-        sync_response_to_workbench: false,
-      })).json()) as McpResult;
-      expect(reads.result.content[0].text).toBe("sent by stub");
-
-      const pending = relay(token, 12, "COMPOSIO_MULTI_EXECUTE_TOOL", {
-        tools: [{ tool_slug: "GMAIL_FETCH_EMAILS", arguments: {} }, { tool_slug: "GMAIL_SEND_EMAIL", arguments: { to: "vendor@example.com" } }],
-        sync_response_to_workbench: false,
-      });
-      let card: any;
-      await expect.poll(async () => {
-        card = await openCardFor(bot.id, "GMAIL_SEND_EMAIL");
-        return Boolean(card);
-      }).toBe(true);
-      expect(card.card.subtitle).toContain("vendor@example.com");
-      await api("POST", `/api/threads/${bot.threadId}/respond`, { requestId: card.card.requestId, behavior: "deny" });
-      const refused = (await (await pending).json()) as McpResult;
-      expect(refused.result.isError).toBe(true);
-    } finally {
-      await api("DELETE", `/api/bots/${bot.id}`);
-    }
-  });
-
-  it("validates the policy and defaults to asking", async () => {
-    const bot = (await api("POST", "/api/bots")).body.bot;
-    try {
-      expect((await api("GET", `/api/bots/${bot.id}/outbound`)).body).toEqual({ policy: { policy: "ask", dailyCap: 25 }, today: 0 });
-      expect((await api("PATCH", `/api/bots/${bot.id}`, { outbound: { policy: "maybe" } })).status).toBe(400);
-      expect((await api("PATCH", `/api/bots/${bot.id}`, { outbound: { policy: "allow", dailyCap: 0 } })).status).toBe(400);
-      expect((await api("GET", "/api/bots/nope/outbound")).status).toBe(404);
-    } finally {
-      await api("DELETE", `/api/bots/${bot.id}`);
-    }
-  });
-});
-
-describe("connection scopes", () => {
-  // Which connected apps a bot may use, and whether it may write to them.
-  // Enforced at the relay, seeing through Composio's meta tools; absent
-  // means every app, the way it always has.
-  type McpResult = { result: { isError?: boolean; content: Array<{ type: string; text: string }> } };
-  const relay = (token: string, id: number, name: string, args: Record<string, unknown> = {}) =>
-    fetch(`${BASE}/api/internal/connectors/mcp`, {
-      method: "POST",
-      headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
-      body: JSON.stringify({ jsonrpc: "2.0", id, method: "tools/call", params: { name, arguments: args } }),
-    });
-
-  it("stores a scope map on the bot, clears it with null, and refuses junk", async () => {
-    const bot = (await api("POST", "/api/bots")).body.bot;
-    try {
-      const scoped = await api("PATCH", `/api/bots/${bot.id}`, { connectorScopes: { apps: { Gmail: "read", slack: "write" } } });
-      expect(scoped.status).toBe(200);
-      expect(scoped.body.bot.connectorScopes).toEqual({ apps: { gmail: "read", slack: "write" } });
-      expect((await api("PATCH", `/api/bots/${bot.id}`, { connectorScopes: { apps: { gmail: "owner" } } })).status).toBe(400);
-      expect((await api("PATCH", `/api/bots/${bot.id}`, { connectorScopes: "gmail" })).status).toBe(400);
-      const cleared = await api("PATCH", `/api/bots/${bot.id}`, { connectorScopes: null });
-      expect(cleared.status).toBe(200);
-      expect(cleared.body.bot.connectorScopes).toBeUndefined();
-    } finally {
-      await api("DELETE", `/api/bots/${bot.id}`);
-    }
-  });
-
-  it("refuses an app that is not listed and a write on a read-only app, and lets the rest through", async () => {
-    expect((await api("PUT", "/api/config", { composio: { apiKey: "ak_good" } })).status).toBe(200);
-    const bot = (await api("POST", "/api/bots", { name: "Scoped" })).body.bot;
-    try {
-      expect((await api("PATCH", `/api/bots/${bot.id}`, { connectorScopes: { apps: { gmail: "read", slack: "write" } } })).status).toBe(200);
-      const token = await mintTestCapability(BASE, bot.id, bot.threadId, { kind: "connectors" });
-
-      const read = (await (await relay(token, 21, "GMAIL_FETCH_EMAILS", { query: "is:unread" })).json()) as McpResult;
-      expect(read.result.content[0].text).toBe("sent by stub");
-
-      const other = (await (await relay(token, 22, "STRIPE_LIST_CHARGES", {})).json()) as McpResult;
-      expect(other.result.isError).toBe(true);
-      expect(other.result.content[0].text).toMatch(/stripe/i);
-      expect(other.result.content[0].text).toMatch(/not been given/i);
-
-      const write = (await (await relay(token, 23, "GMAIL_CREATE_EMAIL_DRAFT", { subject: "x" })).json()) as McpResult;
-      expect(write.result.isError).toBe(true);
-      expect(write.result.content[0].text).toMatch(/read-only/i);
-
-      // A batch is refused whole when one call is out of scope.
-      const batch = (await (await relay(token, 24, "COMPOSIO_MULTI_EXECUTE_TOOL", {
-        tools: [{ tool_slug: "SLACK_SEARCH_MESSAGES", arguments: {} }, { tool_slug: "NOTION_SEARCH_PAGES", arguments: {} }],
-      })).json()) as McpResult;
-      expect(batch.result.isError).toBe(true);
-      expect(relayedMcpCalls.some((call) => call.params?.name === "COMPOSIO_MULTI_EXECUTE_TOOL"
-        && JSON.stringify(call.params.arguments).includes("NOTION_SEARCH_PAGES"))).toBe(false);
-
-      // Connecting an app the bot may not use is refused before any card appears.
-      const connect = await fetch(`${BASE}/api/internal/connectors/request`, {
-        method: "POST",
-        headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
-        body: JSON.stringify({ botId: bot.id, threadId: bot.threadId, resumeKey: "scope-fixture-001", items: [{ slug: "stripe" }] }),
-      });
-      expect(connect.status).toBe(403);
-
-      await expect.poll(async () =>
-        (await api("GET", "/api/decisions")).body.decisions
-          .filter((decision: { botId?: string; source: string }) => decision.botId === bot.id && decision.source === "connector-scope")
-          .map((decision: { decision: string; rule?: string }) => `${decision.decision}:${decision.rule}`),
-      ).toEqual(["auto-denied:scope:stripe:app", "auto-denied:scope:gmail:write", "auto-denied:scope:notion:app", "auto-denied:scope:stripe:app"]);
-    } finally {
-      await api("DELETE", `/api/bots/${bot.id}`);
-    }
-  });
-
-  it("tells the bot what it may use, in its prompt", async () => {
-    const bot = (await api("POST", "/api/bots")).body.bot;
-    try {
-      expect((await api("PATCH", `/api/bots/${bot.id}`, { connectorScopes: { apps: { gmail: "read" } } })).status).toBe(200);
-      const preview = await api("GET", `/api/bots/${bot.id}/system-prompt`);
-      expect(preview.status).toBe(200);
-      expect(JSON.stringify(preview.body)).toContain("gmail (read only)");
-    } finally {
-      await api("DELETE", `/api/bots/${bot.id}`);
-    }
-  });
-});
-
-describe("account profiles and fallback", () => {
-  // A second account on an engine is another instance with its own login
-  // directory; a bot's fallback chain carries a task to it when the first
-  // account hits a limit. Isolated server: the primary fixture Claude is
-  // scripted to die on a 429, and the profile (default fake mode) answers.
-  it("adds a profile, falls over to it on a rate limit, and continues the task", async () => {
-    const isolatedHome = mkdtempSync(join(tmpdir(), "omb-fallback-"));
-    const isolatedData = join(isolatedHome, ".openmausbot");
-    const isolatedStatic = join(isolatedHome, "static");
-    const isolatedPort = await freePortBlock([0, 1]);
-    mkdirSync(join(isolatedStatic, "assets"), { recursive: true });
-    mkdirSync(isolatedData, { recursive: true });
-    writeFileSync(join(isolatedStatic, "index.html"), "<!doctype html><title>Fallback test</title>");
-    writeFileSync(join(isolatedStatic, "assets", "smoke.css"), "body{}");
-    writeFileSync(join(isolatedData, "config.json"), JSON.stringify({
-      instances: {
-        claude: {
-          driver: "claudeAgent",
-          displayName: "Fixture Claude",
-          config: { cli: FAKE_CLAUDE_CLI },
-          environment: { FAKE_CLAUDE_MODE: "rate-limited", FAKE_CLAUDE_RETRY_SCALE: "0.001" },
-        },
-      },
-    }));
-    let isolatedStderr = "";
-    const isolatedChild = spawn(process.execPath, [join(SERVER_DIR, "index.ts")], {
-      cwd: ROOT,
-      env: {
-        ...(process.env.PATH ? { PATH: process.env.PATH } : {}),
-        ...(process.env.PATHEXT ? { PATHEXT: process.env.PATHEXT } : {}),
-        ...(process.env.SystemRoot ? { SystemRoot: process.env.SystemRoot } : {}),
-        HOME: isolatedHome,
-        USERPROFILE: isolatedHome,
-        OMB_PORT: String(isolatedPort),
-        OMB_WEBHOOK_PORT: String(isolatedPort + 1),
-        OMB_STATIC_DIR: isolatedStatic,
-        FAKE_CLAUDE_MODE: "happy",
-        FAKE_CLAUDE_REPLIES: JSON.stringify(["carried on from the second account"]),
-      },
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-    isolatedChild.stderr!.on("data", (chunk) => (isolatedStderr += chunk));
-    const isolatedApi = async (method: string, path: string, body?: unknown): Promise<{ status: number; body: any }> => {
-      const response = await fetch(`http://127.0.0.1:${isolatedPort}${path}`, {
-        method,
-        headers: body ? { "content-type": "application/json" } : undefined,
-        body: body ? JSON.stringify(body) : undefined,
-      });
-      return { status: response.status, body: await response.json() };
-    };
-
-    try {
-      await waitForIsolatedServer(isolatedChild, isolatedPort, () => isolatedStderr);
-
-      const added = await isolatedApi("POST", "/api/instances", { driver: "claudeAgent", displayName: "Claude (second)" });
-      expect(added.status).toBe(201);
-      expect(added.body.instanceId).toBe("claude-second");
-      const second = added.body.instances.find((instance: { instanceId: string }) => instance.instanceId === "claude-second");
-      expect(second).toMatchObject({ driverKind: "claudeAgent", displayName: "Claude (second)" });
-      expect(second.snapshot.state).toBe("available");
-      expect((await isolatedApi("POST", "/api/instances", { driver: "grokAgent", displayName: "Grok 2" })).status).toBe(400);
-
-      const primary = added.body.instances.find((instance: { instanceId: string }) => instance.instanceId === "claude");
-      const bot = (await isolatedApi("POST", "/api/bots", { name: "Hopper" })).body.bot;
-      expect((await isolatedApi("PATCH", `/api/bots/${bot.id}/model`, { instanceId: "claude", model: primary.models.default })).status).toBe(200);
-      const chained = await isolatedApi("PATCH", `/api/bots/${bot.id}`, { fallback: [{ instanceId: "claude-second", model: second.models.default }] });
-      expect(chained.status).toBe(200);
-      expect(chained.body.bot.fallback).toEqual([{ instanceId: "claude-second", model: second.models.default }]);
-      expect((await isolatedApi("PATCH", `/api/bots/${bot.id}`, { fallback: [{ instanceId: "nope", model: "x" }] })).status).toBe(400);
-
-      expect([200, 202]).toContain((await isolatedApi("POST", `/api/bots/${bot.id}/messages`, { text: "chase the unpaid invoices" })).status);
-      await expect.poll(async () => {
-        const current = (await isolatedApi("GET", "/api/bots")).body.bots.find((candidate: { id: string }) => candidate.id === bot.id);
-        const replied = current.messages.some(
-          (message: { role: string; kind: string; text?: string }) =>
-            message.role === "bot" && message.kind === "text" && message.text === "carried on from the second account",
-        );
-        const trail = current.messages
-          .slice(-6)
-          .map((message: { role: string; kind: string; text?: string; tool?: { name: string } }) => message.tool?.name ?? `${message.role}:${message.kind}:${(message.text ?? "").slice(0, 40)}`)
-          .join(" | ");
-        return replied ? `${current.modelSelection.instanceId}:${replied}:${current.busy}` : `${current.modelSelection.instanceId}:${replied}:${current.busy} :: ${trail}`;
-      }, { timeout: 20_000, interval: 200 }).toBe("claude-second:true:false");
-      const final = (await isolatedApi("GET", "/api/bots")).body.bots.find((candidate: { id: string }) => candidate.id === bot.id);
-      expect(final.messages.some((message: { tool?: { name: string } }) => message.tool?.name.startsWith("switched to Claude (second)"))).toBe(true);
-      // the person's own message appears once: the continuation is control-plane, not a second user line
-      expect(final.messages.filter((message: { role: string; kind: string }) => message.role === "user" && message.kind === "text")).toHaveLength(1);
-
-      expect((await isolatedApi("DELETE", "/api/instances/claude")).status).toBe(400);
-      const removed = await isolatedApi("DELETE", "/api/instances/claude-second");
-      expect(removed.status).toBe(200);
-      expect(removed.body.instances.some((instance: { instanceId: string }) => instance.instanceId === "claude-second")).toBe(false);
-    } finally {
-      await waitForExit(isolatedChild, { signal: "SIGTERM" });
-      await removeTempDir(isolatedHome);
-    }
-    expectStoppedTestServerCleanly(isolatedChild, isolatedStderr);
-  }, 60_000);
-});
-
-describe("team memory", () => {
-  // The section's shared people, places, decisions and terms. A bot
-  // proposes; a term lands at once, a person waits for a card; the person
-  // edits and deletes; every bot in the section reads it in its prompt.
-  const proposeAs = async (token: string, bot: { id: string; threadId: string }, body: Record<string, unknown>) => {
-    const response = await fetch(`${BASE}/api/internal/team-memory`, {
-      method: "POST",
-      headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
-      body: JSON.stringify({ fromBotId: bot.id, fromThreadId: bot.threadId, ...body }),
-    });
-    return { status: response.status, body: (await response.json()) as any };
-  };
-
-  it("shares a term at once, holds a person for a card, and tells every bot in the prompt", async () => {
-    const bot = (await api("POST", "/api/bots", { name: "Scout" })).body.bot;
-    const teammate = (await api("POST", "/api/bots", { name: "Mate" })).body.bot;
-    try {
-      const token = await mintTestCapability(BASE, bot.id, bot.threadId);
-      const term = await proposeAs(token, bot, { kind: "term", name: "MCHQ", detail: "MissionControlHQ, the old name" });
-      expect(term.status).toBe(201);
-      expect(term.body.status).toBe("accepted");
-
-      const person = await proposeAs(token, bot, { kind: "person", name: "Ayush", detail: "Founder", aliases: ["Ayu"] });
-      expect(person.status).toBe(201);
-      expect(person.body.status).toBe("proposed");
-      const state = (await api("GET", "/api/bots")).body.bots.find((candidate: { id: string }) => candidate.id === bot.id);
-      const card = state.messages.find((message: { card?: { requestId?: string } }) => message.card?.requestId === person.body.requestId);
-      expect(card.card.title).toMatch(/remember/i);
-      expect(card.card.subtitle).toContain("Ayush");
-      expect(card.card.teamMemoryRequest).toMatchObject({ entryId: person.body.requestId, kind: "person" });
-
-      // not yet in anyone's prompt
-      let preview = JSON.stringify((await api("GET", `/api/bots/${teammate.id}/system-prompt`)).body);
-      expect(preview).toContain("MCHQ: MissionControlHQ");
-      expect(preview).not.toContain("Ayush");
-
-      const answered = await api("POST", `/api/threads/${bot.threadId}/respond`, { requestId: person.body.requestId, behavior: "allow" });
-      expect(answered.body).toMatchObject({ ok: true, outcome: "allowed-once" });
-      preview = JSON.stringify((await api("GET", `/api/bots/${teammate.id}/system-prompt`)).body);
-      expect(preview).toContain("Ayush (also: Ayu): Founder");
-
-      const listed = await api("GET", "/api/team-memory?section=");
-      expect(listed.body.entries.map((entry: { name: string; status: string }) => [entry.name, entry.status])).toEqual([
-        ["MCHQ", "accepted"],
-        ["Ayush", "accepted"],
-      ]);
-
-      await expect.poll(async () =>
-        (await api("GET", "/api/decisions")).body.decisions
-          .filter((decision: { botId?: string; tool?: string }) => decision.botId === bot.id && decision.tool === "propose_team_memory")
-          .map((decision: { decision: string; source: string }) => `${decision.decision}:${decision.source}`),
-      ).toEqual(["auto-approved:team-memory", "card-shown:team-memory", "user-approved:user"]);
-      expect((await proposeAs(token, bot, { kind: "rumor", name: "x", detail: "y" })).status).toBe(400);
-    } finally {
-      for (const entry of (await api("GET", "/api/team-memory?section=")).body.entries) {
-        await api("DELETE", `/api/team-memory/${entry.id}?section=`);
-      }
-      await api("DELETE", `/api/bots/${bot.id}`);
-      await api("DELETE", `/api/bots/${teammate.id}`);
-    }
-  });
-
-  it("lets the person add, edit, accept and delete entries", async () => {
-    const added = await api("POST", "/api/team-memory?section=Work", { kind: "person", name: "Bhanu", detail: "CTO" });
-    expect(added.status).toBe(201);
-    const entry = added.body.entries[0];
-    // the person's own entry never waits on the person
-    expect(entry.status).toBe("accepted");
-    const edited = await api("PATCH", `/api/team-memory/${entry.id}?section=Work`, { detail: "CTO, owns infra", aliases: ["B"] });
-    expect(edited.status).toBe(200);
-    expect(edited.body.entry).toMatchObject({ detail: "CTO, owns infra", aliases: ["B"] });
-    expect((await api("PATCH", `/api/team-memory/${entry.id}?section=Work`, { name: "" })).status).toBe(400);
-    expect((await api("GET", "/api/team-memory?section=")).body.entries.some((candidate: { id: string }) => candidate.id === entry.id)).toBe(false);
-    expect((await api("DELETE", `/api/team-memory/${entry.id}?section=Work`)).status).toBe(200);
-    expect((await api("DELETE", `/api/team-memory/${entry.id}?section=Work`)).status).toBe(404);
-    expect((await api("GET", "/api/team-memory")).status).toBe(400);
   });
 });

@@ -22,6 +22,15 @@ published release** workflow
 verifies and publishes its legacy mirror automatically. Never publish only the
 legacy draft.
 
+The release commit must have passed CI: the **CI passed on the release commit**
+job waits (while the platforms build) for ci.yml's `CI` check on the pinned
+commit and stops the release before any draft if it failed. If that commit
+has no CI run, or a newer merge replaced it, the job runs CI on the commit
+itself on a temporary `release-ci/v<version>` branch. After a flaky failure,
+re-run the failed CI jobs; a release still waiting picks up the new attempt,
+and a release that already stopped needs only `gh run rerun <id> --failed`.
+`ship_without_ci` skips the wait, for emergencies only.
+
 The workflow refuses to overwrite an already-published version. Manual Release
 runs still require `package.json`'s version to be bumped on the selected ref.
 A release is rejected if any installer, stable download
@@ -47,6 +56,11 @@ refreshes it.
 3. README and docs downloads point at the canonical repo, while the legacy
    mirror exists only for installed updater clients and historical releases.
 
+The npm package is published separately and its versioned `.tgz` is attached
+only to the canonical release. It is not a desktop updater artifact; the
+mirror checks permit that one extra file while still verifying the complete,
+byte-identical desktop asset set.
+
 ## Why the gates exist
 
 Each verification step in `release.yml` maps to a real incident from the
@@ -56,6 +70,15 @@ check stayed green, helper paths resolving outside the app after bundling,
 stapling silently invalidating every published hash, and a finished release
 sitting invisible as a draft. Don't remove a gate without reading the comment
 above it.
+
+## Bundled browser gates
+
+Desktop builds also stage a pinned engine and Chromium Headless Shell before
+packaging. Pre-signing checks validate complete resources and upstream hashes;
+native browser smoke tests and macOS signature checks run on the packaged
+output. See [browser packaging](browser-packaging.md) for update ownership,
+license provenance and Linux sandbox constraints. Missing browser resources
+must fail the build, not ship an installer that downloads them on first use.
 
 ## One-time setup: release secrets
 

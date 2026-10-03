@@ -18,6 +18,7 @@ const dayKey = (date: Date): string =>
 export class OutboundCounts {
   private readonly file: string;
   private stored: Stored;
+  private readable = true;
 
   constructor(file: string) {
     this.file = file;
@@ -27,44 +28,51 @@ export class OutboundCounts {
   private load(): Stored {
     try {
       const value: unknown = JSON.parse(readFileSync(this.file, "utf8"));
-      if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+      if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("invalid outbound counts");
       const stored: Stored = {};
       for (const [botId, entry] of Object.entries(value as Record<string, unknown>)) {
-        if (!entry || typeof entry !== "object") continue;
+        if (!entry || typeof entry !== "object") throw new Error("invalid outbound count");
         const { day, count } = entry as { day?: unknown; count?: unknown };
         if (typeof day === "string" && typeof count === "number" && Number.isInteger(count) && count >= 0) {
           stored[botId] = { day, count };
-        }
+        } else throw new Error("invalid outbound count");
       }
       return stored;
-    } catch {
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") this.readable = false;
       return {};
     }
   }
 
   private save(): void {
-    try {
-      writeFileAtomic(this.file, JSON.stringify(this.stored, null, 2), { mode: 0o600 });
-    } catch (error) {
-      // A cap that cannot be persisted still counts in memory for this
-      // process; the failure is logged, not turned into a refused send.
-      console.error("outbound-counts: could not persist", error);
-    }
+    writeFileAtomic(this.file, JSON.stringify(this.stored, null, 2), { mode: 0o600 });
   }
 
   /** How many outbound calls this bot has made on the day `now` falls in. */
   today(botId: string, now: Date = new Date()): number {
+    if (!this.readable) throw new Error("the daily allowance could not be read");
     const entry = this.stored[botId];
     return entry && entry.day === dayKey(now) ? entry.count : 0;
   }
 
   /** Count one more, and return the new total for the day. */
   record(botId: string, now: Date = new Date()): number {
+    return this.reserve(botId, 1, Number.MAX_SAFE_INTEGER, now)!;
+  }
+
+  /** Reserve before any provider await. An uncertain send keeps its slot:
+   * refunding transport failures could repeat a send already delivered. */
+  reserve(botId: string, amount: number, cap: number, now: Date = new Date()): number | null {
     const day = dayKey(now);
     const entry = this.stored[botId];
-    const count = entry && entry.day === day ? entry.count + 1 : 1;
+    const count = this.today(botId, now) + amount;
+    if (count > cap) return null;
     this.stored[botId] = { day, count };
-    this.save();
+    try { this.save(); } catch (error) {
+      if (entry) this.stored[botId] = entry;
+      else delete this.stored[botId];
+      throw error;
+    }
     return count;
   }
 }

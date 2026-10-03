@@ -8,7 +8,9 @@ import kotlinx.serialization.descriptors.buildClassSerialDescriptor
 import kotlinx.serialization.encoding.Decoder
 import kotlinx.serialization.encoding.Encoder
 import kotlinx.serialization.json.JsonDecoder
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonEncoder
+import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.buildJsonObject
@@ -16,6 +18,7 @@ import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.decodeFromJsonElement
 import kotlinx.serialization.json.encodeToJsonElement
 import kotlinx.serialization.json.intOrNull
+import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
@@ -48,6 +51,7 @@ sealed interface Frame {
     data class Thread(val threadId: String, val activeLeafId: String?) : Frame
     data class Bot(val bot: com.openmausbot.companion.core.Bot) : Frame
     data class BotDeleted(val botId: String) : Frame
+    data class BotQueued(val queues: Map<String, List<QueuedSend>>) : Frame
     data class Room(val room: com.openmausbot.companion.core.Room) : Frame
     data class RoomDeleted(val groupId: String) : Frame
     data class Notify(val notification: NotificationFrame) : Frame
@@ -55,6 +59,10 @@ sealed interface Frame {
     data class Computer(val botId: String, val state: String) : Frame
     data object Config : Frame
     data class Runtime(val event: RuntimeEvent) : Frame
+
+    /** The computer's Live call changed; `call` is null once it is gone. */
+    data class LiveCall(val botId: String, val threadId: String, val call: LiveCallState?) : Frame
+
     data class Unknown(val kind: String) : Frame
 
 }
@@ -106,6 +114,7 @@ object FrameSerializer : KSerializer<Frame> {
                 objectValue.required("bot"),
             ))
             "bot.deleted" -> Frame.BotDeleted(objectValue.requiredString("botId"))
+            "bot.queued" -> decodeBotQueued(objectValue) ?: Frame.Unknown(kind)
             "group" -> Frame.Room(input.json.decodeFromJsonElement(
                 com.openmausbot.companion.core.Room.serializer(),
                 objectValue.required("group"),
@@ -129,6 +138,19 @@ object FrameSerializer : KSerializer<Frame> {
                 RuntimeEvent.serializer(),
                 objectValue.required("event"),
             ))
+            // A call object this build cannot read is a broken frame, not
+            // "no call": absorb it the way bot.queued does, and let the next
+            // frame or GET /api/live/call restate the truth. So is a frame
+            // with no `call` at all: only `"call": null` says the line is free.
+            "live.call" -> runCatching {
+                Frame.LiveCall(
+                    botId = objectValue.requiredString("botId"),
+                    threadId = objectValue.requiredString("threadId"),
+                    call = objectValue.required("call").takeUnless { it is JsonNull }?.let {
+                        input.json.decodeFromJsonElement(LiveCallState.serializer(), it)
+                    },
+                )
+            }.getOrNull() ?: Frame.Unknown(kind)
             else -> Frame.Unknown(kind)
         }
     }
@@ -174,6 +196,24 @@ private fun JsonObject.requiredString(name: String): String =
     required(name).jsonPrimitive.contentOrNull
         ?: throw SerializationException("Frame field '$name' must be a string")
 
+/**
+ * A bot.queued frame is a wholesale snapshot of the server's steer queues.
+ * A queues object this build cannot read is a broken frame, not the server
+ * saying every queue is empty - reading it as one would retire every held
+ * row on a glitch. Fall back to Unknown; the next frame or fleet snapshot
+ * restates the truth. Bad entries inside a readable list still drop out
+ * one by one.
+ */
+private fun decodeBotQueued(objectValue: JsonObject): Frame.BotQueued? = runCatching {
+    Frame.BotQueued(
+        queues = objectValue.required("queues").jsonObject.mapValues { (_, entries) ->
+            entries.jsonArray.mapNotNull { element ->
+                runCatching { element.jsonObject.queuedSendOrNull() }.getOrNull()
+            }
+        },
+    )
+}.getOrNull()
+
 private fun Frame.toJsonObject(output: JsonEncoder): JsonObject = buildJsonObject {
     when (this@toJsonObject) {
         is Frame.Hello -> {
@@ -204,6 +244,14 @@ private fun Frame.toJsonObject(output: JsonEncoder): JsonObject = buildJsonObjec
             put("kind", "bot.deleted")
             put("botId", botId)
         }
+        is Frame.BotQueued -> {
+            put("kind", "bot.queued")
+            put("queues", buildJsonObject {
+                queues.forEach { (threadId, sends) ->
+                    put(threadId, JsonArray(sends.map { it.toJsonObject() }))
+                }
+            })
+        }
         is Frame.Room -> {
             put("kind", "group")
             put("group", output.json.encodeToJsonElement(com.openmausbot.companion.core.Room.serializer(), room))
@@ -231,6 +279,12 @@ private fun Frame.toJsonObject(output: JsonEncoder): JsonObject = buildJsonObjec
         is Frame.Runtime -> {
             put("kind", "runtime")
             put("event", output.json.encodeToJsonElement(RuntimeEvent.serializer(), event))
+        }
+        is Frame.LiveCall -> {
+            put("kind", "live.call")
+            put("botId", botId)
+            put("threadId", threadId)
+            put("call", call?.let { output.json.encodeToJsonElement(LiveCallState.serializer(), it) } ?: JsonNull)
         }
         is Frame.Unknown -> put("kind", kind)
     }

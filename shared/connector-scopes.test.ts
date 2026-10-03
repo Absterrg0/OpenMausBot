@@ -43,6 +43,10 @@ describe("normalizeConnectorScopes", () => {
 });
 
 describe("connectorAccessDecision", () => {
+  it("uses the full connected service slug for underscored read-only apps", () => {
+    expect(connectorAccessDecision({ apps: { bland_ai: "read" } }, [{ slug: "BLAND_AI_GET_CALL" }], ["bland", "bland_ai"])).toEqual({ ok: true });
+    expect(connectorAccessDecision({ apps: { bland_ai: "read" } }, [{ slug: "BLAND_AI_SEND_CALL" }], ["bland_ai"])).toMatchObject({ ok: false, reason: "write" });
+  });
   const calls = (...slugs: string[]) => slugs.map((slug) => ({ slug }));
 
   it("allows everything when the bot has no scopes", () => {
@@ -56,6 +60,15 @@ describe("connectorAccessDecision", () => {
       toolkit: "gmail",
       reason: "app",
     });
+  });
+
+  it("never treats inherited dictionary properties as app grants", () => {
+    expect(connectorAccessDecision({ apps: {} }, calls("CONSTRUCTOR_SEND_EMAIL"))).toMatchObject({ ok: false, reason: "app" });
+    expect(normalizeConnectorScopes(JSON.parse('{"apps":{"__proto__":"read"}}'))).toBeNull();
+    const scoped = normalizeConnectorScopes({ apps: { constructor: "read" } })!;
+    expect(Object.keys(scoped.apps)).toEqual(["constructor"]);
+    expect(connectorAccessDecision(scoped, calls("CONSTRUCTOR_SEND_EMAIL"))).toMatchObject({ ok: false, reason: "write" });
+    expect(connectorAccessDecision(scoped, calls("CONSTRUCTOR_GET_EMAIL"))).toEqual({ ok: true });
   });
 
   it("refuses a write on a read-only app, and allows the read", () => {

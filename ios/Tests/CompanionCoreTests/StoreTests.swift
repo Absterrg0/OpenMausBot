@@ -38,6 +38,84 @@ final class StoreTests: XCTestCase {
         }
     }
 
+    func testBackgroundLiveTailStillNeedsItsInitialPage() throws {
+        var state = try hydrated()
+        let threadId = "background-thread"
+        state.bots[0].tasks = [BotTask(threadId: threadId, title: "Background", createdAt: 1)]
+        let latest = message("latest", at: 3)
+        state.apply(.message(threadId: threadId, message: latest))
+
+        XCTAssertEqual(state.transcript(forThread: threadId).map(\.id), ["latest"])
+        XCTAssertFalse(state.hasLoadedPage(forThread: threadId), "A live tail does not contain the initial history.")
+        state.merge(ThreadPage(messages: [message("old", at: 1), message("recent", at: 2)], hasMore: true),
+                    intoThread: threadId)
+        XCTAssertTrue(state.hasLoadedPage(forThread: threadId))
+        XCTAssertEqual(state.transcript(forThread: threadId).map(\.id), ["old", "recent", "latest"])
+        XCTAssertEqual(state.hasMore[threadId], true)
+    }
+
+    func testBackgroundPatchDoesNotCountAsAPageAndEmptyLegacyPageDoes() {
+        var state = CompanionState()
+        state.apply(.messagePatch(threadId: "thread", message: message("patched")))
+        XCTAssertFalse(state.hasLoadedPage(forThread: "thread"))
+        state.merge(ThreadPage(messages: []), intoThread: "thread")
+        XCTAssertTrue(state.hasLoadedPage(forThread: "thread"))
+        XCTAssertEqual(state.hasMore["thread"], false)
+        XCTAssertEqual(state.transcript(forThread: "thread").map(\.id), ["patched"])
+
+        state.merge(ThreadPage(messages: [], hasMore: true), intoThread: "thread")
+        state.merge(ThreadPage(messages: []), intoThread: "thread")
+        XCTAssertEqual(state.hasMore["thread"], true, "An unspecified landing-window boundary preserves known scrollback.")
+    }
+
+    func testMetadataOnlyFleetDoesNotCountAsLoadedButEmptyTranscriptsDo() throws {
+        var source = try fleet()
+        source.bots[0].messages = nil
+        source.groups[0].messages = nil
+        var state = CompanionState()
+        state.hydrate(source)
+        XCTAssertFalse(state.hasLoadedPage(forThread: source.bots[0].threadId))
+        XCTAssertFalse(state.hasLoadedPage(forThread: source.groups[0].threadId))
+
+        source.bots[0].messages = []
+        source.groups[0].messages = []
+        source.bots[0].hasMore = nil
+        source.groups[0].hasMore = nil
+        state.hydrate(source)
+        XCTAssertTrue(state.hasLoadedPage(forThread: source.bots[0].threadId))
+        XCTAssertTrue(state.hasLoadedPage(forThread: source.groups[0].threadId))
+    }
+
+    func testNewOwnerFramesOnlyCountAsLoadedWhenTheyContainAPage() throws {
+        var source = try fleet()
+        var bot = source.bots.removeFirst()
+        var room = source.groups.removeFirst()
+        bot.messages = nil
+        room.messages = nil
+        var state = CompanionState()
+        state.apply(.bot(bot))
+        state.apply(.room(room))
+        XCTAssertFalse(state.hasLoadedPage(forThread: bot.threadId))
+        XCTAssertFalse(state.hasLoadedPage(forThread: room.threadId))
+
+        bot.messages = []
+        room.messages = []
+        state.apply(.bot(bot))
+        state.apply(.room(room))
+        XCTAssertTrue(state.hasLoadedPage(forThread: bot.threadId))
+        XCTAssertTrue(state.hasLoadedPage(forThread: room.threadId))
+
+        state = CompanionState()
+        state.apply(.bot(bot))
+        state.apply(.room(room))
+        XCTAssertTrue(state.hasLoadedPage(forThread: bot.threadId))
+        XCTAssertTrue(state.hasLoadedPage(forThread: room.threadId))
+        state.apply(.botDeleted(botId: bot.id))
+        state.apply(.roomDeleted(groupId: room.id))
+        XCTAssertFalse(state.hasLoadedPage(forThread: bot.threadId))
+        XCTAssertFalse(state.hasLoadedPage(forThread: room.threadId))
+    }
+
     func testSidebarSectionsGroupBotsAndChannelsInNaturalOrder() throws {
         let source = try fleet()
         var researchBot = try XCTUnwrap(source.bots.first)
@@ -187,6 +265,176 @@ final class StoreTests: XCTestCase {
         XCTAssertFalse(state.transcript(forThread: "another-task").contains { $0.id == "old-tail" })
     }
 
+    func testPinnedTaskKeepsItsModelRunAndBranchWhenAnotherDeviceSwitches() throws {
+        var state = CompanionState()
+        var bot = try XCTUnwrap(try fleet().bots.first)
+        bot.threadId = "thread-a"
+        bot.modelSelection = ModelSelection(instanceId: "codex", model: "profile-default")
+        bot.tasks = [
+            BotTask(threadId: "thread-a", title: "A", createdAt: 1, modelSelection: ModelSelection(instanceId: "codex", model: "model-a"), busy: true, unread: true),
+            BotTask(threadId: "thread-b", title: "B", createdAt: 2, modelSelection: ModelSelection(instanceId: "claude", model: "model-b"), busy: false, unread: false),
+        ]
+        var leafA = message("leaf-a")
+        leafA.parentId = "root-a"
+        var alternativeA = message("alternative-a")
+        alternativeA.parentId = "root-a"
+        bot.messages = [message("root-a"), leafA, alternativeA]
+        bot.activeLeafId = "leaf-a"
+        state.apply(.bot(bot))
+        state.apply(.runtime(RuntimeEvent(type: "content.delta", threadId: "thread-a", delta: "still running", streamKind: "assistant_text")))
+
+        // A desktop selection frame is canonical profile state, not phone
+        // navigation. Projecting A must never borrow B's model or transcript.
+        bot.threadId = "thread-b"
+        bot.busy = true // aggregate: A is still working
+        bot.messages = [message("root-b")]
+        bot.activeLeafId = "root-b"
+        state.apply(.bot(bot))
+        XCTAssertEqual(state.bot(bot.id)?.threadId, "thread-b")
+        XCTAssertEqual(state.bot(bot.id)?.modelSelection.model, "profile-default")
+        let pinned = try XCTUnwrap(state.bot(forThread: "thread-a"))
+        XCTAssertEqual(pinned.threadId, "thread-a")
+        XCTAssertEqual(pinned.modelSelection.model, "model-a")
+        XCTAssertEqual(pinned.busy, true)
+        XCTAssertEqual(pinned.unread, true)
+        XCTAssertEqual(state.bot(forThread: "thread-b")?.busy, false)
+        XCTAssertEqual(state.streaming["thread-a"], "still running")
+        XCTAssertEqual(state.visibleTranscript(forThread: "thread-a").map(\.id), ["root-a", "leaf-a"])
+        state.apply(.thread(threadId: "thread-a", activeLeafId: "alternative-a"))
+        XCTAssertEqual(state.visibleTranscript(forThread: "thread-a").map(\.id), ["root-a", "alternative-a"])
+        XCTAssertEqual(state.visibleTranscript(forThread: "thread-b").map(\.id), ["root-b"])
+        XCTAssertNil(bot.projected(forThread: "not-owned"))
+    }
+
+    /// root → question → old answer, with the old answer visible.
+    func editableConversation() throws -> (CompanionState, String) {
+        var state = try hydrated()
+        let threadId = try XCTUnwrap(state.bots.first?.threadId)
+        var root = message("root", at: 1, text: "Ready")
+        root.role = .bot
+        var question = message("q1", at: 2, text: "first try")
+        question.parentId = "root"
+        var answer = message("a1", at: 3, text: "old answer")
+        answer.role = .bot
+        answer.parentId = "q1"
+        state.messages[threadId] = [root, question, answer]
+        state.apply(.thread(threadId: threadId, activeLeafId: "a1"))
+        return (state, threadId)
+    }
+
+    func testPendingEditReplacesTheQuestionAndHidesTheOldAnswerAtOnce() throws {
+        var (state, threadId) = try editableConversation()
+        let pending = PendingEdit(sourceId: "q1", text: "second try", at: 4)
+        state.pendingEdits[threadId] = pending
+        let visible = state.visibleTranscript(forThread: threadId)
+        XCTAssertEqual(visible.map(\.id), ["root", pending.placeholderId])
+        XCTAssertEqual(visible.last?.text, "second try")
+        XCTAssertEqual(visible.last?.parentId, "root")
+        // nothing was folded: the computer's transcript is untouched
+        XCTAssertEqual(state.transcript(forThread: threadId).map(\.id), ["root", "q1", "a1"])
+        // a failed edit only drops the stand-in, so the old branch returns
+        state.pendingEdits[threadId] = nil
+        XCTAssertEqual(state.visibleTranscript(forThread: threadId).map(\.id), ["root", "q1", "a1"])
+    }
+
+    func testStreamedForkTakesOverFromThePendingEdit() throws {
+        var (state, threadId) = try editableConversation()
+        state.pendingEdits[threadId] = PendingEdit(sourceId: "q1", text: "second try", at: 4)
+        var fork = message("q2", at: 4, text: "second try")
+        fork.parentId = "root"
+        // the computer's message frame alone is a sibling, not a child of the leaf…
+        state.apply(.message(threadId: threadId, message: fork))
+        // …and its leaf frame moves the branch, which retires the stand-in
+        state.apply(.thread(threadId: threadId, activeLeafId: "q2"))
+        XCTAssertEqual(state.visibleTranscript(forThread: threadId).map(\.id), ["root", "q2"])
+    }
+
+    func testAdoptEditShowsTheForkWhenTheResponseBeatsTheStream() throws {
+        var (state, threadId) = try editableConversation()
+        var fork = message("q2", at: 4, text: "second try")
+        fork.parentId = "root"
+        state.adoptEdit(fork, inThread: threadId)
+        XCTAssertEqual(state.visibleTranscript(forThread: threadId).map(\.id), ["root", "q2"])
+    }
+
+    func testAdoptEditNeverHidesAReplyThatAlreadyArrived() throws {
+        var (state, threadId) = try editableConversation()
+        var fork = message("q2", at: 4, text: "second try")
+        fork.parentId = "root"
+        state.apply(.message(threadId: threadId, message: fork))
+        state.apply(.thread(threadId: threadId, activeLeafId: "q2"))
+        var reply = message("a2", at: 5, text: "new answer")
+        reply.role = .bot
+        reply.parentId = "q2"
+        state.apply(.message(threadId: threadId, message: reply))
+        state.adoptEdit(fork, inThread: threadId)
+        XCTAssertEqual(state.visibleTranscript(forThread: threadId).map(\.id), ["root", "q2", "a2"])
+    }
+
+    func testLateEditResponseDoesNotUndoBranchSelectionOrANewerEdit() throws {
+        var (state, threadId) = try editableConversation()
+        let pending = PendingEdit(sourceId: "q1", text: "second try", baseLeafId: "a1")
+        state.pendingEdits[threadId] = pending
+        var fork = message("q2", at: 4, text: "second try")
+        fork.parentId = "root"
+        state.apply(.thread(threadId: threadId, activeLeafId: "root"))
+        state.adoptEdit(fork, inThread: threadId, expectedPending: pending)
+        XCTAssertEqual(state.activeLeafIds[threadId], "root")
+        XCTAssertTrue(state.transcript(forThread: threadId).contains { $0.id == "q2" })
+
+        state.apply(.thread(threadId: threadId, activeLeafId: "a1"))
+        state.pendingEdits[threadId] = PendingEdit(sourceId: "q1", text: "newer try", baseLeafId: "a1")
+        state.adoptEdit(fork, inThread: threadId, expectedPending: pending)
+        XCTAssertEqual(state.activeLeafIds[threadId], "a1")
+        XCTAssertEqual(state.visibleTranscript(forThread: threadId).last?.text, "newer try")
+    }
+
+    func testMatchingEditResponseCanSelectTheFork() throws {
+        var (state, threadId) = try editableConversation()
+        let pending = PendingEdit(sourceId: "q1", text: "second try", baseLeafId: "a1")
+        state.pendingEdits[threadId] = pending
+        var fork = message("q2", at: 4, text: "second try")
+        fork.parentId = "root"
+        state.adoptEdit(fork, inThread: threadId, expectedPending: pending)
+        XCTAssertEqual(state.visibleTranscript(forThread: threadId).last?.id, "q2")
+    }
+
+    func testRoutineExecutionsAreHiddenOnlyFromTheThreadPicker() throws {
+        var bot = try XCTUnwrap(try fleet().bots.first)
+        bot.threadId = "results"
+        bot.tasks = [
+            BotTask(threadId: "legacy", title: "Routine: old run", createdAt: 1),
+            BotTask(threadId: "results", title: "Brief results", createdAt: 2, busy: false),
+            BotTask(threadId: "run-thread", title: "Brief", createdAt: 3, busy: true,
+                    activity: "waiting-on-you", approvalMode: "ask", routineRunId: "run-1"),
+        ]
+        var approval = Message(id: "approval", role: .bot, kind: .options, at: 4)
+        approval.card = OptionCard(title: "Approve?", subtitle: "Read", options: ["Approve", "Deny"], requestId: "request")
+        var state = CompanionState()
+        state.apply(.bot(bot))
+        state.merge(ThreadPage(messages: [approval], activeLeafId: "approval"), intoThread: "run-thread")
+
+        XCTAssertEqual(bot.visibleTasks.map(\.threadId), ["legacy", "results"])
+        XCTAssertEqual(state.bot(bot.id)?.tasks?.count, 3)
+        let execution = try XCTUnwrap(state.bot(forThread: "run-thread"))
+        XCTAssertEqual(execution.threadId, "run-thread")
+        XCTAssertEqual(execution.currentTaskBusy, true)
+        XCTAssertEqual(execution.approvalMode, "ask")
+        XCTAssertEqual(state.visibleTranscript(forThread: "run-thread").map(\.id), ["approval"])
+        XCTAssertEqual(state.pendingApprovals.map(\.threadId), ["run-thread"])
+
+        bot.tasks = nil
+        XCTAssertTrue(bot.visibleTasks.isEmpty)
+    }
+
+    func testColdBackgroundPageCarriesItsOwnBranchHead() {
+        var state = CompanionState()
+        var leaf = message("chosen")
+        leaf.parentId = "root"
+        state.merge(ThreadPage(messages: [message("root"), leaf, message("other")], hasMore: false, activeLeafId: "chosen"), intoThread: "thread-a")
+        XCTAssertEqual(state.visibleTranscript(forThread: "thread-a").map(\.id), ["root", "chosen"])
+    }
+
     func testAChannelTaskSwitchReplacesTheActiveTranscript() throws {
         var state = try hydrated()
         var room = try XCTUnwrap(state.rooms.first)
@@ -231,6 +479,26 @@ final class StoreTests: XCTestCase {
         state.messages["t1"] = [root, second, reply, first]
 
         XCTAssertEqual(state.versions(of: first, inThread: "t1").map(\.id), ["first", "second"])
+        XCTAssertEqual(state.userMessageVersions(inThread: "t1")[root.id]?.map(\.id), ["first", "second"])
+        XCTAssertEqual(state.userMessageVersions(inThread: "t1")[nil]?.map(\.id), [root.id])
+        XCTAssertTrue(state.versions(of: reply, inThread: "t1").isEmpty)
+    }
+
+    func testGroupedVersionsKeepChronologicalTieOrderAndThreadIsolation() {
+        var state = CompanionState()
+        var first = message("a", at: 2)
+        first.parentId = "parent"
+        var second = message("b", at: 2)
+        second.parentId = "parent"
+        var other = message("other", at: 1)
+        other.parentId = "different-parent"
+        state.messages["one"] = [second, other, first]
+        state.messages["two"] = [message("other-thread", at: 0)]
+        let groups = state.userMessageVersions(inThread: "one")
+        XCTAssertEqual(groups["parent"]?.map(\.id), ["a", "b"])
+        XCTAssertEqual(groups["different-parent"]?.map(\.id), ["other"])
+        XCTAssertNil(groups[nil])
+        XCTAssertTrue(state.userMessageVersions(inThread: "missing").isEmpty)
     }
 
     func testMessageAppendMovesTheLeafAndBranchSwitchClearsLiveText() throws {
@@ -242,8 +510,41 @@ final class StoreTests: XCTestCase {
         state.apply(.thread(threadId: bot.threadId, activeLeafId: "other"))
         XCTAssertNil(state.streaming[bot.threadId])
 
-        state.apply(.message(threadId: bot.threadId, message: message("latest")))
+        var latest = message("latest")
+        latest.parentId = "other"
+        state.apply(.message(threadId: bot.threadId, message: latest))
         XCTAssertEqual(state.bot(bot.id)?.activeLeafId, "latest")
+    }
+
+    func testMessagesOnOtherBranchesDoNotMoveSelectedOrBackgroundThreadHeads() throws {
+        for selected in [true, false] {
+            var state = CompanionState()
+            var bot = try XCTUnwrap(try fleet().bots.first)
+            bot.threadId = selected ? "thread-a" : "thread-b"
+            bot.tasks = [BotTask(threadId: "thread-a", title: "A", createdAt: 1),
+                         BotTask(threadId: "thread-b", title: "B", createdAt: 2)]
+            bot.activeLeafId = selected ? "chosen" : "sibling"
+            state.apply(.bot(bot))
+            var chosen = message("chosen")
+            chosen.parentId = "root"
+            state.merge(ThreadPage(messages: [message("root"), chosen], hasMore: false, activeLeafId: "chosen"),
+                        intoThread: "thread-a")
+            var alternative = message("alternative")
+            alternative.parentId = "root"
+            state.apply(.message(threadId: "thread-a", message: alternative))
+            XCTAssertEqual(state.bot(forThread: "thread-a")?.activeLeafId, "chosen")
+            XCTAssertEqual(state.bot(bot.id)?.activeLeafId, selected ? "chosen" : "sibling")
+            XCTAssertEqual(state.visibleTranscript(forThread: "thread-a").map(\.id), ["root", "chosen"])
+
+            var tail = message("tail")
+            tail.parentId = "chosen"
+            state.apply(.message(threadId: "thread-a", message: tail))
+            XCTAssertEqual(state.visibleTranscript(forThread: "thread-a").map(\.id), ["root", "chosen", "tail"])
+            state.apply(.message(threadId: "thread-a", message: chosen)) // replay cannot rewind the head
+            XCTAssertEqual(state.bot(forThread: "thread-a")?.activeLeafId, "tail")
+            state.apply(.thread(threadId: "thread-a", activeLeafId: "alternative"))
+            XCTAssertEqual(state.visibleTranscript(forThread: "thread-a").map(\.id), ["root", "alternative"])
+        }
     }
 
     func testDeletingABotTakesItsTranscriptWithIt() throws {
@@ -360,6 +661,117 @@ final class StoreTests: XCTestCase {
         state.apply(.runtime(RuntimeEvent(type: "content.delta", threadId: "t1", delta: "hi", streamKind: "assistant_text")))
         state.apply(.unknown(kind: "routine.run"))
         XCTAssertEqual(state.bots.count, before)
+    }
+
+    // MARK: - Live calls
+
+    private func liveCall(_ status: LiveCallState.Status) -> LiveCallState {
+        LiveCallState(callId: "c1", botId: "b1", threadId: "t1", client: "desktop", voice: "marin", startedAt: 1, status: status)
+    }
+
+    func testALiveCallFrameReplacesTheCallAndNullClearsIt() throws {
+        var state = try hydrated()
+        XCTAssertNil(state.liveCall)
+        state.apply(.liveCall(botId: "b1", threadId: "t1", call: liveCall(.connecting)))
+        XCTAssertEqual(state.liveCall?.status, .connecting)
+        state.apply(.liveCall(botId: "b1", threadId: "t1", call: liveCall(.live)))
+        XCTAssertEqual(state.liveCall?.status, .live)
+        state.apply(.liveCall(botId: "b1", threadId: "t1", call: liveCall(.ended)))
+        XCTAssertEqual(state.liveCall?.status, .ended, "the ended state stays until the harness clears it: the bar reads the reason from it")
+        state.apply(.liveCall(botId: "b1", threadId: "t1", call: nil))
+        XCTAssertNil(state.liveCall)
+    }
+
+    func testTheMacsAnswerToAHangUpReplacesTheCallAtOnce() throws {
+        var state = try hydrated()
+        state.apply(.liveCall(botId: "b1", threadId: "t1", call: liveCall(.live)))
+        var ended = liveCall(.ended)
+        ended.endReason = "hung-up"
+        XCTAssertFalse(state.applyLiveCallEnd(callId: "c1", answer: ended))
+        XCTAssertEqual(state.liveCall, ended, "the remote bar goes without waiting for the frame")
+    }
+
+    func testAnOlderAnswerToAHangUpDoesNotUndoLaterFrames() throws {
+        var state = try hydrated()
+        var ended = liveCall(.ended)
+        ended.endReason = "hung-up"
+
+        // the frame already cleared the line
+        XCTAssertFalse(state.applyLiveCallEnd(callId: "c1", answer: ended))
+        XCTAssertNil(state.liveCall)
+
+        // the frame already said ended, with the Mac's own reason
+        var idle = liveCall(.ended)
+        idle.endReason = "idle"
+        state.apply(.liveCall(botId: "b1", threadId: "t1", call: idle))
+        XCTAssertFalse(state.applyLiveCallEnd(callId: "c1", answer: ended))
+        XCTAssertEqual(state.liveCall, idle)
+
+        // a newer call is on the line now
+        var newer = liveCall(.live)
+        newer.callId = "c2"
+        state.apply(.liveCall(botId: "b1", threadId: "t1", call: newer))
+        XCTAssertFalse(state.applyLiveCallEnd(callId: "c1", answer: ended))
+        XCTAssertEqual(state.liveCall, newer)
+    }
+
+    func testAHangUpTheMacNoLongerKnowsAsksForTheLine() throws {
+        // 404: the Mac runs no such call, yet it reads as running here — a
+        // frame was missed. Not a guess at the line: Session asks for it.
+        var state = try hydrated()
+        state.apply(.liveCall(botId: "b1", threadId: "t1", call: liveCall(.live)))
+        XCTAssertTrue(state.applyLiveCallEnd(callId: "c1", answer: nil))
+        XCTAssertEqual(state.liveCall, liveCall(.live), "left for the lookup to replace")
+
+        state.apply(.liveCall(botId: "b1", threadId: "t1", call: nil))
+        XCTAssertFalse(state.applyLiveCallEnd(callId: "c1", answer: nil), "nothing stale to look up")
+    }
+
+    func testALookupThatStraddledAFrameIsDropped() throws {
+        // GET /api/live/call goes out with the line empty; a start's frame
+        // lands while it is out; the lookup's older `null` must not end the
+        // call that just began
+        var state = try hydrated()
+        state.resetCursor("abc12345:7")
+        let cursor = state.cursor
+        let line = state.liveCall
+        state.apply(.liveCall(botId: "b1", threadId: "t1", call: liveCall(.connecting)))
+        state.advance(to: 8)
+        XCTAssertFalse(state.applyLiveCallLookup(nil, ifCursorMatches: cursor, lineWas: line))
+        XCTAssertEqual(state.liveCall, liveCall(.connecting))
+    }
+
+    func testALookupThatStraddledAHangUpAnswerIsDropped() throws {
+        // no frame, but the remote bar's hang-up answer changed the line
+        var state = try hydrated()
+        state.resetCursor("abc12345:7")
+        state.apply(.liveCall(botId: "b1", threadId: "t1", call: liveCall(.live)))
+        let cursor = state.cursor
+        let line = state.liveCall
+        var ended = liveCall(.ended)
+        ended.endReason = "hung-up"
+        XCTAssertFalse(state.applyLiveCallEnd(callId: "c1", answer: ended))
+        XCTAssertFalse(state.applyLiveCallLookup(liveCall(.live), ifCursorMatches: cursor, lineWas: line))
+        XCTAssertEqual(state.liveCall, ended)
+    }
+
+    func testALookupWithNothingNewerMeanwhileIsApplied() throws {
+        var state = try hydrated()
+        state.resetCursor("abc12345:7")
+        let cursor = state.cursor
+        XCTAssertTrue(state.applyLiveCallLookup(liveCall(.live), ifCursorMatches: cursor, lineWas: nil))
+        XCTAssertEqual(state.liveCall, liveCall(.live), "a phone that connects mid-call learns about it")
+        XCTAssertTrue(state.applyLiveCallLookup(nil, ifCursorMatches: cursor, lineWas: liveCall(.live)))
+        XCTAssertNil(state.liveCall)
+    }
+
+    func testHydrateKeepsTheCallTheStreamReported() throws {
+        // hydrate replaces the fleet, not the line; Session refreshes the
+        // call separately with GET /api/live/call
+        var state = CompanionState()
+        state.apply(.liveCall(botId: "b1", threadId: "t1", call: liveCall(.live)))
+        state.hydrate(try fleet())
+        XCTAssertEqual(state.liveCall?.callId, "c1")
     }
 }
 

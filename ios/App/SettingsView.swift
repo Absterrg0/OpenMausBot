@@ -10,6 +10,7 @@ struct SettingsView: View {
     @AppStorage(PrefKey.activityDetail) private var activityDetail = ActivityDetail.full.rawValue
     @AppStorage(PrefKey.islandIntro) private var islandIntro = IslandIntro.oncePerBot.rawValue
     @AppStorage(PrefKey.language) private var language = AppLanguage.system.rawValue
+    @AppStorage(PrefKey.rosterDensity) private var rosterDensity = RosterDensity.default.rawValue
     private let onConnect: (() -> Void)?
 
     init(onConnect: (() -> Void)? = nil) {
@@ -105,6 +106,28 @@ struct SettingsView: View {
             }
 
             Section {
+                // Bound through the resolved value, so a stored value this
+                // build cannot read still shows the density actually in use.
+                Picker(selection: Binding(
+                    get: { RosterDensity(stored: rosterDensity) },
+                    set: { rosterDensity = $0.rawValue }
+                )) {
+                    ForEach(RosterDensity.allCases, id: \.self) { density in
+                        Text(LocalizedStringKey(density.label)).tag(density)
+                    }
+                } label: {
+                    Label {
+                        Text("List density")
+                    } icon: {
+                        SettingsIcon(symbol: "list.bullet", color: .indigo)
+                    }
+                }
+                .accessibilityIdentifier("list-density")
+            } footer: {
+                Text(LocalizedStringKey(RosterDensity(stored: rosterDensity).caption))
+            }
+
+            Section {
                 Picker(selection: $language) {
                     ForEach(AppLanguage.allCases) { option in
                         Text(option.label).tag(option.rawValue)
@@ -126,15 +149,15 @@ struct SettingsView: View {
                         TasksRoutinesView()
                     } label: {
                         Label {
-                            Text("Tasks & Routines")
+                            Text("Threads & Routines")
                         } icon: {
                             SettingsIcon(symbol: "calendar.badge.clock", color: .orange)
                         }
                     }
 
-                    // Connecting apps needs the admin scope; on a server the
-                    // owner does it in the server's own UI.
-                    if session.connection?.pairedWithServer != true {
+                    // Connecting apps needs the admin scope; a chat-only
+                    // server session leaves it to the owner, in the server's UI.
+                    if session.canAdminister {
                         NavigationLink {
                             ConnectedAppsView()
                         } label: {
@@ -441,7 +464,7 @@ struct ConnectionSecurityView: View {
                     }
                 }
             } else {
-                ContentUnavailableView("No computer connected", systemImage: "laptopcomputer.slash")
+                EmptyStateView("No computer connected", systemImage: "laptopcomputer.slash")
             }
         }
         .navigationTitle("Connection & Security")

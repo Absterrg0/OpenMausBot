@@ -27,6 +27,7 @@ let sidecarPort = 0;
 let cloudDesktopAccess = true;
 let companionMarker = "";
 let companionDevice = "";
+let companionRange = "";
 let endpointCandidates: CompanionEndpoint[] = [];
 /** What the stub harness answers with next. Set per test. */
 let respond: (res: ServerResponse) => void = (res) => res.end();
@@ -58,6 +59,7 @@ beforeAll(async () => {
   harness = createServer((req, res) => {
     companionMarker = String(req.headers["x-openmausbot-companion"] ?? "");
     companionDevice = String(req.headers["x-openmausbot-companion-device"] ?? "");
+    companionRange = String(req.headers.range ?? "");
     respond(res);
   });
   const harnessPort = await listen(harness);
@@ -99,11 +101,11 @@ describe("preparing a harness response for a device", () => {
     }
   });
 
-  it("requires the host to enable cloud desktop for viewer and preview requests", async () => {
+  it("requires the host to enable computer access for viewer and preview requests", async () => {
     cloudDesktopAccess = false;
     try {
-      for (const action of ["join", "screenshot"]) {
-        const { status, text } = await device(`/api/bots/b1/computer/${action}`, "POST");
+      for (const path of ["computer/join", "computer/screenshot", "local-computer/screenshot", "local-computer/join"]) {
+        const { status, text } = await device(`/api/bots/b1/${path}`, "POST");
         expect(status).toBe(403);
         expect(text).toContain("enable it in OpenMausBot");
         expect(text).toContain("Settings → Remote access");
@@ -155,6 +157,26 @@ describe("preparing a harness response for a device", () => {
     expect(joinUrl).toContain("password=viewer-secret");
     expect(joinUrl).toContain("path=vps-viewer%2F");
     expect(joinUrl).not.toContain("127.0.0.1:45678");
+  });
+
+  it("turns the Local VM's loopback viewer into the same device-scoped path", async () => {
+    respond = (res) => {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({
+        joinUrl: "http://127.0.0.1:45679/vnc.html#autoconnect=true&resize=scale&password=vm-secret",
+      }));
+    };
+    const { status, text } = await device("/api/bots/b1/local-computer/join?controlLeaseId=phone-lease-0123456789", "POST");
+    expect(status).toBe(200);
+    const joinUrl = String(JSON.parse(text).joinUrl);
+    expect(joinUrl).toMatch(/^\/vps-viewer\/[A-Za-z0-9_-]{32}\/vnc\.html#/);
+    expect(joinUrl).toContain("password=vm-secret");
+    expect(joinUrl).not.toContain("127.0.0.1:45679");
+
+    // Without a control lease the address never reaches the device.
+    const refused = await device("/api/bots/b1/local-computer/join", "POST");
+    expect(refused.status).toBe(502);
+    expect(refused.text).not.toContain("vm-secret");
   });
 
   it("never forwards a body it could not scrub", async () => {
@@ -290,5 +312,39 @@ describe("preparing a harness response for a device", () => {
     expect(response.headers.get("content-type")).toBe("audio/mpeg");
     expect(response.headers.get("cache-control")).toBe("private, no-store");
     expect(new Uint8Array(await response.arrayBuffer())).toEqual(audio);
+  });
+
+  it("forwards a single Range to a voice-note attachment and relays the 206 window", async () => {
+    const clip = Uint8Array.from([0x10, 0x20, 0x30, 0x40, 0x50, 0x60]);
+    respond = (res) => {
+      res.writeHead(206, {
+        "content-type": "audio/mpeg",
+        "content-length": String(2),
+        "content-range": "bytes 2-3/6",
+      });
+      res.end(clip.subarray(2, 4));
+    };
+
+    const response = await fetch(`http://127.0.0.1:${sidecarPort}/api/attachments/voice-note-1.mp3`, {
+      headers: { authorization: `Bearer ${TOKEN}`, range: "bytes=2-3" },
+    });
+    expect(companionRange).toBe("bytes=2-3");
+    expect(response.status).toBe(206);
+    expect(response.headers.get("content-type")).toBe("audio/mpeg");
+    expect(response.headers.get("content-range")).toBe("bytes 2-3/6");
+    expect(new Uint8Array(await response.arrayBuffer())).toEqual(clip.subarray(2, 4));
+  });
+
+  it("does not forward a non-canonical Range header", async () => {
+    respond = (res) => {
+      res.writeHead(200, { "content-type": "audio/mpeg", "content-length": String(6) });
+      res.end(Uint8Array.from([1, 2, 3, 4, 5, 6]));
+    };
+
+    const response = await fetch(`http://127.0.0.1:${sidecarPort}/api/attachments/voice-note-1.mp3`, {
+      headers: { authorization: `Bearer ${TOKEN}`, range: "bytes=0-1,3-4" },
+    });
+    expect(companionRange).toBe("");
+    expect(response.status).toBe(200);
   });
 });

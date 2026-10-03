@@ -7,11 +7,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { runLogin, runLogout, runStatus, type CliIo, type CliOptions } from "./cli.ts";
 import { removeTempDir } from "./testing/cleanup.ts";
 import { startControlPlaneStub, type ControlPlaneStub } from "./testing/control-plane-stub.ts";
+import { freePortBlock } from "./testing/ports.ts";
 import {
   cleanupTunnelOrigin,
+  createTunnelAccount,
   createTunnelOrigin,
   describeTunnelAccount,
   describeTunnelState,
+  fleetAccess,
+  fleetCredential,
   guardianEntry,
   openTunnelCredentials,
   platformName,
@@ -19,6 +23,8 @@ import {
   startTunnel,
   TUNNEL_CREDENTIALS_FILE,
   tunnelAccess,
+  type ManagedTunnelAccess,
+  type RunningTunnel,
 } from "./tunnel.ts";
 
 const posix = process.platform !== "win32";
@@ -109,6 +115,68 @@ describe("login and logout against the control plane", () => {
     expect(stub.calls).toContain("POST /api/auth/sign-out");
   });
 
+  it("a running serve --tunnel re-creates a reclaimed endpoint behind the same address and reconnects", async () => {
+    expect(await runLogin(options(dir, { email: "milind@example.test" }), fakeIo([stub.otp]).io)).toBe(0);
+    const pending = new Map<number, () => void>();
+    let nextTimer = 1;
+    let clock = 1_000_000;
+    const restarts: ManagedTunnelAccess[] = [];
+    const running: RunningTunnel = {
+      address: stub.endpointUrl,
+      // The connector checked its route once and still says ready.
+      state: () => ({ status: "ready", ready: true }),
+      started: Promise.resolve({ status: "ready", ready: true }),
+      restart: async (access) => {
+        restarts.push(access);
+        return { status: "ready", ready: true };
+      },
+      stop: async () => {},
+    };
+    let serving: RunningTunnel | null = null;
+    const account = createTunnelAccount({
+      dataDir: dir,
+      version: "test",
+      recovery: { running: () => serving },
+      clock: {
+        setTimer: (callback, _milliseconds) => {
+          pending.set(nextTimer, callback);
+          return nextTimer++;
+        },
+        clearTimer: (handle) => {
+          pending.delete(handle as number);
+        },
+        now: () => clock,
+      },
+    });
+    const fire = () => {
+      const due = [...pending.values()];
+      pending.clear();
+      for (const callback of due) callback();
+    };
+    try {
+      // serve starts the tunnel, then hands it to the service.
+      serving = running;
+      await account.service.restore();
+      expect(stub.calls.filter((call) => call === "GET /v1/installations/self/endpoint")).toHaveLength(1);
+      expect(restarts).toEqual([]);
+
+      // Weeks offline with the process alive; the control plane reclaimed the tunnel.
+      const replacement = stub.reclaim();
+      clock += 30 * 24 * 60 * 60_000;
+      fire();
+      await vi.waitFor(() => expect(restarts).toEqual([{ endpoint: stub.endpointUrl, token: replacement }]));
+      expect(tunnelAccess(openTunnelCredentials(dir).read())).toEqual({ endpoint: stub.endpointUrl, token: replacement });
+      expect(stub.calls.filter((call) => call === "POST /api/auth/email-otp/send-verification-otp")).toHaveLength(1);
+
+      // Once serve stops, nothing is checked any more.
+      serving = null;
+      account.service.dispose();
+      expect(pending.size).toBe(0);
+    } finally {
+      account.service.dispose();
+    }
+  });
+
   it("an unusable control-plane override is a clear error, not a silent default", async () => {
     vi.stubEnv("OMB_CONTROL_PLANE_URL", "ftp://nope");
     const io = fakeIo([]);
@@ -159,7 +227,7 @@ describe.skipIf(!posix)("startTunnel: guardian, gateway and connector, verified 
       res.end(JSON.stringify({ app: "openmausbot", url: req.url, peer: req.socket.remoteAddress ?? null }));
     });
     await new Promise<void>((done) => harness.listen(origin.socketPath, done));
-    const originPort = 20000 + Math.floor(Math.random() * 20000);
+    const originPort = await freePortBlock([0], 29_600);
     const endpoint = "https://c-stub.openmausbot.invalid";
     const guardian = guardianEntry();
     expect(guardian).toBeTruthy();
@@ -182,12 +250,24 @@ describe.skipIf(!posix)("startTunnel: guardian, gateway and connector, verified 
       expect(viaGateway.app).toBe("openmausbot");
       expect(viaGateway.peer).toBeNull();
       // the connector is spawned right after the gateway binds; its shell writes the pid a moment later
-      let connectorPid = 0;
-      for (let tries = 0; tries < 50 && !connectorPid; tries += 1) {
-        connectorPid = existsSync(pidFile) ? Number(readFileSync(pidFile, "utf8").trim()) : 0;
-        if (!connectorPid) await new Promise((r) => setTimeout(r, 100));
-      }
+      const connectorPidOtherThan = async (previous: number) => {
+        let pid = 0;
+        for (let tries = 0; tries < 50 && (!pid || pid === previous); tries += 1) {
+          pid = existsSync(pidFile) ? Number(readFileSync(pidFile, "utf8").trim()) : 0;
+          if (!pid || pid === previous) await new Promise((r) => setTimeout(r, 100));
+        }
+        return pid === previous ? 0 : pid;
+      };
+      const firstPid = await connectorPidOtherThan(0);
+      expect(firstPid).toBeGreaterThan(0);
+      // An unchanged token leaves the running connector alone ...
+      expect((await tunnel.restart({ endpoint, token: `connector-${"t".repeat(60)}` })).status).toBe("ready");
+      expect(Number(readFileSync(pidFile, "utf8").trim())).toBe(firstPid);
+      // ... and a re-provisioned one (idle reclaim recovery) replaces it.
+      expect((await tunnel.restart({ endpoint, token: `connector-${"u".repeat(60)}` })).status).toBe("ready");
+      const connectorPid = await connectorPidOtherThan(firstPid);
       expect(connectorPid).toBeGreaterThan(0);
+      expect(() => process.kill(firstPid, 0)).toThrow();
       await tunnel.stop();
       expect(tunnel.state().status).toBe("stopped");
       await new Promise((r) => setTimeout(r, 300));
@@ -200,4 +280,25 @@ describe.skipIf(!posix)("startTunnel: guardian, gateway and connector, verified 
       await removeTempDir(dir);
     }
   }, 30_000);
+});
+
+describe("a fleet's credential in the environment", () => {
+  it("gets the public address with no account file and no emailed code; a rejected credential is a clear error", async () => {
+    const stub = await startControlPlaneStub();
+    try {
+      const env = { ...process.env, OMB_CONTROL_PLANE_URL: stub.url };
+      expect(fleetCredential({})).toBeNull();
+      expect(fleetCredential({ OMB_INSTALLATION_CREDENTIAL: "   " })).toBeNull();
+      const credential = stub.seedInstallation("boat-1");
+      expect(fleetCredential({ OMB_INSTALLATION_CREDENTIAL: ` ${credential} ` })).toBe(credential);
+      const access = await fleetAccess({ credential, env });
+      expect(access).toEqual({ endpoint: stub.endpointUrl, token: stub.connectorToken });
+      expect(stub.calls).toContain("POST /v1/installations/self/endpoint");
+      expect(stub.calls.some((call) => call.includes("/api/auth/"))).toBe(false);
+      await expect(fleetAccess({ credential: `omb_install_${"x".repeat(22)}.${"y".repeat(43)}`, env })).rejects.toThrow(/rejected/);
+      await expect(fleetAccess({ credential, env: { ...env, OMB_CONTROL_PLANE_URL: "ftp://nope" } })).rejects.toThrow(/OMB_CONTROL_PLANE_URL/);
+    } finally {
+      await stub.close();
+    }
+  });
 });

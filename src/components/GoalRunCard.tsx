@@ -82,13 +82,13 @@ export function GoalRunCard({ message }: { message: Message }) {
         </div>
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
-            <h3 className="truncate text-[13.5px] font-semibold text-ink">{goal || "Channel goal"}</h3>
+            <h3 className="truncate text-[13.5px] font-semibold text-ink">{goal || "Group goal"}</h3>
             <span aria-live="polite" className={cn("text-[11.5px] font-medium", copy.tone)}>
               {copy.label}
             </span>
           </div>
           {detail && <p className="mt-1 line-clamp-2 text-[12.5px] leading-relaxed text-ink-secondary">{detail}</p>}
-          <p className="mt-1 text-[11.5px] text-ink-secondary/80">
+          <p className="mt-1 text-[11.5px] text-ink-tertiary">
             {run.coordinatorName} coordinating · {turns}
           </p>
         </div>

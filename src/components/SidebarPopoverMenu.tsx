@@ -10,10 +10,16 @@
 // nothing in particular is startling on a row you pass over constantly.
 import { useEffect, useId, useRef, useState } from "react";
 import { cn } from "@/lib/cn";
+import { useMenuMotion } from "./MenuMotion";
+import { usePopoverDismiss } from "@/hooks/use-popover-dismiss";
 
 export interface SidebarMenuItem {
   key: string;
   label: string;
+  /** a second, quieter line under the label (where "Connect your phone" connects to) */
+  subtitle?: string;
+  /** a third, quieter line still: a short note (why something is not offered yet) */
+  note?: string;
   icon?: React.ReactNode;
   active?: boolean;
   /** the item wants attention (a failed routine, a downloaded update); a
@@ -26,12 +32,17 @@ export interface SidebarMenuItem {
   disabled?: boolean;
   /** draw a hairline above this item — the Grok-style trailing group */
   separatorBefore?: boolean;
+  /** a small caps label above this item, naming the group it starts (the
+   * chat menu's "Share" over the two export actions) */
+  heading?: string;
   /** rendered at the trailing edge (a spinner, a status dot) */
   trailing?: React.ReactNode;
   /** the menu normally closes on select; an item that reports progress in
    * place (the update check) keeps it open */
   keepOpen?: boolean;
   onSelect: () => void;
+  /** `data-tour` id, so the guided tour can point at this item */
+  tourId?: string;
 }
 
 /** Opening is quick enough to feel like a hover, closing is slow enough to
@@ -40,11 +51,19 @@ const OPEN_DELAY_MS = 80;
 const CLOSE_DELAY_MS = 250;
 
 export function SidebarPopoverMenu({
+  tourId,
   items,
   ariaLabel,
   openOnHover = false,
+  placement = "above",
   renderTrigger,
 }: {
+  /** "above" stretches over the trigger's width and opens upward (the
+   * sidebar's bottom menus); "below" hangs a fixed-width sheet under the
+   * trigger's right edge (a header icon). */
+  placement?: "above" | "below";
+  /** `data-tour` id for the trigger button */
+  tourId?: string;
   items: SidebarMenuItem[];
   ariaLabel: string;
   openOnHover?: boolean;
@@ -61,6 +80,7 @@ export function SidebarPopoverMenu({
   const openTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const closeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const menuId = useId();
+  const motion = useMenuMotion(open);
 
   const clearTimers = () => {
     if (openTimer.current) clearTimeout(openTimer.current);
@@ -86,19 +106,7 @@ export function SidebarPopoverMenu({
     setOpen(false);
   };
 
-  useEffect(() => {
-    if (!open) return;
-    const onKey = (event: KeyboardEvent) => event.key === "Escape" && close();
-    const onDown = (event: PointerEvent) => {
-      if (event.target instanceof Node && !rootRef.current?.contains(event.target)) close();
-    };
-    window.addEventListener("keydown", onKey);
-    window.addEventListener("pointerdown", onDown);
-    return () => {
-      window.removeEventListener("keydown", onKey);
-      window.removeEventListener("pointerdown", onDown);
-    };
-  }, [open]);
+  usePopoverDismiss(open, rootRef, close);
 
   const asking = items.filter((item) => item.attention);
   const attention = asking.length > 0;
@@ -120,6 +128,7 @@ export function SidebarPopoverMenu({
     >
       <button
         type="button"
+        data-tour={tourId}
         aria-haspopup="menu"
         aria-expanded={open}
         aria-controls={open ? menuId : undefined}
@@ -137,19 +146,26 @@ export function SidebarPopoverMenu({
         {renderTrigger({ open, attention, attentionTone })}
       </button>
 
-      {open && (
+      {motion.shown && (
         <div
           id={menuId}
           role="menu"
           aria-label={ariaLabel}
-          className="animate-pop-in absolute bottom-full left-0 right-0 z-40 mb-1 overflow-hidden rounded-xl border border-hairline/50 bg-card py-1.5 shadow-2xl shadow-black/50"
+          {...motion.exitProps}
+          className={cn(
+            "absolute z-40 overflow-hidden rounded-xl border border-hairline/50 bg-menu py-1.5 shadow-2xl shadow-black/50",
+            placement === "below" ? "top-full right-0 mt-1 w-72 max-w-[calc(100vw-2rem)]" : "bottom-full left-0 right-0 mb-1",
+            motion.className,
+          )}
         >
           {items.map((item) => (
             <div key={item.key}>
               {item.separatorBefore && <div className="my-1.5 h-px bg-hairline/50" />}
+              {item.heading && <div className="px-3 pb-0.5 pt-1.5 text-[10px] font-semibold uppercase tracking-[0.08em] text-ink-secondary">{item.heading}</div>}
               <button
                 type="button"
                 role="menuitem"
+                data-tour={item.tourId}
                 disabled={item.disabled}
                 onClick={() => {
                   item.onSelect();
@@ -170,7 +186,15 @@ export function SidebarPopoverMenu({
                     {item.icon}
                   </span>
                 )}
-                <span className="flex-1 truncate">{item.label}</span>
+                {item.subtitle || item.note ? (
+                  <span className="flex min-w-0 flex-1 flex-col">
+                    <span className="truncate">{item.label}</span>
+                    {item.subtitle && <span className="truncate text-[12px] text-ink-secondary">{item.subtitle}</span>}
+                    {item.note && <span className="text-[11.5px] leading-snug text-ink-tertiary">{item.note}</span>}
+                  </span>
+                ) : (
+                  <span className="flex-1 truncate">{item.label}</span>
+                )}
                 {item.trailing}
                 {item.attention && (
                   <span

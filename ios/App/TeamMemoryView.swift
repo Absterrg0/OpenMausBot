@@ -2,8 +2,7 @@ import CompanionCore
 import SwiftUI
 
 /// The people, places, decisions and terms every bot in a section shares.
-/// Bots add what they learn (places and terms land at once; people and
-/// decisions wait here for a tap); the person answers, edits, adds, and
+/// Every bot proposal waits for admin review; the person answers, edits, adds, and
 /// removes. The phone twin of Team map → Memory on the desktop.
 struct TeamMemoryView: View {
     let section: String
@@ -16,6 +15,9 @@ struct TeamMemoryView: View {
     @State private var draftKind = "term"
     @State private var draftName = ""
     @State private var draftDetail = ""
+    @State private var editingEntry: TeamMemoryEntry?
+    @State private var editDetail = ""
+    @State private var loadGeneration = 0
 
     private static let kinds: [(kind: String, title: LocalizedStringKey)] = [
         ("person", "People"), ("place", "Places"), ("decision", "Decisions"), ("term", "Terms"),
@@ -32,23 +34,23 @@ struct TeamMemoryView: View {
                         VStack(alignment: .leading, spacing: 6) {
                             EntryLine(entry: entry)
                             HStack {
-                                Button("Remember", systemImage: "checkmark") {
+                                Button {
                                     Task { await answer(entry, remember: true) }
-                                }
+                                } label: { Label("Remember", systemImage: "checkmark") }
                                 .buttonStyle(.borderedProminent)
                                 Button("Skip") {
                                     Task { await answer(entry, remember: false) }
                                 }
                                 .buttonStyle(.bordered)
                             }
-                            .disabled(busyID == entry.id)
+                            .disabled(busyID != nil)
                         }
                     }
                 }
             }
             if let page, page.entries.filter({ $0.status == "accepted" }).isEmpty, proposed.isEmpty {
                 Section {
-                    Text("Nothing shared yet. Bots add entries as they learn who is who and where things live, or add one below.")
+                    Text("Nothing shared yet. Every bot proposal waits for an admin's review before it is shared. Your own additions are shared immediately.")
                         .foregroundStyle(.secondary)
                 }
             }
@@ -59,11 +61,18 @@ struct TeamMemoryView: View {
                         ForEach(rows) { entry in
                             EntryLine(entry: entry)
                                 .swipeActions(edge: .trailing) {
+                                    Button {
+                                        editDetail = entry.detail
+                                        editingEntry = entry
+                                    } label: { Label("Edit", systemImage: "pencil") }
+                                    .tint(.accentColor)
+                                    .disabled(busyID != nil)
                                     Button(role: .destructive) {
                                         Task { await remove(entry) }
                                     } label: {
                                         Label("Remove", systemImage: "trash")
                                     }
+                                    .disabled(busyID != nil)
                                 }
                         }
                     }
@@ -83,17 +92,18 @@ struct TeamMemoryView: View {
                     HStack {
                         Button("Add") { Task { await add() } }
                             .buttonStyle(.borderedProminent)
-                            .disabled(busyID == "new" || draftName.trimmingCharacters(in: .whitespaces).isEmpty || draftDetail.trimmingCharacters(in: .whitespaces).isEmpty)
+                            .disabled(page == nil || busyID != nil || draftName.trimmingCharacters(in: .whitespaces).isEmpty || draftDetail.trimmingCharacters(in: .whitespaces).isEmpty)
                         Button("Cancel") { adding = false }
                             .buttonStyle(.bordered)
                     }
                 } else {
-                    Button("Add an entry", systemImage: "plus") { adding = true }
+                    Button { adding = true } label: { Label("Add an entry", systemImage: "plus") }
+                        .disabled(page == nil || busyID != nil)
                 }
             }
             if failed {
                 Section {
-                    ContentUnavailableView("Couldn't load", systemImage: "wifi.exclamationmark")
+                    EmptyStateView(String(localized: "Couldn't load"), systemImage: "wifi.exclamationmark")
                 }
             }
         }
@@ -102,19 +112,53 @@ struct TeamMemoryView: View {
         .task(id: session.connection?.id) {
             page = nil
             failed = false
+            busyID = nil
+            editingEntry = nil
             await load()
         }
         .refreshable { await load() }
+        .sheet(item: $editingEntry) { entry in
+            NavigationStack {
+                Form {
+                    TextField("Detail", text: $editDetail, axis: .vertical)
+                        .lineLimit(3...8)
+                        .accessibilityLabel("Detail")
+                        .accessibilityIdentifier("team-memory-detail")
+                        .disabled(busyID != nil)
+                }
+                .navigationTitle(entry.name)
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("Cancel") { editingEntry = nil }.disabled(busyID != nil)
+                    }
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button("Save") {
+                            Task {
+                                let detail = editDetail.trimmingCharacters(in: .whitespacesAndNewlines)
+                                if await mutate(id: entry.id, { try await $0.updateTeamMemory(section: section, id: entry.id, detail: detail) }) {
+                                    editingEntry = nil
+                                }
+                            }
+                        }
+                        .disabled(busyID != nil || editDetail.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    }
+                }
+                .interactiveDismissDisabled(busyID != nil)
+            }
+        }
     }
 
     private func load() async {
+        guard busyID == nil else { return }
+        loadGeneration += 1
+        let generation = loadGeneration
         let connectionID = session.connection?.id
         loading = true
         defer {
-            if !Task.isCancelled, session.connection?.id == connectionID { loading = false }
+            if !Task.isCancelled, session.connection?.id == connectionID, loadGeneration == generation { loading = false }
         }
         let loaded = await session.teamMemory(section: section)
-        guard !Task.isCancelled, session.connection?.id == connectionID else { return }
+        guard !Task.isCancelled, session.connection?.id == connectionID, loadGeneration == generation else { return }
         if let loaded {
             page = loaded
             failed = false
@@ -123,36 +167,38 @@ struct TeamMemoryView: View {
         }
     }
 
-    private func apply(_ entries: [TeamMemoryEntry]?) {
-        guard let entries, var current = page else { return }
+    private func mutate(id: String, _ body: (CompanionClient) async throws -> [TeamMemoryEntry]) async -> Bool {
+        guard page != nil, busyID == nil else { return false }
+        let connectionID = session.connection?.id
+        loadGeneration += 1
+        let generation = loadGeneration
+        loading = false
+        busyID = id
+        defer { if loadGeneration == generation { busyID = nil } }
+        let result = await session.editTeamMemory(body)
+        guard !Task.isCancelled, session.connection?.id == connectionID, loadGeneration == generation,
+              let entries = result, var current = page else { return false }
         current.entries = entries
         page = current
+        return true
     }
 
     private func answer(_ entry: TeamMemoryEntry, remember: Bool) async {
-        busyID = entry.id
-        defer { busyID = nil }
-        apply(await session.editTeamMemory { try await $0.answerTeamMemory(section: section, id: entry.id, remember: remember) })
+        _ = await mutate(id: entry.id) { try await $0.answerTeamMemory(section: section, id: entry.id, remember: remember) }
     }
 
     private func remove(_ entry: TeamMemoryEntry) async {
-        busyID = entry.id
-        defer { busyID = nil }
-        apply(await session.editTeamMemory { try await $0.removeTeamMemory(section: section, id: entry.id) })
+        _ = await mutate(id: entry.id) { try await $0.removeTeamMemory(section: section, id: entry.id) }
     }
 
     private func add() async {
-        busyID = "new"
-        defer { busyID = nil }
         let name = draftName.trimmingCharacters(in: .whitespaces)
         let detail = draftDetail.trimmingCharacters(in: .whitespaces)
-        let result = await session.editTeamMemory { try await $0.addTeamMemory(section: section, kind: draftKind, name: name, detail: detail) }
-        if result != nil {
+        if await mutate(id: "new", { try await $0.addTeamMemory(section: section, kind: draftKind, name: name, detail: detail) }) {
             draftName = ""
             draftDetail = ""
             adding = false
         }
-        apply(result)
     }
 }
 

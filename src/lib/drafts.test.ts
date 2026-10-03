@@ -3,6 +3,7 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 
 import {
+  appendComposerDraft,
   appendDraftAttachments,
   changeDraftAttachmentPending,
   draftRevision,
@@ -12,6 +13,7 @@ import {
   getDraftChannelMode,
   isDraftAttachmentPending,
   markDraftEdited,
+  prependComposerDraft,
   recoverFailedComposerSend,
   replaceDraftAttachment,
   restoredSendId,
@@ -20,6 +22,8 @@ import {
   setDraftChannelMode,
   useComposerChannelMode,
 } from "./drafts";
+import { citationAttachment, createCitationTextSelector } from "./citations";
+import { composeMessage } from "./composer-attachments";
 
 function memoryStorage(): Storage {
   const values = new Map<string, string>();
@@ -146,6 +150,38 @@ describe("channel draft delivery mode", () => {
 });
 
 describe("durable attachment completion", () => {
+  it("isolates persisted citation drafts and keeps an older failed citation send out of a newer draft", () => {
+    const store = memoryStorage();
+    Object.defineProperty(globalThis, "localStorage", { configurable: true, value: store });
+    const draftId = "bot:citations:thread-a";
+    const otherDraftId = "bot:citations:thread-b";
+    const citation = citationAttachment(
+      { ownerType: "bot", ownerId: "citations", threadId: "thread-a", messageId: "source-1" },
+      createCitationTextSelector("before selected after", 7, 15)!,
+      "old note",
+    );
+    setDraftAttachments(store, draftId, [citation]);
+    expect(getDraftAttachments(store, draftId)).toEqual([citation]);
+    expect(getDraftAttachments(store, otherDraftId)).toEqual([]);
+
+    const revision = draftRevision(draftId);
+    markDraftEdited(draftId);
+    setDraft(store, draftId, "newer words");
+    setDraftAttachments(store, draftId, []);
+    expect(recoverFailedComposerSend({
+      draftId,
+      revision,
+      sendId: "citation-send",
+      threadId: "thread-a",
+      text: "",
+      requestText: composeMessage("", [citation]),
+      attachments: [citation],
+    })).toBe("outbox");
+    expect(getDraft(store, draftId)).toBe("newer words");
+    expect(getDraftAttachments(store, draftId)).toEqual([]);
+    expect(failedComposerSends(draftId)).toEqual([expect.objectContaining({ sendId: "citation-send" })]);
+  });
+
   it("keeps blob previews in memory but never writes them into durable storage", () => {
     const store = memoryStorage();
     Object.defineProperty(globalThis, "localStorage", { configurable: true, value: store });
@@ -280,5 +316,76 @@ describe("durable attachment completion", () => {
     expect(isDraftAttachmentPending("bot:pending:a")).toBe(true);
     changeDraftAttachmentPending("bot:pending:a", false);
     expect(isDraftAttachmentPending("bot:pending:a")).toBe(false);
+  });
+});
+
+describe("appendComposerDraft", () => {
+  const prompt = "Create a verification skill from the run below.\n\n✓ doctor — pnpm control:omb doctor\n\n";
+
+  it("puts the text into an empty draft exactly as given", () => {
+    const store = memoryStorage();
+    Object.defineProperty(globalThis, "localStorage", { configurable: true, value: store });
+    const draftId = "bot:save:thread-empty";
+    const revision = draftRevision(draftId);
+    appendComposerDraft(draftId, prompt);
+    expect(getDraft(store, draftId)).toBe(prompt);
+    expect(JSON.parse(store.getItem("omb-drafts") ?? "{}")[draftId]).toBe(prompt);
+    // an edited draft outranks a late failed send, exactly like typing does
+    expect(draftRevision(draftId)).toBe(revision + 1);
+  });
+
+  it("appends after a blank line and never replaces what the person typed", () => {
+    const store = memoryStorage();
+    Object.defineProperty(globalThis, "localStorage", { configurable: true, value: store });
+    const draftId = "bot:save:thread-typed";
+    setDraft(store, draftId, "Keep the doctor step first.");
+    appendComposerDraft(draftId, prompt);
+    expect(getDraft(store, draftId)).toBe(`Keep the doctor step first.\n\n${prompt}`);
+  });
+
+  it("leaves attachments and the channel mode as they were", () => {
+    const store = memoryStorage();
+    Object.defineProperty(globalThis, "localStorage", { configurable: true, value: store });
+    const draftId = "group:save:thread-attached";
+    const attachment = { kind: "file" as const, id: "file-1", path: "/private/attachments/log.txt", name: "log.txt", size: 12 };
+    setDraftAttachments(store, draftId, [attachment]);
+    setDraftChannelMode(store, draftId, "goal");
+    appendComposerDraft(draftId, prompt);
+    expect(getDraft(store, draftId)).toBe(prompt);
+    expect(getDraftAttachments(store, draftId)).toEqual([attachment]);
+    expect(getDraftChannelMode(store, draftId)).toBe("goal");
+  });
+});
+
+describe("prependComposerDraft", () => {
+  it("puts a queued message into an empty draft and marks it edited", () => {
+    const store = memoryStorage();
+    Object.defineProperty(globalThis, "localStorage", { configurable: true, value: store });
+    const draftId = "bot:edit-queued:empty";
+    const revision = draftRevision(draftId);
+    prependComposerDraft(draftId, "actually stop at 10");
+    expect(getDraft(store, draftId)).toBe("actually stop at 10");
+    expect(draftRevision(draftId)).toBe(revision + 1);
+  });
+
+  it("leads with the queued words and keeps what the person already typed below", () => {
+    const store = memoryStorage();
+    Object.defineProperty(globalThis, "localStorage", { configurable: true, value: store });
+    const draftId = "bot:edit-queued:typed";
+    setDraft(store, draftId, "and use the smaller model");
+    prependComposerDraft(draftId, "actually stop at 10");
+    expect(getDraft(store, draftId)).toBe("actually stop at 10\n\nand use the smaller model");
+  });
+
+  it("treats a whitespace-only draft as empty and leaves attachments alone", () => {
+    const store = memoryStorage();
+    Object.defineProperty(globalThis, "localStorage", { configurable: true, value: store });
+    const draftId = "group:edit-queued:attached";
+    const attachment = { kind: "file" as const, id: "file-1", path: "/private/attachments/log.txt", name: "log.txt", size: 12 };
+    setDraft(store, draftId, "  \n");
+    setDraftAttachments(store, draftId, [attachment]);
+    prependComposerDraft(draftId, "check the log");
+    expect(getDraft(store, draftId)).toBe("check the log");
+    expect(getDraftAttachments(store, draftId)).toEqual([attachment]);
   });
 });

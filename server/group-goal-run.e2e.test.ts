@@ -1,5 +1,5 @@
 import { spawn, type ChildProcess } from "node:child_process";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -17,6 +17,10 @@ let child: ChildProcess;
 let home = "";
 let stopScopedWorkerFinishGate = "";
 let busyWorkerFinishGate = "";
+let busyGoalFinishGate = "";
+let routineGoalFinishGate = "";
+let queueFinishGate = "";
+let stopScopedLeadFinishGate = "";
 let base = "";
 let stderr = "";
 
@@ -48,6 +52,11 @@ beforeAll(async () => {
   home = mkdtempSync(join(tmpdir(), "omb-goal-run-"));
   stopScopedWorkerFinishGate = join(home, "stop-scoped-worker-finish");
   busyWorkerFinishGate = join(home, "busy-worker-finish");
+  busyGoalFinishGate = join(home, "busy-goal-finish");
+  routineGoalFinishGate = join(home, "routine-goal-finish");
+  queueFinishGate = join(home, "queue-finish");
+  stopScopedLeadFinishGate = join(home, "stop-scoped-lead-finish");
+  writeFileSync(stopScopedLeadFinishGate, "allow initial goal delegation");
   const data = join(home, ".openmausbot");
   const staticDir = join(home, "static");
   mkdirSync(data, { recursive: true });
@@ -87,6 +96,7 @@ beforeAll(async () => {
         displayName: "Queue fixture",
         environment: {
           FAKE_CLAUDE_MODE: "slow",
+          FAKE_CLAUDE_SLOW_FINISH_GATE: queueFinishGate,
           FAKE_CLAUDE_REPLIES: JSON.stringify(["first response", "second response"]),
           FAKE_CLAUDE_REPLY_STATE: join(home, "slow-replies.txt"),
         },
@@ -97,6 +107,7 @@ beforeAll(async () => {
         displayName: "Busy goal fixture",
         environment: {
           FAKE_CLAUDE_MODE: "slow",
+          FAKE_CLAUDE_SLOW_FINISH_GATE: busyGoalFinishGate,
           FAKE_CLAUDE_REPLIES: JSON.stringify([
             "The unrelated direct task is complete.",
             "The queued team goal is complete.\n<openmaus-goal>{\"status\":\"completed\",\"detail\":\"Waited for the lead, then completed normally.\"}</openmaus-goal>",
@@ -137,6 +148,7 @@ beforeAll(async () => {
         displayName: "Stop-scoped lead fixture",
         environment: {
           FAKE_CLAUDE_MODE: "slow",
+          FAKE_CLAUDE_SLOW_FINISH_GATE: stopScopedLeadFinishGate,
           FAKE_CLAUDE_REPLIES: JSON.stringify([
             "I am delegating this scheduled goal.\n<openmaus-goal>{\"status\":\"continue\",\"next\":\"Delayed worker\",\"instruction\":\"Finish the scheduled analysis\",\"detail\":\"Waiting for the delayed worker.\"}</openmaus-goal>",
             "This is unrelated direct work and should be stopped.",
@@ -173,6 +185,7 @@ beforeAll(async () => {
         displayName: "Routine goal fixture",
         environment: {
           FAKE_CLAUDE_MODE: "slow",
+          FAKE_CLAUDE_SLOW_FINISH_GATE: routineGoalFinishGate,
           FAKE_CLAUDE_REPLIES: JSON.stringify([
             "The scheduled review is complete.\n<openmaus-goal>{\"status\":\"completed\",\"detail\":\"Scheduled team review completed.\"}</openmaus-goal>",
           ]),
@@ -311,6 +324,9 @@ describe("goal-driven channel runs", () => {
       const waitingState = (await api("GET", "/api/bots?messages=30")).body;
       const waitingRoom = waitingState.groups.find((group: { id: string }) => group.id === room.id);
       const cardId = waitingRoom.messages.find((message: { kind: string }) => message.kind === "goal.run").id;
+      // Release only after the wait card is observed; process startup on a
+      // slow runner must not consume the fake CLI's fixed completion window.
+      writeFileSync(busyGoalFinishGate, "observed the waiting goal");
 
       await expect.poll(async () => {
         const state = (await api("GET", "/api/bots?messages=30")).body;
@@ -801,6 +817,9 @@ describe("goal-driven channel runs", () => {
         workerBusy: true,
       });
 
+      // Hold just this unrelated direct turn until Stop is observed. The
+      // initial goal delegation used the already-open gate above.
+      rmSync(stopScopedLeadFinishGate, { force: true });
       expect((await api("POST", `/api/bots/${lead.id}/messages`, {
         text: "Start unrelated coordinator work",
       })).status).toBe(202);
@@ -824,6 +843,7 @@ describe("goal-driven channel runs", () => {
         return state.bots.find((bot: { id: string }) => bot.id === lead.id)?.busy;
       }, { timeout: 5_000 }).toBe(false);
 
+      writeFileSync(stopScopedLeadFinishGate, "allow the later goal continuation");
       // The worker may settle and advance the room while Stop is in flight.
       // Either in-progress or already-completed is valid; cancellation/stopped
       // is the regression this snapshot must exclude.
@@ -937,6 +957,7 @@ describe("goal-driven channel runs", () => {
         threadId: running.threadId,
         working: true,
       });
+      writeFileSync(routineGoalFinishGate, "opened the running background task");
 
       await expect.poll(async () => {
         const calendar = (await api("GET", "/api/routines")).body;
@@ -958,7 +979,7 @@ describe("goal-driven channel runs", () => {
       expect(backgroundRoom.threadId).toBe(completedRun.threadId);
       expect(backgroundRoom.tasks).toContainEqual(expect.objectContaining({
         threadId: completedRun.threadId,
-        title: "Daily team review",
+        title: expect.stringMatching(/^Daily team review · [A-Z][a-z]{2} \d{1,2}, \d{1,2}:\d{2} [AP]M$/),
       }));
 
       const switched = await api("POST", `/api/groups/${room.id}/tasks/${completedRun.threadId}`);
@@ -993,15 +1014,21 @@ describe("goal-driven channel runs", () => {
       memberIds: [looper.id],
       setup: { bulletin: "", defaultResponder: { kind: "member", botId: looper.id } },
     })).body.group;
-    expect((await api("POST", `/api/groups/${room.id}/messages`, {
+    const started = await api("POST", `/api/groups/${room.id}/messages`, {
       text: "Keep trying forever",
       mode: "goal",
-    })).status).toBe(202);
+    });
+    expect(started.status).toBe(202);
+    // Per-turn digests can push the original card out of a tail page.
+    // Anchor its identity beside this exact accepted user message, then
+    // observe that same receipt through the bounded scrollback endpoint.
+    const initial = await api("GET", `/api/threads/${started.body.threadId}/messages?around=${started.body.message.id}&limit=3`);
+    const card = initial.body.messages.find((message: { kind: string }) => message.kind === "goal.run");
+    expect(card).toMatchObject({ id: expect.any(String) });
 
     await expect.poll(async () => {
-      const state = (await api("GET", "/api/bots?messages=40")).body;
-      const current = state.groups.find((candidate: { id: string }) => candidate.id === room.id);
-      return current?.messages.find((message: { kind: string }) => message.kind === "goal.run")?.goalRun;
+      const page = await api("GET", `/api/threads/${started.body.threadId}/messages?around=${card.id}&limit=1`);
+      return page.body.messages[0]?.goalRun;
     }, { timeout: 15_000 }).toMatchObject({ status: "limit-reached", turnCount: 13, maxTurns: 13 });
   });
 
@@ -1082,6 +1109,7 @@ describe("goal-driven channel runs", () => {
 
     const retryWhileQueued = await api("POST", `/api/groups/${room.id}/messages`, queuedBody);
     expect(retryWhileQueued.body).toMatchObject({ queued: true, queueId: queued.body.queueId });
+    writeFileSync(queueFinishGate, "observed the queued message and idempotent retry");
 
     await expect.poll(async () => {
       const state = (await api("GET", "/api/bots?messages=30")).body;

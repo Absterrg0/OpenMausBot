@@ -1,7 +1,8 @@
 # Voice in OpenMausBot
 
-Decision doc, 2026-08-14. How bots speak, and how you hold a conversation with
-one.
+Historical decision doc, 2026-08-14. It records the original ElevenLabs-only
+shape; the current product also supports Fish Audio, built-in Mac voices, and
+local Chatterbox. See the current [voice guide](../apps/docs/content/docs/features/voice-and-memory.mdx).
 
 ## Shape
 
@@ -89,7 +90,7 @@ delegate real work to specialists over `ask_bot` — no new machinery required.
 | Kokoro-82M in the renderer | Genuinely good and free, but it is a second provider, a 2.2MB chunk, an ONNX runtime and a first-run model download. Simplicity won. |
 | Cartesia | Cheaper and faster to first byte, but a second provider earns its keep only once one is not enough |
 | ElevenLabs Agents | Its custom-LLM `cascade_timeout_seconds` maxes at 15s and agent turns exceed that; it also wants to own turn-taking and tool calls, which is what the harness owns |
-| OpenAI Realtime / Gemini Live (speech-to-speech) | They replace the brain, and the brain being Claude Code on your own machine *is* the product |
+| OpenAI Realtime / Gemini Live (speech-to-speech) | They replace the brain, and the brain being Claude Code on your own machine *is* the product. (Later: GPT-Live's *client delegation* keeps the bot as the brain, so it became the optional Live call mode — see `server/live-call.ts`.) |
 
 ## Known gaps
 

@@ -199,6 +199,82 @@ class StoreTest {
         assertEquals(listOf("root", "fork", "tail"), state.visibleTranscript(bot.threadId).map(Message::id))
     }
 
+    /** root → question → old answer, with the old answer visible. */
+    private fun editableConversation(): Pair<CompanionState, String> {
+        val hydrated = hydrated()
+        val threadId = hydrated.bots.first().threadId
+        val root = message("root", 1.0, "Ready").copy(role = Message.Role.BOT)
+        val question = message("q1", 2.0, "first try").copy(parentId = root.id)
+        val answer = message("a1", 3.0, "old answer").copy(role = Message.Role.BOT, parentId = question.id)
+        val state = hydrated.copy(messages = hydrated.messages + (threadId to listOf(root, question, answer)))
+            .apply(Frame.Thread(threadId, answer.id))
+        return state to threadId
+    }
+
+    @Test
+    fun pendingEditReplacesTheQuestionAndHidesTheOldAnswerAtOnce() {
+        val (base, threadId) = editableConversation()
+        val pending = PendingEdit("q1", "second try", 4.0)
+        val state = base.copy(pendingEdits = mapOf(threadId to pending))
+        val visible = state.visibleTranscript(threadId)
+        assertEquals(listOf("root", pending.placeholderId), visible.map(Message::id))
+        assertEquals("second try", visible.last().text)
+        assertEquals("root", visible.last().parentId)
+        // nothing was folded: the computer's transcript is untouched
+        assertEquals(listOf("root", "q1", "a1"), state.transcript(threadId).map(Message::id))
+        // a failed edit only drops the stand-in, so the old branch returns
+        assertEquals(listOf("root", "q1", "a1"), state.copy(pendingEdits = emptyMap()).visibleTranscript(threadId).map(Message::id))
+    }
+
+    @Test
+    fun streamedForkTakesOverFromThePendingEdit() {
+        val (base, threadId) = editableConversation()
+        val fork = message("q2", 4.0, "second try").copy(parentId = "root")
+        val state = base.copy(pendingEdits = mapOf(threadId to PendingEdit("q1", "second try", 4.0)))
+            // the message frame alone is a sibling, not a child of the leaf...
+            .apply(Frame.Message(threadId, fork))
+            // ...and the leaf frame moves the branch, which retires the stand-in
+            .apply(Frame.Thread(threadId, fork.id))
+        assertEquals(listOf("root", "q2"), state.visibleTranscript(threadId).map(Message::id))
+    }
+
+    @Test
+    fun adoptEditShowsTheForkWhenTheResponseBeatsTheStream() {
+        val (base, threadId) = editableConversation()
+        val fork = message("q2", 4.0, "second try").copy(parentId = "root")
+        assertEquals(listOf("root", "q2"), base.adoptEdit(fork, threadId).visibleTranscript(threadId).map(Message::id))
+    }
+
+    @Test
+    fun adoptEditNeverHidesAReplyThatAlreadyArrived() {
+        val (base, threadId) = editableConversation()
+        val fork = message("q2", 4.0, "second try").copy(parentId = "root")
+        val reply = message("a2", 5.0, "new answer").copy(role = Message.Role.BOT, parentId = fork.id)
+        val state = base.apply(Frame.Message(threadId, fork))
+            .apply(Frame.Thread(threadId, fork.id))
+            .apply(Frame.Message(threadId, reply))
+            .adoptEdit(fork, threadId)
+        assertEquals(listOf("root", "q2", "a2"), state.visibleTranscript(threadId).map(Message::id))
+    }
+
+    @Test
+    fun lateEditDoesNotUndoBranchSelectionOrNewerEdit() {
+        val (base, threadId) = editableConversation()
+        val pending = PendingEdit("q1", "second try", baseLeafId = "a1")
+        val fork = message("q2", 4.0, "second try").copy(parentId = "root")
+        val switched = base.copy(pendingEdits = mapOf(threadId to pending))
+            .apply(Frame.Thread(threadId, "root"))
+            .adoptEdit(fork, threadId, pending)
+        assertEquals("root", switched.activeLeafIds[threadId])
+        assertTrue(switched.transcript(threadId).any { it.id == "q2" })
+        val newer = PendingEdit("q1", "newer try", baseLeafId = "a1")
+        val superseded = base.copy(pendingEdits = mapOf(threadId to newer)).adoptEdit(fork, threadId, pending)
+        assertEquals("a1", superseded.activeLeafIds[threadId])
+        assertEquals("newer try", superseded.visibleTranscript(threadId).last().text)
+        val accepted = base.copy(pendingEdits = mapOf(threadId to pending)).adoptEdit(fork, threadId, pending)
+        assertEquals("q2", accepted.visibleTranscript(threadId).last().id)
+    }
+
     @Test
     fun versionsAreUserMessagesWithTheSameParent() {
         val root = message("root")
@@ -380,6 +456,58 @@ class StoreTest {
         state = state.apply(Frame.Runtime(RuntimeEvent("content.delta", "t1", "hi", "assistant_text")))
         state = state.apply(Frame.Unknown("routine.run"))
         assertEquals(before, state.bots.size)
+    }
+
+    @Test
+    fun aLiveCallFrameReplacesTheCallAndNullClearsIt() {
+        var state = hydrated()
+        assertNull(state.liveCall)
+        val call = LiveCallState("c1", "b1", "t1", "android", "marin", 1.0, LiveCallStatus.LIVE)
+        state = state.apply(Frame.LiveCall("b1", "t1", call))
+        assertEquals(call, state.liveCall)
+        assertEquals(call, state.runningLiveCall())
+        val ended = call.copy(status = LiveCallStatus.ENDED, endReason = "hung-up")
+        state = state.apply(Frame.LiveCall("b1", "t1", ended))
+        assertEquals(ended, state.liveCall)
+        assertNull(state.runningLiveCall())
+        state = state.apply(Frame.LiveCall("b1", "t1", null))
+        assertNull(state.liveCall)
+    }
+
+    @Test
+    fun aLookupAnswerIsDroppedWhenAFrameLandedWhileItWasOut() {
+        val call = LiveCallState("c1", "b1", "t1", "desktop", "marin", 1.0, LiveCallStatus.LIVE)
+        val before = hydrated()
+        val readAt = before.liveCallRevision
+        // The lookup is out; the stream brings the call meanwhile.
+        val framed = before.apply(Frame.LiveCall("b1", "t1", call))
+        assertEquals(call, framed.applyLiveCallLookup(null, readAt).liveCall, "the lookup's older null must not end the call the frame brought")
+        // Nothing reached the line meanwhile: the answer is the news.
+        assertEquals(call, before.applyLiveCallLookup(call, readAt).liveCall)
+        assertNull(framed.applyLiveCallLookup(null, framed.liveCallRevision).liveCall)
+    }
+
+    @Test
+    fun aHangUpAnswerAppliesOnlyWhileItsCallStillReadsAsRunning() {
+        val call = LiveCallState("c1", "b1", "t1", "desktop", "marin", 1.0, LiveCallStatus.LIVE)
+        val ended = call.copy(status = LiveCallStatus.ENDED, endReason = "hung-up")
+        val running = hydrated().apply(Frame.LiveCall("b1", "t1", call))
+        assertTrue(running.showsRunningLiveCall("c1"))
+        assertFalse(running.showsRunningLiveCall("c2"))
+        assertEquals(ended, running.applyLiveCallEnd("c1", ended).liveCall, "the answer takes the bar down now, not on the frame after it")
+
+        // Later news already on the line wins over the answer.
+        val newer = call.copy(callId = "c2")
+        assertEquals(newer, running.apply(Frame.LiveCall("b1", "t1", newer)).applyLiveCallEnd("c1", ended).liveCall, "a newer call stays")
+        assertNull(running.apply(Frame.LiveCall("b1", "t1", null)).applyLiveCallEnd("c1", ended).liveCall, "a cleared line stays clear")
+        val idle = call.copy(status = LiveCallStatus.ENDED, endReason = "idle")
+        val alreadyEnded = running.apply(Frame.LiveCall("b1", "t1", idle))
+        assertFalse(alreadyEnded.showsRunningLiveCall("c1"))
+        assertEquals(idle, alreadyEnded.applyLiveCallEnd("c1", ended).liveCall, "the frame's own reason is not replaced")
+
+        // An applied answer is news too: a lookup that was out across it is older.
+        val readAt = running.liveCallRevision
+        assertEquals(ended, running.applyLiveCallEnd("c1", ended).applyLiveCallLookup(call, readAt).liveCall)
     }
 }
 

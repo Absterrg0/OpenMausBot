@@ -143,4 +143,33 @@ final class ActivityClientTests: XCTestCase {
         XCTAssertEqual(try body()["kind"] as? String, "term")
         XCTAssertEqual(entries.first?.name, "MCHQ")
     }
+
+    func testEditsAnAcceptedEntryAndEncodesTheExactSection() async throws {
+        ActivityRequestStub.responseBody = Data(#"{"entries":[]}"#.utf8)
+
+        _ = try await client.updateTeamMemory(section: "Work & R&D", id: "entry_1", detail: "Reviewed detail")
+
+        let request = try XCTUnwrap(ActivityRequestStub.capturedRequest)
+        XCTAssertEqual(request.httpMethod, "PATCH")
+        XCTAssertEqual(request.url?.path, "/api/team-memory/entry_1")
+        let query = URLComponents(url: try XCTUnwrap(request.url), resolvingAgainstBaseURL: false)?.queryItems
+        XCTAssertEqual(query, [URLQueryItem(name: "section", value: "Work & R&D")])
+        XCTAssertEqual(try body()["detail"] as? String, "Reviewed detail")
+        XCTAssertNil(try body()["accept"])
+    }
+
+    func testRefusesPathShapedMemoryIdsBeforeAnyMutation() async {
+        for operation in ["edit", "answer", "remove"] {
+            do {
+                switch operation {
+                case "edit": _ = try await client.updateTeamMemory(section: "", id: "../other", detail: "No")
+                case "answer": _ = try await client.answerTeamMemory(section: "", id: "../other", remember: true)
+                default: _ = try await client.removeTeamMemory(section: "", id: "../other")
+                }
+                XCTFail("a path-shaped id must never reach the wire")
+            } catch {
+                XCTAssertNil(ActivityRequestStub.capturedRequest)
+            }
+        }
+    }
 }

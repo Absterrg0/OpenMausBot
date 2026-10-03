@@ -73,9 +73,9 @@ export function isOutboundTool(name: string): boolean {
   if (name === "COMPOSIO_PROXY_EXECUTE") return true;
   const tokens = actionTokens(name);
   if (tokens.length === 0) return false;
-  if (tokens.includes("DRAFT")) return false;
   if (READ_VERBS.has(tokens[0])) return false;
   if (tokens.some((token) => SEND_VERBS.has(token))) return true;
+  if (tokens.includes("DRAFT")) return false;
   return tokens.some((token) => CREATE_VERBS.has(token)) && tokens.some((token) => SENT_NOUNS.has(token));
 }
 
@@ -104,40 +104,30 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
 
 /** Composio's session exposes a handful of meta tools and runs the app
  * tools inside them: a multi-execute call carries a list of slugs with
- * arguments, and the remote workbench runs Python that names the slugs it
- * calls. This returns the app tools a tools/call would actually run —
- * the call itself when it is a plain app tool, the wrapped ones otherwise
- * — so a gate sees through the wrapper. Search, schema lookup, and
- * connection management run nothing and yield nothing. */
+ * arguments. Arbitrary workbench/bash code is opaque: it requires an
+ * explicit unrestricted approval, never an inferred app or send count.
+ * Search, schema lookup, and connection management run no app tools. */
 export function connectorCallsIn(name: string, args: unknown): ConnectorCall[] {
   if (name === "COMPOSIO_MULTI_EXECUTE_TOOL") {
-    const tools = isRecord(args) && Array.isArray(args.tools) ? args.tools : [];
+    const tools = isRecord(args) && Array.isArray(args.tools) ? args.tools
+      : isRecord(args) && typeof args.tool_slug === "string" ? [args] : [];
+    if (!tools.length) return [{ slug: "COMPOSIO_PROXY_EXECUTE", arguments: args }];
     const calls: ConnectorCall[] = [];
     for (const item of tools) {
-      if (!isRecord(item)) continue;
+      if (!isRecord(item)) return [{ slug: "COMPOSIO_PROXY_EXECUTE", arguments: args }];
       const slug = [item.tool_slug, item.slug, item.name, item.tool].find((value) => typeof value === "string" && value);
-      if (typeof slug !== "string") continue;
+      if (typeof slug !== "string") return [{ slug: "COMPOSIO_PROXY_EXECUTE", arguments: args }];
       calls.push({ slug, ...(item.arguments !== undefined ? { arguments: item.arguments } : {}) });
     }
     return calls;
   }
   if (name === "COMPOSIO_REMOTE_WORKBENCH" || name === "COMPOSIO_REMOTE_BASH_TOOL") {
-    const code = isRecord(args)
-      ? [args.code_to_execute, args.code, args.command].find((value) => typeof value === "string")
-      : undefined;
-    if (typeof code !== "string") return [];
-    const seen = new Set<string>();
-    const calls: ConnectorCall[] = [];
-    for (const match of code.matchAll(/\b([A-Z][A-Z0-9]+_[A-Z0-9_]{3,})\b/g)) {
-      const slug = match[1];
-      if (slug.startsWith("COMPOSIO_") || seen.has(slug)) continue;
-      seen.add(slug);
-      calls.push({ slug });
-    }
-    if (/\bproxy_execute\b/.test(code)) calls.push({ slug: "COMPOSIO_PROXY_EXECUTE" });
-    return calls;
+    // Arbitrary code can compute tool names and repeat calls. Its app and
+    // outbound count cannot be inferred from literals in the source.
+    return [{ slug: "COMPOSIO_PROXY_EXECUTE", arguments: args }];
   }
-  if (name.startsWith("COMPOSIO_")) return [];
+  if (["COMPOSIO_SEARCH_TOOLS", "COMPOSIO_GET_TOOL_SCHEMAS", "COMPOSIO_MANAGE_CONNECTIONS", "COMPOSIO_WAIT_FOR_CONNECTIONS"].includes(name)) return [];
+  if (name.startsWith("COMPOSIO_")) return [{ slug: "COMPOSIO_PROXY_EXECUTE", arguments: args }];
   return [{ slug: name, ...(args !== undefined ? { arguments: args } : {}) }];
 }
 

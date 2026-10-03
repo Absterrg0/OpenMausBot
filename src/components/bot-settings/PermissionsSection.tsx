@@ -15,14 +15,20 @@ import { useEffect, useState } from "react";
 import { Crown } from "lucide-react";
 
 import { cn } from "@/lib/cn";
+import { t } from "@/lib/i18n";
+import { useOwnerOrAdmin } from "@/lib/use-owner-or-admin";
 import { useStore, type Bot } from "@/state/store";
 import type { ApprovalMode } from "../../../shared/approval-mode";
 import { DEFAULT_OUTBOUND_POLICY, type OutboundPolicy } from "../../../shared/outbound";
 import { ApprovalModeSelector } from "../ApprovalModeSelector";
+import { CommandAllowlistDialog } from "../CommandAllowlistDialog";
 import { FullAccessWarning } from "../FullAccessWarning";
 import { LocalComputerAutoWarning } from "../LocalComputerAutoWarning";
 import { Switch } from "../SettingsPrimitives";
+import { ManagedTeamsSettings } from "./ManagedTeamsSettings";
+import { ProposalStatus } from "./ProposalStatus";
 import type { useBotSettingsDerived } from "./useBotSettingsDerived";
+import { useBotEditor } from "./BotEditorContext";
 
 export function PermissionsSection({
   bot,
@@ -31,13 +37,18 @@ export function PermissionsSection({
   bot: Bot;
   derived: ReturnType<typeof useBotSettingsDerived>;
 }) {
-  const { patch, engine, canCoordinate, canAutoReview, approvalMode, trustedModesAvailable, sectionName, currentChief } = derived;
-  const { dispatch } = useStore();
+  const { patch, engine, canCoordinate, approvalMode, trustedModesAvailable, sectionName, currentChief } = derived;
+  const { state, dispatch } = useStore();
+  const ownerOrAdmin = useOwnerOrAdmin();
+  const { draft } = useBotEditor();
   const [localAutoWarning, setLocalAutoWarning] = useState<string | null>(null);
   const [fullAccessTarget, setFullAccessTarget] = useState<string | null>(null);
+  const [allThreads, setAllThreads] = useState(true);
+  const [commandAllowlistTarget, setCommandAllowlistTarget] = useState<{ botId: string; botName: string } | null>(null);
   const setApprovalMode = (mode: ApprovalMode) => {
     if (bot.busy || mode === approvalMode) return;
     if (mode === "full") {
+      setAllThreads(true);
       setFullAccessTarget(bot.id);
       return;
     }
@@ -74,21 +85,30 @@ export function PermissionsSection({
             aria-label="Chief of Staff"
             disabled={!bot.chiefOfStaff && !canCoordinate}
             onClick={() => patch({ chiefOfStaff: !bot.chiefOfStaff })}
-            title={!bot.chiefOfStaff && !canCoordinate ? "This engine cannot contact other bots" : undefined}
+            title={!bot.chiefOfStaff && !canCoordinate ? "This model cannot contact other bots" : undefined}
             className="disabled:cursor-not-allowed"
           />
         </div>
         <div className="mt-3 text-[13px] leading-relaxed text-ink-secondary">
           {bot.chiefOfStaff && !canCoordinate
-            ? "This bot still holds the role, but its current engine cannot contact teammates. Choose a Claude or ACP engine to restore coordination."
+            ? "This bot still holds the role, but its current provider cannot contact teammates. Choose a provider that supports bot coordination."
             : bot.chiefOfStaff
-              ? `This is the primary contact for ${sectionName}. It can create and coordinate specialists in this section, then combine their work into one answer.`
+              ? `This is the primary contact for ${sectionName}. It can create and coordinate specialists in this team, then combine their work into one answer.`
               : !canCoordinate
-                ? "Choose a Claude or ACP engine to let this bot coordinate teammates."
+                ? "Choose a provider that supports bot coordination."
                 : currentChief
                   ? `Make this bot the ${sectionName} Chief and hand the role over from ${currentChief.name}.`
-                  : `Make this bot the primary contact for the ${sectionName} section.`}
+                  : `Make this bot the primary contact for the ${sectionName} team.`}
         </div>
+        <ProposalStatus bot={bot} kind="chief" />
+        {bot.chiefOfStaff && <ManagedTeamsSettings
+          key={bot.id + JSON.stringify(bot.managedSections ?? [])}
+          name={bot.name} ownTeam={bot.section?.trim() || ""}
+          teams={["", ...(state.sections ?? []), ...[...state.bots, ...state.groups].map(member => member.section?.trim() || "")]}
+          allowed={bot.managedSections ?? []}
+          onSave={managedSections => patch({ managedSections, acknowledgePeerScope: true })}
+        />}
+        {bot.chiefOfStaff && <ProposalStatus bot={bot} kind="owner" />}
       </div>
 
       <div className="flex items-center justify-between gap-4 rounded-xl bg-card p-4">
@@ -99,13 +119,14 @@ export function PermissionsSection({
               ? "This bot will stop and ask before it reaches out to another bot."
               : "Let this bot talk to teammates on its own, without a confirmation step."}
           </div>
+          <ProposalStatus bot={bot} kind="owner" />
         </div>
         <Switch
           checked={Boolean(bot.approvePeerComms)}
           aria-label="Ask me before contacting other bots"
           disabled={!bot.approvePeerComms && !canCoordinate}
           onClick={() => patch({ approvePeerComms: !bot.approvePeerComms })}
-          title={!bot.approvePeerComms && !canCoordinate ? "This engine cannot contact other bots" : undefined}
+          title={!bot.approvePeerComms && !canCoordinate ? "This model cannot contact other bots" : undefined}
           className="disabled:cursor-not-allowed"
         />
       </div>
@@ -113,8 +134,9 @@ export function PermissionsSection({
       <div className="rounded-xl bg-card p-4">
         <div className="text-[15px] font-medium text-ink">Approval level</div>
         <div className="mt-0.5 text-[13px] text-ink-secondary">
-          Choose how much this bot can do before it stops to ask you.
+          {draft ? "Default for the new bot's threads, routines and delegated work." : "Default for new threads, routines and delegated work. When enabling Full access, you can also apply it to every existing thread. Use Refresh permissions on a thread to apply the current level to that conversation."}
         </div>
+        <ProposalStatus bot={bot} kind="owner" />
         <div className="mt-3">
           <ApprovalModeSelector
             approvalMode={bot.approvalMode}
@@ -126,57 +148,27 @@ export function PermissionsSection({
             wide
             disabled={Boolean(bot.busy)}
             trustedModesAvailable={trustedModesAvailable}
+            onManageCommandAllowlist={!draft && ownerOrAdmin === true ? () => setCommandAllowlistTarget({ botId: bot.id, botName: bot.name }) : undefined}
           />
         </div>
+        {!draft && approvalMode === "full" && trustedModesAvailable && <button
+          type="button" disabled={Boolean(bot.busy)}
+          className="mt-3 text-[13px] text-accent hover:underline disabled:opacity-40"
+          onClick={() => { setAllThreads(true); setFullAccessTarget(bot.id); }}
+        >Apply Full access to all threads</button>}
+        {!draft && ownerOrAdmin === true && <button
+          type="button"
+          className="mt-3 block text-[13px] text-accent hover:underline"
+          onClick={() => setCommandAllowlistTarget({ botId: bot.id, botName: bot.name })}
+        >{t("commandAllowlist.manage")}</button>}
       </div>
 
-      <OutboundControl bot={bot} onChange={(outbound) => patch({ outbound })} />
-
-      {!(engine?.driverKind === "antigravityAgent" && approvalMode === "full") && <div className="rounded-xl bg-card p-4">
-        <div className="text-[15px] font-medium text-ink">Review routine approvals</div>
-        <div className="mt-0.5 text-[13px] text-ink-secondary">
-          {approvalMode === "custom"
-            ? "Custom follows your Codex config.toml and its approval prompts. Routine auto-review stays off in this mode."
-            : canAutoReview
-              ? "The same engine reviews ordinary approval cards. Existing safety rules, unattended turns, local-computer access, and questions still wait for you."
-              : "This engine cannot run an isolated review safely, so approval cards continue to wait for you."}
-        </div>
-        <div className="mt-3 flex gap-1 rounded-lg bg-inset p-0.5">
-          {(
-            [
-              ["off", "Off", "Every undecided approval waits for you."],
-              ["shadow", "Watch", "Record the review without answering the card."],
-              ["enforce", "On", "Answer only reviews that return a strict approval."],
-            ] as const
-          ).map(([value, label, hint]) => {
-            const current = approvalMode === "custom"
-              ? "off"
-              : bot.autoReview === "shadow" || bot.autoReview === "enforce"
-                ? bot.autoReview
-                : "off";
-            const disabled = value !== "off" && (approvalMode === "custom" || !canAutoReview);
-            return (
-              <button
-                key={value}
-                title={disabled
-                  ? approvalMode === "custom"
-                    ? "Custom approval behavior is controlled by config.toml"
-                    : "Not supported by this engine"
-                  : hint}
-                disabled={disabled}
-                onClick={() => patch({ autoReview: value })}
-                className={cn(
-                  "flex-1 rounded-md px-2.5 py-1.5 text-[13px] font-medium disabled:cursor-not-allowed disabled:opacity-40",
-                  current === value ? "bg-raised text-ink" : "text-ink-secondary hover:text-ink",
-                )}
-              >
-                {label}
-              </button>
-            );
-          })}
-        </div>
-      </div>}
-
+      {commandAllowlistTarget && <CommandAllowlistDialog
+        key={commandAllowlistTarget.botId}
+        {...commandAllowlistTarget}
+        onClose={() => setCommandAllowlistTarget(null)}
+      />}
+      {!draft && <OutboundControl key={bot.id} bot={bot} onChange={(outbound) => patch({ outbound })} />}
       <LocalComputerAutoWarning
         open={localAutoWarning !== null}
         onCancel={() => setLocalAutoWarning(null)}
@@ -189,12 +181,14 @@ export function PermissionsSection({
       />
       <FullAccessWarning
         open={fullAccessTarget !== null}
+        allThreads={allThreads}
+        onAllThreadsChange={draft ? undefined : setAllThreads}
         onCancel={() => setFullAccessTarget(null)}
         onConfirm={() => {
           const target = fullAccessTarget;
           setFullAccessTarget(null);
           if (!target) return;
-          dispatch({ type: "updateBot", botId: target, patch: { approvalMode: "full", confirmFullAccess: true } });
+          dispatch({ type: "updateBot", botId: target, patch: { approvalMode: "full", confirmFullAccess: true, applyToAllThreads: allThreads } });
         }}
       />
     </div>
@@ -253,6 +247,8 @@ function OutboundControl({ bot, onChange }: { bot: Bot; onChange: (policy: Outbo
           <button
             key={value}
             title={hint}
+            type="button"
+            aria-pressed={policy.policy === value}
             onClick={() => {
               if (value !== policy.policy) onChange({ policy: value, dailyCap: policy.dailyCap });
             }}
@@ -266,7 +262,7 @@ function OutboundControl({ bot, onChange }: { bot: Bot; onChange: (policy: Outbo
         ))}
       </div>
       {policy.policy === "allow" && (
-        <div className="mt-3 flex items-center gap-3 text-[13px] text-ink-secondary">
+        <div className="mt-3 flex flex-wrap items-center gap-3 text-[13px] text-ink-secondary">
           <label className="flex items-center gap-2">
             Up to
             <input
@@ -288,9 +284,6 @@ function OutboundControl({ bot, onChange }: { bot: Bot; onChange: (policy: Outbo
             {today === null ? "" : `${today} of ${policy.dailyCap} used today`}
           </span>
         </div>
-      )}
-      {policy.policy === "ask" && today !== null && today > 0 && (
-        <div className="mt-2 text-[12px] text-ink-secondary tabular-nums">{today} sent today with your approval.</div>
       )}
     </div>
   );

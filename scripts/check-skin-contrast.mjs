@@ -90,11 +90,16 @@ function contrast(fgHex, bgHex) {
 // Pairs taken from what the components render, not from what looks plausible:
 // body copy sits on all five surfaces, the filled accent/danger buttons carry
 // their own ink token, and the status colours are used as text on cards.
-const SURFACES = ["--color-app", "--color-panel", "--color-raised", "--color-raised-hover", "--color-card", "--color-inset"];
+const SURFACES = ["--color-app", "--color-panel", "--color-raised", "--color-raised-hover", "--color-card", "--color-inset", "--color-composer", "--color-menu"];
 const PAIRS = [
   ...SURFACES.map((s) => ["--color-ink", s, 4.5]),
   ...SURFACES.map((s) => ["--color-ink-secondary", s, 4.5]),
-  ["--color-ink", "--color-bubble-user", 4.5],
+  // Quiet text (timestamps, hints, placeholders) has its own token rather
+  // than an opacity on the secondary ink: `text-ink-secondary/70` measured
+  // 2.6:1 on Linen and was never checked here. It is body-size text, so it
+  // is held to the same 4.5:1 on the same surfaces.
+  ...SURFACES.map((s) => ["--color-ink-tertiary", s, 4.5]),
+  ["--color-bubble-user-ink", "--color-bubble-user", 4.5],
   ["--color-accent-ink", "--color-accent", 4.5],
   ["--color-danger-ink", "--color-danger", 4.5],
   ["--color-success-ink", "--color-success", 4.5],
@@ -115,6 +120,12 @@ const PAIRS = [
   ["--color-focus", "--color-app", 3],
   ["--color-focus", "--color-panel", 3],
   ["--color-focus", "--color-card", 3],
+  // A focused text field paints its own border in the ring colour (the
+  // browser outline is off for fields), so the ring also has to clear the
+  // fills the fields themselves use.
+  ["--color-focus", "--color-inset", 3],
+  ["--color-focus", "--color-raised", 3],
+  ["--color-focus", "--color-control", 3],
   // Surface against surface. Text contrast alone will not catch a skin that
   // gives two surfaces the same value: Atelier and Lagoon both defined
   // `raised` as the pure white they use for a card, so every chip, hover fill
@@ -189,6 +200,44 @@ for (const [id, tokens] of skins) {
     console.log(`    ${fg} on ${bg}: ${ratio.toFixed(2)}:1 (needs ${min}:1${baseline})`);
   }
   if (skinFailed) failed = true;
+}
+
+// The inverted bubbles (Daylight's ink-black, Meadow's green-black) have
+// their own inherited context: the editor, labels, quotes and file chips
+// explicitly use these tokens, not parent color.
+for (const skinId of ["daylight", "meadow"]) {
+  const scope = css.match(new RegExp(`@scope \\(\\[data-skin="${skinId}"\\]\\) to \\(\\[data-skin\\]\\)\\s*\\{\\s*\\.bg-bubble-user\\s*\\{([^}]*)\\}`))?.[1];
+  if (!scope) {
+    failed = true;
+    console.log(`✗ ${skinId} bubble — no @scope block for the inverted bubble`);
+    continue;
+  }
+  const bubble = { ...skins.get(skinId), ...declarations(scope) };
+  let bubbleFailed = false;
+  for (const [fg, bg] of [
+    ["--color-ink", "--color-bubble-user"],
+    ["--color-ink-secondary", "--color-bubble-user"],
+    ["--color-ink", "--color-raised"],
+    ["--color-ink-secondary", "--color-raised-hover"],
+    ["--color-ink-secondary", "--color-inset"],
+    ["--color-ink-tertiary", "--color-bubble-user"],
+    ["--color-ink-tertiary", "--color-raised-hover"],
+    ["--color-ink-tertiary", "--color-inset"],
+    ["--color-accent", "--color-inset"],
+    ["--color-accent-text", "--color-bubble-user"],
+    ["--color-ink", "--color-control"],
+    ["--color-accent-ink", "--color-accent"],
+    ["--color-danger-ink", "--color-danger"],
+    ["--color-success-ink", "--color-success"],
+  ]) {
+    const ratio = contrast(bubble[fg] ?? "", bubble[bg] ?? "");
+    if (ratio === null || ratio < 4.5) {
+      failed = true;
+      bubbleFailed = true;
+      console.log(`✗ ${skinId} bubble — ${fg} on ${bg}: ${ratio?.toFixed(2) ?? "unmeasurable"}:1 (needs 4.5:1)`);
+    }
+  }
+  if (!bubbleFailed) console.log(`✓ ${skinId} bubble — editor, controls and paired fills above 4.5:1`);
 }
 
 process.exit(failed ? 1 : 0);

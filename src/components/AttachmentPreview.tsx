@@ -31,6 +31,7 @@ import {
   type TranscriptImageAttachment,
 } from "@/lib/composer-attachments";
 import { cn } from "@/lib/cn";
+import { t } from "@/lib/i18n";
 
 export interface PreviewImage {
   src: string;
@@ -107,6 +108,7 @@ export function safeDownloadFilename(value: string | null | undefined): string {
   const basename = (value ?? "").split(/[\\/]/).at(-1) ?? "";
   const cleaned = basename
     .normalize("NFC")
+    // oxlint-disable-next-line no-control-regex -- strips control and bidi characters from a filename
     .replace(/[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/g, "")
     .replace(/[<>:"|?*]/g, "_")
     .trim()
@@ -205,6 +207,26 @@ function revokeObjectUrlLater(url: string): void {
   setTimeout(() => URL.revokeObjectURL(url), 0);
 }
 
+/** Downloads and explicit media previews share the message-scoped capability.
+ * Never request a transcript path directly, even when it looks like a URL. */
+export async function requestMessageFile(
+  filePath: string,
+  message: MessageAttachmentContext,
+  signal: AbortSignal,
+): Promise<Response> {
+  const response = await fetch(`/api/threads/${encodeURIComponent(message.threadId)}/messages/${encodeURIComponent(message.messageId)}/file`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ path: filePath }),
+    signal,
+  });
+  if (!response.ok) {
+    const body = await response.json().catch(() => null) as { error?: string } | null;
+    throw new Error(body?.error ?? t("attach.downloadFailed"));
+  }
+  return response;
+}
+
 /** Shared save state for transcript file chips and bot-authored file links. */
 export function useLocalFileSave(filePath: string, name?: string, message?: MessageAttachmentContext) {
   const [state, setState] = useState<"idle" | "saving" | "saved" | "failed">("idle");
@@ -236,7 +258,7 @@ export function useLocalFileSave(filePath: string, name?: string, message?: Mess
   const save = useCallback(async () => {
     if (saving.current) return;
     if (!message) {
-      setReason("This older file reference is no longer available to download");
+      setReason(t("attach.unavailableOld"));
       setState("failed");
       return;
     }
@@ -251,16 +273,7 @@ export function useLocalFileSave(filePath: string, name?: string, message?: Mess
     const controller = new AbortController();
     request.current = controller;
     try {
-      const response = await fetch(`/api/threads/${encodeURIComponent(message.threadId)}/messages/${encodeURIComponent(message.messageId)}/file`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ path: filePath }),
-        signal: controller.signal,
-      });
-      if (!response.ok) {
-        const body = await response.json().catch(() => null) as { error?: string } | null;
-        throw new Error(body?.error ?? "That file could not be downloaded");
-      }
+      const response = await requestMessageFile(filePath, message, controller.signal);
       const blob = await response.blob();
       if (!mounted.current || controller.signal.aborted) return;
       const url = URL.createObjectURL(blob);
@@ -294,7 +307,7 @@ export function useLocalFileSave(filePath: string, name?: string, message?: Mess
       }, 4000);
     } catch (error) {
       if (!mounted.current || controller.signal.aborted) return;
-      setReason(error instanceof Error ? error.message : "That file could not be saved");
+      setReason(error instanceof Error ? error.message : t("attach.saveFailed"));
       setState("failed");
     } finally {
       if (request.current === controller) {
@@ -397,7 +410,7 @@ export function AttachmentPreviewDialog({
         ref={dialogRef}
         role="dialog"
         aria-modal="true"
-        aria-label={`Preview ${current.name}`}
+        aria-label={t("attach.previewAria", { name: current.name })}
         tabIndex={-1}
         className="animate-pop-in flex h-full max-h-[900px] w-full max-w-[1200px] flex-col overflow-hidden rounded-2xl border border-white/15 bg-black/70 shadow-2xl outline-none"
       >
@@ -405,7 +418,9 @@ export function AttachmentPreviewDialog({
           <div className="min-w-0">
             <div className="truncate text-[13px] font-medium text-white">{current.name}</div>
             <div className="text-[10.5px] text-white/50">
-              {items.length > 1 ? `${index + 1} of ${items.length}` : "Image preview"}
+              {items.length > 1
+                ? t("attach.position", { index: index + 1, count: items.length })
+                : t("attach.imagePreview")}
             </div>
           </div>
           <div className="flex shrink-0 items-center gap-1">
@@ -417,8 +432,8 @@ export function AttachmentPreviewDialog({
                   source: current.downloadUrl,
                 })}
                 className="flex size-9 items-center justify-center rounded-lg text-white/65 hover:bg-white/10 hover:text-white"
-                aria-label={`Download ${current.name}`}
-                title="Download"
+                aria-label={t("attach.downloadAria", { name: current.name })}
+                title={t("attach.download")}
               >
                 <Download size={17} />
               </a>
@@ -429,8 +444,8 @@ export function AttachmentPreviewDialog({
                 target="_blank"
                 rel="noreferrer"
                 className="flex size-9 items-center justify-center rounded-lg text-white/65 hover:bg-white/10 hover:text-white"
-                aria-label={`Open original ${current.name}`}
-                title="Open original"
+                aria-label={t("attach.openOriginalAria", { name: current.name })}
+                title={t("attach.openOriginal")}
               >
                 <ExternalLink size={17} />
               </a>
@@ -438,7 +453,7 @@ export function AttachmentPreviewDialog({
             <button
               onClick={onClose}
               className="flex size-9 items-center justify-center rounded-lg text-white/65 hover:bg-white/10 hover:text-white"
-              aria-label="Close image preview"
+              aria-label={t("attach.close")}
             >
               <X size={19} />
             </button>
@@ -482,7 +497,7 @@ export function AttachmentPreviewDialog({
               <button
                 type="button"
                 onClick={() => navigate(-1)}
-                aria-label="Previous image"
+                aria-label={t("attach.previous")}
                 className="absolute left-2 top-1/2 flex size-10 -translate-y-1/2 items-center justify-center rounded-full bg-black/55 text-white/80 backdrop-blur-sm hover:bg-black/75 hover:text-white sm:left-4"
               >
                 <ChevronLeft size={21} />
@@ -490,7 +505,7 @@ export function AttachmentPreviewDialog({
               <button
                 type="button"
                 onClick={() => navigate(1)}
-                aria-label="Next image"
+                aria-label={t("attach.next")}
                 className="absolute right-2 top-1/2 flex size-10 -translate-y-1/2 items-center justify-center rounded-full bg-black/55 text-white/80 backdrop-blur-sm hover:bg-black/75 hover:text-white sm:right-4"
               >
                 <ChevronRight size={21} />
@@ -504,7 +519,7 @@ export function AttachmentPreviewDialog({
   );
 }
 
-function Thumbnail({
+export function AttachmentThumbnail({
   image,
   onPreview,
   className,
@@ -520,12 +535,18 @@ function Thumbnail({
   // then be put back into a permanent loading state.
   const [state, setState] = useState<"loading" | "ready" | "failed">("loading");
   const [attempt, setAttempt] = useState(0);
+  // Until the pixels are known the tile is 4:3; then it takes the picture's own
+  // shape (within sane bounds) so a wide image has no empty band beneath it.
+  const [ratio, setRatio] = useState<number | null>(null);
 
   return (
-    <span className={cn("group/image relative block aspect-[4/3] min-w-0 overflow-hidden rounded-xl border border-hairline/40 bg-inset", className)}>
+    <span
+      style={ratio ? { aspectRatio: String(ratio) } : undefined}
+      className={cn("group/image relative block aspect-[4/3] min-w-0 overflow-hidden rounded-xl border border-hairline/40 bg-inset", className)}
+    >
       {state === "loading" && (
         <span className="absolute inset-0 flex animate-pulse items-center justify-center bg-raised/65" role="status">
-          <LoaderCircle size={17} className="animate-spin text-ink-secondary/65" />
+          <LoaderCircle size={17} className="animate-spin text-ink-tertiary" />
           <span className="sr-only">Loading {image.name}</span>
         </span>
       )}
@@ -550,9 +571,9 @@ function Thumbnail({
               setAttempt((value) => value + 1);
             }}
             className="flex items-center gap-1 rounded-md border border-hairline/50 bg-panel px-2 py-1 text-[11px] text-ink hover:bg-raised"
-            aria-label={`Retry loading ${image.name}`}
+            aria-label={t("attach.retryAria", { name: image.name })}
           >
-            <RotateCcw size={11} /> Retry
+            <RotateCcw size={11} /> {t("chat.retry")}
           </span>
         </span>
       ) : (
@@ -572,8 +593,8 @@ function Thumbnail({
             }
           }}
           className="absolute inset-0 block size-full cursor-pointer text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent/60 aria-disabled:cursor-default"
-          aria-label={`Preview attached image ${image.name}`}
-          title={`Preview ${image.name}`}
+          aria-label={t("attach.previewImageAria", { name: image.name })}
+          title={t("attach.previewAria", { name: image.name })}
         >
           <img
             key={`${image.src}:${attempt}`}
@@ -581,7 +602,11 @@ function Thumbnail({
             alt={image.name}
             loading={eager ? "eager" : "lazy"}
             fetchPriority={eager ? "high" : undefined}
-            onLoad={() => setState("ready")}
+            onLoad={(event) => {
+              const { naturalWidth, naturalHeight } = event.currentTarget;
+              if (naturalWidth > 0 && naturalHeight > 0) setRatio(Math.min(Math.max(naturalWidth / naturalHeight, 0.6), 2.4));
+              setState("ready");
+            }}
             onError={() => setState("failed")}
             className={cn(
               "block size-full object-cover transition duration-200 group-hover/image:scale-[1.015]",
@@ -619,7 +644,7 @@ export function AttachedImageGallery({
     <>
       <div className={cn("mb-2 grid max-w-full gap-2", imageGalleryLayout(images.length), className)}>
         {images.map((image, index) => (
-          <Thumbnail key={`${image.src}:${index}`} image={image} onPreview={() => setSelectedIndex(index)} eager={eager} />
+          <AttachmentThumbnail key={`${image.src}:${index}`} image={image} onPreview={() => setSelectedIndex(index)} eager={eager} />
         ))}
       </div>
       {selectedIndex !== null && images[selectedIndex] && (
@@ -707,18 +732,18 @@ export function MarkdownImagePreview({
         {external && !externalAllowed ? (
           <span className="flex aspect-[4/3] max-h-96 flex-col items-center justify-center gap-2 rounded-xl border border-hairline/40 bg-inset px-4 text-center text-[12px] text-ink-secondary">
             <ImageOff size={20} />
-            <span>External image hidden for privacy</span>
-            <button type="button" className="rounded-md border border-hairline/50 bg-panel px-2.5 py-1 text-ink hover:bg-raised" onClick={(event) => { event.preventDefault(); event.stopPropagation(); setApprovedExternalSource(src); }}>Load image</button>
+            <span>{t("attach.externalHidden")}</span>
+            <button type="button" className="rounded-md border border-hairline/50 bg-panel px-2.5 py-1 text-ink hover:bg-raised" onClick={(event) => { event.preventDefault(); event.stopPropagation(); setApprovedExternalSource(src); }}>{t("attach.loadImage")}</button>
           </span>
         ) : filePath && (!threadId || !messageId || localSourceOffset === null) ? (
           <span className="flex aspect-[4/3] max-h-96 items-center justify-center gap-2 rounded-xl border border-hairline/40 bg-inset text-[12px] text-ink-secondary" role="alert">
-            <ImageOff size={17} /> This older image reference is no longer available
+            <ImageOff size={17} /> {t("attach.oldImage")}
           </span>
         ) : visibleSource ? (
-          <Thumbnail key={image.src} image={image} onPreview={() => setOpen(true)} className="max-h-96" eager />
+          <AttachmentThumbnail key={image.src} image={image} onPreview={() => setOpen(true)} className="max-h-96" eager />
         ) : (
           <span className="flex aspect-[4/3] max-h-96 animate-pulse items-center justify-center rounded-xl border border-hairline/40 bg-inset" role="status">
-            <LoaderCircle size={17} className="animate-spin text-ink-secondary/65" />
+            <LoaderCircle size={17} className="animate-spin text-ink-tertiary" />
             <span className="sr-only">Loading {name}</span>
           </span>
         )}
@@ -733,29 +758,39 @@ export function MarkdownImagePreview({
   );
 }
 
-function AttachedFileChip({ file, message }: { file: TranscriptFileAttachment; message?: MessageAttachmentContext }) {
+export function AttachedFileChip({ file, message, linked = false, className }: {
+  file: TranscriptFileAttachment;
+  message?: MessageAttachmentContext;
+  /** A rendered bot-authored Markdown link, still checked by the server on click. */
+  linked?: boolean;
+  className?: string;
+}) {
   const save = useLocalFileSave(file.path, file.name, message);
   const failed = save.state === "failed";
-  if (!message || !file.private) {
+  if (!message || (!file.private && !linked)) {
     return (
-      <div title={`${file.name} — unavailable legacy attachment`} className="flex max-w-[280px] items-center gap-2 overflow-hidden rounded-lg border border-hairline/40 bg-inset/70 px-2.5 py-2 text-[12px] text-ink-secondary">
+      <div title={t("attach.legacyFile", { name: file.name })} className={cn("flex max-w-[280px] items-center gap-2 overflow-hidden rounded-lg border border-hairline/40 bg-inset/70 px-2.5 py-2 text-[12px] text-ink-secondary", className)}>
         <FileText size={14} className="shrink-0" aria-hidden="true" />
         <span className="min-w-0 flex-1 truncate text-ink">{file.name}</span>
-        <span className="text-[10.5px]">Unavailable</span>
+        <span className="text-[10.5px]">{t("attach.unavailable")}</span>
       </div>
     );
   }
   return (
     <div
-      title={save.state === "saved" && save.savedTo ? `Saved to ${save.savedTo}` : file.name}
-      className="max-w-[280px] overflow-hidden rounded-lg border border-hairline/40 bg-inset/70 text-[12px] text-ink-secondary"
+      title={save.state === "saved" && save.savedTo ? t("attach.savedTo", { path: save.savedTo }) : file.name}
+      className={cn("max-w-[280px] overflow-hidden rounded-lg border border-hairline/40 bg-inset/70 text-[12px] text-ink-secondary", className)}
     >
       <button
         type="button"
         onClick={() => void save.save()}
         disabled={save.state === "saving"}
-        aria-label={`${failed ? "Retry saving" : "Save a copy of"} ${file.name}`}
-        className="flex w-full items-center gap-2 px-2.5 py-2 text-left hover:bg-raised/70 disabled:cursor-wait"
+        aria-label={
+          failed
+            ? t("attach.retrySaveAria", { name: file.name })
+            : t("attach.saveAria", { name: file.name })
+        }
+        className="flex min-h-10 w-full items-center gap-2 px-2.5 py-2 text-left transition-colors hover:bg-raised/70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent/60 disabled:cursor-wait disabled:hover:bg-transparent"
       >
         <FileText size={14} className="shrink-0" aria-hidden="true" />
         <span className="min-w-0 flex-1 truncate text-ink">{file.name}</span>
@@ -777,7 +812,11 @@ function AttachedFileChip({ file, message }: { file: TranscriptFileAttachment; m
             failed ? "text-danger" : save.state === "saved" ? "text-success" : "text-ink-secondary",
           )}
         >
-          {save.state === "saving" ? "Downloading…" : save.state === "saved" ? "Downloaded" : save.reason}
+          {save.state === "saving"
+            ? t("attach.downloading")
+            : save.state === "saved"
+              ? t("attach.downloaded")
+              : save.reason}
         </div>
       )}
     </div>

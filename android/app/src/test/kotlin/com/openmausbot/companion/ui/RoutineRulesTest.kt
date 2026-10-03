@@ -36,6 +36,17 @@ class RoutineRulesTest {
     private val en = Locale.US
 
     @Test
+    fun `routine copy distinguishes fresh context from the shared results thread`() {
+        assertEquals("Routine = scheduled work with one results thread", RoutineRules.HEADER_ROUTINE)
+        for (footer in listOf(RoutineRules.SCHEDULE_FOOTER, RoutineRules.INTERVAL_SCHEDULE_FOOTER)) {
+            assertTrue(footer.contains("fresh context"))
+            assertTrue(footer.contains("Results collect in one thread"))
+            assertTrue(footer.contains("full run logs remain available"))
+        }
+        assertTrue(RoutineRules.INTERVAL_SCHEDULE_FOOTER.contains("skipped instead of queued"))
+    }
+
+    @Test
     fun `routines sort by next run, and one with none sorts last`() {
         val soon = routine(id = "soon", nextRunAt = 1_000.0)
         val later = routine(id = "later", nextRunAt = 9_000.0)
@@ -309,7 +320,7 @@ class RoutineRulesTest {
                 configured,
                 listOf(instance(driverKind = "boxAgent", state = "unavailable")),
             ).cloudReady,
-            "a Box agent that is not available is not a Cloud VM to run on",
+            "a Boat agent that is not available is not a Cloud VM to run on",
         )
     }
 

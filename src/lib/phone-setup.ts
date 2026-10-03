@@ -1,4 +1,5 @@
 import type { CompanionAccountState } from "../types/ogb";
+import { t } from "./i18n";
 import type { CompanionEndpoint, CompanionPairingRouteMode } from "./companion-pairing";
 
 export type PhoneSetupPhase = "intro" | "sign-in" | "verifying" | "qr" | "success";
@@ -426,6 +427,7 @@ const PUBLIC_ACCOUNT_MESSAGES = [
   /^This account has reached its computer limit\./,
   /^This computer is already connected\./,
   /^The secure connection (?:is still being prepared|service could not finish setup|is still being removed)\./,
+  /^Secure HTTPS links are temporarily full\./,
   /^Secure access is not available right now\./,
   /^The secure connection service (?:had a problem|returned an unexpected response)\./,
   /^The secure connection request could not be completed\./,
@@ -446,5 +448,5 @@ export function normalizePhoneSetupActionError(cause: unknown, fallback: string)
     && PUBLIC_ACCOUNT_MESSAGES.some((pattern) => pattern.test(message))
     ? message
     : fallback;
-  return reference ? `${publicMessage} Reference: ${reference}.` : publicMessage;
+  return reference ? t("phone.error.reference", { message: publicMessage, reference }) : publicMessage;
 }

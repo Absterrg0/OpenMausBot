@@ -7,6 +7,8 @@ import {
   useRef,
   useState,
 } from "react";
+import { t } from "@/lib/i18n";
+import { PhonePreview } from "@/components/onboarding/PhonePreview";
 import {
   ArrowLeft,
   Check,
@@ -96,10 +98,10 @@ export type CompanionBridge = {
 
 type AccountBridge = NonNullable<NonNullable<Window["ogb"]>["companionAccount"]>;
 type StateBridge<T> = { state: () => Promise<T> };
-const DIRECT_PAIRING_UNAVAILABLE =
-  "Direct Wi-Fi pairing isn’t available on this computer right now. Connect this computer to Wi-Fi, then try again.";
-const PROTECTED_PAIRING_UNAVAILABLE =
-  "The HTTPS pairing route became unavailable. Check secure access, then create a new code.";
+// functions, not constants: a message resolved at import time would keep the
+// language the app booted in
+const directPairingUnavailable = () => t("phone.error.directUnavailable");
+const protectedPairingUnavailable = () => t("phone.error.protectedUnavailable");
 
 interface OwnedCompanionPairingRoutePin extends CompanionPairingRoutePin {
   generation: number;
@@ -311,7 +313,7 @@ export function usePhoneSetupController(profileEmail = ""): PhoneSetupController
       if (mounted.current) setError(
         normalizePhoneSetupActionError(
           cause,
-          "Remote access could not be updated. Open Advanced & troubleshooting and try again.",
+          t("phone.error.remoteUpdate"),
         ),
       );
     } finally {
@@ -336,7 +338,7 @@ export function usePhoneSetupController(profileEmail = ""): PhoneSetupController
       } catch (cause) {
         if (mounted.current) setAccountError(normalizePhoneSetupActionError(
           cause,
-          "Secure remote access could not be updated. Try again.",
+          t("phone.error.secureUpdate"),
         ));
       } finally {
         if (mounted.current) setAccountBusy(false);
@@ -362,7 +364,7 @@ export function usePhoneSetupController(profileEmail = ""): PhoneSetupController
       const companion = companionBridge();
       if (!companion) {
         if (mounted.current && setupGeneration.current === generation) {
-          setError("Remote access setup is only available in the desktop app.");
+          setError(t("phone.error.desktopOnly"));
         }
         finishAttempt();
         return;
@@ -414,8 +416,8 @@ export function usePhoneSetupController(profileEmail = ""): PhoneSetupController
         if (explicitRoute && !companionPairingRoute(started, routeMode)) {
           setProvisioning(false);
           setError(routeMode === "tailscale"
-            ? "Tailscale pairing isn’t available right now. Make sure Tailscale is connected and MagicDNS is on."
-            : DIRECT_PAIRING_UNAVAILABLE);
+            ? t("phone.error.tailscaleUnavailable")
+            : directPairingUnavailable());
           dispatchFlow({ type: "reset" });
           return;
         }
@@ -458,10 +460,10 @@ export function usePhoneSetupController(profileEmail = ""): PhoneSetupController
           setState({ ...paired, pairing: null });
           setProvisioning(false);
           setError(pairingFailure ?? (routeMode === "local"
-            ? DIRECT_PAIRING_UNAVAILABLE
+            ? directPairingUnavailable()
             : routeMode === "tailscale"
-              ? "Tailscale pairing isn’t available right now. Make sure Tailscale is connected and MagicDNS is on."
-              : PROTECTED_PAIRING_UNAVAILABLE));
+              ? t("phone.error.tailscaleUnavailable")
+              : protectedPairingUnavailable()));
           dispatchFlow({ type: "reset" });
           return;
         }
@@ -483,7 +485,7 @@ export function usePhoneSetupController(profileEmail = ""): PhoneSetupController
         setProvisioning(false);
         setError(normalizePhoneSetupActionError(
           cause,
-          "Device pairing could not be prepared. Open Advanced & troubleshooting and try again.",
+          t("phone.error.pairingPrepare"),
         ));
         dispatchFlow({ type: "reset" });
       } finally {
@@ -576,7 +578,7 @@ export function usePhoneSetupController(profileEmail = ""): PhoneSetupController
       .catch((cause: unknown) => {
         if (!mounted.current || setupGeneration.current !== generation) return;
         setAccountError(
-          normalizePhoneSetupActionError(cause, "We could not send the code. Try again."),
+          normalizePhoneSetupActionError(cause, t("phone.error.sendCode")),
         );
       })
       .finally(() => {
@@ -608,7 +610,7 @@ export function usePhoneSetupController(profileEmail = ""): PhoneSetupController
         if (!mounted.current || setupGeneration.current !== generation) return;
         setProvisioning(false);
         setAccountError(
-          normalizePhoneSetupActionError(cause, "That code could not be verified. Try again."),
+          normalizePhoneSetupActionError(cause, t("phone.error.verifyCode")),
         );
       })
       .finally(() => {
@@ -643,7 +645,7 @@ export function usePhoneSetupController(profileEmail = ""): PhoneSetupController
         if (!mounted.current || setupGeneration.current !== generation) return;
         setProvisioning(false);
         setAccountError(
-          normalizePhoneSetupActionError(cause, "Secure access could not be restored. Try again."),
+          normalizePhoneSetupActionError(cause, t("phone.error.restore")),
         );
       })
       .finally(() => {
@@ -715,8 +717,8 @@ export function usePhoneSetupController(profileEmail = ""): PhoneSetupController
     setProvisioning(false);
     setSetupTimedOut(false);
     setError(tokenMatches
-      ? PROTECTED_PAIRING_UNAVAILABLE
-      : "The pairing code changed before setup finished. Create a new code and try again.");
+      ? protectedPairingUnavailable()
+      : t("phone.error.codeChanged"));
     dispatchFlow({ type: "reset" });
 
     if (tokenMatches && companion) {
@@ -895,9 +897,9 @@ export function usePhoneSetupController(profileEmail = ""): PhoneSetupController
 
 function ValuePoints() {
   const points: Array<{ Icon: typeof Smartphone; title: string; detail: string }> = [
-    { Icon: Smartphone, title: "Your conversations", detail: "Read and reply from another device." },
-    { Icon: Check, title: "Quick approvals", detail: "Keep work moving when you step away." },
-    { Icon: ShieldCheck, title: "Private by default", detail: "Only devices you approve can connect." },
+    { Icon: Smartphone, title: t("phone.value.chats"), detail: t("phone.value.chatsDetail") },
+    { Icon: Check, title: t("phone.value.approvals"), detail: t("phone.value.approvalsDetail") },
+    { Icon: ShieldCheck, title: t("phone.value.private"), detail: t("phone.value.privateDetail") },
   ];
   return (
     <div className="mt-5 grid w-full gap-2 sm:grid-cols-3">
@@ -917,38 +919,96 @@ export function PhoneSetupFlowView({
   variant,
   onSkip,
   onComplete,
+  compactHeader = false,
 }: {
   controller: PhoneSetupController;
   variant: "settings" | "onboarding";
   onSkip?: () => void;
   onComplete?: () => void;
+  /** The host already shows a title for this step (the welcome tour does),
+   * so the intro drops its own icon and heading and keeps the detail. */
+  compactHeader?: boolean;
 }) {
   const c = controller;
   const actionError = companionAccountActionError(c.account, c.accountError);
   const canSubmitEmail = /^\S+@\S+\.\S+$/.test(c.email.trim());
   const manualCodeMode = phonePairingManualCodeMode(Boolean(c.state?.pairing), c.pairingLink);
 
-  if (c.phase === "intro") {
+  if (c.phase === "intro" && compactHeader) {
+    const points: Array<{ Icon: typeof Smartphone; title: string; detail: string }> = [
+      { Icon: Smartphone, title: t("phone.value.chats"), detail: t("phone.value.chatsDetail") },
+      { Icon: Check, title: t("phone.value.approvals"), detail: t("phone.value.approvalsDetail") },
+      { Icon: ShieldCheck, title: t("phone.value.private"), detail: t("phone.value.privateDetail") },
+    ];
     return (
-      <div className="flex flex-col items-center text-center">
-        <div className="flex size-14 items-center justify-center rounded-2xl bg-accent/12 text-accent">
-          <Smartphone size={26} />
+      <div className="flex flex-col">
+        <p className="mt-1 text-[13.5px] leading-relaxed text-ink-secondary">{t("phone.intro.detail")}</p>
+        <div className="mt-4 grid grid-cols-[200px_1fr] items-center gap-6">
+          <PhonePreview />
+          <ul className="flex flex-col gap-3.5">
+            {points.map(({ Icon, title, detail }) => (
+              <li key={title} className="flex items-start gap-3">
+                <span className="mt-0.5 flex size-7 shrink-0 items-center justify-center rounded-lg bg-accent/12 text-accent">
+                  <Icon size={14} />
+                </span>
+                <span>
+                  <span className="block text-[13.5px] font-medium text-ink">{title}</span>
+                  <span className="block text-[12px] leading-relaxed text-ink-secondary">{detail}</span>
+                </span>
+              </li>
+            ))}
+          </ul>
         </div>
-        <h2 className="mt-4 text-[19px] font-semibold text-ink">Use {brand().name} from another device</h2>
-        <p className="mt-1.5 max-w-[460px] text-[13.5px] leading-relaxed text-ink-secondary">
-          Check chats, answer approvals, and send new work from a phone or another computer.
-        </p>
-        <ValuePoints />
         <button
           onClick={c.start}
           disabled={!c.state || c.busy || c.accountBusy}
-          className="mt-5 w-full max-w-[320px] rounded-lg bg-accent py-2.5 text-[14px] font-medium text-white hover:opacity-90 disabled:cursor-wait disabled:opacity-40"
+          className="mt-5 w-full rounded-lg bg-accent py-2.5 text-[14px] font-medium text-white hover:opacity-90 disabled:cursor-wait disabled:opacity-40"
+        >
+          {t("phone.intro.setUp")}
+        </button>
+        {c.error && <p role="alert" className="mt-3 text-[12.5px] text-danger">{c.error}</p>}
+        <button
+          onClick={() => {
+            c.skip();
+            onSkip?.();
+          }}
+          className="mt-3 self-center text-[12.5px] text-ink-secondary hover:text-ink"
+        >
+          {t("phone.intro.notNow")}
+        </button>
+        <p className="mt-1.5 self-center text-[11.5px] text-ink-secondary">{t("phone.intro.resume")}</p>
+      </div>
+    );
+  }
+
+  if (c.phase === "intro") {
+    return (
+      <div className={compactHeader ? "flex flex-col items-start" : "flex flex-col items-center text-center"}>
+        {!compactHeader && (
+          <>
+            <div className="flex size-14 items-center justify-center rounded-2xl bg-accent/12 text-accent">
+              <Smartphone size={26} />
+            </div>
+            <h2 className="mt-4 text-[19px] font-semibold text-ink">{t("phone.intro.title", { app: brand().name })}</h2>
+          </>
+        )}
+        <p className={compactHeader ? "mt-1 text-[13.5px] leading-relaxed text-ink-secondary" : "mt-1.5 max-w-[460px] text-[13.5px] leading-relaxed text-ink-secondary"}>
+          {t("phone.intro.detail")}
+        </p>
+        <ValuePoints />
+        <button
+          data-phone-pairing-action
+          onClick={c.start}
+          disabled={!c.state || c.busy || c.accountBusy}
+          className={compactHeader
+            ? "mt-5 w-full rounded-lg bg-accent py-2.5 text-[14px] font-medium text-white hover:opacity-90 disabled:cursor-wait disabled:opacity-40"
+            : "mt-5 w-full max-w-[320px] rounded-lg bg-accent py-2.5 text-[14px] font-medium text-white hover:opacity-90 disabled:cursor-wait disabled:opacity-40"}
         >
           {variant === "settings"
             ? c.state?.devices.length
-              ? "Pair another device"
-              : "Pair a device"
-            : "Set up another device"}
+              ? t("phone.intro.pairAnother")
+              : t("phone.intro.pair")
+            : t("phone.intro.setUp")}
         </button>
         {c.error && <p role="alert" className="mt-3 max-w-[390px] text-[12.5px] text-danger">{c.error}</p>}
         {variant === "onboarding" && (
@@ -958,12 +1018,12 @@ export function PhoneSetupFlowView({
                 c.skip();
                 onSkip?.();
               }}
-              className="mt-2.5 text-[12.5px] text-ink-secondary hover:text-ink"
+              className={compactHeader ? "mt-3 self-center text-[12.5px] text-ink-secondary hover:text-ink" : "mt-2.5 text-[12.5px] text-ink-secondary hover:text-ink"}
             >
-              Not now
+              {t("phone.intro.notNow")}
             </button>
-            <p className="mt-2 text-[11.5px] text-ink-secondary">
-              You can resume anytime from Settings → Remote access.
+            <p className={compactHeader ? "mt-2 self-center text-[11.5px] text-ink-secondary" : "mt-2 text-[11.5px] text-ink-secondary"}>
+              {t("phone.intro.resume")}
             </p>
           </>
         )}
@@ -977,31 +1037,31 @@ export function PhoneSetupFlowView({
     return (
       <div className="mx-auto flex w-full max-w-[430px] flex-col">
         <button onClick={c.cancel} className="mb-4 flex w-fit items-center gap-1.5 text-[12px] text-ink-secondary hover:text-ink">
-          <ArrowLeft size={13} /> Back
+          <ArrowLeft size={13} /> {t("phone.back")}
         </button>
         <div className="flex size-11 items-center justify-center rounded-xl bg-accent/12 text-accent">
           <Mail size={20} />
         </div>
         <h2 className="mt-3 text-[18px] font-semibold text-ink">
-          {unavailable || failed ? "Secure access needs attention" : "Sign in to pair securely"}
+          {unavailable || failed ? t("phone.signIn.attention") : t("phone.signIn.title")}
         </h2>
         <p
           role={c.setupTimedOut ? "alert" : undefined}
           className="mt-1 text-[13px] leading-relaxed text-ink-secondary"
         >
           {unavailable
-            ? "Online remote access is not available right now. You can still pair directly on the same Wi-Fi."
+            ? t("phone.signIn.unavailable")
             : c.setupTimedOut
-              ? "Secure access is taking longer than expected. You can try again or pair directly on this Wi-Fi."
+              ? t("phone.signIn.timedOut")
             : failed
-              ? c.account?.message ?? "We could not finish creating your private connection."
-              : "We’ll email you a one-time code. No password needed."}
+              ? c.account?.message ?? t("phone.signIn.failed")
+              : t("phone.signIn.emailPrompt")}
         </p>
 
         {!unavailable && !failed && (
           <div className="mt-5 flex flex-col gap-3">
             <label className="flex flex-col gap-1.5">
-              <span className="text-[12px] font-medium text-ink-secondary">Email</span>
+              <span className="text-[12px] font-medium text-ink-secondary">{t("phone.signIn.email")}</span>
               <input
                 autoFocus
                 autoComplete="email"
@@ -1013,12 +1073,12 @@ export function PhoneSetupFlowView({
                   if (event.key === "Enter" && !c.codeSent && canSubmitEmail) c.requestCode();
                 }}
                 placeholder="you@example.com"
-                className="rounded-lg border border-hairline/50 bg-inset px-3 py-2.5 text-[14px] text-ink outline-none placeholder:text-ink-secondary/60 focus:border-accent disabled:opacity-50"
+                className="rounded-lg border border-hairline/50 bg-inset px-3 py-2.5 text-[14px] text-ink outline-none placeholder:text-ink-tertiary focus:border-accent disabled:opacity-50"
               />
             </label>
             {c.codeSent && (
               <label className="flex flex-col gap-1.5">
-                <span className="text-[12px] font-medium text-ink-secondary">8-digit code</span>
+                <span className="text-[12px] font-medium text-ink-secondary">{t("phone.signIn.code")}</span>
                 <input
                   autoFocus
                   autoComplete="one-time-code"
@@ -1030,7 +1090,7 @@ export function PhoneSetupFlowView({
                     if (event.key === "Enter" && c.code.length === 8) c.verifyCode();
                   }}
                   placeholder="12345678"
-                  className="rounded-lg border border-hairline/50 bg-inset px-3 py-2.5 font-mono text-[16px] tracking-[0.18em] text-ink outline-none placeholder:tracking-normal placeholder:text-ink-secondary/60 focus:border-accent disabled:opacity-50"
+                  className="rounded-lg border border-hairline/50 bg-inset px-3 py-2.5 font-mono text-[16px] tracking-[0.18em] text-ink outline-none placeholder:tracking-normal placeholder:text-ink-tertiary focus:border-accent disabled:opacity-50"
                 />
               </label>
             )}
@@ -1039,7 +1099,7 @@ export function PhoneSetupFlowView({
               onClick={c.codeSent ? c.verifyCode : c.requestCode}
               className="rounded-lg bg-accent py-2.5 text-[14px] font-medium text-white hover:opacity-90 disabled:opacity-40"
             >
-              {c.accountBusy ? "Working…" : c.codeSent ? "Verify and continue" : "Email me a code"}
+              {c.accountBusy ? t("phone.signIn.working") : c.codeSent ? t("phone.signIn.verify") : t("phone.signIn.sendCode")}
             </button>
             {c.codeSent && (
               <button
@@ -1047,11 +1107,11 @@ export function PhoneSetupFlowView({
                 onClick={c.changeEmail}
                 className="text-[12px] text-ink-secondary hover:text-ink disabled:opacity-40"
               >
-                Use another email
+                {t("phone.signIn.otherEmail")}
               </button>
             )}
             {c.codeSent && !actionError && (
-              <p className="text-[11.5px] text-ink-secondary">The code expires in 10 minutes.</p>
+              <p className="text-[11.5px] text-ink-secondary">{t("phone.signIn.expires")}</p>
             )}
           </div>
         )}
@@ -1062,12 +1122,12 @@ export function PhoneSetupFlowView({
             onClick={c.retryAccount}
             className="mt-5 rounded-lg bg-accent py-2.5 text-[14px] font-medium text-white disabled:opacity-40"
           >
-            {c.accountBusy ? "Trying again…" : "Try secure access again"}
+            {c.accountBusy ? t("remote.account.retrying") : t("phone.signIn.retry")}
           </button>
         )}
         {actionError && <p role="alert" className="mt-3 text-[12.5px] text-danger">{actionError}</p>}
         <div className="my-4 flex items-center gap-3 text-[11px] text-ink-secondary">
-          <span className="h-px flex-1 bg-hairline/40" /> or <span className="h-px flex-1 bg-hairline/40" />
+          <span className="h-px flex-1 bg-hairline/40" /> {t("phone.signIn.or")} <span className="h-px flex-1 bg-hairline/40" />
         </div>
         {variant === "onboarding" && c.tailscaleAvailable && (
           <>
@@ -1076,10 +1136,10 @@ export function PhoneSetupFlowView({
               onClick={c.useTailscale}
               className="flex items-center justify-center gap-2 rounded-lg border border-hairline/50 py-2.5 text-[13px] text-ink hover:bg-control disabled:opacity-40"
             >
-              <ShieldCheck size={15} /> Pair over Tailscale
+              <ShieldCheck size={15} /> {t("remote.pairOverTailscale")}
             </button>
             <p className="mt-2 text-center text-[11px] leading-relaxed text-ink-secondary">
-              The other device must be signed in to the same tailnet.
+              {t("phone.signIn.tailnetNote")}
             </p>
           </>
         )}
@@ -1088,10 +1148,10 @@ export function PhoneSetupFlowView({
           onClick={c.useLocal}
           className={`${variant === "onboarding" && c.tailscaleAvailable ? "mt-3" : ""} flex items-center justify-center gap-2 rounded-lg border border-hairline/50 py-2.5 text-[13px] text-ink hover:bg-control disabled:opacity-40`}
         >
-          <Wifi size={15} /> Pair on this Wi-Fi instead
+          <Wifi size={15} /> {t("phone.signIn.wifiInstead")}
         </button>
         <p className="mt-2 text-center text-[11px] leading-relaxed text-ink-secondary">
-          Both devices must be on a network that lets them see each other.
+          {t("phone.signIn.wifiNote")}
         </p>
       </div>
     );
@@ -1105,22 +1165,22 @@ export function PhoneSetupFlowView({
         </div>
         <h2 className="mt-4 text-[18px] font-semibold text-ink">
           {c.localFallback
-            ? "Preparing your pairing code"
+            ? t("phone.verifying.local")
             : c.tailscaleFallback
-              ? "Preparing Tailscale pairing"
-              : "Creating secure remote access"}
+              ? t("phone.verifying.tailscale")
+              : t("phone.verifying.secure")}
         </h2>
         <p className="mt-1.5 max-w-[360px] text-[13px] leading-relaxed text-ink-secondary">
           {c.localFallback
-            ? "This should only take a moment."
+            ? t("phone.verifying.localDetail")
             : c.tailscaleFallback
-              ? "Your pairing code will use your private tailnet connection."
-            : "We’re giving this computer a private connection that works even when the paired device is away from this Wi-Fi."}
+              ? t("phone.verifying.tailscaleDetail")
+            : t("phone.verifying.secureDetail")}
         </p>
         {(c.error || c.accountError) && (
           <p role="alert" className="mt-3 max-w-[380px] text-[12.5px] text-danger">{c.error ?? c.accountError}</p>
         )}
-        <button onClick={c.cancel} className="mt-5 text-[12px] text-ink-secondary hover:text-ink">Cancel</button>
+        <button onClick={c.cancel} className="mt-5 text-[12px] text-ink-secondary hover:text-ink">{t("common.cancel")}</button>
       </div>
     );
   }
@@ -1131,9 +1191,9 @@ export function PhoneSetupFlowView({
         <div className="flex size-14 items-center justify-center rounded-full bg-success/15 text-success">
           <Check size={28} />
         </div>
-        <h2 className="mt-4 text-[19px] font-semibold text-ink">Your device is ready</h2>
+        <h2 className="mt-4 text-[19px] font-semibold text-ink">{t("phone.success.title")}</h2>
         <p className="mt-1.5 text-[13px] text-ink-secondary">
-          It can now open chats, answer approvals, and send new work.
+          {t("phone.success.detail")}
         </p>
         <button
           onClick={() => {
@@ -1142,7 +1202,7 @@ export function PhoneSetupFlowView({
           }}
           className="mt-5 w-full max-w-[280px] rounded-lg bg-accent py-2.5 text-[14px] font-medium text-white"
         >
-          {variant === "onboarding" ? `Start using ${brand().name}` : "Done"}
+          {variant === "onboarding" ? t("phone.success.start", { app: brand().name }) : t("phone.success.done")}
         </button>
       </div>
     );
@@ -1154,49 +1214,47 @@ export function PhoneSetupFlowView({
         <QrCode size={23} />
       </div>
       <h2 className="mt-3 text-[18px] font-semibold text-ink">
-        {c.pairingExpired ? "That code expired" : "Scan or enter the code"}
+        {c.pairingExpired ? t("phone.code.expired") : t("phone.code.title")}
       </h2>
       <p className="mt-1 text-[13px] text-ink-secondary">
-        {c.pairingExpired
-          ? "Create a fresh code when the other device is ready."
-          : "Scan this code in OpenMaus on iPhone, or enter the address and code from pairing details in another desktop app."}
+        {c.pairingExpired ? t("phone.code.expiredDetail") : t("phone.code.detail")}
       </p>
       {!c.pairingExpired && c.pairingLink && (
-        <div className="mt-4 rounded-2xl bg-white p-3.5" aria-label="Device pairing QR code">
+        <div className="mt-4 rounded-2xl bg-white p-3.5" aria-label={t("phone.code.qrAria")}>
           <QRCodeSVG value={c.pairingLink} size={180} level="M" bgColor="#ffffff" fgColor="#111111" />
         </div>
       )}
       {!c.pairingExpired && manualCodeMode === "direct" && c.state?.pairing && (
         <div className="mt-4 w-full max-w-[320px] rounded-xl bg-inset px-4 py-3 text-[12.5px] text-ink-secondary">
-          <div>Open OpenMausMobile and enter this manual code.</div>
+          <div>{t("phone.code.manualIntro")}</div>
           <div className="mt-2 font-mono text-[22px] tracking-[0.25em] text-ink">
             {c.state.pairing.code}
           </div>
         </div>
       )}
       {!c.pairingExpired && manualCodeMode === "details" && c.state?.pairing && (
-        <p className="mt-3 text-[11.5px] text-ink-secondary">Code expires in {c.secondsLeft}s</p>
+        <p className="mt-3 text-[11.5px] text-ink-secondary">{t("phone.code.expiresIn", { seconds: c.secondsLeft })}</p>
       )}
       {c.pairingExpired && (
         <button onClick={c.refreshCode} className="mt-5 rounded-lg bg-accent px-5 py-2.5 text-[14px] font-medium text-white">
-          Create a new code
+          {t("phone.code.createNew")}
         </button>
       )}
       {!c.pairingExpired && c.state?.pairing && (
         <details className="mt-4 w-full max-w-[390px] rounded-lg border border-hairline/40 px-3 py-2 text-left">
-          <summary className="cursor-pointer text-[12px] text-ink-secondary">Having trouble?</summary>
+          <summary className="cursor-pointer text-[12px] text-ink-secondary">{t("phone.code.trouble")}</summary>
           <div className="mt-3 text-[12px] text-ink-secondary">
-            Manual code
+            {t("phone.code.manual")}
             <div className="mt-1 font-mono text-[22px] tracking-[0.25em] text-ink">{c.state.pairing.code}</div>
             {c.address && (
               <div className="mt-3">
-                <ConnectionDetail label="Pairing address" value={`${c.address}:${c.pairingPort}`} />
+                <ConnectionDetail label={t("phone.code.address")} value={`${c.address}:${c.pairingPort}`} />
               </div>
             )}
           </div>
         </details>
       )}
-      <button onClick={c.cancel} className="mt-4 text-[12px] text-ink-secondary hover:text-ink">Cancel</button>
+      <button onClick={c.cancel} className="mt-4 text-[12px] text-ink-secondary hover:text-ink">{t("common.cancel")}</button>
     </div>
   );
 }
@@ -1206,11 +1264,13 @@ export function PhoneSetupFlow({
   variant,
   onSkip,
   onComplete,
+  compactHeader,
 }: {
   profileEmail?: string;
   variant: "settings" | "onboarding";
   onSkip?: () => void;
   onComplete?: () => void;
+  compactHeader?: boolean;
 }) {
   const controller = usePhoneSetupController(profileEmail);
   return (
@@ -1218,8 +1278,7 @@ export function PhoneSetupFlow({
       controller={controller}
       variant={variant}
       onSkip={onSkip}
-      onComplete={onComplete}
-    />
+      onComplete={onComplete} compactHeader={compactHeader} />
   );
 }
 

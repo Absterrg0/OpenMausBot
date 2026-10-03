@@ -21,6 +21,24 @@ import type { BotRecord, Message, Store } from "./store.ts";
 
 export { peerAllowKey } from "./peer-approval-key.ts";
 
+/** Only allow authorizes work; absence of an answer is not a user decision. */
+export type PeerApprovalOutcome = "allow" | "deny" | "expired" | "cancelled";
+export type PeerApprovalFailure = Exclude<PeerApprovalOutcome, "allow">;
+
+export function peerApprovalFailure(outcome: PeerApprovalFailure): {
+  error: string;
+  approvalOutcome: PeerApprovalFailure;
+  approvalSource: "user" | "system";
+} {
+  return {
+    error: outcome === "deny" ? "denied by user"
+      : outcome === "expired" ? "the approval card expired without an answer"
+        : "the approval was cancelled before a decision",
+    approvalOutcome: outcome,
+    approvalSource: outcome === "deny" ? "user" : "system",
+  };
+}
+
 /** What a peer-approval helper needs from the outside world: the store
  * for thread append + persist, and the SSE broadcaster so the chat
  * updates without waiting for a refresh. */
@@ -31,10 +49,12 @@ export interface ApprovalBus {
   /** Where a "blocked on you" frame goes. Optional: the boot-time cleanup
    * and the settle paths only ever answer cards, and never raise one. */
   notify?: (notification: Notification | null) => void;
+  /** Effective server-resolved Full Access for this exact source thread. */
+  autoApply?: (botId: string, threadId: string) => boolean;
 }
 
 interface Pending {
-  resolve: (result: "allow" | "deny") => void;
+  resolve: (result: PeerApprovalOutcome) => void;
   /** Frees the requestId if the user never answers. */
   timer: ReturnType<typeof setTimeout>;
   fromBotId: string;
@@ -61,8 +81,14 @@ function settleCard(pending: Pending, behavior: string, source: "user" | "system
   });
   // answered (by whoever): the turn is working again — the same hand-back
   // the request.resolved fold does for a provider's card
-  const waiting = pending.bus.store.bot(pending.fromBotId);
-  if (waiting?.activity === "waiting-on-you") pending.bus.store.setActivity(waiting.id, "working");
+  const store = pending.bus.store;
+  const task = store.projectBotForTask(pending.fromBotId, pending.threadId);
+  if (task) {
+    if (task.activity === "waiting-on-you") store.setTaskActivity(task.id, pending.threadId, "working");
+  } else if (store.groupByThread(pending.threadId)) {
+    const waiting = store.bot(pending.fromBotId);
+    if (waiting?.activity === "waiting-on-you") store.setActivity(waiting.id, "working");
+  }
 }
 
 /** requestId → pending ask. Lives only in memory — restarting the
@@ -129,9 +155,13 @@ function pushApprovalCard(
 function announceCard(bus: ApprovalBus, from: BotRecord, card: Message, sourceThreadId: string): void {
   // the bot is not working now — it is waiting on a person. A delegation
   // drained after its turn has already settled is idle, and stays so.
-  const live = bus.store.bot(from.id);
-  if (live?.busy) bus.store.setActivity(from.id, "waiting-on-you");
+  const task = bus.store.projectBotForTask(from.id, sourceThreadId);
   const room = bus.store.groupByThread(sourceThreadId);
+  if (task) {
+    if (task.busy) bus.store.setTaskActivity(from.id, sourceThreadId, "waiting-on-you");
+  } else if (room && bus.store.bot(from.id)?.busy) {
+    bus.store.setActivity(from.id, "waiting-on-you");
+  }
   const group = room && !room.dm ? { id: room.id, name: room.name } : undefined;
   const title = card.card?.title ?? "";
   const detail = card.card?.subtitle ? `${title} — ${card.card.subtitle}` : title;
@@ -139,7 +169,7 @@ function announceCard(bus: ApprovalBus, from: BotRecord, card: Message, sourceTh
 }
 
 /** Ask the user (in the source task thread) whether `from` may `action` `target`.
- * Resolves with `"allow"` or `"deny"`. If `from.alwaysAllow` already
+ * Distinguishes user denial from expiry and cancellation. If `from.alwaysAllow` already
  * covers the (action, target) pair, returns `"allow"` immediately
  * without a card. */
 export function requestPeerApproval(
@@ -149,8 +179,8 @@ export function requestPeerApproval(
   message: string,
   action: PeerAction,
   sourceThreadId = from.threadId,
-): Promise<"allow" | "deny"> {
-  if (allowKeyAllowed(from, peerAllowKey(action, target.id))) {
+): Promise<PeerApprovalOutcome> {
+  if (bus.autoApply?.(from.id, sourceThreadId) || allowKeyAllowed(from, peerAllowKey(action, target.id))) {
     return Promise.resolve("allow");
   }
   return new Promise((resolve) => {
@@ -160,13 +190,13 @@ export function requestPeerApproval(
     const card = pushApprovalCard(bus, from, target, message, action, requestId, sourceThreadId);
     announceCard(bus, from, card, sourceThreadId);
     const timer = setTimeout(() => {
-      // 15 minutes without an answer → deny. Keeps an unattended bot from
+      // 15 minutes without an answer → expired. Keeps an unattended bot from
       // stalling its own turn forever (matches the Claude broker timeout).
       const pending = pendingComms.get(requestId);
       if (!pending) return;
       pendingComms.delete(requestId);
       settleCard(pending, "deny", "system");
-      resolve("deny");
+      resolve("expired");
     }, APPROVAL_TIMEOUT_MS);
     timer.unref?.(); // a waiting card must never hold the process open
     pendingComms.set(requestId, {
@@ -202,18 +232,18 @@ export function resolvePeerComms(
 }
 
 /** Drop every approval waiting on a bot that no longer exists (or is being
- * deleted), denying it so the caller's turn doesn't wait out the timeout. */
+ * deleted), cancelling it so the caller's turn doesn't wait out the timeout. */
 export function cancelPeerApprovalsFor(botId: string): void {
-  for (const [requestId, pending] of [...pendingComms]) {
+  for (const [requestId, pending] of Array.from(pendingComms)) {
     if (pending.fromBotId !== botId && pending.toBotId !== botId) continue;
     pendingComms.delete(requestId);
     clearTimeout(pending.timer);
     settleCard(pending, "deny", "system");
-    pending.resolve("deny");
+    pending.resolve("cancelled");
   }
 }
 
-/** Deny every peer-communication approval owned by a thread whose turn was
+/** Cancel every peer-communication approval owned by a thread whose turn was
  * interrupted. Patching the card alone is not enough: the in-memory promise
  * must resolve too, or the delegation queue waits until its 15-minute timer. */
 export function cancelPeerApprovalsForThread(threadId: string): void {
@@ -222,7 +252,7 @@ export function cancelPeerApprovalsForThread(threadId: string): void {
     pendingComms.delete(requestId);
     clearTimeout(pending.timer);
     settleCard(pending, "deny", "system");
-    pending.resolve("deny");
+    pending.resolve("cancelled");
   }
 }
 

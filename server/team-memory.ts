@@ -3,15 +3,13 @@
 // Four kinds of entry — people (with the names they go by), places (where a
 // document or a thing lives), decisions (dated, with where they were made),
 // and terms (what an abbreviation or a nickname means). A bot proposes an
-// entry from its conversation; a place or a term lands at once, because the
-// cost of a wrong one is a wasted lookup, while a person or a decision waits
-// for a tap, because those shape what every teammate does next. The person
-// can edit or delete any of it.
+// entry from its conversation; every kind waits for admin review before
+// entering shared prompts. The person can edit or delete any of it.
 //
 // Distinct from section-context.ts, which is the user's brief and is never
 // written by a bot, and from a bot's private MEMORY.md. This is the layer
 // in between: bot-fed, person-reviewed, read by all.
-import { existsSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { z } from "zod";
 
 import { writeFileAtomic } from "./atomic.ts";
@@ -20,9 +18,6 @@ import { sectionContextKey, sectionContextLabel } from "./section-context.ts";
 
 export const TEAM_MEMORY_KINDS = ["person", "place", "decision", "term"] as const;
 export type TeamMemoryKind = (typeof TEAM_MEMORY_KINDS)[number];
-
-/** Kinds that land without a tap. */
-const AUTO_ACCEPT: ReadonlySet<TeamMemoryKind> = new Set(["place", "term"]);
 
 export const TEAM_MEMORY_NAME_MAX = 120;
 export const TEAM_MEMORY_DETAIL_MAX = 600;
@@ -67,6 +62,7 @@ const entrySchema = z.object({
 });
 const fileSchema = z.object({ version: z.literal(1), sections: z.record(z.string(), z.array(entrySchema)) });
 type TeamMemoryFile = z.infer<typeof fileSchema>;
+const emptyFile = (): TeamMemoryFile => ({ version: 1, sections: Object.create(null) });
 
 const clean = (value: unknown, max: number): string => (typeof value === "string" ? value.replace(/\s+/g, " ").trim().slice(0, max + 1) : "");
 const sameName = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
@@ -78,24 +74,45 @@ export type TeamMemoryResolution =
 export class TeamMemory {
   private readonly file: string;
   private data: TeamMemoryFile;
+  private saved: TeamMemoryFile;
+  private readable = true;
 
   constructor(file: string) {
     this.file = file;
     this.data = this.load();
+    this.saved = this.snapshot();
+  }
+
+  private snapshot(): TeamMemoryFile {
+    return { version: 1, sections: Object.assign(Object.create(null), structuredClone(this.data.sections)) };
   }
 
   private load(): TeamMemoryFile {
-    if (!existsSync(this.file)) return { version: 1, sections: {} };
     try {
-      const parsed = fileSchema.safeParse(JSON.parse(readFileSync(this.file, "utf8")));
-      return parsed.success ? parsed.data : { version: 1, sections: {} };
-    } catch {
-      return { version: 1, sections: {} };
+      const input = JSON.parse(readFileSync(this.file, "utf8"));
+      if (!fileSchema.safeParse(input).success) throw new Error("invalid team memory");
+      const data = emptyFile();
+      // Like section context, team names are own keys, not inherited
+      // properties; record parsers can omit ordinary names like __proto__.
+      for (const [key, value] of Object.entries(input.sections)) {
+        data.sections[sectionContextKey(key)] = z.array(entrySchema).parse(value);
+      }
+      return data;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") this.readable = false;
+      return emptyFile();
     }
   }
 
   private save(): void {
-    writeFileAtomic(this.file, JSON.stringify(this.data, null, 2), { mode: 0o600 });
+    try {
+      if (!this.readable) throw new Error("Saved team memory could not be read; the existing file was left unchanged");
+      writeFileAtomic(this.file, JSON.stringify(this.data, null, 2), { mode: 0o600 });
+      this.saved = this.snapshot();
+    } catch (error) {
+      this.data = { version: 1, sections: Object.assign(Object.create(null), structuredClone(this.saved.sections)) };
+      throw error;
+    }
   }
 
   private entries(section: string | null | undefined): TeamMemoryEntry[] {
@@ -116,29 +133,20 @@ export class TeamMemory {
     const detail = clean(input.detail, TEAM_MEMORY_DETAIL_MAX);
     if (detail.length > TEAM_MEMORY_DETAIL_MAX) throw new Error(`detail is at most ${TEAM_MEMORY_DETAIL_MAX} characters`);
     const aliases = [...new Set((input.aliases ?? []).map((alias) => clean(alias, TEAM_MEMORY_NAME_MAX)).filter((alias) => alias && !sameName(alias, name)))].slice(0, TEAM_MEMORY_ALIASES_MAX);
+    if (aliases.some(alias => alias.length > TEAM_MEMORY_NAME_MAX)) throw new Error(`aliases are at most ${TEAM_MEMORY_NAME_MAX} characters`);
     return { kind: input.kind, name, detail, aliases };
   }
 
-  /** A bot's proposal. Same kind and name as an existing entry updates it
-   * (keeping its status); otherwise a place or term is accepted at once and
-   * a person or decision waits. */
+  /** Every autonomous addition or replacement waits for admin review without
+   * changing accepted facts, including terms and places from untrusted input. */
   propose(
     section: string | null | undefined,
     input: TeamMemoryInput,
     source: TeamMemorySource,
-  ): { entry: TeamMemoryEntry; status: "accepted" | "proposed" | "updated" } {
+  ): { entry: TeamMemoryEntry; status: "proposed" } {
     const normalized = TeamMemory.normalize(input);
     const entries = this.entries(section);
-    const existing = entries.find((entry) => entry.kind === normalized.kind && sameName(entry.name, normalized.name));
-    if (existing) {
-      existing.detail = normalized.detail || existing.detail;
-      existing.aliases = [...new Set([...existing.aliases, ...normalized.aliases])].slice(0, TEAM_MEMORY_ALIASES_MAX);
-      existing.source = { ...source };
-      existing.updatedAt = source.at;
-      this.save();
-      return { entry: { ...existing }, status: "updated" };
-    }
-    const status = AUTO_ACCEPT.has(normalized.kind) ? "accepted" : "proposed";
+    const status = "proposed";
     const entry: TeamMemoryEntry = {
       id: newId(),
       ...normalized,
@@ -160,6 +168,10 @@ export class TeamMemory {
     if (answer === "accept") {
       entries[index].status = "accepted";
       entries[index].updatedAt = Date.now();
+      // Keep the old accepted fact until a person approves its replacement.
+      const accepted = entries[index];
+      this.data.sections[sectionContextKey(section)] = entries.filter(entry =>
+        entry.id === id || entry.kind !== accepted.kind || !sameName(entry.name, accepted.name) || entry.status !== "accepted");
       this.save();
       return { claimed: true, state: "accepted" };
     }
@@ -182,6 +194,9 @@ export class TeamMemory {
       detail: patch.detail ?? entry.detail,
       aliases: patch.aliases ?? entry.aliases,
     });
+    if (this.entries(section).some(candidate => candidate.id !== id && candidate.kind === normalized.kind && sameName(candidate.name, normalized.name))) {
+      throw new Error("an entry with this kind and name already exists");
+    }
     Object.assign(entry, normalized, { status: "accepted", updatedAt: Date.now() });
     this.save();
     return { ...entry };

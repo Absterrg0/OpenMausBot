@@ -3,6 +3,12 @@ import path from "node:path";
 import { pipeline } from "node:stream/promises";
 import { fileURLToPath } from "node:url";
 
+export function revealDownloadWhenDone(item, reveal) {
+  item.once("done", (_event, state) => {
+    if (state === "completed") reveal(item.getSavePath());
+  });
+}
+
 function normalizeSourcePath(rawPath) {
   if (typeof rawPath !== "string" || !rawPath.trim()) {
     throw new Error("A file path is required");
@@ -129,4 +135,14 @@ export async function defaultSaveName(dir, sourcePath, { fsp = fs.promises } = {
     }
   }
   return path.join(dir, `${stem}${ext}`);
+}
+
+export function collisionFreeDownloadPath(dir, sourcePath, { existsSync = fs.existsSync } = {}) {
+  const fileName = path.basename(sourcePath);
+  const ext = path.extname(fileName);
+  const stem = path.basename(fileName, ext);
+  for (let n = 0; ; n += 1) {
+    const candidate = path.join(dir, n === 0 ? fileName : `${stem} (${n})${ext}`);
+    if (!existsSync(candidate)) return candidate;
+  }
 }

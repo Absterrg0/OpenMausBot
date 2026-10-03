@@ -41,6 +41,9 @@ public enum Frame: Sendable {
     case thread(threadId: String, activeLeafId: String?)
     case bot(Bot)
     case botDeleted(botId: String)
+    /// Held sends for the whole fleet, keyed by thread. The server owns
+    /// this queue; the frame replaces the phone's copy wholesale.
+    case botQueued(queues: [String: [QueuedSend]])
     case room(Room)
     case roomDeleted(groupId: String)
     /// Something worth interrupting for.
@@ -51,6 +54,10 @@ public enum Frame: Sendable {
     /// The bot's cloud computer is being provisioned.
     case computer(botId: String, state: String)
     case config
+    /// The one Live call the harness runs, or `nil` when the line is free.
+    /// `botId`/`threadId` sit at the top level so member narrowing on the
+    /// server can hide calls on bots a member cannot see.
+    case liveCall(botId: String, threadId: String, call: LiveCallState?)
     case runtime(RuntimeEvent)
     case unknown(kind: String)
 }
@@ -58,7 +65,7 @@ public enum Frame: Sendable {
 extension Frame: Decodable {
     private enum CodingKeys: String, CodingKey {
         case kind, cursor, resumed, threadId, message, activeLeafId
-        case bot, botId, group, groupId, notification, png, mime, state, event
+        case bot, botId, group, groupId, notification, png, mime, state, event, queues, call
     }
 
     public init(from decoder: Decoder) throws {
@@ -90,6 +97,20 @@ extension Frame: Decodable {
             self = .bot(try container.decode(Bot.self, forKey: .bot))
         case "bot.deleted":
             self = .botDeleted(botId: try container.decode(String.self, forKey: .botId))
+        case "bot.queued":
+            // Defensive by design: a queues dictionary this build cannot
+            // read is a broken frame, not the server saying the queue is
+            // empty — reading it as one would retire every held-send row on
+            // a glitch. Ignore it; the next frame or fleet snapshot restates
+            // the truth. Bad entries inside a readable list still drop out
+            // one by one.
+            if let decoded = try? container.decode([String: [Lossy<QueuedSend>]].self, forKey: .queues) {
+                self = .botQueued(queues: decoded.mapValues { list in
+                    list.compactMap(\.value)
+                })
+            } else {
+                self = .unknown(kind: kind)
+            }
         case "group":
             self = .room(try container.decode(Room.self, forKey: .group))
         case "group.deleted":
@@ -111,6 +132,21 @@ extension Frame: Decodable {
             self = .config
         case "runtime":
             self = .runtime(try container.decode(RuntimeEvent.self, forKey: .event))
+        case "live.call":
+            // Defensive like bot.queued: a call object this build cannot read
+            // is a broken frame, not the harness saying the line is free.
+            // `call: null` is that, and only that.
+            let botId = try container.decode(String.self, forKey: .botId)
+            let threadId = try container.decode(String.self, forKey: .threadId)
+            if !container.contains(.call) {
+                self = .unknown(kind: kind)
+            } else if try container.decodeNil(forKey: .call) {
+                self = .liveCall(botId: botId, threadId: threadId, call: nil)
+            } else if let call = try? container.decode(LiveCallState.self, forKey: .call) {
+                self = .liveCall(botId: botId, threadId: threadId, call: call)
+            } else {
+                self = .unknown(kind: kind)
+            }
         default:
             // routines, and whatever the harness adds next
             self = .unknown(kind: kind)
@@ -132,6 +168,8 @@ extension Frame {
             return notification.threadId
         case let .runtime(event):
             return event.threadId
+        case let .liveCall(_, threadId, _):
+            return threadId
         default:
             return nil
         }
