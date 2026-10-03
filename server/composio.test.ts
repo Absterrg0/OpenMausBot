@@ -48,6 +48,8 @@ let accountStatusNow: Record<string, string> = { ca_notion: "INITIATED" };
  * account it would create, as upstream does. */
 let linkedAccounts: Array<{
   id: string;
+  /** The Composio user the account belongs to; unset lists it for everyone. */
+  user_id?: string;
   alias?: string | null;
   toolkit: { slug: string };
   status: string;
@@ -170,10 +172,12 @@ beforeAll(async () => {
 
     if (req.method === "POST" && url.pathname === "/api/v3.1/tool_router/session") {
       sessionAuthConfigs = body.auth_configs ?? {};
+      // Another Composio user's Session, so its links create that user's accounts.
+      const sessionId = body.user_id === "openmausbot_elsewhere" ? "trs_elsewhere" : "trs_test";
       res.writeHead(201, { "content-type": "application/json" });
       return res.end(JSON.stringify({
-        session_id: "trs_test",
-        mcp: { type: "http", url: "https://app.composio.dev/tool_router/v3/trs_test/mcp" },
+        session_id: sessionId,
+        mcp: { type: "http", url: `https://app.composio.dev/tool_router/v3/${sessionId}/mcp` },
         config: { user_id: body.user_id, multi_account: body.multi_account, auth_configs: sessionAuthConfigs },
       }));
     }
@@ -301,13 +305,14 @@ beforeAll(async () => {
       }
       return res.end(JSON.stringify({ items: [{ slug: "x", name: "X (Twitter)" }, { slug: "github", name: "GitHub" }] }));
     }
-    if (req.method === "GET" && url.pathname === "/api/v3.1/tool_router/session/trs_test") {
+    const multiAccountSession = url.pathname.match(/^\/api\/v3\.1\/tool_router\/session\/(trs_test|trs_elsewhere)$/)?.[1];
+    if (req.method === "GET" && multiAccountSession) {
       res.writeHead(200, { "content-type": "application/json" });
       return res.end(JSON.stringify({
-        session_id: "trs_test",
-        mcp: { type: "http", url: "https://app.composio.dev/tool_router/v3/trs_test/mcp" },
+        session_id: multiAccountSession,
+        mcp: { type: "http", url: `https://app.composio.dev/tool_router/v3/${multiAccountSession}/mcp` },
         config: {
-          user_id: "openmausbot_existing",
+          user_id: multiAccountSession === "trs_elsewhere" ? "openmausbot_elsewhere" : "openmausbot_existing",
           multi_account: {
             enable: true,
             max_accounts_per_toolkit: 5,
@@ -370,7 +375,10 @@ beforeAll(async () => {
       res.writeHead(200, { "content-type": "application/json" });
       if (malformedConnectedAccounts) return res.end(JSON.stringify({ items: {} }));
       if (emptyConnectedAccounts) return res.end(JSON.stringify({ items: [] }));
-      if (linkedAccounts) return res.end(JSON.stringify({ items: linkedAccounts }));
+      if (linkedAccounts) {
+        const user = url.searchParams.get("user_ids");
+        return res.end(JSON.stringify({ items: linkedAccounts.filter((account) => !account.user_id || account.user_id === user) }));
+      }
       if (url.searchParams.get("cursor") === "accounts-page-2") {
         return res.end(JSON.stringify({
           items: [
@@ -403,6 +411,7 @@ beforeAll(async () => {
       }
       const linked = linkedAccounts && {
         id: `ca_linked_${linkedAccounts.length + 1}`,
+        user_id: url.pathname.includes("/trs_elsewhere/") ? "openmausbot_elsewhere" : "openmausbot_existing",
         alias: body.alias ?? null,
         toolkit: { slug: body.toolkit },
         status: "INITIATED",
@@ -1233,54 +1242,28 @@ describe.sequential("Composio Sessions", () => {
     }
   });
 
-  it("retries an unfinished attempt under its alias instead of calling the alias taken", async () => {
+  it("leaves an unfinished attempt it holds no link for, and says the sign-in is in progress", async () => {
     const cfg: AppConfig = {
       composio: { apiKey: "ak_test", userId: "openmausbot_existing", sessionId: "trs_test" },
     };
-    // ca_notion "team" is INITIATED: its link was minted and never completed,
-    // yet upstream already reserves the alias for it.
-    const before = calls.length;
-    await expect(authorizeService(cfg, "notion", "Team")).resolves.toEqual({
-      url: "https://connect.composio.dev/link/notion",
+    const sent = (from: number) => calls.slice(from).filter((call) => call.method === "DELETE" || call.path.endsWith("/link"));
+    // ca_notion "team" is INITIATED and its link was never issued here (as
+    // after a restart): upstream reserves the alias until the attempt lapses,
+    // and removing it could race a sign-in finishing in its tab.
+    let before = calls.length;
+    await expect(authorizeService(cfg, "notion", "Team")).rejects.toMatchObject({
+      status: 409,
+      message: expect.stringMatching(/^Sign-in for "Team" on notion is still in progress/),
     });
-    const retry = calls.slice(before).filter((call) => call.method === "DELETE" || call.path.endsWith("/link"));
-    expect(retry.map((call) => `${call.method} ${call.path.split("/").slice(-2).join("/")}`)).toEqual([
-      "DELETE connected_accounts/ca_notion",
-      "POST trs_test/link",
-    ]);
-    // The attempt holds no credentials, so its removal revokes nothing.
-    expect(retry[0].query).toBe("");
-    expect(retry[1].body).toEqual({ toolkit: "notion", alias: "Team" });
+    expect(sent(before)).toEqual([]);
 
     // A connected account's alias stays taken, and nothing is removed for it.
-    const untouched = calls.length;
-    await expect(authorizeService(cfg, "github", "WORK")).rejects.toMatchObject({ status: 409 });
-    expect(calls.slice(untouched).some((call) => call.method === "DELETE" || call.path.endsWith("/link"))).toBe(false);
-  });
-
-  it("only replaces an attempt that is still unfinished when it is read again", async () => {
-    const cfg: AppConfig = {
-      composio: { apiKey: "ak_test", userId: "openmausbot_existing", sessionId: "trs_test" },
-    };
-    const sent = (from: number) =>
-      calls.slice(from).filter((call) => call.method === "DELETE" || call.path.endsWith("/link")).map((call) => call.method);
-    try {
-      // The list still says INITIATED, but the sign-in finished meanwhile:
-      // the account is connected now and must survive.
-      accountStatusNow = { ca_notion: "ACTIVE" };
-      let before = calls.length;
-      await expect(authorizeService(cfg, "notion", "team")).rejects.toMatchObject({ status: 409 });
-      expect(sent(before)).toEqual([]);
-      // Another request already removed it: nothing to delete, link anyway.
-      accountStatusNow = {};
-      before = calls.length;
-      await expect(authorizeService(cfg, "notion", "team")).resolves.toEqual({
-        url: "https://connect.composio.dev/link/notion",
-      });
-      expect(sent(before)).toEqual(["POST"]);
-    } finally {
-      accountStatusNow = { ca_notion: "INITIATED" };
-    }
+    before = calls.length;
+    await expect(authorizeService(cfg, "github", "WORK")).rejects.toMatchObject({
+      status: 409,
+      message: expect.stringMatching(/already in use/),
+    });
+    expect(sent(before)).toEqual([]);
   });
 
   it("gives overlapping requests for one connection the same link", async () => {
@@ -1308,19 +1291,13 @@ describe.sequential("Composio Sessions", () => {
       // nothing was replaced.
       expect(links(before)).toBe(3);
       expect(calls.slice(before).some((call) => call.method === "DELETE")).toBe(false);
-      // A later request is a retry in its own right.
-      linkedAccounts = [{
-        id: "ca_first",
-        alias: "work",
-        toolkit: { slug: "googledrive" },
-        status: "INITIATED",
-        updated_at: "2026-09-01T17:00:00Z",
-      }];
-      accountStatusNow = { ca_first: "INITIATED" };
+      // A later request is a retry in its own right, and gets that link back.
+      const work = linkedAccounts.find((account) => account.alias === "work" && account.user_id === "openmausbot_existing");
+      accountStatusNow = { [work!.id]: "INITIATED" };
       const later = calls.length;
-      await authorizeService(cfg, "googledrive", "work");
-      expect(links(later)).toBe(1);
-      expect(calls.slice(later).filter((call) => call.method === "DELETE")).toHaveLength(1);
+      await expect(authorizeService(cfg, "googledrive", "work")).resolves.toEqual(first);
+      expect(links(later)).toBe(0);
+      expect(calls.slice(later).some((call) => call.method === "DELETE")).toBe(false);
     } finally {
       linkedAccounts = null;
       accountStatusNow = { ca_notion: "INITIATED" };
@@ -1385,20 +1362,18 @@ describe.sequential("Composio Sessions", () => {
       expect(sent(before)).toEqual(["POST"]);
 
       // A link kept past the time Composio gives an attempt is dropped and
-      // never handed out; an attempt still open then is replaced as one whose
-      // link is unknown.
+      // never handed out; an attempt still open then is one whose link is
+      // unknown, and is left alone.
       accountStatusNow = { ca_linked_2: "INITIATED" };
       vi.useFakeTimers({ toFake: ["Date"] });
       vi.setSystemTime(Date.now() + 16 * 60_000);
       before = calls.length;
       try {
-        await expect(authorizeService(cfg, "googledrive", "work")).resolves.toEqual({
-          url: "https://connect.composio.dev/link/googledrive/ca_linked_3",
-        });
+        await expect(authorizeService(cfg, "googledrive", "work")).rejects.toMatchObject({ status: 409 });
       } finally {
         vi.useRealTimers();
       }
-      expect(sent(before)).toEqual(["DELETE", "POST"]);
+      expect(sent(before)).toEqual([]);
 
       // Its sign-in finished: the account owns the alias, nothing is handed
       // out and nothing removed.

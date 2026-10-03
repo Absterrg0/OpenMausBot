@@ -135,8 +135,6 @@ describe("connected-apps broker boundaries", () => {
       next_cursor: "accounts-page-2",
     };
     let connectedAccountsUnavailable = false;
-    // What reading ca_personal by id reports; it can be newer than the list.
-    let personalStatusNow = "INITIALIZING";
     vi.stubGlobal("fetch", async (input: string | URL | Request, init?: RequestInit) => {
       const url = String(input);
       fetchCalls.push({ url, init });
@@ -178,9 +176,6 @@ describe("connected-apps broker boundaries", () => {
           });
         }
         return Response.json(accounts);
-      }
-      if (url.endsWith("/connected_accounts/ca_personal") && !init?.method) {
-        return Response.json({ id: "ca_personal", status: personalStatusNow });
       }
       if (/\/connected_accounts\/ca_(work|personal)(\?|$)/.test(url) && init?.method === "DELETE") return Response.json({ success: true });
       return Response.json({ error: "not found" }, { status: 404 });
@@ -290,29 +285,16 @@ describe("connected-apps broker boundaries", () => {
     // A connected account keeps its alias.
     const taken = await authorize("gmail", "Work", installation, env as never, ctx as never);
     expect(taken.status).toBe(409);
-    // The list says the attempt is unfinished, but its sign-in completed
-    // since: it is a connected account now and must not be removed.
-    personalStatusNow = "ACTIVE";
-    const connectedSince = fetchCalls.length;
-    const kept = await authorize("gmail", "personal", installation, env as never, ctx as never);
-    expect(kept.status).toBe(409);
-    expect(fetchCalls.slice(connectedSince).some((call) => call.init?.method === "DELETE" || call.url.endsWith("/link"))).toBe(false);
-    personalStatusNow = "INITIALIZING";
-    // An attempt nobody finished still holds its alias upstream, so asking
-    // for that link again replaces the attempt instead of refusing it.
+    // An attempt nobody finished still holds its alias upstream. The app
+    // hands a retry the link it issued; one reaching the broker is refused as
+    // in progress and left alone, since removing it could race its sign-in.
     const before = fetchCalls.length;
-    const retried = await authorize("gmail", "Personal", installation, env as never, ctx as never);
-    expect(retried.status).toBe(200);
-    const retry = fetchCalls.slice(before).filter((call) => call.init?.method === "DELETE" || call.url.endsWith("/link"));
-    expect(retry.map((call) => `${call.init?.method} ${new URL(call.url).pathname.split("/").slice(-2).join("/")}`)).toEqual([
-      "DELETE connected_accounts/ca_personal",
-      "POST trs_multi/link",
-    ]);
-    // The attempt holds no credentials, so its removal revokes nothing.
-    expect(new URL(retry[0].url).search).toBe("");
-    expect(JSON.parse(String(retry[1].init?.body))).toEqual({ toolkit: "gmail", alias: "Personal" });
-    // The app is told which attempt the link belongs to, to hand it out again.
-    await expect(retried.json()).resolves.toEqual({ url: "https://connect.composio.dev/link/gmail", accountId: "ca_linked" });
+    const inProgress = await authorize("gmail", "Personal", installation, env as never, ctx as never);
+    expect(inProgress.status).toBe(409);
+    await expect(inProgress.json()).resolves.toEqual({
+      error: 'Sign-in for "Personal" on gmail is still in progress. Finish it, or retry once it expires (about 10 minutes).',
+    });
+    expect(fetchCalls.slice(before).some((call) => call.init?.method === "DELETE" || call.url.endsWith("/link"))).toBe(false);
 
     // A lapsed attempt no longer reserves its alias and is left in place.
     accounts.items.push({ id: "ca_lapsed", alias: "old", toolkit: { slug: "gmail" }, status: "EXPIRED", updated_at: "2026-08-21T09:00:00Z" });
