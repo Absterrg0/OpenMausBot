@@ -782,23 +782,16 @@ export function normalizeMathDelimiters(text: string, imageOffsets?: Map<number,
   return normalized;
 }
 
-/** A message's text as react-markdown reads it. */
-interface NormalizedMarkdown {
-  source: string;
-  /** markdown image offsets after math normalization → offsets in the stored text */
-  imageOffsets?: Map<number, number>;
-}
-
 // Table repair and math normalization each parse the whole message on top of
 // react-markdown's own parse, and what they produce depends on the text alone.
 // Keep it per text, so a bubble that renders again (a thread list change under
 // a message holding a '#') or mounts again (a thread revisited, the raw view
 // toggled off) skips both parses. Two transcript windows' worth: the open
 // thread and the one before it.
-const normalizedCache = new Map<string, NormalizedMarkdown>();
+const normalizedCache = new Map<string, Pick<MessageScope, "imageOffsets"> & { source: string }>();
 const NORMALIZED_CACHE_MAX = TRANSCRIPT_WINDOW_SIZE * 2;
 
-function normalizeMessageMarkdown(text: string): NormalizedMarkdown {
+function normalizeMessageMarkdown(text: string) {
   const cached = normalizedCache.get(text);
   if (cached) return cached;
   // A near-miss table from a model renders as an unreadable run of pipes
