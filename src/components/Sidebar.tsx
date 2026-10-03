@@ -33,6 +33,7 @@ import {
 } from "lucide-react";
 import { api, useStore, formatTime, visibleMessages, currentTaskBot, openThread, type AppState, type Bot, type Group } from "@/state/store";
 import { approvalModeFor } from "../../shared/approval-mode";
+import { avatarCropRadius, botAvatarProfile } from "../../shared/bot-avatar";
 import { peerLine } from "@/lib/peer-message";
 import { liveActivityLabel } from "@/lib/live-activity";
 import { llmThreadTitlesEnabled } from "@/lib/feature-flags";
@@ -90,6 +91,7 @@ import {
   partitionSidebarBots,
   partitionSidebarGroups,
   placeSection,
+  pinnedCircleThreadListVisible,
   sameSectionOrder,
   sidebarGoalRunPreview,
   sidebarLayoutInteractive,
@@ -1159,7 +1161,7 @@ export function BotThreadList({ bot, selected, density = "comfortable", query = 
   );
 }
 
-function PinnedBotCircle({
+export function PinnedBotCircle({
   bot,
   onMenu,
 }: {
@@ -1174,6 +1176,7 @@ function PinnedBotCircle({
   const working = !waiting && (Boolean(bot.busy) || activityTasks.some((task) => task.busy || task.activity === "working"));
   const unread = bot.unread || activityTasks.some((task) => task.unread);
   const mascotMotion = selected && state.mascotMotion?.botId === bot.id ? state.mascotMotion : null;
+  const radius = avatarCropRadius(botAvatarProfile(bot).avatarCrop);
   return (
     <button
       type="button"
@@ -1186,10 +1189,13 @@ function PinnedBotCircle({
       className="flex min-w-0 flex-col items-center gap-1 rounded-lg px-1 py-1 text-center outline-none focus-visible:ring-1 focus-visible:ring-accent/60"
     >
       <span className="relative">
-        <span className={cn(
-          "flex size-16 items-center justify-center overflow-hidden rounded-full",
-          selected && "ring-2 ring-accent ring-offset-2 ring-offset-panel",
-        )}>
+        <span
+          className={cn(
+            "flex size-16 items-center justify-center overflow-hidden",
+            selected && "ring-2 ring-accent ring-offset-2 ring-offset-panel",
+          )}
+          style={{ borderRadius: radius }}
+        >
           <BotAvatar
             bot={bot}
             state={stateForBot({ ...bot, messages: visible })}
@@ -1220,6 +1226,50 @@ function PinnedBotCircle({
       </span>
       <span className="w-full truncate text-center text-[11px] leading-4 text-ink">{bot.name}</span>
     </button>
+  );
+}
+
+/** The same pinned bots as the circle grid, as normal rows, so their threads
+ * and thread menu stay reachable. Not a reorderable section. */
+export function PinnedCircleThreadSection({
+  bots,
+  density,
+  quiet,
+  query,
+  collapsed,
+  onToggle,
+  onMenu,
+}: {
+  bots: Bot[];
+  density: SidebarDensity;
+  quiet: boolean;
+  query: string;
+  collapsed: boolean;
+  onToggle: () => void;
+  onMenu: (menu: MenuState) => void;
+}) {
+  const name = t("sidebar.section.pinned");
+  return (
+    <div data-sidebar-pinned-circle-threads="" className="flex flex-col gap-0.5 pt-3">
+      <SidebarSectionHeader
+        name={name}
+        collapsed={collapsed}
+        attention={collapsed ? sidebarSectionAttention(bots, []) : undefined}
+        onToggle={onToggle}
+        reorderable={false}
+        dragging={false}
+      />
+      {!collapsed && bots.map((bot) => (
+        <BotListItem
+          key={bot.id}
+          bot={bot}
+          density={density}
+          quiet={quiet}
+          query={query}
+          onMenu={onMenu}
+        />
+      ))}
+    </div>
   );
 }
 
@@ -1875,6 +1925,7 @@ export function Sidebar({ open, onClose, collapseToIcons = false }: {
   );
   const pinnedCircles = usePinnedCircles();
   const universalPins = useUniversalPins();
+  const [pinnedCircleThreadsCollapsed, setPinnedCircleThreadsCollapsed] = useState(true);
   // Compact is the quiet sidebar: a row is its name and its status, nothing
   // else (see the `quiet` prop on BotListItem and GroupListItem).
   const quietRows = density === "compact";
@@ -2045,6 +2096,9 @@ export function Sidebar({ open, onClose, collapseToIcons = false }: {
     ...sectionNames.map(userSectionId),
   ];
   const sectionIds = orderedSidebarSections(naturalSectionIds, sectionOrder);
+  // Circle mode removes these bots from the normal rows. Their thread list
+  // stays at the bottom and is not part of the draggable section order.
+  const showPinnedCircleThreads = pinnedCircleThreadListVisible(pinnedCircles, density, pinnedBots.length);
   const layoutInteractive = sidebarLayoutInteractive(density, q);
   const sectionCollapsed = (id: string) =>
     sidebarSectionCollapsed(id, collapsedSections, density, q);
@@ -2586,6 +2640,17 @@ export function Sidebar({ open, onClose, collapseToIcons = false }: {
             );
           })}
           <SearchResults query={query} onLanded={() => setQuery("")} />
+          {showPinnedCircleThreads && (
+            <PinnedCircleThreadSection
+              bots={pinnedBots}
+              density={density}
+              quiet={quietRows}
+              query={q}
+              collapsed={pinnedCircleThreadsCollapsed}
+              onToggle={() => setPinnedCircleThreadsCollapsed((collapsed) => !collapsed)}
+              onMenu={setMenu}
+            />
+          )}
         </div>
       </GlassScroller>
       <p className="sr-only" aria-live="polite" aria-atomic="true">

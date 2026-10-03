@@ -1,0 +1,134 @@
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+import { initialState, StoreProvider, type Bot } from "@/state/store";
+import type { BotAvatarCrop } from "../../shared/bot-avatar";
+
+vi.mock("./DesktopCapabilities", () => ({
+  useDesktopCapabilities: () => ({}),
+}));
+
+import { PinnedBotCircle, PinnedCircleThreadSection } from "./Sidebar";
+
+const bot = (overrides: Partial<Bot> = {}): Bot => ({
+  id: "atlas",
+  threadId: "thread-atlas",
+  name: "Atlas",
+  title: "",
+  description: "",
+  notifications: true,
+  color: "green",
+  unread: false,
+  pinned: true,
+  modelSelection: { instanceId: "claude", model: "test" },
+  messages: [],
+  ...overrides,
+});
+
+const frame = (markup: string) => {
+  const match = markup.match(/class="flex size-16 items-center justify-center overflow-hidden[^"]*" style="([^"]*)"/);
+  expect(match, markup).not.toBeNull();
+  return match![0];
+};
+
+function renderCircle(candidate: Bot, selected = false) {
+  const saved = { selectedId: initialState.selectedId, activeView: initialState.activeView };
+  if (selected) {
+    initialState.selectedId = candidate.id;
+    initialState.activeView = "chat";
+  }
+  try {
+    return renderToStaticMarkup(createElement(
+      StoreProvider,
+      null,
+      createElement(PinnedBotCircle, { bot: candidate, onMenu: vi.fn() }),
+    ));
+  } finally {
+    initialState.selectedId = saved.selectedId;
+    initialState.activeView = saved.activeView;
+  }
+}
+
+function renderThreads(collapsed: boolean, bots: Bot[]) {
+  return renderToStaticMarkup(createElement(
+    StoreProvider,
+    null,
+    createElement(PinnedCircleThreadSection, {
+      bots,
+      density: "comfortable",
+      quiet: false,
+      query: "",
+      collapsed,
+      onToggle: () => {},
+      onMenu: vi.fn(),
+    }),
+  ));
+}
+
+describe("pinned circle frame", () => {
+  it.each([
+    ["circle", "50%"],
+    ["rounded", "22%"],
+    ["square", "0"],
+    ["mascot", "0"],
+  ] as const)("keeps a %s crop (%s) and does not force rounded-full", (crop: BotAvatarCrop, radius: string) => {
+    const markup = renderCircle(bot({
+      avatarCrop: crop,
+      avatarUrl: crop === "mascot" ? undefined : "/api/attachments/cat.webp",
+    }));
+    const clipped = frame(markup);
+    expect(clipped).toContain(`border-radius:${radius}`);
+    expect(clipped).not.toContain("rounded-full");
+    expect(markup).not.toContain("rounded-full");
+  });
+
+  it("draws the selection ring on the same crop as the frame", () => {
+    const markup = renderCircle(bot({
+      avatarCrop: "rounded",
+      avatarUrl: "/api/attachments/cat.webp",
+    }), true);
+    const clipped = frame(markup);
+    expect(clipped).toContain("ring-2");
+    expect(clipped).toContain("ring-accent");
+    expect(clipped).toContain("border-radius:22%");
+    expect(clipped).not.toContain("rounded-full");
+  });
+});
+
+describe("pinned circle thread list", () => {
+  const atlas = bot({
+    tasks: [
+      { threadId: "thread-atlas", title: "Current", createdAt: 2 },
+      { threadId: "thread-earlier", title: "Earlier", createdAt: 1 },
+    ] as Bot["tasks"],
+  });
+  const beacon = bot({ id: "beacon", threadId: "thread-beacon", name: "Beacon" });
+
+  it("stays closed, without a second circle grid or a reorder handle", () => {
+    const markup = renderThreads(true, [atlas, beacon]);
+    expect(markup).toContain('data-sidebar-pinned-circle-threads=""');
+    expect(markup).toContain('aria-expanded="false"');
+    expect(markup).toContain("Expand Pinned");
+    expect(markup).not.toContain("Atlas");
+    expect(markup).not.toContain("Beacon");
+    expect(markup).not.toContain("data-sidebar-pinned-circles");
+    expect(markup).not.toContain("Drag to reorder");
+  });
+
+  it("opens the same pinned bots as rows, in circle order, with the thread menu", () => {
+    const markup = renderThreads(false, [atlas, beacon]);
+    expect(markup).toContain('aria-expanded="true"');
+    expect(markup).toContain("Collapse Pinned");
+    expect(markup.indexOf("Atlas")).toBeLessThan(markup.indexOf("Beacon"));
+    expect(markup).toContain('aria-label="Actions for Atlas"');
+    expect(markup).toContain("Expand Atlas threads");
+    expect(markup).not.toContain("data-sidebar-pinned-circles");
+    expect(markup).not.toContain("Drag to reorder");
+  });
+});
+
+afterEach(() => {
+  initialState.selectedId = "";
+  initialState.activeView = "chat";
+});
