@@ -341,6 +341,29 @@ it("requests both code palettes for skin-aware highlighting", async () => {
   }
 });
 
+it("paints a cached highlight in a code block's first frame", async () => {
+  const originalUseEffect = (await vi.importActual<typeof React>("react")).useEffect;
+  const effects: React.EffectCallback[] = [];
+  const effect = vi.mocked(React.useEffect).mockImplementation((callback) => { effects.push(callback); });
+  const codeToHtml = vi.fn().mockResolvedValue("<pre>highlighted once</pre>");
+  vi.doMock("shiki", () => ({ codeToHtml }));
+  const cleanup: ReturnType<React.EffectCallback>[] = [];
+  const block = createElement(CodeBlock, { code: "const remounted = true;", lang: "ts", streaming: false });
+  try {
+    expect(renderToStaticMarkup(block)).not.toContain("highlighted once");
+    for (const callback of effects.splice(0)) cleanup.push(callback());
+    await vi.waitFor(() => expect(codeToHtml).toHaveBeenCalledTimes(1));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    // a remount (revisiting the thread) paints highlighted at once, never
+    // plain text first
+    expect(renderToStaticMarkup(block)).toContain("highlighted once");
+  } finally {
+    for (const close of cleanup) if (typeof close === "function") close();
+    effect.mockImplementation(originalUseEffect);
+    vi.doUnmock("shiki");
+  }
+});
+
 describe("#Title thread links in markdown", () => {
   const threads = [
     { botId: "scout", botName: "Scout", threadId: "qa-245", title: "QA PR 245", activeAt: 2 },
@@ -824,8 +847,9 @@ it("renders mermaid strictly and serves repeat views from cache", async () => {
     expect(render).toHaveBeenCalledWith(expect.any(String), "flowchart LR\n  Ship-->Sea");
 
     // a settled remount (revisiting the thread, a skin flip) re-renders from
-    // cache: still exactly one real mermaid render for this source
-    renderToStaticMarkup(createElement(ChatMarkdown, { text: fence }));
+    // cache: the diagram is in its first frame, and still exactly one real
+    // mermaid render for this source
+    expect(renderToStaticMarkup(createElement(ChatMarkdown, { text: fence }))).toContain("<svg>sea lanes</svg>");
     for (const callback of effects.splice(0)) cleanup.push(callback());
     await Promise.resolve();
     expect(render).toHaveBeenCalledTimes(1);
