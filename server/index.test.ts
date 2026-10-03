@@ -11058,6 +11058,7 @@ describe("harness HTTP API", () => {
       expect((await api("PATCH", `/api/bots/${bot.id}`, {
         composio: true,
         connectorTools: { gmail: { tools: ["GMAIL_SEND_EMAIL"] } },
+        outbound: { policy: "allow", dailyCap: 10 },
       })).status).toBe(200);
       const token = await mintTestCapability(BASE, bot.id, bot.threadId, { kind: "connectors" });
       const call = async (frame: unknown, bearer = token) => {
@@ -11123,23 +11124,37 @@ describe("harness HTTP API", () => {
       // The refusal never enumerates what the bot could have called instead.
       expect(JSON.stringify(refused.body)).not.toContain("GMAIL_SEND_EMAIL");
 
-      // A legacy bot with no grants record keeps today's behavior: everything relays.
+      // A legacy bot with no grants record may relay verifiable sends under an explicit allowance.
       const legacy = (await api("POST", "/api/bots")).body.bot;
       try {
-        expect((await api("PATCH", `/api/bots/${legacy.id}`, { composio: true })).status).toBe(200);
+        expect((await api("PATCH", `/api/bots/${legacy.id}`, {
+          composio: true,
+          outbound: { policy: "allow", dailyCap: 10 },
+        })).status).toBe(200);
         const legacyToken = await mintTestCapability(BASE, legacy.id, legacy.threadId, { kind: "connectors" });
         const legacyCall = await call(
           { jsonrpc: "2.0", id: 21, method: "tools/call", params: { name: "SLACK_POST_MESSAGE", arguments: {} } },
           legacyToken,
         );
         expect(legacyCall.body.result.content[0].text).toBe("relay-ok");
-        // Legacy bots keep the pre-grants relay for unreadable frames too:
-        // a malformed MULTI_EXECUTE batch passes through untouched.
-        const legacyMalformed = await call(
+        // Unreadable batches still require explicit consent, even under an allowance.
+        const beforeOpaque = relayed().length;
+        const legacyMalformed = call(
           { jsonrpc: "2.0", id: 22, method: "tools/call", params: { name: "COMPOSIO_MULTI_EXECUTE_TOOL", arguments: { tools: [{ arguments: {} }] } } },
           legacyToken,
         );
-        expect(legacyMalformed.body.result.content[0].text).toBe("relay-ok");
+        let card: any;
+        await expect.poll(async () => {
+          const messages: any[] = (await api("GET", `/api/threads/${legacy.threadId}/messages?limit=100`)).body.messages;
+          card = messages.findLast((row) => row.card?.outboundRequest && !row.card.answered);
+          return Boolean(card);
+        }, { timeout: 5_000 }).toBe(true);
+        expect(relayed()).toHaveLength(beforeOpaque);
+        expect((await api("POST", `/api/threads/${legacy.threadId}/respond`, {
+          requestId: card.card.requestId, behavior: "deny",
+        })).status).toBe(200);
+        expect((await legacyMalformed).body.result.isError).toBe(true);
+        expect(relayed()).toHaveLength(beforeOpaque);
       } finally {
         await api("DELETE", `/api/bots/${legacy.id}`);
       }
