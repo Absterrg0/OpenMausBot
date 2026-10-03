@@ -227,6 +227,7 @@ import { RETRY_MAX_ATTEMPTS } from "./drivers/retry.ts";
 import { recoveryCapabilityError } from "./automatic-recovery.ts";
 import { decodeGeneratedImage } from "./generated-image.ts";
 import {
+  addDisabledMcpServer,
   MAX_MCP_SERVERS,
   isRemoteMcpServer,
   listMcpServers,
@@ -18354,6 +18355,32 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         }
         const updated = updateChannel(room.id, patch);
         return json(res, 200, { ok: true, memberIds: updated.memberIds, memberCount: updated.memberIds.length, message: `Updated room “${updated.name}”.` });
+      }
+      if (method === "POST" && path === "/api/internal/mcp-servers") {
+        // Same single-flight lock as POST /api/mcp/servers: two writers must
+        // not interleave a read of cfg.mcpServers with a save.
+        if (mcpConfigBusy) return json(res, 409, { error: "MCP servers are already being updated." });
+        mcpConfigBusy = true;
+        try {
+          const body = await readInternalBody();
+          const added = addDisabledMcpServer(cfg.mcpServers ?? {}, body);
+          if (!added.ok) return json(res, added.status, { error: added.error });
+          const refusal = mcpPolicyRefusal(added.name, added.server);
+          if (refusal) return json(res, 403, { error: refusal, code: "managed_policy" });
+          persistMcpServers(added.next);
+          const server = added.server;
+          const remote = isRemoteMcpServer(server);
+          return json(res, 201, {
+            name: added.name,
+            enabled: false,
+            transport: remote ? server.type : "command",
+            target: remote ? server.url : server.command,
+            envKeys: remote ? [] : Object.keys(server.env).sort(),
+            headerKeys: remote ? Object.keys(server.headers).sort() : [],
+          });
+        } finally {
+          mcpConfigBusy = false;
+        }
       }
       if (method === "POST" && path === "/api/internal/request-credential") {
         const body = await readInternalBody();

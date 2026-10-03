@@ -7868,6 +7868,79 @@ describe("harness HTTP API", () => {
     expect(after).toEqual({ status: 200, body: { servers: [] } });
   });
 
+  it("lets a bot file an MCP server only as a disabled row", async () => {
+    const bot = (await api("POST", "/api/bots")).body.bot;
+    const token = await mintTestCapability(BASE, bot.id, bot.threadId);
+    const secret = "bot-filed-secret-that-must-never-render";
+    const headerSecret = "bot-header-secret-that-must-never-render";
+    const oauthSecret = "bot-oauth-secret-that-must-never-render";
+    const configFile = join(home, ".openmausbot", "config.json");
+    const fileServer = (body: unknown) => fetch(`${BASE}/api/internal/mcp-servers`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    try {
+      const filed = await fileServer({ name: "botnotes", command: "npx", args: ["-y", "notes-mcp"], env: { NOTES_TOKEN: secret } });
+      const filedBody = await filed.json();
+      expect(filed.status).toBe(201);
+      expect(filedBody).toEqual({
+        name: "botnotes", enabled: false, transport: "command", target: "npx",
+        envKeys: ["NOTES_TOKEN"], headerKeys: [],
+      });
+      expect(JSON.stringify(filedBody)).not.toContain(secret);
+      const disk = JSON.parse(readFileSync(configFile, "utf8"));
+      expect(disk.mcpServers.botnotes).toEqual({
+        command: "npx", args: ["-y", "notes-mcp"], env: { NOTES_TOKEN: secret }, enabled: false,
+      });
+
+      const switched = await fileServer({ name: "botother", command: "npx", enabled: true });
+      expect(switched.status).toBe(400);
+      expect(await switched.json()).toMatchObject({ error: expect.stringMatching(/on\/off switch/) });
+      expect(JSON.parse(readFileSync(configFile, "utf8")).mcpServers.botother).toBeUndefined();
+      expect(JSON.parse(readFileSync(configFile, "utf8")).mcpServers.botnotes.env.NOTES_TOKEN).toBe(secret);
+
+      const again = await fileServer({ name: "botnotes", command: "other-command" });
+      expect(again.status).toBe(409);
+      expect(JSON.parse(readFileSync(configFile, "utf8")).mcpServers.botnotes.command).toBe("npx");
+
+      const remote = await fileServer({
+        name: "botdocs",
+        url: "https://docs.example/mcp",
+        type: "sse",
+        headers: { Authorization: headerSecret },
+        oauth: { clientId: "corp-app", clientSecret: oauthSecret },
+      });
+      const remoteBody = await remote.json();
+      expect(remote.status).toBe(201);
+      expect(remoteBody).toEqual({
+        name: "botdocs", enabled: false, transport: "sse", target: "https://docs.example/mcp",
+        envKeys: [], headerKeys: ["Authorization"],
+      });
+      const remoteText = JSON.stringify(remoteBody);
+      expect(remoteText).not.toContain(headerSecret);
+      expect(remoteText).not.toContain(oauthSecret);
+      const savedRemote = JSON.parse(readFileSync(configFile, "utf8")).mcpServers.botdocs;
+      expect(savedRemote).toEqual({
+        type: "sse", url: "https://docs.example/mcp", headers: { Authorization: headerSecret },
+        oauth: { clientId: "corp-app", clientSecret: oauthSecret }, enabled: false,
+      });
+
+      const listed = await api("GET", "/api/mcp/servers");
+      expect(listed.body.servers).toEqual(expect.arrayContaining([
+        expect.objectContaining({ name: "botnotes", enabled: false, envKeys: ["NOTES_TOKEN"] }),
+        expect.objectContaining({ name: "botdocs", enabled: false, headerKeys: ["Authorization"] }),
+      ]));
+      expect(JSON.stringify(listed.body)).not.toContain(secret);
+      expect(JSON.stringify(listed.body)).not.toContain(headerSecret);
+      expect(JSON.stringify(listed.body)).not.toContain(oauthSecret);
+    } finally {
+      await api("DELETE", "/api/mcp/servers/botnotes").catch(() => undefined);
+      await api("DELETE", "/api/mcp/servers/botdocs").catch(() => undefined);
+      await api("DELETE", `/api/bots/${bot.id}`).catch(() => undefined);
+    }
+  });
+
   it("manages and probes a url MCP server, and the Claude Code servers switch", async () => {
     const secret = "Bearer mcp-header-that-must-never-render";
     const fake = await startFakeHttpMcp({ requireHeader: { name: "Authorization", value: secret } });
