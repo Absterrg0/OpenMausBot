@@ -6,6 +6,7 @@
 // The sentences that both the direct-turn and room-turn paths use live
 // here too, so neither path can drift from the other or from the preview.
 import { soulSystemPrompt } from "./bot-folder.ts";
+import { teammateAvailabilityPrompt, type RosterMember } from "./peer-roster.ts";
 import type { ConnectorToolGrant } from "../shared/wire.ts";
 
 export type PromptPart = { id: string; label: string; text: string };
@@ -19,9 +20,10 @@ export function userProfileSystemPrompt(profile?: { aboutMe?: string }): string 
 /** Sections whose text legitimately differs between two turns of one live
  * conversation: memory, because a bot writes to MEMORY.md mid-conversation,
  * mentions, which describe the message being sent right now, outstanding
- * teammate work, which settles while the person keeps talking, and recent
+ * teammate work, which settles while the person keeps talking, recent
  * work, whose relative time labels are recomputed every turn and whose
- * newest-first list changes as the bot works in other threads.
+ * newest-first list changes as the bot works in other threads, and team
+ * availability, which changes whenever a teammate starts or finishes work.
  *
  * They are reported apart from the rest so a driver that keeps one CLI
  * process per thread can key that process on the stable half. Before this
@@ -30,7 +32,16 @@ export function userProfileSystemPrompt(profile?: { aboutMe?: string }): string 
  * entire conversation at the cache-write rate. Mentions did the same on any
  * turn that tagged a bot, and recent work did it on every turn of an active
  * bot, because its "2h ago" labels drift even when nothing else changed. */
-const VOLATILE_SECTIONS = new Set(["memory", "mentions", "outstanding", "recent"]);
+const VOLATILE_SECTIONS = new Set(["memory", "mentions", "outstanding", "recent", "availability"]);
+
+/** The team availability section, defined once for the direct turn, the room
+ * turn and the preview. Its id is what puts it in the volatile half: a call
+ * site that spelled it differently would put it back in the stable half,
+ * where one teammate starting work relaunches the engine. An empty team
+ * gives an empty section. */
+export function teamAvailabilityPart(team: readonly RosterMember[]): PromptPart {
+  return { id: "availability", label: "Team availability", text: teammateAvailabilityPrompt(team) };
+}
 
 export function buildSystemPrompt(
   persona: string,

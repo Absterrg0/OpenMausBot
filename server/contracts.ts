@@ -163,8 +163,8 @@ export interface SendTurnInput {
   /** Bot persona (name/title/description) as a system prompt. */
   system?: string;
   /** `system` split at the sections that legitimately change mid-conversation
-   * (memory, mentions, outstanding teammate work, recent work): `systemStable` is everything else, `systemVolatile` is
-   * those sections' text. A driver that keeps one CLI process per thread keys
+   * (the sections in VOLATILE_SECTIONS, system-prompt.ts): `systemStable` is
+   * everything else, `systemVolatile` is those sections' text. A driver that keeps one CLI process per thread keys
    * that process on the stable half, so a memory edit no longer respawns the
    * session and makes the provider re-cache the entire prompt; the changed half
    * is delivered inside the next turn instead. Drivers that rebuild their

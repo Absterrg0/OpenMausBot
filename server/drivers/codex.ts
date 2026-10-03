@@ -1618,10 +1618,11 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
         // Only the stable half of the prompt belongs in the developer slot:
         // it is the part that must survive compaction unchanged, and any
         // change to it invalidates the provider's cached prefix. The volatile
-        // half (memory, mentions, outstanding teammate work) is delivered
-        // inside the turn that changed it, after the cached prefix, the same
-        // contract SendTurnInput.systemStable documents. Without the split
-        // the driver keeps the previous single-block behaviour.
+        // half (the sections in VOLATILE_SECTIONS, system-prompt.ts) is
+        // delivered inside the turn that changed it, after the cached
+        // prefix, the same contract SendTurnInput.systemStable documents.
+        // Without the split the driver keeps the previous single-block
+        // behaviour.
         const stableInstructions = typeof turn.systemStable === "string" && typeof turn.systemVolatile === "string"
           ? turn.systemStable
           : null;
