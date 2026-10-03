@@ -8283,6 +8283,34 @@ describe("harness HTTP API", () => {
     }
   });
 
+  it("ends a Chief of Staff's team section at the roster, in the preview and in a real turn", async () => {
+    // The Chief prompt used to close with a VM status block read from a file
+    // outside OpenMausBot that nothing ever wrote, so every Chief turn spent
+    // about 800 bytes saying the status was unknown.
+    const bot = (await api("POST", "/api/bots", { name: "Atlas", section: "Roster end" })).body.bot;
+    try {
+      expect((await api("PATCH", `/api/bots/${bot.id}`, {
+        chiefOfStaff: true,
+        modelSelection: { instanceId: "claude", model: "claude-sonnet-5" },
+      })).status).toBe(200);
+      const roster = "Current Roster end section team:\n- No other visible bots are available yet.";
+
+      const sections = (await api("GET", `/api/bots/${bot.id}/system-prompt`)).body.sections as Array<{ id: string; text: string }>;
+      const team = sections.find((section) => section.id === "coordination")?.text ?? "";
+      expect(team).toContain("You are the Chief of Staff for the Roster end section.");
+      expect(team.endsWith(roster)).toBe(true);
+
+      rmSync(fakeClaudeDump, { force: true });
+      expect((await api("POST", `/api/bots/${bot.id}/messages`, { text: "hello" })).status).toBe(202);
+      const system = (await readJsonFileWhenReady<{ systemPrompt: string }>(fakeClaudeDump, 15_000)).systemPrompt;
+      expect(system).toContain(roster);
+      expect(system).not.toContain("OPENMAUSBOT STATUS");
+    } finally {
+      await api("POST", `/api/bots/${bot.id}/interrupt`);
+      await api("DELETE", `/api/bots/${bot.id}`);
+    }
+  });
+
   it("Works on: Off withholds the browser and tells the model why", async () => {
     // The report behind this: a bot set to Off reached for a browser anyway,
     // because Off withheld only the computer. The dispatched prompt is the

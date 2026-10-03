@@ -124,7 +124,6 @@ import { buildRecall } from "./recall.ts";
 import { createMemoryUpkeep, upkeepEnabled } from "./memory-upkeep.ts";
 import { appendAboutMe, commitLearned, planLearned } from "./profile-learned.ts";
 import { canAccessTeam, canReachPeer, coordinatorSupervises, livePeerRoster, livePeerRosterBlock, peerAllowed, peerName, peerRosterSystemPrompt, peerStatus, peerStatusWords, reachablePeers, resolveTeammate, roomPeerRosterSystemPrompt, roomRosterLine, PEER_ACCESS_HELP } from "./peer-roster.ts";
-import { openMausStatusSystemPrompt } from "./openmaus-status-capsule.ts";
 import {
   containerComputerAction,
   containerComputerExists,
@@ -3786,7 +3785,7 @@ function previewSystemPrompt(bot: BotRecord) {
   });
   const peers = reachablePeers(store.bots, bot);
   const coordination = bot.chiefOfStaff
-    ? chiefOfStaffSystemPrompt(bot.id, store.bots, true, openMausStatusSystemPrompt())
+    ? chiefOfStaffSystemPrompt(bot.id, store.bots, true)
     : peers.length > 0
       ? peerRosterSystemPrompt(peers)
       : "";
@@ -10321,7 +10320,6 @@ async function startTurn(
             bot.id,
             store.bots,
             Boolean(integrations.agents),
-            openMausStatusSystemPrompt(),
             boundedCoordination,
           )
         : integrations.agents && sectionPeers.length > 0
