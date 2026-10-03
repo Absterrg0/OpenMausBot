@@ -1288,6 +1288,25 @@ describe("agents-proxy MCP surface", () => {
     delegationStatusResponse = { status: "done", toBotName: "Helper", result: "All done." };
   });
 
+  it("check_delegation says when the teammate is stopped on the person's approval", async () => {
+    delegationStatusResponse = {
+      status: "running",
+      toBotName: "Helper",
+      elapsedMs: 90_000,
+      recentActivity: ["Bash: echo hi"],
+      awaitingPerson: { kind: "approval", tool: "Bash", threadTitle: "Guarded task" },
+    };
+    try {
+      const text = (await callTool("check_delegation", { task_id: "task-later456" })).result.content[0].text;
+      expect(text).toContain("is waiting on the person's approval");
+      expect(text).toContain('@Helper stopped at a card in its thread "Guarded task" (to run Bash)');
+      expect(text).toContain("Tell the person now");
+      expect(text).not.toContain("is running with");
+    } finally {
+      delegationStatusResponse = { status: "done", toBotName: "Helper", result: "All done." };
+    }
+  });
+
   it("check_delegation explains a queued handoff: who it is waiting on, and when it expires", async () => {
     delegationStatusResponse = {
       status: "queued",

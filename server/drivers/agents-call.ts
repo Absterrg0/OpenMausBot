@@ -726,6 +726,15 @@ export async function callTool(name: string, args: Json, context: ToolCallContex
           : ` It expires if not picked up within ${Math.ceil(expiresInMs / 3_600_000)} hour${Math.ceil(expiresInMs / 3_600_000) === 1 ? "" : "s"}.`;
       return { text: `Task ${taskId} is still queued — ${who} hasn't picked it up yet${waitMs ? ` after ${timeout}s` : ""}.${why}${expiry} Keep working and check again later.` };
     }
+    if (r.status === "running" && r.awaitingPerson && typeof r.awaitingPerson === "object") {
+      const card = r.awaitingPerson as { kind?: unknown; tool?: unknown; threadTitle?: unknown };
+      const what = card.kind === "approval" ? "approval" : card.kind === "review" ? "review" : "answer";
+      const where = typeof card.threadTitle === "string" && card.threadTitle ? ` in its thread "${card.threadTitle}"` : " in its own thread";
+      const tool = typeof card.tool === "string" && card.tool ? ` (to run ${card.tool})` : "";
+      return {
+        text: `Task ${taskId} is waiting on the person's ${what}: ${who} stopped at a card${where}${tool}. Nothing moves until the person answers that card there. Tell the person now and point them to that thread; do not keep waiting or checking.`,
+      };
+    }
     if (r.status === "running") {
       const elapsedMs = Number.isFinite(r.elapsedMs) ? Number(r.elapsedMs) : 0;
       const minutes = Math.floor(elapsedMs / 60_000);

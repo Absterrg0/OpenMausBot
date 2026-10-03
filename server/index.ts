@@ -113,7 +113,7 @@ import { parseToolScope, toolScopeWidens } from "../shared/tool-scope.ts";
 import type { TeamComputersPayload } from "../shared/team-computer.ts";
 import { boatCreateRecoverySnapshot, retireDeletedBoatCreate } from "./boat-create-idempotency.ts";
 import { boatDeletionSnapshot } from "./boat-delete-journal.ts";
-import { liveDecisionRefusal } from "../shared/live-approval.ts";
+import { liveCardKind, liveDecisionRefusal } from "../shared/live-approval.ts";
 import {
   boatAccountResourceChangeError,
   cloudBackendChangeError,
@@ -4785,7 +4785,9 @@ function outstandingAssignmentsPrompt(threadId: string): string {
     requestId: node.id,
     bot: store.bot(node.botId)?.name ?? "Teammate",
     assignment: node.text.slice(0, 1_000),
-    status: node.status === "queued" ? "waiting for that teammate to be free" : "working on it now",
+    status: node.status === "queued" ? "waiting for that teammate to be free"
+      : openPersonCard(node.threadId) ? "stopped on a card waiting for the person's approval or answer in that teammate's thread; tell the person to open it"
+      : "working on it now",
   }));
   return ` Assignments you already sent are still outstanding, and nothing in this conversation cancelled them: ${JSON.stringify(listed)}. Do not resend them, do not poll or wait for them, and do not tell the user they were lost. Each result returns to this conversation on its own and resumes you then. To change or add to one, send the change to the same teammate with coordinate_bots; it runs after the current work. Answer the message above with that work still in flight.`;
 }
@@ -7666,6 +7668,7 @@ bus.subscribe((event: RuntimeEvent) => {
           // the bot is not working now — it is waiting on a person
           if (bot) store.setTaskActivity(bot.id, event.threadId, "waiting-on-you");
           else if (asker.busy) store.setActivity(asker.id, "waiting-on-you");
+          if (event.requestId) showWaitingOnPersonChip(event.threadId, event.requestId, asker, permission ? "approval" : "answer");
           const notificationBot = (routineRun && routineSourceOwner(routineRun)?.bot) || asker;
           notify(buildNotification(
             permission ? "approval" : "question",
@@ -7679,6 +7682,7 @@ bus.subscribe((event: RuntimeEvent) => {
     }
     case "request.resolved": {
       if (event.requestId) pendingCommandRules.delete(`${event.threadId}:${event.requestId}`);
+      if (event.requestId) settleWaitingOnPersonChips(event.threadId, event.requestId);
       // answered (by whoever): the turn is working again, unless it settled
       const waiting = bot ?? (speaker ? store.bot(speaker.botId) : undefined);
       if (bot && store.taskByThread(bot.id, event.threadId)?.activity === "waiting-on-you") {
@@ -7738,6 +7742,7 @@ bus.subscribe((event: RuntimeEvent) => {
       }
       break;
     case "turn.completed": {
+      settleWaitingOnPersonChips(event.threadId);
       // A peer-started turn settles as coordination, not as news. What keeps
       // that classification from outliving its turn is the rewrite at
       // dispatch, not this line — releasing it here too is hygiene, so a
@@ -8057,6 +8062,57 @@ const delegationWatch = new Map<string, {
   /** Cross-bot send: leave the terminal state in the recipient thread. */
   oneWay?: boolean;
 }>();
+
+/** The card in this thread that is waiting on the person: an approval, a
+ * question or a proposal to review, newest first. */
+function openPersonCard(threadId: string): { kind: "approval" | "question" | "review"; tool?: string } | undefined {
+  const messages = store.messagesFor(threadId);
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const card = messages[i]!.kind === "options" ? messages[i]!.card : undefined;
+    const kind = liveCardKind(card);
+    if (kind) return { kind, tool: card?.tool };
+  }
+  return undefined;
+}
+
+/** The conversation waiting on work that runs in this thread: a Chief's
+ * delegate_bot task or coordinate_bots assignment. */
+function delegatorOf(threadId: string): { threadId: string; botId?: string } | undefined {
+  const watch = delegationWatch.get(threadId);
+  if (watch?.sourceThreadId) return { threadId: watch.sourceThreadId, botId: watch.sourceBotId };
+  const parent = roomHandoffs.assignerOf(threadId);
+  return parent ? { threadId: parent.threadId, botId: parent.botId } : undefined;
+}
+
+// MOCA-274: a delegated teammate's card used to live only in its own thread,
+// so the person talking to the Chief never saw that work was waiting on them.
+// A chip in the delegating conversation points at the card until it settles.
+const waitingOnPersonChips = new Map<string, { threadId: string; messageId: string; name: string; kind: string }>();
+
+function showWaitingOnPersonChip(threadId: string, requestId: string, asker: BotRecord, kind: "approval" | "answer") {
+  const delegator = delegatorOf(threadId);
+  if (!delegator || delegator.threadId === threadId) return;
+  const chip = store.appendMessage(delegator.threadId, { role: "bot", kind: "activity",
+    from: { botId: asker.id, name: asker.name, color: asker.color },
+    tool: { name: `Waiting on your ${kind} in @${asker.name}` },
+    threadRef: { botId: asker.id, threadId, title: store.taskByThread(asker.id, threadId)?.title ?? asker.name },
+  });
+  waitingOnPersonChips.set(`${threadId}:${requestId}`, { threadId: delegator.threadId, messageId: chip.id, name: asker.name, kind });
+}
+
+/** Settle the chip for one answered card, or every chip for this thread once
+ * its turn ends (a card nobody answered can no longer be answered). */
+function settleWaitingOnPersonChips(threadId: string, requestId?: string) {
+  for (const [key, chip] of waitingOnPersonChips) {
+    if (requestId ? key !== `${threadId}:${requestId}` : !key.startsWith(`${threadId}:`)) continue;
+    waitingOnPersonChips.delete(key);
+    const existing = store.messagesFor(chip.threadId).find((message) => message.id === chip.messageId);
+    if (!existing?.tool) continue;
+    store.patchMessage(chip.threadId, chip.messageId, {
+      tool: { ...existing.tool, name: requestId ? `@${chip.name} got your ${chip.kind}` : `@${chip.name} is no longer waiting on your ${chip.kind}`, ok: true },
+    });
+  }
+}
 
 // Peer wake: when a delegated reply lands, resume the source bot so it can
 // fold the result in and answer the user instead of sitting idle. Mirrors
@@ -17480,7 +17536,10 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
           if (!sender || (target && !canReachPeer(sender, target))) {
             return json(res, 403, { error: "Result withheld: team access changed while the teammate was working" });
           }
-          if (Date.now() >= deadline) {
+          // Nothing moves while the teammate's card waits on the person, so
+          // say so now rather than holding the long-poll to its deadline.
+          const awaitingPerson = running && runningEntry ? openPersonCard(runningEntry[0]) : undefined;
+          if (Date.now() >= deadline || awaitingPerson) {
             if (running && runningEntry) {
               const recent = summarizeDelegatedActivity(
                 store.messagesFor(runningEntry[0]),
@@ -17491,6 +17550,12 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
                 toBotName: store.bot(toBotId)?.name ?? toBotId,
                 elapsedMs: Math.max(0, Date.now() - (running.startedAtMs ?? Date.now())),
                 recentActivity: recent,
+                ...(awaitingPerson ? {
+                  awaitingPerson: {
+                    ...awaitingPerson,
+                    threadTitle: store.taskByThread(toBotId, runningEntry[0])?.title,
+                  },
+                } : {}),
               });
             }
             const queuedTarget = store.bot(toBotId);

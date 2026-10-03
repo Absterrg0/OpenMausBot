@@ -667,7 +667,9 @@ function handle(msg: any) {
         break;
       }
       const cachedLiveLoad = process.env.FAKE_ACP_CACHED_LIVE_LOAD === "1" && liveSession === msg.params?.sessionId;
-      if (mode === "safe-agent-reads" && !cachedLiveLoad) {
+      // like a real agent that reconnects its MCP servers on load, so a
+      // later turn on this process carries that turn's own token
+      if ((mode === "safe-agent-reads" || mode === "chief-delegate") && !cachedLiveLoad) {
         agentsMcp = (msg.params?.mcpServers ?? []).find((server: any) => server.name === "agents") ?? null;
       }
       if (process.env.FAKE_ACP_DUMP) {
