@@ -7,6 +7,8 @@ import { describe, expect, it, vi } from "vitest";
 import {
   ChatMarkdown,
   CodeBlock,
+  HIGHLIGHT_CACHE_MAX,
+  HIGHLIGHT_CACHE_MAX_CHARS,
   samePeers,
   chatUrlTransform,
   markdownImageName,
@@ -344,6 +346,61 @@ it("requests both code palettes for skin-aware highlighting", async () => {
     // a remount (revisiting the thread) paints the cached highlight at once,
     // never plain text first
     await vi.waitFor(() => expect(renderToStaticMarkup(fence)).toContain("dual palette"));
+  } finally {
+    for (const close of cleanup) if (typeof close === "function") close();
+    effect.mockImplementation(originalUseEffect);
+    vi.doUnmock("shiki");
+  }
+});
+
+it("keeps the newest highlighted code within both the count and the size bound", async () => {
+  const originalUseEffect = (await vi.importActual<typeof React>("react")).useEffect;
+  const effects: React.EffectCallback[] = [];
+  const effect = vi.mocked(React.useEffect).mockImplementation((callback) => { effects.push(callback); });
+  // each block's highlighted HTML is padded to the size the step needs
+  let htmlChars = 0;
+  const codeToHtml = vi.fn(async (code: string) => `<pre class="cache-probe">${code}</pre>`.padEnd(htmlChars, " "));
+  vi.doMock("shiki", () => ({ codeToHtml }));
+  const cleanup: ReturnType<React.EffectCallback>[] = [];
+  const block = (code: string) => createElement(CodeBlock, { code, lang: "text" });
+  // a cached block paints highlighted in its first frame
+  const painted = (code: string) => {
+    const html = renderToStaticMarkup(block(code));
+    effects.length = 0;
+    return html.includes('class="cache-probe"');
+  };
+  // mount a block and let its highlight settle
+  const highlight = async (code: string) => {
+    const calls = codeToHtml.mock.results.length;
+    renderToStaticMarkup(block(code));
+    for (const callback of effects.splice(0)) cleanup.push(callback());
+    await vi.waitFor(() => expect(codeToHtml.mock.results.length).toBe(calls + 1), { interval: 1 });
+    await codeToHtml.mock.results[calls]!.value;
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  };
+  try {
+    // past the count, the oldest block goes
+    const small = Array.from({ length: HIGHLIGHT_CACHE_MAX + 1 }, (_, i) => `small block ${i}`);
+    for (const code of small) await highlight(code);
+    expect(painted(small[0]!)).toBe(false);
+    expect(small.slice(1).every(painted)).toBe(true);
+
+    // four quarter-size blocks fill the size bound, pushing the small ones out
+    htmlChars = Math.floor(HIGHLIGHT_CACHE_MAX_CHARS / 4);
+    const big = Array.from({ length: 5 }, (_, i) => `big block ${i}`);
+    for (const code of big.slice(0, 4)) await highlight(code);
+    expect(small.some(painted)).toBe(false);
+    expect(big.slice(0, 4).every(painted)).toBe(true);
+    // past the size, the oldest block goes
+    await highlight(big[4]!);
+    expect(painted(big[0]!)).toBe(false);
+    expect(big.slice(1).every(painted)).toBe(true);
+
+    // a block bigger than the whole bound is not kept and pushes nothing out
+    htmlChars = HIGHLIGHT_CACHE_MAX_CHARS + 1;
+    await highlight("huge block");
+    expect(painted("huge block")).toBe(false);
+    expect(big.slice(1).every(painted)).toBe(true);
   } finally {
     for (const close of cleanup) if (typeof close === "function") close();
     effect.mockImplementation(originalUseEffect);

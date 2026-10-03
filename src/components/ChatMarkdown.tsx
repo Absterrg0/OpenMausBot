@@ -35,10 +35,26 @@ import { looksLikeThreadRefUrl, parseThreadRefUrl, resolveThreadRefAddress, rema
 import { MarkdownImagePreview, useLocalFileSave, type MessageAttachmentContext } from "./AttachmentPreview";
 import { ThreadLink, ThreadRefsContext, threadLinkFromProps, type ThreadRefsValue } from "./ThreadRefs";
 
-// tiny highlight cache so revisiting a thread doesn't re-tokenize settled
-// blocks; keys are content-hashed and capped.
+// highlighted code, so revisiting a thread doesn't re-tokenize settled
+// blocks; keys are content hashes. The two-theme HTML is about 20 to 28 times
+// the size of the code, so the cache is bounded by size as well as by count
+// (200 large blocks alone held 23 MB). Past either bound the oldest go first.
 const highlightCache = new Map<string, string>();
-const CACHE_MAX = 200;
+export const HIGHLIGHT_CACHE_MAX = 200;
+// about 4 MB of HTML, counted in characters; 200 typical snippets take ~1 MB
+export const HIGHLIGHT_CACHE_MAX_CHARS = 4 * 1024 * 1024;
+function rememberHighlight(key: string, html: string) {
+  // one block bigger than the whole bound would only push everything else out
+  if (html.length > HIGHLIGHT_CACHE_MAX_CHARS) return;
+  highlightCache.set(key, html);
+  let chars = 0;
+  for (const cached of highlightCache.values()) chars += cached.length;
+  for (const [oldest, oldestHtml] of highlightCache) {
+    if (highlightCache.size <= HIGHLIGHT_CACHE_MAX && chars <= HIGHLIGHT_CACHE_MAX_CHARS) break;
+    highlightCache.delete(oldest);
+    chars -= oldestHtml.length;
+  }
+}
 // rendered mermaid SVGs, keyed by skin scheme + content hash so revisiting a
 // thread re-mounts straight from cache — same idea as highlightCache, smaller
 // cap because SVGs are bigger than highlighted code
@@ -250,11 +266,7 @@ export function CodeBlock({ code, lang }: CodeBlockProps) {
       )
       .then((out) => {
         if (!alive) return;
-        if (highlightCache.size >= CACHE_MAX) {
-          const first = highlightCache.keys().next().value;
-          if (first) highlightCache.delete(first);
-        }
-        highlightCache.set(key, out);
+        rememberHighlight(key, out);
         setHtml(out);
       })
       .catch(() => {
