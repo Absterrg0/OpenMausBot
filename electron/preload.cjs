@@ -103,6 +103,7 @@ const bridge = {
     refreshTailscale: () => ipcRenderer.invoke("companion:refresh-tailscale"),
     pairing: (open, expectedToken) => ipcRenderer.invoke("companion:pairing", open, expectedToken),
     cloudDesktop: (deviceId, allowed) => ipcRenderer.invoke("companion:cloud-desktop", deviceId, allowed),
+    browserControl: (deviceId, allowed) => ipcRenderer.invoke("companion:browser-control", deviceId, allowed),
     revoke: (deviceId) => ipcRenderer.invoke("companion:revoke", deviceId),
   },
   /** Keep this computer awake for scheduled routines. The hold itself lives

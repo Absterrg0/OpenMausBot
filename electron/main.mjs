@@ -513,6 +513,7 @@ import {
   companionPairing,
   companionRefreshTailscale,
   companionCloudDesktopAccess,
+  companionBrowserControlAccess,
   companionRevoke,
   companionRunning,
   companionState,
@@ -2686,6 +2687,9 @@ ipcMain.handle("companion:pairing", localOnly("companion:pairing", (_event, open
 }));
 ipcMain.handle("companion:cloud-desktop", localOnly("companion:cloud-desktop", (_event, deviceId, allowed) =>
   companionCloudDesktopAccess(deviceId, Boolean(allowed)).then(() => desktopCompanionState()),
+));
+ipcMain.handle("companion:browser-control", localOnly("companion:browser-control", (_event, deviceId, allowed) =>
+  companionBrowserControlAccess(deviceId, Boolean(allowed)).then(() => desktopCompanionState()),
 ));
 ipcMain.handle("companion:revoke", localOnly("companion:revoke", (_event, deviceId) =>
   companionRevoke(deviceId).then(() => desktopCompanionState()),
