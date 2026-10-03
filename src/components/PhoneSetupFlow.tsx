@@ -21,6 +21,7 @@ import {
 } from "lucide-react";
 import { QRCodeSVG } from "qrcode.react";
 import {
+  companionPairingAddressText,
   companionPairingLink,
   companionPairingRoute,
   companionPairingRoutePin,
@@ -199,6 +200,8 @@ export interface PhoneSetupController {
   secondsLeft: number;
   address: string | undefined;
   pairingPort: number;
+  /** What to type on the phone: `https://host` for hosted, `host:port` otherwise. */
+  addressText: string | undefined;
   hostedReady: boolean;
   localFallback: boolean;
   tailscaleFallback: boolean;
@@ -846,6 +849,7 @@ export function usePhoneSetupController(profileEmail = ""): PhoneSetupController
       : 0,
     address: pairingRoute?.address,
     pairingPort: pairingRoute?.port ?? state?.port ?? 8810,
+    addressText: pairingRoute ? companionPairingAddressText(pairingRoute) : undefined,
     hostedReady: Boolean(state?.endpoints?.some((endpoint) => endpoint.kind === "hosted")),
     localFallback: flow.localFallback,
     tailscaleFallback: flow.tailscaleFallback,
@@ -1251,7 +1255,7 @@ export function PhoneSetupFlowView({
             <div className="mt-1 font-mono text-[22px] tracking-[0.25em] text-ink">{c.state.pairing.code}</div>
             {c.address && (
               <div className="mt-3">
-                <ConnectionDetail label={t("phone.code.address")} value={`${c.address}:${c.pairingPort}`} />
+                <ConnectionDetail label={t("phone.code.address")} value={c.addressText ?? `${c.address}:${c.pairingPort}`} />
               </div>
             )}
           </div>

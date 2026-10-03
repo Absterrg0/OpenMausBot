@@ -45,6 +45,24 @@ export interface CompanionPairingRoute {
   endpoints?: CompanionEndpoint[];
 }
 
+/** The address to type into a phone, written the way both phone apps read
+ * it. A bare `host:port` is plain HTTP on that port to them, so a hosted
+ * route shown as `abc.openmausbot.com:443` sent the typed code over HTTP to a
+ * TLS port and failed on every phone. Hosted routes are written with their
+ * scheme (and without the default port); direct routes keep `host:port`. */
+export function companionPairingAddressText(route: CompanionPairingRoute): string {
+  const hosted = route.endpoints?.find((endpoint) => {
+    if (endpoint.kind !== "hosted") return false;
+    try {
+      return new URL(endpoint.url).hostname === route.address;
+    } catch {
+      return false;
+    }
+  });
+  if (hosted) return new URL(hosted.url).origin;
+  return `${route.address}:${route.port}`;
+}
+
 export interface CompanionPairingRoutePin {
   route: CompanionPairingRoute;
   /** The exact protected transport selected when the QR was created. A

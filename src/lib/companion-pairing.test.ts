@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  companionPairingAddressText,
   companionPairingLink,
   companionPairingRoute,
   companionPairingRoutePin,
@@ -354,5 +355,33 @@ describe("companionPairingLink", () => {
         { url: "http://openmausbot-aa.local:8810", kind: "bonjour", priority: 300 },
       ],
     }, "local")).toBeNull();
+  });
+});
+
+describe("companionPairingAddressText", () => {
+  it("writes a hosted route with its scheme, so a phone does not send the code as HTTP to port 443", () => {
+    const hosted = { url: "https://device.openmausbot.com", kind: "hosted" as const, priority: 0 };
+    const route = companionPairingRoute({ port: 8810, endpoints: [hosted] }, "automatic");
+
+    expect(companionPairingAddressText(route!)).toBe("https://device.openmausbot.com");
+  });
+
+  it("keeps a hosted route's non-default port", () => {
+    expect(companionPairingAddressText({
+      address: "box.example.com",
+      port: 8443,
+      endpoints: [{ url: "https://box.example.com:8443", kind: "hosted", priority: 0 }],
+    })).toBe("https://box.example.com:8443");
+  });
+
+  it("leaves direct routes as host:port", () => {
+    const route = companionPairingRoute({
+      port: 8810,
+      tailnetName: "mac.tail1234.ts.net",
+      endpoints: [{ url: "http://mac.tail1234.ts.net:8810", kind: "tailnet", priority: 100 }],
+    }, "tailscale");
+
+    expect(companionPairingAddressText(route!)).toBe("mac.tail1234.ts.net:8810");
+    expect(companionPairingAddressText({ address: "192.168.1.42", port: 8810 })).toBe("192.168.1.42:8810");
   });
 });
