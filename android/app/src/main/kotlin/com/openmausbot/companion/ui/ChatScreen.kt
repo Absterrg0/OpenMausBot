@@ -1084,6 +1084,11 @@ private fun LoadedChat(
                     fileOpenError = null
                     attachmentError = null
                 },
+                stoppable = chat.canStop,
+                onStop = {
+                    haptics.play(HapticCue.SELECT)
+                    scope.launch { session.interrupt(chat) }
+                },
                 onTogglePlus = {
                     // iOS drops the composer's focus before the sheet rises; a
                     // keyboard under it would leave the sheet nowhere to go.
@@ -1611,6 +1616,8 @@ private fun Composer(
     attachmentError: String?,
     onRemoveAttachment: (PendingMessageAttachment) -> Unit,
     onDismissError: () -> Unit,
+    stoppable: Boolean,
+    onStop: () -> Unit,
 ) {
     val canSend = AttachmentImportRules.canSend(draft, attachments.size, preparing, sending)
     val inFlight = preparing || sending
@@ -1843,7 +1850,30 @@ private fun Composer(
                     )
                 }
 
-                TouchTarget(
+                // Stop sits in the bar while the turn runs, as it does on the
+                // desktop and iOS. The Interrupt chat action was the only way
+                // before, and rooms had none at all. It takes the mic's slot,
+                // as on the desktop: four 48dp targets left a 360dp phone a
+                // field about 60dp wide. A dictation already running keeps
+                // its mic so it can be stopped.
+                if (stoppable) {
+                    TouchTarget(onClick = onStop, contentDescription = "Stop the current turn") {
+                        Box(
+                            modifier = Modifier
+                                .size(32.dp)
+                                .background(secondaryTint.copy(alpha = 0.12f), CircleShape),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(11.dp)
+                                    .background(MaterialTheme.colorScheme.onSurface, RoundedCornerShape(2.dp)),
+                            )
+                        }
+                    }
+                }
+
+                if (!stoppable || dictationListening) TouchTarget(
                     onClick = onToggleDictation,
                     contentDescription = if (dictationListening) {
                         "Stop dictation"
