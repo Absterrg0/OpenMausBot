@@ -160,7 +160,10 @@ describe("connected-apps broker boundaries", () => {
         return Response.json(body);
       }
       if (url.endsWith("/tool_router/session/trs_multi/link") && init?.method === "POST") {
-        return Response.json({ redirect_url: "https://connect.composio.dev/link/gmail" }, { status: 201 });
+        return Response.json(
+          { redirect_url: "https://connect.composio.dev/link/gmail", connected_account_id: "ca_linked" },
+          { status: 201 },
+        );
       }
       if (url.includes("/tool_router/session/trs_multi")) return Response.json(session("trs_multi", "omb_stable"));
       if (url.includes("/connected_accounts?") && !init?.method) {
@@ -179,7 +182,7 @@ describe("connected-apps broker boundaries", () => {
       if (url.endsWith("/connected_accounts/ca_personal") && !init?.method) {
         return Response.json({ id: "ca_personal", status: personalStatusNow });
       }
-      if (/\/connected_accounts\/ca_(work|personal)\?/.test(url) && init?.method === "DELETE") return Response.json({ success: true });
+      if (/\/connected_accounts\/ca_(work|personal)(\?|$)/.test(url) && init?.method === "DELETE") return Response.json({ success: true });
       return Response.json({ error: "not found" }, { status: 404 });
     });
     const installation = {
@@ -280,7 +283,7 @@ describe("connected-apps broker boundaries", () => {
     });
     const authorized = await authorize("gmail", "second", installation, env as never, ctx as never);
     expect(authorized.status).toBe(200);
-    await expect(authorized.json()).resolves.toEqual({ url: "https://connect.composio.dev/link/gmail" });
+    await expect(authorized.json()).resolves.toEqual({ url: "https://connect.composio.dev/link/gmail", accountId: "ca_linked" });
     const linkCall = fetchCalls.find((call) => call.url.endsWith("/tool_router/session/trs_multi/link"));
     expect(JSON.parse(String(linkCall?.init?.body))).toEqual({ toolkit: "gmail", alias: "second" });
 
@@ -305,7 +308,11 @@ describe("connected-apps broker boundaries", () => {
       "DELETE connected_accounts/ca_personal",
       "POST trs_multi/link",
     ]);
+    // The attempt holds no credentials, so its removal revokes nothing.
+    expect(new URL(retry[0].url).search).toBe("");
     expect(JSON.parse(String(retry[1].init?.body))).toEqual({ toolkit: "gmail", alias: "Personal" });
+    // The app is told which attempt the link belongs to, to hand it out again.
+    await expect(retried.json()).resolves.toEqual({ url: "https://connect.composio.dev/link/gmail", accountId: "ca_linked" });
 
     // A lapsed attempt no longer reserves its alias and is left in place.
     accounts.items.push({ id: "ca_lapsed", alias: "old", toolkit: { slug: "gmail" }, status: "EXPIRED", updated_at: "2026-08-21T09:00:00Z" });

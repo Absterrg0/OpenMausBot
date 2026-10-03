@@ -73,7 +73,10 @@ const toolkitPageSchema = z.object({
   items: z.array(toolkitItemSchema).optional(),
   next_cursor: z.string().nullable().optional(),
 });
-const linkResponseSchema = z.object({ redirect_url: z.string().optional() });
+const linkResponseSchema = z.object({
+  redirect_url: z.string().optional(),
+  connected_account_id: z.string().optional(),
+});
 const aliasRequestSchema = z.object({ alias: z.string().nullable().optional() });
 const upstreamErrorSchema = z.object({
   message: z.string().optional(),
@@ -493,8 +496,10 @@ async function authorize(
   // Only a connected account owns its alias. Composio creates the account,
   // alias included, when the auth link is minted, and stops reserving the
   // alias when that link expires. An attempt the user never finished is
-  // therefore this same connection, retried. An unfinished attempt holds no
-  // credentials and is replaced; a lapsed one is left as is.
+  // therefore this same connection, retried. The app hands a retry the link
+  // it already issued while the attempt is open, so an attempt reaching this
+  // point is one whose link it no longer knows: it is replaced. A lapsed
+  // attempt is left as is.
   const sameAlias = alias
     ? serviceAccounts.filter((account) => account.alias?.trim().toLowerCase() === alias.toLowerCase())
     : [];
@@ -520,7 +525,9 @@ async function authorize(
     // read it again and only replace an attempt that is still unfinished.
     // Composio's delete takes no status condition, so this narrows the gap
     // to the one request between the read and the delete; it does not close
-    // it. Clearing the alias instead would leave the old link live, and a
+    // it. An unfinished attempt holds no credentials, so nothing is revoked:
+    // a sign-in that lands in that gap loses the record, never the grant.
+    // Clearing the alias instead would leave the old link live, and a
     // sign-in finished there would connect an account with no alias.
     const path = `/connected_accounts/${encodeURIComponent(account.id!)}`;
     const current = await composioRequest(env, path);
@@ -531,7 +538,7 @@ async function authorize(
     if (!UNFINISHED_ACCOUNT.test(status)) {
       return json({ error: `Account alias "${alias}" is already in use for ${slug}` }, 409);
     }
-    const removed = await composioRequest(env, `${path}?revoke_on_delete=true`, { method: "DELETE" });
+    const removed = await composioRequest(env, path, { method: "DELETE" });
     if (!removed.ok && removed.status !== 404) {
       return json({ error: await upstreamError(removed, "Authorization unavailable") }, 502);
     }
@@ -549,7 +556,12 @@ async function authorize(
   if (redirect.protocol !== "https:" || (redirect.hostname !== "composio.dev" && !redirect.hostname.endsWith(".composio.dev"))) {
     return json({ error: "Composio returned an untrusted authorization link" }, 502);
   }
-  return json({ url: redirect.toString() });
+  // The attempt the link belongs to, so the app can hand a retry this same
+  // link while the attempt is still open.
+  const accountId = body.connected_account_id && ACCOUNT_ID.test(body.connected_account_id)
+    ? body.connected_account_id
+    : undefined;
+  return json(accountId ? { url: redirect.toString(), accountId } : { url: redirect.toString() });
 }
 
 async function disconnect(slug: string, installation: InstallationRow, env: Env, ctx: ExecutionContext) {
