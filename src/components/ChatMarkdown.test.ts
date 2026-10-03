@@ -326,37 +326,19 @@ it("requests both code palettes for skin-aware highlighting", async () => {
   const codeToHtml = vi.fn().mockResolvedValue("<pre>dual palette</pre>");
   vi.doMock("shiki", () => ({ codeToHtml }));
   const cleanup: ReturnType<React.EffectCallback>[] = [];
+  // effects stay captured, so each static render is a fresh first frame
+  const fence = createElement(ChatMarkdown, { text: "```text\nPalette regression sample\n```" });
   try {
-    renderToStaticMarkup(createElement(ChatMarkdown, { text: "```text\nPalette regression sample\n```" }));
-    for (const callback of effects) cleanup.push(callback());
+    expect(renderToStaticMarkup(fence)).not.toContain("dual palette");
+    for (const callback of effects.splice(0)) cleanup.push(callback());
     await vi.waitFor(() => expect(codeToHtml).toHaveBeenCalledWith("Palette regression sample", {
       lang: "text",
       themes: { light: "github-light-default", dark: "github-dark-default" },
       defaultColor: "light-dark()",
     }));
-  } finally {
-    for (const close of cleanup) if (typeof close === "function") close();
-    effect.mockImplementation(originalUseEffect);
-    vi.doUnmock("shiki");
-  }
-});
-
-it("paints a cached highlight in a code block's first frame", async () => {
-  const originalUseEffect = (await vi.importActual<typeof React>("react")).useEffect;
-  const effects: React.EffectCallback[] = [];
-  const effect = vi.mocked(React.useEffect).mockImplementation((callback) => { effects.push(callback); });
-  const codeToHtml = vi.fn().mockResolvedValue("<pre>highlighted once</pre>");
-  vi.doMock("shiki", () => ({ codeToHtml }));
-  const cleanup: ReturnType<React.EffectCallback>[] = [];
-  const block = createElement(CodeBlock, { code: "const remounted = true;", lang: "ts", streaming: false });
-  try {
-    expect(renderToStaticMarkup(block)).not.toContain("highlighted once");
-    for (const callback of effects.splice(0)) cleanup.push(callback());
-    await vi.waitFor(() => expect(codeToHtml).toHaveBeenCalledTimes(1));
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    // a remount (revisiting the thread) paints highlighted at once, never
-    // plain text first
-    expect(renderToStaticMarkup(block)).toContain("highlighted once");
+    // a remount (revisiting the thread) paints the cached highlight at once,
+    // never plain text first
+    await vi.waitFor(() => expect(renderToStaticMarkup(fence)).toContain("dual palette"));
   } finally {
     for (const close of cleanup) if (typeof close === "function") close();
     effect.mockImplementation(originalUseEffect);

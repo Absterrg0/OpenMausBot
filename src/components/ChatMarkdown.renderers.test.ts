@@ -56,7 +56,6 @@ describe("ChatMarkdown element renderers", () => {
     const second = markdownProps(after, text);
     expect(second.components).toBe(first.components);
     expect(markdownProps(before, "Another message").components).toBe(first.components);
-    expect(second.rehypePlugins).toBe(first.rehypePlugins);
   });
 
   it("follows the thread list only for a message that can hold a thread link", () => {

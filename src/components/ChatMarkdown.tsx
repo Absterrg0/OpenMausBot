@@ -16,7 +16,7 @@
 // themselves, so a snippet never reorders and never scrambles the RTL
 // sentence holding it.
 import { createContext, memo, use, useContext, useEffect, useMemo, useRef, useState, type ComponentProps, type ReactNode } from "react";
-import Markdown, { defaultUrlTransform, type Components, type ExtraProps, type Options as MarkdownOptions } from "react-markdown";
+import Markdown, { defaultUrlTransform, type Components, type ExtraProps } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
 import rehypeKatex from "rehype-katex";
@@ -983,8 +983,6 @@ const MARKDOWN_COMPONENTS: Components = {
   },
 };
 
-const REHYPE_PLUGINS: MarkdownOptions["rehypePlugins"] = [rehypeKatex];
-
 // A thread link only ever comes from a "#Title" run or a canonical
 // openmausbot://thread/ link, whatever case or escaping its scheme uses.
 const MAY_LINK_THREAD = /#|openmausbot/i;
@@ -1001,11 +999,6 @@ function ChatMarkdownComponent({ text, streaming = false, message, mentionPeers 
   // may be called conditionally), so opening or renaming a thread, renaming
   // a bot or changing the selection leaves every other bubble alone.
   const { threads, currentBotId } = MAY_LINK_THREAD.test(text) ? use(ThreadRefsContext) : NO_THREAD_REFS;
-  const remarkPlugins = useMemo((): MarkdownOptions["remarkPlugins"] => [
-    remarkGfm, remarkMath, remarkWindowsPathDestinations, unwrapLinkedImages,
-    [remarkMentions, { peers: mentionPeers, everyone }],
-    remarkThreadRefs(threads, currentBotId),
-  ], [mentionPeers, everyone, threads, currentBotId]);
   // A near-miss table from a model renders as an unreadable run of pipes
   // unless it is repaired before parsing. Table repair moves image source
   // offsets, so image messages skip that repair but still normalize math.
@@ -1017,8 +1010,8 @@ function ChatMarkdownComponent({ text, streaming = false, message, mentionPeers 
     <MessageScopeContext.Provider value={{ streaming, message, imageOffsets, threads, currentBotId }}>
       <div className="chat-md min-w-0 [&>*+*]:mt-2">
         <Markdown
-          remarkPlugins={remarkPlugins}
-          rehypePlugins={REHYPE_PLUGINS}
+          remarkPlugins={[remarkGfm, remarkMath, remarkWindowsPathDestinations, unwrapLinkedImages, [remarkMentions, { peers: mentionPeers, everyone }], remarkThreadRefs(threads, currentBotId)]}
+          rehypePlugins={[rehypeKatex]}
           urlTransform={chatUrlTransform}
           components={MARKDOWN_COMPONENTS}
         >
