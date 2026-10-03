@@ -156,6 +156,7 @@ struct ChatView: View {
         // array as a unit; repeatedly reaching through ObservableObject for
         // every row only recomputes the same value.
         let transcript = rows
+        let versions = session.state.userMessageVersions(inThread: threadId)
         // A VStack with the composer as a sibling, rather than a scroll view
         // with `.safeAreaInset`. The inset version sized itself to its
         // content, so a short transcript left the composer floating in the
@@ -209,6 +210,8 @@ struct ChatView: View {
                                     MessageRow(
                                         chat: current,
                                         message: message,
+                                        versions: message.role == .user && message.kind == .text
+                                            ? versions[message.parentId] ?? [] : [],
                                         endsRun: endsRun(at: index, in: transcript),
                                         openLink: openLink,
                                         openThread: openThread
@@ -419,6 +422,17 @@ struct ChatView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
         .overlay(alignment: .bottom) { plusSheet }
+        .overlay(alignment: .bottomTrailing) {
+#if DEBUG
+            if ProcessInfo.processInfo.arguments.contains("-busy-fleet-preview") {
+                Text("Offline busy-fleet fixture")
+                    .font(.caption2)
+                    .allowsHitTesting(false)
+                    .accessibilityIdentifier("busy-fleet-progress")
+                    .accessibilityValue(session.state.cursor ?? "0")
+            }
+#endif
+        }
         .toolbar(.hidden, for: .navigationBar)
         .navigationBarBackButtonHidden(true)
         // Hiding the bar above also disarms the system edge-swipe back
@@ -1486,6 +1500,7 @@ struct ChatView: View {
 struct MessageRow: View {
     let chat: Chat
     let message: Message
+    var versions: [Message] = []
     /// Last bubble of a run from the same side: the one that gets the tail.
     var endsRun = true
     let openLink: (URL, Message) -> OpenURLAction.Result
@@ -1500,10 +1515,6 @@ struct MessageRow: View {
     @State private var digest: DigestSummary?
 
     private static let reactionChoices = ["👍", "❤️", "😂", "🎉", "👀"]
-
-    private var versions: [Message] {
-        session.state.versions(of: message, inThread: chat.threadId)
-    }
 
     /// The stand-in for an edit the computer has not answered yet. It has no
     /// server identity, so nothing may react to it or edit it again.
@@ -2586,6 +2597,7 @@ struct StreamingBubble: View {
                         mascotColor: MausPalette.color(color),
                         isStreaming: true
                     )
+                    .equatable()
                 }
                 if let text, !text.isEmpty {
                     // Same renderer as the settled bubble, for the same

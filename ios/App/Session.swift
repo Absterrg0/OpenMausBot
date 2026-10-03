@@ -311,6 +311,7 @@ final class Session: ObservableObject {
                 // earlier run on the same simulator may have saved a choice.
                 UserDefaults.standard.removeObject(forKey: PrefKey.rosterDensity)
             }
+            if arguments.contains("-busy-fleet-preview") { startBusyFleetPreview() }
             status = .live
             return
         }
@@ -318,6 +319,67 @@ final class Session: ObservableObject {
         restore()
         Task { await refreshNotificationAuthorization() }
     }
+
+#if DEBUG
+    /// Ordinary chat under synthetic fleet traffic: no client, pairing,
+    /// microphone or provider. Uses the same delivery/fold as the live stream.
+    private func startBusyFleetPreview() {
+        guard let template = state.bots.first,
+              let messageTemplate = state.transcript(forThread: template.threadId).first,
+              let event = try? JSONDecoder().decode(RuntimeEvent.self, from: Data(
+                #"{"type":"content.delta","threadId":"fixture","delta":"busy ","streamKind":"assistant_text"}"#.utf8
+              )) else { return }
+        var fleet = state
+        fleet.resetCursor("busy-preview:0")
+        for number in 0..<20 {
+            var bot = template
+            bot.id = "busy-preview-\(number)"
+            bot.threadId = "busy-thread-\(number)"
+            bot.name = "Busy fixture \(number)"
+            bot.tasks = nil
+            bot.projects = nil
+            bot.unread = false
+            bot.messages = (0..<50).map { index in
+                var message = messageTemplate
+                message.id = "busy-\(number)-\(index)"
+                message.role = .bot
+                message.kind = .text
+                message.at = Double(index)
+                message.parentId = nil
+                message.attachments = nil
+                message.card = nil
+                message.text = "Synthetic completed message \(index)."
+                return message
+            }
+            bot.activeLeafId = bot.messages?.last?.id
+            fleet.apply(.bot(bot))
+        }
+        state = fleet
+        streamTask = Task { [weak self] in
+            let events = AsyncThrowingStream<StreamFrame, Error> { continuation in
+                let producer = Task.detached {
+                    for sequence in 1...36_000 {
+                        if Task.isCancelled { break }
+                        var next = event
+                        next.threadId = "busy-thread-\(sequence % 20)"
+                        continuation.yield(StreamFrame(frame: .runtime(next), seq: sequence))
+                        if sequence % 20 == 0 {
+                            do { try await Task.sleep(nanoseconds: 50_000_000) } catch { break }
+                        }
+                    }
+                    continuation.finish()
+                }
+                continuation.onTermination = { _ in producer.cancel() }
+            }
+            do {
+                for try await batch in eventBatches(events) {
+                    guard !Task.isCancelled, let self else { return }
+                    self.applyStreamBatch(batch)
+                }
+            } catch { /* offline fixture cancellation */ }
+        }
+    }
+#endif
 
     /// Rebuild the selected connection at launch, migrating the previous
     /// single-computer record the first time a multi-computer build runs.
@@ -856,11 +918,12 @@ final class Session: ObservableObject {
                 // breaking out here instead would fall through to the "the
                 // harness went away" path and flash a lost-connection banner
                 // on what is actually a deliberate reconnect.
-                for try await frame in try client.events(since: state.cursor, screens: screenWatchers > 0) {
+                let events = try client.events(since: state.cursor, screens: screenWatchers > 0)
+                for try await batch in eventBatches(events) {
                     if Task.isCancelled { return }
                     reconnectDelay = 0
 
-                    if case let .hello(cursor, resumed) = frame.frame {
+                    if let first = batch.first, case let .hello(cursor, resumed) = first.frame {
                         log.info("stream live, resumed=\(resumed, privacy: .public)")
                         // false means the server could not replay the gap —
                         // the one case that costs a full hydrate. Commit the
@@ -879,12 +942,7 @@ final class Session: ObservableObject {
                         refreshConnectionMetadata(using: client)
                         continue
                     }
-                    state.apply(frame)
-                    if case let .notify(notification) = frame.frame {
-                        NotificationCoordinator.shared.deliver(notification, sequence: frame.seq)
-                    }
-                    NotificationCoordinator.shared.setBadge(state.unreadCount)
-                    state.advance(to: frame.seq)
+                    applyStreamBatch(batch)
                 }
                 // the stream ended without an error — the harness went away
                 log.notice("stream ended without an error")
@@ -910,6 +968,18 @@ final class Session: ObservableObject {
             reconnectDelay = reconnectDelay == 0 ? 1 : min(reconnectDelay * 2, 15)
             try? await Task.sleep(nanoseconds: reconnectDelay * 1_000_000_000)
         }
+    }
+
+    private func applyStreamBatch(_ batch: [StreamFrame]) {
+        var updated = state
+        updated.applyBatch(batch)
+        state = updated
+        for frame in batch {
+            if case let .notify(notification) = frame.frame {
+                NotificationCoordinator.shared.deliver(notification, sequence: frame.seq)
+            }
+        }
+        NotificationCoordinator.shared.setBadge(state.unreadCount)
     }
 
     private func hydrate(using client: CompanionClient) async throws {

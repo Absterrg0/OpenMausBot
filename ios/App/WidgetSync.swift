@@ -3,32 +3,31 @@
 // A widget extension is a separate process on a system budget, so it cannot
 // subscribe to the session. Instead the app freezes the same `updates` the
 // pill reads into the App Group whenever they change — the same 400 ms
-// debounce the Dynamic Island rides — and tells WidgetKit to reload only
-// when the payload actually differs. While the app is alive the widgets are
-// exact; once it is gone they age the last snapshot and say so.
+// window the Dynamic Island rides — and tells WidgetKit to reload only
+// when the payload differs, or its unchanged timestamp needs a minute's
+// renewal. Once the app is gone they age the last snapshot and say so.
 import Combine
 import CompanionCore
 import Foundation
+import UIKit
 import WidgetKit
 
 @MainActor
 final class WidgetSyncBridge {
-    private let store: WidgetSnapshotStore?
+    private let writer: WidgetSnapshotWriter?
     private var cancellable: AnyCancellable?
-    /// The last snapshot this bridge wrote; an equal payload is neither
-    /// rewritten nor allowed to cost the widget a reload.
-    private var lastWritten: WidgetSnapshot?
     /// The per-chat elapsed clock, seeded from the last snapshot so work
     /// that began before this launch keeps its true start.
     private var sinceClock = WidgetSinceClock()
-    /// Whether the unpaired state is already what is on disk. Starts false —
-    /// at launch nothing is known about the file — so an app that comes up
-    /// unpaired still clears whatever the last session left behind, once.
-    private var publishedUnpaired = false
+    private var clockConnectionID: String?
+    private var backgroundWrite: UIBackgroundTaskIdentifier = .invalid
+    private var flushGeneration = 0
 
     init(store: WidgetSnapshotStore?) {
-        self.store = store
-        sinceClock = WidgetSinceClock(seed: store?.read())
+        writer = store.map(WidgetSnapshotWriter.init(store:))
+        let seed = store?.read()
+        sinceClock = WidgetSinceClock(seed: seed)
+        clockConnectionID = seed?.connectionID
     }
 
     /// The bridge over the App Group container the widget extension reads.
@@ -44,54 +43,73 @@ final class WidgetSyncBridge {
     func attach(to session: Session) {
         // Both the fleet and the connection matter: an unpaired app must
         // clear the snapshot even when no state change would have said so.
+        // A fixed window keeps startup's grace without waiting forever for
+        // a busy fleet to go quiet. Empty windows publish nothing.
         cancellable = Publishers.CombineLatest(session.$state, session.$connection)
-            .debounce(for: .milliseconds(400), scheduler: DispatchQueue.main)
+            .collect(.byTime(DispatchQueue.main, .milliseconds(400)))
+            .compactMap(\.last)
             .sink { [weak self] state, connection in
                 self?.sync(state, connectionID: connection?.id)
             }
     }
 
-    /// The last write before suspension. The debounced stream may never
-    /// fire for the newest state, and a snapshot one ask behind is the
+    /// The last write before suspension. The current window may not yet
+    /// have published the newest state, and a snapshot one ask behind is the
     /// difference between answering from the home screen and opening a
     /// chat that has already moved on.
     func flush(_ state: CompanionState, connectionID: String?) {
-        sync(state, connectionID: connectionID)
+        guard writer != nil else { return }
+        flushGeneration &+= 1
+        let generation = flushGeneration
+        if backgroundWrite == .invalid {
+            backgroundWrite = UIApplication.shared.beginBackgroundTask(withName: "widget.snapshot") { [weak self] in
+                self?.endBackgroundWrite()
+            }
+        }
+        sync(state, connectionID: connectionID, flushGeneration: generation)
     }
 
-    private func sync(_ state: CompanionState, connectionID: String?) {
-        guard let store else { return }
+    private func sync(_ state: CompanionState, connectionID: String?, flushGeneration: Int? = nil) {
+        guard writer != nil else { return }
         guard let connectionID else {
             // Unpaired: no snapshot at all beats a stale one claiming a
             // connection that no longer exists — the widgets fall back to
             // their pairing placeholder.
-            guard !publishedUnpaired else { return }
-            store.remove()
-            lastWritten = nil
             // The clock dies with the session it measured: a re-paired
             // computer's work starts when it starts, not when the last
             // one did.
             sinceClock = WidgetSinceClock()
-            publishedUnpaired = true
-            WidgetCenter.shared.reloadAllTimelines()
+            clockConnectionID = nil
+            publish(nil, flushGeneration: flushGeneration)
             return
         }
-        publishedUnpaired = false
+        if clockConnectionID != connectionID {
+            sinceClock = WidgetSinceClock()
+            clockConnectionID = connectionID
+        }
         let snapshot = state.widgetSnapshot(connectionID: connectionID) { chat in
             MausState.forChat(chat, in: state).rawValue
         } since: { update in
             sinceClock.stamp(for: update.chat, kind: update.kind)
         }
-        sinceClock.forget(absentFrom: state.updates.map(\.chat))
-        guard snapshot != lastWritten else { return }
-        do {
-            try store.write(snapshot)
-            lastWritten = snapshot
-            WidgetCenter.shared.reloadAllTimelines()
-        } catch {
-            // A failed write — an unsigned preview, a full container — must
-            // not take the app down with it; the widget keeps whatever
-            // the previous write left.
+        sinceClock.forget(absentFrom: snapshot.rows.map(\.chat))
+        publish(snapshot, flushGeneration: flushGeneration)
+    }
+
+    private func publish(_ snapshot: WidgetSnapshot?, flushGeneration: Int?) {
+        writer?.publish(snapshot) { [weak self] changed in
+            Task { @MainActor in
+                if changed { WidgetCenter.shared.reloadAllTimelines() }
+                if let flushGeneration, self?.flushGeneration == flushGeneration {
+                    self?.endBackgroundWrite()
+                }
+            }
         }
+    }
+
+    private func endBackgroundWrite() {
+        guard backgroundWrite != .invalid else { return }
+        UIApplication.shared.endBackgroundTask(backgroundWrite)
+        backgroundWrite = .invalid
     }
 }

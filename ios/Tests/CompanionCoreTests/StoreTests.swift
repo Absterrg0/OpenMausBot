@@ -479,6 +479,26 @@ final class StoreTests: XCTestCase {
         state.messages["t1"] = [root, second, reply, first]
 
         XCTAssertEqual(state.versions(of: first, inThread: "t1").map(\.id), ["first", "second"])
+        XCTAssertEqual(state.userMessageVersions(inThread: "t1")[root.id]?.map(\.id), ["first", "second"])
+        XCTAssertEqual(state.userMessageVersions(inThread: "t1")[nil]?.map(\.id), [root.id])
+        XCTAssertTrue(state.versions(of: reply, inThread: "t1").isEmpty)
+    }
+
+    func testGroupedVersionsKeepChronologicalTieOrderAndThreadIsolation() {
+        var state = CompanionState()
+        var first = message("a", at: 2)
+        first.parentId = "parent"
+        var second = message("b", at: 2)
+        second.parentId = "parent"
+        var other = message("other", at: 1)
+        other.parentId = "different-parent"
+        state.messages["one"] = [second, other, first]
+        state.messages["two"] = [message("other-thread", at: 0)]
+        let groups = state.userMessageVersions(inThread: "one")
+        XCTAssertEqual(groups["parent"]?.map(\.id), ["a", "b"])
+        XCTAssertEqual(groups["different-parent"]?.map(\.id), ["other"])
+        XCTAssertNil(groups[nil])
+        XCTAssertTrue(state.userMessageVersions(inThread: "missing").isEmpty)
     }
 
     func testMessageAppendMovesTheLeafAndBranchSwitchClearsLiveText() throws {

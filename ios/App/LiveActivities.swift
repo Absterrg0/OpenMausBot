@@ -28,8 +28,11 @@ final class LiveActivityCoordinator {
         AnswerApprovalIntent.handler = { [weak self, weak session] threadId, requestId, choice, isPermission in
             await self?.answer(session: session, threadId: threadId, requestId: requestId, choice: choice, isPermission: isPermission)
         }
+        // Do not debounce indefinitely while another bot is streaming.
+        // The first window also lets cold-launch hydration settle.
         cancellable = session.$state
-            .debounce(for: .milliseconds(400), scheduler: DispatchQueue.main)
+            .collect(.byTime(DispatchQueue.main, .milliseconds(400)))
+            .compactMap(\.last)
             .sink { [weak self] state in self?.sync(state) }
     }
 
@@ -45,7 +48,7 @@ final class LiveActivityCoordinator {
 
     private func sync(_ state: CompanionState) {
         guard ActivityAuthorizationInfo().areActivitiesEnabled else { return }
-        let wanted = state.updates.filter { $0.kind != .toReview }
+        let wanted = state.liveActivityUpdates
         var wantedIds = Set<String>()
 
         for update in wanted {

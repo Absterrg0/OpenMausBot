@@ -47,6 +47,22 @@ public struct WidgetSnapshot: Codable, Equatable, Sendable {
 }
 
 extension WidgetSnapshot {
+    /// Payload changes publish immediately. An unchanged live view only
+    /// renews once a minute, without changing the widget's answer-age gate.
+    public func shouldReplace(_ previous: WidgetSnapshot?) -> Bool {
+        guard let previous, connectionID == previous.connectionID,
+              rows == previous.rows,
+              zip(rows, previous.rows).allSatisfy({ current, held in
+                  current.chat.threadId == held.chat.threadId
+                      && current.chat.name == held.chat.name
+                      && current.chat.color == held.chat.color
+                      && current.chat.threadTitle == held.chat.threadTitle
+              })
+        else { return true }
+        let elapsed = writtenAt.timeIntervalSince(previous.writtenAt)
+        return elapsed < 0 || elapsed >= 60
+    }
+
     /// An empty write from "now" — what a placeholder renders, so a
     /// preview crosses the same fresh-to-stale line a real quiet
     /// snapshot does instead of occupying a state nothing produces.
@@ -121,8 +137,25 @@ extension CompanionState {
             writtenAt: now,
             connectionID: connectionID,
             rows: updates.map { update in
-                WidgetSnapshot.Row(
-                    chat: update.chat,
+                // Widgets render identity, status and the offered card, not
+                // the conversation or the rest of its thread tree.
+                let chat: Chat
+                switch update.chat {
+                case var .bot(bot):
+                    bot.messages = nil
+                    bot.activeLeafId = nil
+                    bot.hasMore = nil
+                    bot.projects = nil
+                    bot.tasks = bot.tasks?.filter { $0.threadId == bot.threadId }
+                    chat = .bot(bot)
+                case var .room(room):
+                    room.messages = nil
+                    room.hasMore = nil
+                    room.tasks = room.tasks?.filter { $0.threadId == room.threadId }
+                    chat = .room(room)
+                }
+                return WidgetSnapshot.Row(
+                    chat: chat,
                     kind: update.kind,
                     line: update.line,
                     card: update.card,
@@ -226,5 +259,41 @@ public struct WidgetSnapshotStore: Sendable {
     /// Removes the snapshot. A file that never existed is not an error.
     public func remove() {
         try? FileManager.default.removeItem(at: fileURL)
+    }
+}
+
+/// Serial disk work keeps JSON/file replacement off the UI actor and ensures
+/// an unpair clears every earlier write before a later pairing is published.
+public final class WidgetSnapshotWriter: @unchecked Sendable {
+    private let store: WidgetSnapshotStore
+    private let queue = DispatchQueue(label: "com.openmausbot.widget.snapshot", qos: .utility)
+    // These two fields are accessed only on queue.
+    private var lastWritten: WidgetSnapshot?
+    private var publishedUnpaired = false
+
+    public init(store: WidgetSnapshotStore) { self.store = store }
+
+    /// Completion runs on the writer queue, even for a skipped/failed write.
+    public func publish(_ snapshot: WidgetSnapshot?, completion: @escaping @Sendable (Bool) -> Void) {
+        queue.async { [self] in
+            if let snapshot {
+                guard snapshot.shouldReplace(lastWritten) else { completion(false); return }
+                do {
+                    try store.write(snapshot)
+                    lastWritten = snapshot
+                    publishedUnpaired = false
+                } catch {
+                    // Do not remember a failed write: the next update retries.
+                    completion(false)
+                    return
+                }
+            } else {
+                guard !publishedUnpaired else { completion(false); return }
+                store.remove()
+                lastWritten = nil
+                publishedUnpaired = true
+            }
+            completion(true)
+        }
     }
 }

@@ -31,6 +31,79 @@ final class WidgetSnapshotTests: XCTestCase {
 
     // MARK: - Derivation
 
+    func testSnapshotOmitsTranscriptsAndUnrelatedTasksWithoutChangingWidgetContent() throws {
+        let state = try hydrated
+        let snapshot = state.widgetSnapshot(connectionID: "computer-1") { _ in "idle" }
+        for (row, update) in zip(snapshot.rows, state.updates) {
+            XCTAssertEqual(row.chat.destination, update.chat.destination)
+            XCTAssertEqual(row.chat.name, update.chat.name)
+            XCTAssertEqual(row.chat.color, update.chat.color)
+            XCTAssertEqual(row.chat.threadTitle, update.chat.threadTitle)
+            XCTAssertEqual(row.card, update.card)
+            switch row.chat {
+            case let .bot(bot):
+                XCTAssertNil(bot.messages)
+                XCTAssertNil(bot.projects)
+                XCTAssertTrue((bot.tasks ?? []).allSatisfy { $0.threadId == bot.threadId })
+            case let .room(room):
+                XCTAssertNil(room.messages)
+                XCTAssertTrue((room.tasks ?? []).allSatisfy { $0.threadId == room.threadId })
+            }
+        }
+        // Deriving the compact snapshot never changes the app's transcript.
+        XCTAssertFalse(try XCTUnwrap(state.messages["t-ask-new"]).isEmpty)
+    }
+
+    func testUnchangedPayloadRenewsAtMostOnceAMinuteAndChangesPublishImmediately() throws {
+        var state = try hydrated
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+        func snapshot(at offset: TimeInterval = 0, connectionID: String = "computer-1") -> WidgetSnapshot {
+            state.widgetSnapshot(connectionID: connectionID, now: now.addingTimeInterval(offset)) { _ in "idle" }
+        }
+        let first = snapshot()
+        XCTAssertTrue(first.shouldReplace(nil))
+        XCTAssertFalse(snapshot(at: 0.001).shouldReplace(first))
+        XCTAssertFalse(snapshot(at: 59.999).shouldReplace(first))
+        XCTAssertTrue(snapshot(at: 60).shouldReplace(first))
+        XCTAssertTrue(snapshot(at: -1).shouldReplace(first))
+        XCTAssertTrue(snapshot(connectionID: "computer-2").shouldReplace(first))
+        XCTAssertTrue(state.widgetSnapshot(connectionID: "computer-1", now: now) { _ in "alerting" }.shouldReplace(first))
+
+        let index = try XCTUnwrap(state.bots.firstIndex { $0.id == "bot-ask-new" })
+        state.bots[index].name = "Renamed"
+        XCTAssertTrue(snapshot().shouldReplace(first))
+        let renamed = snapshot()
+        state.bots[index].color = "red"
+        XCTAssertTrue(snapshot().shouldReplace(renamed))
+        let recolored = snapshot()
+        state.bots[index].tasks?[0].title = "New thread title"
+        XCTAssertTrue(snapshot().shouldReplace(recolored))
+        let retitled = snapshot()
+        let cardIndex = try XCTUnwrap(state.messages["t-ask-new"]?.firstIndex { $0.card?.requestId == "req-new" })
+        state.messages["t-ask-new"]?[cardIndex].card?.options = ["Cancel"]
+        XCTAssertTrue(snapshot().shouldReplace(retitled))
+        let changedOptions = snapshot()
+        state.messages["t-ask-new"]?[cardIndex].card?.answered = "Cancel"
+        XCTAssertTrue(snapshot().shouldReplace(changedOptions))
+
+        // Equality for a widget payload never extends the trust window on
+        // an old snapshot that the app has stopped refreshing.
+        XCTAssertNil(first.answerableCard(
+            threadId: "t-ask-new", requestId: "req-new", choice: "Ship it", isPermission: false,
+            at: now.addingTimeInterval(WidgetSnapshot.answerMaximumAge + 0.1)
+        ))
+
+        // Room identity equality intentionally ignores the selected thread;
+        // the widget's deep link must not inherit that shortcut.
+        var room = try XCTUnwrap(state.rooms.first)
+        let oldRow = WidgetSnapshot.Row(chat: .room(room), kind: .working, line: "Working", card: nil, face: "idle", since: nil)
+        room.threadId = "new-room-thread"
+        let newRow = WidgetSnapshot.Row(chat: .room(room), kind: .working, line: "Working", card: nil, face: "idle", since: nil)
+        XCTAssertEqual(oldRow, newRow)
+        XCTAssertTrue(WidgetSnapshot(writtenAt: now, connectionID: "computer-1", rows: [newRow])
+            .shouldReplace(WidgetSnapshot(writtenAt: now, connectionID: "computer-1", rows: [oldRow])))
+    }
+
     func testRowsMirrorUpdatesOneToOneWithFacesResolvedAtWriteTime() throws {
         let state = try hydrated
         let now = Date(timeIntervalSince1970: 1_700_000_000)
@@ -303,6 +376,71 @@ final class WidgetSnapshotTests: XCTestCase {
     }
 
     // MARK: - Store
+
+    func testWriterRunsOffMainAndPreservesWriteUnpairPairOrder() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("widget-writer-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = WidgetSnapshotStore(directory: directory)
+        let writer = WidgetSnapshotWriter(store: store)
+        let state = try hydrated
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+        let first = state.widgetSnapshot(connectionID: "computer-1", now: now) { _ in "idle" }
+        let duplicate = state.widgetSnapshot(connectionID: "computer-1", now: now.addingTimeInterval(0.001)) { _ in "idle" }
+        let paired = state.widgetSnapshot(connectionID: "computer-2", now: now) { _ in "idle" }
+        let completed = expectation(description: "ordered writes")
+        completed.expectedFulfillmentCount = 4
+        writer.publish(first) { changed in
+            XCTAssertFalse(Thread.isMainThread)
+            XCTAssertTrue(changed)
+            XCTAssertEqual(store.read(), first)
+            completed.fulfill()
+        }
+        writer.publish(duplicate) { changed in
+            XCTAssertFalse(changed)
+            XCTAssertEqual(store.read(), first)
+            completed.fulfill()
+        }
+        writer.publish(nil) { changed in
+            XCTAssertTrue(changed)
+            XCTAssertNil(store.read())
+            completed.fulfill()
+        }
+        writer.publish(paired) { changed in
+            XCTAssertTrue(changed)
+            XCTAssertEqual(store.read(), paired)
+            completed.fulfill()
+        }
+        wait(for: [completed], timeout: 5)
+        XCTAssertEqual(store.read(), paired)
+    }
+
+    func testWriterRetriesAnUnchangedPayloadAfterWriteFailure() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("widget-writer-failure-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        // A file where the container directory belongs makes the first
+        // write fail, without changing real App Group permissions.
+        try Data("blocked".utf8).write(to: directory)
+        let store = WidgetSnapshotStore(directory: directory)
+        let writer = WidgetSnapshotWriter(store: store)
+        let snapshot = try hydrated.widgetSnapshot(connectionID: "computer-1") { _ in "idle" }
+        let completed = expectation(description: "retry after failed write")
+        completed.expectedFulfillmentCount = 2
+        writer.publish(snapshot) { changed in
+            XCTAssertFalse(changed)
+            XCTAssertNil(store.read())
+            try? FileManager.default.removeItem(at: directory)
+            completed.fulfill()
+        }
+        writer.publish(snapshot) { changed in
+            XCTAssertTrue(changed)
+            XCTAssertEqual(store.read()?.connectionID, snapshot.connectionID)
+            completed.fulfill()
+        }
+        wait(for: [completed], timeout: 5)
+        XCTAssertEqual(store.read()?.connectionID, snapshot.connectionID)
+    }
 
     func testStoreRoundTripsReplacesAndRemoves() throws {
         let directory = FileManager.default.temporaryDirectory
