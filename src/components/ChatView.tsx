@@ -11,6 +11,7 @@ import {
   Crown,
   Download,
   Gauge,
+  ListChecks,
   MessageSquareReply,
   Monitor,
   MoreHorizontal,
@@ -1716,11 +1717,18 @@ function ChatHeaderMenu({ bot, messages, findOpen, onFind }: {
       onSelect: () => dispatch({ type: "toggleSettings", open: true, section: "usage" }),
     } satisfies SidebarMenuItem] : []),
     ...(remoteClient ? [] : [{
+      key: "activity",
+      label: "Activity",
+      icon: <ListChecks size={16} />,
+      active: state.activityOpen,
+      separatorBefore: !usage,
+      onSelect: () => dispatch({ type: "toggleActivity" }),
+    } satisfies SidebarMenuItem, {
       key: "inspector",
       label: t("chat.inspector"),
       icon: <Bug size={16} />,
       active: advanced && state.inspectorOpen,
-      separatorBefore: !usage,
+      separatorBefore: true,
       heading: usage ? undefined : advancedOnly,
       disabled: !advanced,
       onSelect: () => dispatch({ type: "toggleInspector" }),
@@ -1737,7 +1745,7 @@ function ChatHeaderMenu({ bot, messages, findOpen, onFind }: {
           data-testid="chat-more"
           className={cn(
             "flex rounded-md p-1.5 hover:bg-raised",
-            open || findOpen || state.inspectorOpen ? "text-accent" : "text-ink-secondary hover:text-ink",
+            open || findOpen || state.inspectorOpen || state.activityOpen ? "text-accent" : "text-ink-secondary hover:text-ink",
           )}
           title={t("chat.more")}
         >

@@ -47,7 +47,7 @@ import {
   type CredentialTargetId,
 } from "../shared/credential-request.ts";
 
-import { approvalHeldNote, approvalHeldReason, approvalModeForOrigin, autoVerdict, deliverFullAccessApproval, delegatedApprovalMode } from "./auto-approve.ts";
+import { HELD_NOTE, approvalHeldNote, approvalHeldReason, approvalModeForOrigin, autoVerdict, deliverFullAccessApproval, delegatedApprovalMode } from "./auto-approve.ts";
 import { CommandAllowlistStore, commandAllowlistCandidate } from "./command-allowlist.ts";
 import type { CommandAllowlistCandidate, CommandAllowlistResponse } from "../shared/command-allowlist.ts";
 import { updateClaudeCli } from "./claude-update.ts";
@@ -419,6 +419,7 @@ import {
   THREADS_PROMPT,
   LEARN_PROMPT,
   PROFILE_PROMPT,
+  TEAM_MEMORY_PROMPT,
   ROUTINE_PROMPT,
   ROUTINE_EXECUTION_PROMPT,
   WEBHOOK_PROMPT,
@@ -475,6 +476,12 @@ import { fetchGithubTeam, fetchLibraryTeam, fetchTeamCatalog } from "./team-libr
 import { BOT_PACKAGE_MAX_SKILLS, isBotPackage, packageSummary, parsePackageDocument, renderBotPackageMarkdown, type PackageDocument } from "./bot-package.ts";
 import { createTeamManifest, parseTeamManifest } from "./team-manifest.ts";
 import { readThreadEvents } from "./thread-events.ts";
+import { TeamMemory, TEAM_MEMORY_KINDS, type TeamMemoryKind } from "./team-memory.ts";
+import { describeTool, readBotActivity } from "./activity.ts";
+import { OutboundCounts } from "./outbound-counts.ts";
+import { OutboundRequestService } from "./outbound-requests.ts";
+import { DEFAULT_OUTBOUND_POLICY, connectorCallsIn, normalizeOutboundPolicy, outboundCallsIn } from "../shared/outbound.ts";
+import { connectorAccessDecision, describeConnectorScopes, normalizeConnectorScopes } from "../shared/connector-scopes.ts";
 import { bindThreadLogCapProvider } from "./thread-log-rotation.ts";
 import { listenWebhookIngress, webhookCredential, type WebhookIngress } from "./webhook-ingress.ts";
 import { assertModelVariantSupported, memberTurnSelection } from "./member-turn.ts";
@@ -1298,6 +1305,10 @@ function cardAnswerRefusal(auth: RequestAuth, threadId: string, requestId: strin
     return auth.trust === "service" && behavior !== "deny"
       ? "A local service can only decline this request. Approve or answer it in OpenMausBot while signed in."
       : null;
+  }
+  if (!auth.scopes.includes("admin") && store.messagesFor(threadId).some(message =>
+    message.card?.requestId === requestId && message.card.teamMemoryRequest)) {
+    return "Only a workspace admin can review shared team memory.";
   }
   // A Cloud home is one person's: a device paired with chat-only access (a
   // guest) may read along but never answer, or its words would reach the
@@ -3801,7 +3812,7 @@ function previewSystemPrompt(bot: BotRecord) {
       browser: previewPlan.computer === undefined ? false : previewPlan.browser,
     }, { note: previewPlan.note, cloudHome: Boolean(CLOUD_HOME) }) },
     { id: "cloud-home", label: "OMB Cloud", text: CLOUD_HOME ? cloudHomePrompt(agentsMounted && lendingEnabled()) : "" },
-    { id: "composio", label: "Connected apps", text: caps?.composioMcp && bot.composio !== false && composio.configured(cfg) ? composioSystemPrompt(bot.connectorTools) : "" },
+    { id: "composio", label: "Connected apps", text: caps?.composioMcp && bot.composio !== false && composio.configured(cfg) ? composioSystemPrompt(bot.connectorTools) + describeConnectorScopes(bot.connectorScopes) : "" },
     { id: "mcp", label: "MCP servers", text: caps?.customMcp ? customMcpPrompt(Object.keys(engineMcpServers(bot))) : "" },
     { id: "browser", label: "Browser", text: previewPlan.browser ? BUILT_IN_BROWSER_SYSTEM_PROMPT : "" },
     { id: "coordination", label: "Team", text: agentsMounted && coordination ? ` ${coordination}` : "" },
@@ -3809,6 +3820,7 @@ function previewSystemPrompt(bot: BotRecord) {
     { id: "routine", label: "Routines", text: agentsMounted ? ROUTINE_PROMPT : "" },
     { id: "profile", label: "Profile changes", text: agentsMounted ? PROFILE_PROMPT : "" },
     { id: "section-context", label: "Section context", text: sectionContextSystemPrompt(bot.section) },
+    { id: "team-memory", label: "Team memory", text: teamMemory.systemPrompt(bot.section) + (agentsMounted ? TEAM_MEMORY_PROMPT : "") },
     { id: "memory", label: "Memory", text: memorySystemPrompt(bot.id, { managedWrites: agentsMounted, fileTools: Boolean(privateWorkspace), enabled: bot.memoryEnabled !== false }) },
     { id: "skills", label: "Skills index", text: privateWorkspace ? skillsSystemPrompt(bot.id, skillsLibraryEnabled(cfg) ? bot.assignedSkills : undefined) : "" },
   ]);
@@ -9311,6 +9323,8 @@ async function startTurn(
     compactOnly?: boolean;
     /** Harness-only: never follow a backup failure with another attempt. */
     automaticRecoveryAttempted?: boolean;
+    /** Cursor into this bot's ordered startup-only backups. */
+    automaticRecoveryIndex?: number;
     /** Queue receipts outlive the dispatch acknowledgment until this exact turn settles. */
     onTurnSettled?: () => void;
     coordination?: { id: string; resumed: boolean; settle: (outcome: { ok: boolean; text: string }) => void };
@@ -10407,7 +10421,7 @@ async function startTurn(
         { id: "cloud-home", label: "OMB Cloud", text: CLOUD_HOME ? cloudHomePrompt(Boolean(integrations.agents) && lendingEnabled()) : "" },
         // gated on the integration, not the key: the hint only goes to a
         // bot whose driver actually mounted the tools
-        { id: "composio", label: "Connected apps", text: integrations.composio ? composioSystemPrompt(liveBot?.connectorTools ?? bot.connectorTools) : "" },
+        { id: "composio", label: "Connected apps", text: integrations.composio ? composioSystemPrompt(liveBot?.connectorTools ?? bot.connectorTools) + describeConnectorScopes((liveBot ?? bot).connectorScopes) : "" },
         { id: "mcp", label: "MCP servers", text: customMcpPrompt(Object.keys(integrations.custom ?? {})) },
         { id: "browser", label: "Browser", text: integrations.browser ? BUILT_IN_BROWSER_SYSTEM_PROMPT : "" },
         { id: "coordination", label: "Team", text: coordinationPrompt ? ` ${coordinationPrompt}` : "" },
@@ -10420,6 +10434,7 @@ async function startTurn(
         { id: "profile", label: "Profile changes", text: profilePrompt },
         { id: "learn", label: "Skill authoring", text: learnPrompt },
         { id: "section-context", label: "Section context", text: sectionContextSystemPrompt(bot.section) },
+        { id: "team-memory", label: "Team memory", text: teamMemory.systemPrompt(bot.section) + (integrations.agents ? TEAM_MEMORY_PROMPT : "") },
         // what the bot said lately in its other conversations, so a task
         // never redoes — or forgets — what another one already did
         { id: "recent", label: "Recent work", text: recentWorkPrompt(recentWork(recentWorkSources(bot), bot, { userName: cfg.profile?.name?.trim() || "User", currentThreadId: threadId, ...recentWorkFilter() })) },
@@ -10464,7 +10479,8 @@ async function startTurn(
       const dispatch = await guardTurnDispatch(instance.adapter.sendTurn({
         threadId,
         botId: bot.id,
-        startupRecovery: cfg.automaticRecovery?.enabled === true && !opts?.automaticRecoveryAttempted,
+        startupRecovery: cfg.automaticRecovery?.enabled === true &&
+          (opts?.automaticRecoveryIndex ?? 0) < ((liveBot ?? bot).fallback?.length || (cfg.automaticRecovery.backup ? 1 : 0)),
         text: withRecalled(recalled, dispatchContext.turnText),
         refreshSystemPrompt: true,
         images: turnImages,
@@ -10624,9 +10640,15 @@ async function startTurn(
         return;
       }
       let message = e instanceof Error ? e.message : String(e);
-      const backup = cfg.automaticRecovery?.enabled ? cfg.automaticRecovery.backup : undefined;
       const current = store.projectBotForTask(bot.id, threadId);
-      if (mayRecover && backup && current && !opts?.automaticRecoveryAttempted && (!opts?.cardContinuation || opts.coordination) &&
+      const backups = cfg.automaticRecovery?.enabled
+        ? current?.fallback?.length ? current.fallback : cfg.automaticRecovery.backup ? [cfg.automaticRecovery.backup] : []
+        : [];
+      const nextIndex = backups.findIndex((candidate, index) => index >= (opts?.automaticRecoveryIndex ?? 0) &&
+        registry.get(candidate.instanceId)?.enabled &&
+        (candidate.instanceId !== instanceId || candidate.model !== model));
+      const backup = backups[nextIndex];
+      if (mayRecover && backup && current && (!opts?.cardContinuation || opts.coordination) &&
           !directRequestOwners.get(threadId)?.stopped && !hasQueuedSteeredMessages(bot.id, threadId) &&
           JSON.stringify(current.modelSelection) === JSON.stringify(bot.modelSelection) &&
           (backup.instanceId !== instanceId || backup.model !== model) &&
@@ -10652,7 +10674,7 @@ async function startTurn(
               name: `recovery: Automatic recovery: ${instance.displayName || instance.driverKind} could not start. Trying ${target.displayName || target.driverKind} · ${checked.selection.model} once in this thread.`, ok: true,
             } });
             await startTurn(bot.id, text, { ...opts, threadId, userMessage, editedMessageId: undefined,
-              automaticRecoveryAttempted: true });
+              automaticRecoveryAttempted: true, automaticRecoveryIndex: nextIndex + 1 });
             // The backup now owns these callbacks; don't publish a failed
             // routine/peer result or release a queued receipt in between.
             directFollowupSettlers.delete(dispatchClaimId);
@@ -11451,6 +11473,75 @@ const validateModelProposal = (selection: ModelSelection, current?: BotRecord): 
   }
   return null;
 };
+const teamMemory = new TeamMemory(join(DATA_DIR, "team-memory.json"));
+const outboundRequests = new OutboundRequestService();
+const outboundCounts = new OutboundCounts(join(DATA_DIR, "outbound-counts.json"));
+const OUTBOUND_HOLD_MS = 9 * 60_000;
+
+function resolveAndSendTrust(res: ServerResponse, threadId: string, requestId: string, behavior: "allow" | "deny" | "answer"): boolean {
+  const teamMemoryCard = store.messagesFor(threadId).find(
+    (message) => message.card?.requestId === requestId && message.card.teamMemoryRequest,
+  );
+  if (teamMemoryCard?.card?.teamMemoryRequest) {
+    const request = teamMemoryCard.card.teamMemoryRequest;
+    const proposer = teamMemoryCard.from?.botId ? store.bot(teamMemoryCard.from.botId) : store.botByThread(threadId);
+    const result = teamMemory.resolve(request.section, request.entryId, behavior === "allow" ? "accept" : "reject");
+    if (!result.claimed) {
+      if (!teamMemoryCard.card.answered) {
+        store.patchMessage(threadId, teamMemoryCard.id, { card: { ...teamMemoryCard.card, answered: "unavailable", dismissed: true } });
+      }
+      json(res, 200, { ok: true, outcome: "unavailable" });
+      return true;
+    }
+    if (result.state === "already_settled") {
+      json(res, 200, { ok: true, outcome: "allowed-once", alreadySettled: true });
+      return true;
+    }
+    store.patchMessage(threadId, teamMemoryCard.id, {
+      card: { ...teamMemoryCard.card, answered: result.state === "accepted" ? "allow" : "deny" },
+    });
+    appendDecision(DATA_DIR, {
+      threadId, requestId, botId: proposer?.id, botName: proposer?.name,
+      tool: "propose_team_memory", summary: teamMemoryCard.card.subtitle,
+      decision: result.state === "accepted" ? "user-approved" : "user-denied", source: "user",
+    });
+    json(res, 200, { ok: true, outcome: result.state === "accepted" ? "allowed-once" : "rejected" });
+    return true;
+  }
+  const outboundCard = store.messagesFor(threadId).find(
+    (message) => message.card?.requestId === requestId && message.card.outboundRequest,
+  );
+  if (outboundCard?.card?.outboundRequest) {
+    const outboundBot = outboundCard.from?.botId ? store.bot(outboundCard.from.botId) : store.botByThread(threadId);
+    const result = outboundRequests.resolve({ threadId, requestId, behavior });
+    if (!result.claimed) {
+      // The hold is memory-only: after a restart the card outlives the
+      // relay that was waiting on it, so close it rather than leave an
+      // approval nobody can deliver owning the composer.
+      if (!outboundCard.card.answered) {
+        store.patchMessage(threadId, outboundCard.id, { card: { ...outboundCard.card, answered: "unavailable", dismissed: true } });
+      }
+      json(res, 200, { ok: true, outcome: "unavailable" });
+      return true;
+    }
+    if (result.state === "already_settled") {
+      json(res, 200, { ok: true, outcome: result.behavior === "allow" ? "allowed-once" : "rejected", alreadySettled: true });
+      return true;
+    }
+    store.patchMessage(threadId, outboundCard.id, {
+      card: { ...outboundCard.card, answered: result.state === "allowed" ? "allow" : "deny" },
+    });
+    appendDecision(DATA_DIR, {
+      threadId, requestId, botId: outboundBot?.id, botName: outboundBot?.name,
+      tool: outboundCard.card.tool, summary: outboundCard.card.subtitle,
+      decision: result.state === "allowed" ? "user-approved" : "user-denied", source: "user",
+    });
+    json(res, 200, { ok: true, outcome: result.state === "allowed" ? "allowed-once" : "rejected" });
+    return true;
+  }
+  return false;
+}
+
 const profileRequests = new ProfileRequestService({
   store,
   autoApply: fullAccessForSource,
@@ -12659,6 +12750,7 @@ async function runGroupMemberTurn(
     { id: "recall", label: "Recall", text: integrations.agents && bot.memoryEnabled !== false ? SESSION_SEARCH_SYSTEM_PROMPT : "" },
     { id: "recent", label: "Recent work", text: recentWorkPrompt(recentLines) },
     { id: "section-context", label: "Section context", text: sectionContextSystemPrompt(bot.section) },
+    { id: "team-memory", label: "Team memory", text: teamMemory.systemPrompt(bot.section) + (integrations.agents ? TEAM_MEMORY_PROMPT : "") },
     // the room path has always put a newline before memory and trimmed
     // the block's leading space; keep that so existing prompts are
     // byte-identical. The write guidance follows the tools actually
@@ -16593,6 +16685,58 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         });
         return json(res, 201, proposed);
       }
+      if (method === "POST" && path === "/api/internal/team-memory") {
+        const parsed = z.object({
+          fromBotId: z.string().min(1).max(128),
+          fromThreadId: z.string().min(1).max(128),
+          kind: z.string(),
+          name: z.string(),
+          detail: z.string(),
+          aliases: z.array(z.string()).optional(),
+        }).strict().safeParse(await readInternalBody());
+        if (!parsed.success) return json(res, 400, { error: "invalid team memory proposal" });
+        const body = parsed.data;
+        const from = store.bot(body.fromBotId);
+        if (!from) return json(res, 403, { error: "unknown sender" });
+        const owner = connectorThread(from.id, body.fromThreadId);
+        if (!owner) return json(res, 403, { error: "source conversation does not belong to sender" });
+        if (!sameAudience(from.visibility, undefined) || (owner.group && !roomFeedsBot(owner.group, from))) {
+          return json(res, 403, { error: "restricted conversations cannot publish section-wide memory; ask an admin to add it" });
+        }
+        if (!(TEAM_MEMORY_KINDS as readonly string[]).includes(body.kind)) {
+          return json(res, 400, { error: `kind must be one of ${TEAM_MEMORY_KINDS.join(", ")}` });
+        }
+        let proposed: ReturnType<TeamMemory["propose"]>;
+        try {
+          proposed = teamMemory.propose(
+            from.section,
+            { kind: body.kind as TeamMemoryKind, name: body.name, detail: body.detail, aliases: body.aliases },
+            { botId: from.id, botName: from.name, threadId: body.fromThreadId, at: Date.now() },
+          );
+        } catch (error) {
+          return json(res, 400, { error: error instanceof Error ? error.message : String(error) });
+        }
+        const summary = `${proposed.entry.kind[0].toUpperCase()}${proposed.entry.kind.slice(1)}: ${proposed.entry.name}${proposed.entry.aliases.length ? ` (also ${proposed.entry.aliases.join(", ")})` : ""} — ${proposed.entry.detail}`;
+        const section = sectionContextKey(from.section);
+        const card = store.appendMessage(body.fromThreadId, {
+          role: "bot",
+          kind: "options",
+          ...(owner.group ? { from: { botId: from.id, name: from.name, color: from.color } } : {}),
+          card: {
+            title: "Remember this for the team?",
+            subtitle: summary,
+            options: ["Remember", "Skip"],
+            requestId: proposed.entry.id,
+            tool: "propose_team_memory",
+            teamMemoryRequest: { section, entryId: proposed.entry.id, kind: proposed.entry.kind },
+          },
+        });
+        appendDecision(DATA_DIR, {
+          threadId: body.fromThreadId, requestId: proposed.entry.id, botId: from.id, botName: from.name,
+          tool: "propose_team_memory", summary, decision: "card-shown", source: "team-memory",
+        });
+        return json(res, 201, { status: "proposed", requestId: proposed.entry.id, messageId: card.id, summary });
+      }
       if (method === "POST" && path === "/api/internal/profile-requests") {
         const parsed = z.object({
           fromBotId: z.string().min(1).max(128),
@@ -18146,7 +18290,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         // Reading a streamed MCP body yields to ordinary settings requests.
         // Re-read the live bot immediately before relay so turning Connected
         // Apps off wins over a request that authenticated under the old value.
-        const currentSender = store.bot(internalCapability.botId);
+        let currentSender = store.bot(internalCapability.botId);
         if (!currentSender || currentSender.composio === false || !composio.configured(cfg)) {
           return json(res, 403, { error: "connected apps are not enabled for this bot" });
         }
@@ -18157,6 +18301,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         // Rows are fire-and-forget: a log failure must never take the call
         // (or its refusal) down with it.
         const call = connectorCallFromFrame(body);
+        let serviceSlugs: readonly string[] = [];
         // A bot with no grants record keeps the pre-grants relay: even an
         // unreadable frame passes through exactly as it always did.
         if (call.kind === "unrecognized" && currentSender.connectorTools !== undefined) {
@@ -18183,7 +18328,10 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
           // underscored service (bland_ai) keeps its own tools instead of
           // a plain-prefix grant (bland) capturing them; an unreachable
           // catalog reads as empty and the plain split stands.
-          const serviceSlugs = await composio.connectedServiceSlugs(cfg);
+          serviceSlugs = await composio.connectedServiceSlugs(cfg);
+          requireActiveInternalCapability();
+          currentSender = store.bot(internalCapability.botId);
+          if (!currentSender || currentSender.composio === false || !composio.configured(cfg)) return json(res, 403, { error: "connected apps are no longer enabled for this bot" });
           const verdict = evaluateConnectorTools(call.names, currentSender.connectorTools, serviceSlugs);
           if (!verdict.allowed) {
             for (const denial of verdict.denials) {
@@ -18223,13 +18371,167 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
             rule: verdict.rule,
           });
         }
-        const upstream = await composio.relayMcp(
+        // ── the outbound gate ──
+        // A tools/call that sends something (shared/outbound.ts) is its own
+        // confirmation in every approval mode, Full included: it waits on a
+        // card, or spends the bot's daily allowance. Everything else relays
+        // untouched. A refusal is an ordinary tool error so the bot reads
+        // it and carries on, rather than a transport failure it retries.
+        const rpc = body && typeof body === "object" && !Array.isArray(body)
+          ? (body as { id?: unknown; method?: unknown; params?: unknown })
+          : null;
+        const rpcParams = rpc?.params && typeof rpc.params === "object" && !Array.isArray(rpc.params)
+          ? (rpc.params as { name?: unknown; arguments?: unknown })
+          : null;
+        // The app tools this call would actually run, seen through Composio's
+        // meta tools (a multi-execute list, workbench code), and the ones
+        // among them that send.
+        const outboundCalls = rpc?.method === "tools/call" && typeof rpcParams?.name === "string"
+          ? outboundCallsIn(rpcParams.name, rpcParams.arguments)
+          : [];
+        const outboundTool = outboundCalls.length ? outboundCalls[0].slug : null;
+        const refuseOutbound = (text: string) => {
+          res.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" });
+          return res.end(JSON.stringify({ jsonrpc: "2.0", id: rpc?.id ?? null, result: { content: [{ type: "text", text }], isError: true } }));
+        };
+        // ── connection scopes ──
+        // Checked first: an app this bot may not touch is refused outright,
+        // never turned into a question for the person.
+        const connectorCalls = rpc?.method === "tools/call" && typeof rpcParams?.name === "string"
+          ? connectorCallsIn(rpcParams.name, rpcParams.arguments)
+          : [];
+        const access = connectorAccessDecision(currentSender.connectorScopes, connectorCalls, serviceSlugs);
+        if (!access.ok) {
+          const described = describeTool(access.slug);
+          const appName = described.app ?? access.toolkit;
+          appendDecision(DATA_DIR, {
+            threadId: internalCapability.threadId, botId: currentSender.id, botName: currentSender.name,
+            tool: access.slug, decision: "auto-denied", source: "connector-scope", rule: `scope:${access.toolkit}:${access.reason}`,
+          });
+          return refuseOutbound(
+            access.reason === "app"
+              ? `OpenMausBot did not run this: ${currentSender.name} has not been given access to ${appName}. Ask the user to allow it under the bot's Access settings, and do not retry.`
+              : `OpenMausBot did not run this: ${appName} is read-only for ${currentSender.name}, and ${described.label} would write to it. Ask the user before trying again.`,
+          );
+        }
+        const opaque = connectorCalls.some(call => call.slug === "COMPOSIO_PROXY_EXECUTE");
+        if (opaque && currentSender.connectorTools !== undefined) return refuseOutbound("OpenMausBot cannot verify this code against this bot's tool grants. Use a direct app tool.");
+        let outboundApproved = false;
+        if (outboundTool) {
+          const policy = currentSender.outbound ?? DEFAULT_OUTBOUND_POLICY;
+          const threadId = internalCapability.threadId;
+          const { app } = describeTool(outboundTool);
+          const summary = outboundCalls.map((call) => {
+            const described = describeTool(call.slug);
+            const argsText = call.arguments === undefined ? "" : JSON.stringify(call.arguments);
+            return `${described.app ? `${described.app} · ` : ""}${described.label}${argsText ? `\n${argsText.slice(0, 400)}${argsText.length > 400 ? "… [arguments truncated]" : ""}` : ""}`;
+          }).join("\n\n");
+          const capNote = (count: number) =>
+            `OpenMausBot did not send this. ${currentSender.name} has reached its daily limit of ${count} outbound action${count === 1 ? "" : "s"}. Ask the user to raise the limit under the bot's Permissions before trying again.`;
+          if (policy.policy === "allow" && !opaque) {
+            const today = outboundCounts.today(currentSender.id);
+            if (today + outboundCalls.length > policy.dailyCap) {
+              appendDecision(DATA_DIR, {
+                threadId, botId: currentSender.id, botName: currentSender.name,
+                tool: outboundTool, summary, decision: "auto-denied", source: "outbound", rule: `daily-cap:${policy.dailyCap}`,
+              });
+              return refuseOutbound(capNote(policy.dailyCap));
+            }
+          } else {
+            const owner = connectorThread(currentSender.id, threadId);
+            const held = outboundRequests.open({ botId: currentSender.id, threadId, tool: outboundTool, timeoutMs: OUTBOUND_HOLD_MS });
+            const card = store.appendMessage(threadId, {
+              role: "bot",
+              kind: "options",
+              ...(owner?.group ? { from: { botId: currentSender.id, name: currentSender.name, color: currentSender.color } } : {}),
+              card: {
+                title: "Send on your behalf?",
+                subtitle: summary,
+                options: ["Allow", "Deny"],
+                requestId: held.requestId,
+                tool: outboundTool,
+                held: HELD_NOTE["approval.held.outbound"],
+                heldCode: "approval.held.outbound",
+                outboundRequest: { tool: outboundTool, app },
+              },
+            });
+            appendDecision(DATA_DIR, {
+              threadId, requestId: held.requestId, botId: currentSender.id, botName: currentSender.name,
+              tool: outboundTool, summary, decision: "card-shown", source: "outbound",
+            });
+            if (owner?.group) {
+              if (activeGroupTurnForBot(currentSender.id)?.threadId === threadId) store.setActivity(currentSender.id, "waiting-on-you");
+            } else if (store.taskByThread(currentSender.id, threadId)?.busy) {
+              store.setTaskActivity(currentSender.id, threadId, "waiting-on-you");
+            }
+            notify(buildNotification("approval", currentSender, threadId, summary, { avatarUrl: currentSender.avatarUrl }));
+            const answer = await held.answer;
+            outboundRequests.forget(held.requestId);
+            if (internalCapabilityIsActive(internalCapability)) {
+              const waiting = store.bot(currentSender.id);
+              if (owner?.group) {
+                if (activeGroupTurnForBot(currentSender.id)?.threadId === threadId && waiting?.activity === "waiting-on-you") store.setActivity(waiting.id, "working");
+              } else if (store.taskByThread(currentSender.id, threadId)?.activity === "waiting-on-you") {
+                store.setTaskActivity(currentSender.id, threadId, "working");
+              }
+            }
+            if (answer !== "allow") {
+              if (answer === "timeout") {
+                const stale = store.messagesFor(threadId).find((message) => message.id === card.id);
+                if (stale?.card && !stale.card.answered) {
+                  store.patchMessage(threadId, stale.id, { card: { ...stale.card, answered: "unavailable", dismissed: true } });
+                }
+              }
+              return refuseOutbound(
+                answer === "timeout"
+                  ? "OpenMausBot did not send this: nobody answered the approval in time. Ask the user before trying again."
+                  : "OpenMausBot did not send this: the user declined. Do not retry it; ask the user what they would like instead.",
+              );
+            }
+            outboundApproved = true;
+            requireActiveInternalCapability();
+          }
+        }
+        let dispatchRefusal: string | undefined;
+        const refuseDispatch: (text: string) => never = (text) => {
+          dispatchRefusal = text;
+          throw new Error(text);
+        };
+        let upstream: Awaited<ReturnType<typeof composio.relayMcp>>;
+        try { upstream = await composio.relayMcp(
           cfg,
           body,
           Array.isArray(req.headers["mcp-session-id"])
             ? req.headers["mcp-session-id"][0]
             : req.headers["mcp-session-id"],
-        );
+          () => {
+            requireActiveInternalCapability();
+            const fresh = store.bot(internalCapability.botId);
+            if (!fresh || fresh.composio === false || !composio.configured(cfg)) refuseDispatch("Connected apps were disabled while this call waited.");
+            const freshAccess = connectorAccessDecision(fresh.connectorScopes, connectorCalls, serviceSlugs);
+            if (!freshAccess.ok || (opaque && fresh.connectorTools !== undefined) ||
+                (call.kind === "tools" && !evaluateConnectorTools(call.names, fresh.connectorTools, serviceSlugs).allowed) ||
+                (call.kind === "unrecognized" && fresh.connectorTools !== undefined)) {
+              refuseDispatch("This bot's connected-app permissions changed. The call was not run.");
+            }
+            if (outboundTool) {
+              const policy = fresh.outbound ?? DEFAULT_OUTBOUND_POLICY;
+              if (policy.policy === "allow" && !opaque) {
+                let reserved: number | null;
+                try { reserved = outboundCounts.reserve(fresh.id, outboundCalls.length, policy.dailyCap); }
+                catch { refuseDispatch("The daily allowance could not be saved. Nothing was sent."); }
+                if (reserved === null) refuseDispatch("This bot has reached its daily outbound limit. Nothing was sent.");
+                appendDecision(DATA_DIR, { threadId: internalCapability.threadId, botId: fresh.id, botName: fresh.name,
+                  tool: outboundTool, decision: "auto-approved", source: "outbound", rule: `daily-allowance:${reserved}/${policy.dailyCap}` });
+              } else if (!outboundApproved) {
+                refuseDispatch("The outbound policy changed. Ask for approval again before sending.");
+              }
+            }
+          },
+        ); } catch (error) {
+          if (dispatchRefusal) return refuseOutbound(dispatchRefusal);
+          throw error;
+        }
         const headers: Record<string, string> = {
           "content-type": upstream.contentType,
           "cache-control": "no-store",
@@ -18300,6 +18602,16 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         if (!items.length || items.length > 12) return json(res, 400, { error: "one to twelve valid connection requests are required" });
         if (!composio.configured(cfg) || owner.bot.composio === false) {
           return json(res, 409, { error: "connected apps are not enabled for this bot" });
+        }
+        if (owner.bot.connectorScopes) {
+          const outside = slugs.find((slug) => !owner.bot.connectorScopes?.apps[slug]);
+          if (outside) {
+            appendDecision(DATA_DIR, {
+              threadId, botId: owner.bot.id, botName: owner.bot.name,
+              tool: "COMPOSIO_MANAGE_CONNECTIONS", summary: outside, decision: "auto-denied", source: "connector-scope", rule: `scope:${outside}:app`,
+            });
+            return json(res, 403, { error: `${owner.bot.name} has not been given access to ${outside}; allow it under the bot's Access settings first` });
+          }
         }
         const connectionState: Record<string, { connected?: boolean }> = await composio.connectionStatus(cfg, slugs).catch(() => ({}));
         requireActiveInternalCapability();
@@ -20659,6 +20971,38 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       }
       if (section !== undefined) patch.section = section ?? undefined;
       if (body.chiefOfStaff === false) patch.chiefOfStaff = false;
+      // where a task carries on when this engine is unavailable, in order
+      if (body.fallback !== undefined) {
+        if (!Array.isArray(body.fallback) || body.fallback.length > 5) {
+          return json(res, 400, { error: "fallback must be a list of up to five { instanceId, model } entries" });
+        }
+        const chain: Array<{ instanceId: string; model: string }> = [];
+        for (const entry of body.fallback as unknown[]) {
+          const row = entry && typeof entry === "object" ? (entry as { instanceId?: unknown; model?: unknown }) : null;
+          if (!row || typeof row.instanceId !== "string" || !/^[\w.-]+$/.test(row.instanceId) || typeof row.model !== "string" || !row.model.trim() || row.model.length > 500) {
+            return json(res, 400, { error: "fallback must be a list of up to five { instanceId, model } entries" });
+          }
+          if (!registry.get(row.instanceId)) return json(res, 400, { error: `fallback engine "${row.instanceId}" is not available` });
+          if (chain.some((seen) => seen.instanceId === row.instanceId)) continue;
+          chain.push({ instanceId: row.instanceId, model: row.model.trim() });
+        }
+        patch.fallback = chain;
+      }
+      // which connected apps this bot may use; null clears back to all of them
+      if (body.connectorScopes !== undefined) {
+        if (body.connectorScopes === null) patch.connectorScopes = undefined;
+        else {
+          const scopes = normalizeConnectorScopes(body.connectorScopes);
+          if (!scopes) return json(res, 400, { error: "connectorScopes must be { apps: { <toolkit>: read | write } } or null" });
+          patch.connectorScopes = scopes;
+        }
+      }
+      // sending on the person's behalf: ask every time, or a daily allowance
+      if (body.outbound !== undefined) {
+        const policy = normalizeOutboundPolicy(body.outbound);
+        if (!policy) return json(res, 400, { error: "outbound must be { policy: ask | allow, dailyCap: 1..1000 }" });
+        patch.outbound = policy;
+      }
       // per-bot gate on the workspace's connected apps (Composio)
       if (body.composio !== undefined) {
         if (typeof body.composio !== "boolean") return json(res, 400, { error: "composio must be true or false" });
@@ -20953,6 +21297,15 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       // desktop capability or a paired session, which is what the refusal
       // points at.
       const loosened: string[] = [];
+      // These three fields were validated above before joining the broad patch.
+      const trustPatch = patch as Pick<Partial<BotRecord>, "outbound" | "connectorScopes" | "fallback">;
+      if (body.outbound !== undefined && trustPatch.outbound?.policy === "allow" &&
+          (existingBot?.outbound?.policy !== "allow" || trustPatch.outbound.dailyCap > existingBot.outbound.dailyCap)) loosened.push("outbound");
+      if (body.connectorScopes !== undefined && existingBot?.connectorScopes &&
+          (!trustPatch.connectorScopes || Object.entries(trustPatch.connectorScopes.apps).some(([slug, scope]) =>
+            !existingBot.connectorScopes!.apps[slug] || (scope === "write" && existingBot.connectorScopes!.apps[slug] === "read")))) loosened.push("connectorScopes");
+      if (body.fallback !== undefined && trustPatch.fallback?.some(candidate =>
+          !existingBot?.fallback?.some(previous => previous.instanceId === candidate.instanceId && previous.model === candidate.model))) loosened.push("fallback");
       if (Array.isArray(patch.managedSections) && patch.managedSections.some(section => !(existingBot?.managedSections ?? []).includes(section))) {
         loosened.push("managedSections");
       }
@@ -21291,6 +21644,62 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
     // it. That keeps one bot from silently changing every teammate's future
     // turns. The section query parameter is required even for General (""),
     // so a malformed client cannot accidentally read or replace that brief.
+    // ── team memory: the section's shared people, places, decisions, terms ──
+    // The person's view and their edits. Same section rule as the brief:
+    // the query parameter is required even for General.
+    if (path === "/api/team-memory" && (method === "GET" || method === "POST")) {
+      if (!url.searchParams.has("section")) return json(res, 400, { error: "section is required" });
+      const section = sectionContextKey(url.searchParams.get("section") ?? "");
+      if (section.length > 60) return json(res, 400, { error: "section must be at most 60 characters" });
+      if (method === "GET") {
+        return json(res, 200, { section, label: sectionContextLabel(section), entries: teamMemory.list(section) });
+      }
+      const body = await readBody(req);
+      if (!body || typeof body !== "object" || !(TEAM_MEMORY_KINDS as readonly string[]).includes(String(body.kind))) {
+        return json(res, 400, { error: `kind must be one of ${TEAM_MEMORY_KINDS.join(", ")}` });
+      }
+      try {
+        const proposed = teamMemory.propose(
+          section,
+          { kind: body.kind as TeamMemoryKind, name: String(body.name ?? ""), detail: String(body.detail ?? ""), aliases: Array.isArray(body.aliases) ? body.aliases.map(String) : undefined },
+          { botId: "", botName: "you", threadId: "", at: Date.now() },
+        );
+        // the person's own entry never waits on the person
+        if (proposed.status === "proposed") teamMemory.resolve(section, proposed.entry.id, "accept");
+        return json(res, 201, { entries: teamMemory.list(section) });
+      } catch (error) {
+        return json(res, 400, { error: error instanceof Error ? error.message : String(error) });
+      }
+    }
+    m = path.match(/^\/api\/team-memory\/([\w-]+)$/);
+    if (m && (method === "PATCH" || method === "DELETE")) {
+      if (!url.searchParams.has("section")) return json(res, 400, { error: "section is required" });
+      const section = sectionContextKey(url.searchParams.get("section") ?? "");
+      if (method === "DELETE") {
+        if (!teamMemory.remove(section, m[1])) return json(res, 404, { error: "no such entry" });
+        return json(res, 200, { entries: teamMemory.list(section) });
+      }
+      const body = await readBody(req);
+      if (!body || typeof body !== "object") return json(res, 400, { error: "body must be a JSON object" });
+      if (body.accept === true) {
+        const result = teamMemory.resolve(section, m[1], "accept");
+        if (!result.claimed) return json(res, 404, { error: "no such entry" });
+        return json(res, 200, { entries: teamMemory.list(section) });
+      }
+      const patch: { name?: string; detail?: string; aliases?: string[]; kind?: TeamMemoryKind } = {};
+      if (typeof body.name === "string") patch.name = body.name;
+      if (typeof body.detail === "string") patch.detail = body.detail;
+      if (Array.isArray(body.aliases)) patch.aliases = body.aliases.map(String);
+      if (typeof body.kind === "string" && (TEAM_MEMORY_KINDS as readonly string[]).includes(body.kind)) patch.kind = body.kind as TeamMemoryKind;
+      try {
+        const updated = teamMemory.update(section, m[1], patch);
+        if (!updated) return json(res, 404, { error: "no such entry" });
+        return json(res, 200, { entry: updated, entries: teamMemory.list(section) });
+      } catch (error) {
+        return json(res, 400, { error: error instanceof Error ? error.message : String(error) });
+      }
+    }
+
     if (path === "/api/section-context" && (method === "GET" || method === "PUT")) {
       if (!url.searchParams.has("section")) return json(res, 400, { error: "section is required" });
       const requested = url.searchParams.get("section") ?? "";
@@ -21855,6 +22264,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         if (refusal) return json(res, 403, { error: refusal });
       }
       return await answeringCardAs(auth, bot.threadId, String(body.requestId), async () => {
+        if (resolveAndSendTrust(res, bot.threadId, String(body.requestId), behavior)) return;
         if (await resolveAndSendTeamSetup(res, {
           botId: bot.id, threadId: bot.threadId, requestId: String(body.requestId), behavior,
         }, auth.kind === "loopback" ? DESKTOP_MANAGED || Boolean(req.headers.origin) && !store.bots.some((bot) => bot.busy || activeGroupTurnForBot(bot.id)) : auth.scopes.includes("admin"))) return;
@@ -21944,6 +22354,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         if (refusal) return json(res, 403, { error: refusal });
       }
       return await answeringCardAs(auth, threadId, requestId, async () => {
+        if (resolveAndSendTrust(res, threadId, requestId, behavior)) return;
         const skillCard = store.messagesFor(threadId).find(
           (message) => message.card?.requestId === requestId && message.card.skillRequest,
         );
@@ -23063,6 +23474,34 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       return;
     }
 
+    // ── a bot's activity: what it did, with the outcome ──
+    // Read-only over the same two logs as the inspector and the decision
+    // route above. The bot's own threads (its DM and every task) carry the
+    // tool runs; the decision log carries the bot's requests wherever they
+    // happened, since those rows name the bot.
+    m = path.match(/^\/api\/bots\/([\w-]+)\/activity$/);
+    if (m && method === "GET") {
+      const bot = store.bot(m[1]);
+      if (!bot) return json(res, 404, { error: "no such bot" });
+      const rawLimit = url.searchParams.get("limit");
+      const parsedLimit = rawLimit === null ? undefined : Number(rawLimit);
+      if (parsedLimit !== undefined && (!Number.isInteger(parsedLimit) || parsedLimit <= 0)) {
+        return json(res, 400, { error: "limit must be a positive whole number" });
+      }
+      const threadIds = [...new Set([bot.threadId, ...store.tasks(bot.id).map((task) => task.threadId)])];
+      return json(res, 200, {
+        rows: readBotActivity({ dataDir: DATA_DIR, eventsDir: EVENTS_DIR, botId: bot.id, threadIds, limit: parsedLimit ?? 300 }),
+      });
+    }
+
+    // ── a bot's outbound allowance: the policy, and how much of it is spent ──
+    m = path.match(/^\/api\/bots\/([\w-]+)\/outbound$/);
+    if (m && method === "GET") {
+      const bot = store.bot(m[1]);
+      if (!bot) return json(res, 404, { error: "no such bot" });
+      return json(res, 200, { policy: bot.outbound ?? DEFAULT_OUTBOUND_POLICY, today: outboundCounts.today(bot.id) });
+    }
+
     // ── provider instances (model picker) ──
     if (method === "GET" && path === "/api/instances") {
       // Rescan PATH first: this endpoint is how the app answers "what can I
@@ -23317,7 +23756,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
           try { previousDir = configuredAccountDirectory(entry); } catch { /* Allow repairing an unused malformed account. */ }
           entry.config = { ...entry.config as Record<string, unknown>, configDir: body.configDir };
           if (previousDir !== configuredAccountDirectory(entry)) {
-            const used = store.bots.some((bot) => bot.modelSelection.instanceId === instanceId || store.tasks(bot.id).some((task) =>
+            const used = store.bots.some((bot) => bot.modelSelection.instanceId === instanceId || bot.fallback?.some(candidate => candidate.instanceId === instanceId) || store.tasks(bot.id).some((task) =>
               task.modelSelection?.instanceId === instanceId || task.resumeCursors[instanceId] || task.lastInstanceId === instanceId));
             if (used) return json(res, 409, { error: "This account is used by bots or conversation history. Add another account and select it for the bot instead." });
             assertSeparateClaudeAccount(instances, instanceId, entry);
@@ -23340,7 +23779,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         return json(res, 400, { error: "Only added Claude accounts can be removed here." });
       }
       if (cfg.defaultModelSelection?.instanceId === instanceId || store.bots.some((bot) =>
-        bot.modelSelection.instanceId === instanceId || store.tasks(bot.id).some((task) => task.modelSelection?.instanceId === instanceId)) ||
+        bot.modelSelection.instanceId === instanceId || bot.fallback?.some(candidate => candidate.instanceId === instanceId) || store.tasks(bot.id).some((task) => task.modelSelection?.instanceId === instanceId)) ||
         busyProviderSelections().some((selection) => selection.instanceId === instanceId)) {
         return json(res, 409, { error: "Choose another account for the bots and default model using this account before removing it." });
       }

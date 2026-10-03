@@ -96,6 +96,9 @@ final class Session: ObservableObject {
     /// still belong to it. A Live call hangs up here, so its end request
     /// reaches the computer that holds the call.
     let leavingComputer = PassthroughSubject<Void, Never>()
+    /// Only receipt-changing runtime events, not token deltas.
+    let activityUpdates = PassthroughSubject<String, Never>()
+    private var editingTeamMemory = false
     /// Ciphertext-only operations survive navigation and transient
     /// disconnects so a retry cannot accidentally reseal the same value with
     /// a different HPKE operation id. Nothing here is persisted to disk.
@@ -234,6 +237,19 @@ final class Session: ObservableObject {
                 let config = URLSessionConfiguration.ephemeral
                 config.protocolClasses = [LiveCallPreviewProtocol.self]
                 client = CompanionClient(connection: preview, token: "live-call-fixture-token", session: URLSession(configuration: config))
+            }
+            if arguments.contains("-memory-preview") {
+                let config = URLSessionConfiguration.ephemeral
+                config.protocolClasses = [MemoryPreviewProtocol.self]
+                let transport = URLSession(configuration: config)
+                client = CompanionClient(connection: preview, token: "memory-fixture-current", session: transport)
+                MemoryPreviewProtocol.onMutation = { [weak self] in
+                    guard arguments.contains("-memory-stale-preview"), let self else { return }
+                    var changed = preview
+                    changed.id = "memory-preview-new"
+                    self.connection = changed
+                    self.client = CompanionClient(connection: changed, token: "memory-fixture-new", session: transport)
+                }
             }
             var fleet = fleet
             if arguments.contains("-live-call-long-name-preview"),
@@ -992,6 +1008,10 @@ final class Session: ObservableObject {
         updated.applyBatch(batch)
         state = updated
         for frame in batch {
+            if case let .runtime(event) = frame.frame,
+               ["turn.completed", "runtime.error", "request.opened", "request.resolved", "item.completed"].contains(event.type) {
+                activityUpdates.send(event.threadId)
+            }
             if case let .notify(notification) = frame.frame {
                 NotificationCoordinator.shared.deliver(notification, sequence: frame.seq)
             }
@@ -2425,6 +2445,66 @@ final class Session: ObservableObject {
             return overview
         } catch {
             guard !Task.isCancelled, connection?.id == connectionID else { return nil }
+            guard !(error is CancellationError), (error as? URLError)?.code != .cancelled else { return nil }
+            actionError = error.localizedDescription
+            return nil
+        }
+    }
+
+    /// What the bot did, with the outcome. Read-only, like the overview.
+    func botActivity(for bot: Bot) async -> [ActivityRow]? {
+        guard let client else { return nil }
+        let connectionID = connection?.id
+        do {
+            let rows = try await client.activity(botId: bot.id)
+            guard !Task.isCancelled, connection?.id == connectionID else { return nil }
+            return rows
+        } catch {
+            guard !Task.isCancelled, connection?.id == connectionID else { return nil }
+            guard !(error is CancellationError), (error as? URLError)?.code != .cancelled else { return nil }
+            actionError = error.localizedDescription
+            return nil
+        }
+    }
+
+    // MARK: - Team memory
+
+    /// The section's shared people, places, decisions and terms.
+    func teamMemory(section: String) async -> TeamMemoryPage? {
+        guard let client else { return nil }
+        let connectionID = connection?.id
+        do {
+            let page = try await client.teamMemory(section: section)
+            guard !Task.isCancelled, connection?.id == connectionID else { return nil }
+            return page
+        } catch {
+            guard !Task.isCancelled, connection?.id == connectionID else { return nil }
+            guard !(error is CancellationError), (error as? URLError)?.code != .cancelled else { return nil }
+            actionError = error.localizedDescription
+            return nil
+        }
+    }
+
+    /// One edit, and the page as it is afterwards; nil when it failed, with
+    /// the failure already shown.
+    func editTeamMemory(_ body: (CompanionClient) async throws -> [TeamMemoryEntry]) async -> [TeamMemoryEntry]? {
+        guard !editingTeamMemory, !Task.isCancelled, let client else { return nil }
+        let connectionID = connection?.id
+        editingTeamMemory = true
+        defer { editingTeamMemory = false }
+        do {
+            let entries = try await body(client)
+            guard !Task.isCancelled, connection?.id == connectionID,
+                  self.client?.connection.id == client.connection.id else { return nil }
+            return entries
+        } catch let error as APIError where error.isUnauthorized {
+            guard !Task.isCancelled, connection?.id == connectionID,
+                  self.client?.connection.id == client.connection.id else { return nil }
+            status = .unauthorized
+            return nil
+        } catch {
+            guard !Task.isCancelled, connection?.id == connectionID,
+                  self.client?.connection.id == client.connection.id else { return nil }
             guard !(error is CancellationError), (error as? URLError)?.code != .cancelled else { return nil }
             actionError = error.localizedDescription
             return nil

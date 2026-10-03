@@ -21,6 +21,7 @@ import { TriggersPanel } from "@/components/TriggersPanel";
 import { ComputerPanel } from "@/components/ComputerPanel";
 import { RemoteDesktopPanel } from "@/components/remote-desktop-panel";
 import { InspectorPanel } from "@/components/InspectorPanel";
+import { ActivityPanel } from "@/components/ActivityPanel";
 import { SettingsModal } from "@/components/SettingsModal";
 import { WorkspaceBackupRecovery } from "@/components/WorkspaceBackupSettings";
 import { UpdateBanner } from "@/components/UpdateBanner";
@@ -111,7 +112,7 @@ function Shell({ viewer }: { viewer: WelcomeViewer | null }) {
   // A side panel beside the full sidebar leaves the default 1100px window a
   // ~330px chat. Fold the sidebar to its avatar rail for as long as a panel
   // is open and the window is not wide enough for all three.
-  const sidePanelOpen = Boolean(bot) && (state.settingsOpen || state.computerOpen || state.inspectorOpen);
+  const sidePanelOpen = Boolean(bot) && (state.settingsOpen || state.computerOpen || state.inspectorOpen || state.activityOpen);
   const collapseSidebar = sidePanelOpen && !sidebarAndPanelFit;
   const calendarFocus = state.activeView === "routines";
   // Turning Advanced mode off closes the inspector it no longer offers.
@@ -234,6 +235,7 @@ function Shell({ viewer }: { viewer: WelcomeViewer | null }) {
     state.settingsOpen ||
     state.computerOpen ||
     state.inspectorOpen ||
+    state.activityOpen ||
     state.appSettingsOpen ||
     state.pluginsOpen ||
     state.triggersOpen;
@@ -367,6 +369,7 @@ function Shell({ viewer }: { viewer: WelcomeViewer | null }) {
         )
       )}
       {!remoteClient && state.inspectorOpen && bot && <InspectorPanel key={bot.threadId} bot={bot} />}
+      {!remoteClient && state.activityOpen && bot && <ActivityPanel key={`activity:${bot.id}`} bot={bot} />}
       {state.appSettingsOpen && <SettingsModal />}
       {/* On the person's Cloud: its setup checklist, and after it Move to
           Cloud's one-time card on an empty Cloud (desktop app only). */}
