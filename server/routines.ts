@@ -1681,7 +1681,14 @@ export class RoutineManager {
       if (event.cost != null) run.cost = (run.cost ?? 0) + event.cost;
       if (event.denials?.length) run.denials = [...new Set([...(run.denials ?? []), ...event.denials])];
       if (!event.ok) {
-        this.failRun(run, event.stopReason ?? run.error ?? "The bot did not complete this run");
+        const genericStopReason = event.stopReason === "error" || event.stopReason === "tool_error";
+        this.failRun(
+          run,
+          (genericStopReason ? run.error : undefined) ??
+            event.stopReason ??
+            run.error ??
+            "The bot did not complete this run",
+        );
         queueMicrotask(() => void this.tick());
         return cloneRun(run);
       }

@@ -2548,6 +2548,45 @@ describe("RoutineManager", () => {
     expect(h.failed).toHaveLength(1);
   });
 
+  it.each(["error", "tool_error"])(
+    "preserves the detailed runtime error when a turn ends with generic %s",
+    async (stopReason) => {
+      const h = harness();
+      const routine = h.manager.create({
+        name: "Broken report",
+        prompt: "Write the report",
+        botId: "maus-failed",
+        schedule: { type: "once", at: new Date(2026, 7, 17, 8, 1).getTime() },
+      });
+      h.setNow(routine.nextRunAt!);
+      await h.manager.tick();
+
+      const base = {
+        provider: "fake",
+        threadId: "thread-1",
+        createdAt: new Date().toISOString(),
+      };
+      h.manager.handleRuntimeEvent({
+        ...base,
+        eventId: "runtime-error",
+        type: "runtime.error",
+        message: "model-call limit reached before a final response",
+      });
+      h.manager.handleRuntimeEvent({
+        ...base,
+        eventId: "turn-completed",
+        type: "turn.completed",
+        ok: false,
+        stopReason,
+      });
+
+      expect(h.manager.listRuns()[0]).toMatchObject({
+        status: "failed",
+        error: "model-call limit reached before a final response",
+      });
+    },
+  );
+
   it("marks every unseen failed or missed run seen in one sweep", async () => {
     const h = harness();
     const broken = h.manager.create({
