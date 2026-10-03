@@ -1,201 +1,242 @@
-// Mid-turn sends: what the phone shows between posting a message and the
-// computer actually running it.
-//
-// The harness answers a mid-turn send in one of three ways, and only one of
-// them puts anything in the transcript. These are claims about the other
-// two — the ones that used to leave the screen blank.
+// Held mid-turn sends: the state machine, the wire shapes it reads, and the
+// row derivation that surfaces it. Queued is client state derived from the
+// wire, never task activity — the activity arm for it is gone for good.
 import XCTest
 @testable import CompanionCore
 
 final class QueuedSendTests: XCTestCase {
-    private func echo() -> Bot {
-        Bot(
-            id: "b1", threadId: "t1", name: "Echo", title: "", description: "",
-            notifications: true, color: "blue", unread: false,
-            modelSelection: ModelSelection(instanceId: "codex", model: "gpt-5.5"),
-            createdAt: 1
-        )
+    private func held(_ queueId: String, _ text: String = "follow-up", reason: String? = nil) -> QueuedSend {
+        QueuedSend(queueId: queueId, text: text, reason: reason)
     }
 
-    private func drained(_ id: String, queueId: String, text: String = "and add tests") -> Message {
-        var message = Message(id: id, role: .user, kind: .text, at: 10)
-        message.text = text
+    private func landed(_ id: String, queueId: String?) -> Message {
+        var message = Message(id: id, role: .user, kind: .text, at: 1)
+        message.text = "hello"
         message.queueId = queueId
         return message
     }
 
-    // MARK: - The receipt
-
-    func testAHeldSendDecodesAsQueued() throws {
-        let body = Data(#"{"ok":true,"queued":true,"queueId":"q1","threadId":"t1"}"#.utf8)
-        let receipt = try JSONDecoder().decode(SendReceiptBody.self, from: body).receipt
-        XCTAssertEqual(receipt, .queued(queueId: "q1", threadId: "t1"))
+    private func room(_ id: String, threadId: String) throws -> Room {
+        try JSONDecoder().decode(Room.self, from: Data("""
+        {"id":"\(id)","threadId":"\(threadId)","name":"Ops","memberIds":["bot"],
+         "defaultResponder":{"kind":"first"},"bulletin":"","unread":false,"createdAt":1}
+        """.utf8))
     }
 
-    func testASendTakenIntoTheRunningTurnDecodesAsSteered() throws {
-        let body = Data(#"{"ok":true,"steered":true,"threadId":"t1","message":{"id":"m1"}}"#.utf8)
-        let receipt = try JSONDecoder().decode(SendReceiptBody.self, from: body).receipt
-        XCTAssertEqual(receipt, .sent(threadId: "t1", steered: true))
-    }
+    // MARK: - Remembering and retiring
 
-    /// An older harness answers `{ok:true}`. That is a plain send, not a
-    /// failure and not something to draw a ghost for.
-    func testAnAnswerWithoutMidTurnDetailIsAPlainSend() throws {
-        let body = Data(#"{"ok":true}"#.utf8)
-        let receipt = try JSONDecoder().decode(SendReceiptBody.self, from: body).receipt
-        XCTAssertEqual(receipt, .sent(threadId: nil, steered: false))
-    }
-
-    /// `queued` without the id it is identified by is not something this
-    /// client can track, cancel, or retire. Treating it as a plain send
-    /// loses the ghost; treating it as queued would strand one forever.
-    func testQueuedWithoutAnIdFallsBackToAPlainSend() throws {
-        let body = Data(#"{"ok":true,"queued":true,"threadId":"t1"}"#.utf8)
-        let receipt = try JSONDecoder().decode(SendReceiptBody.self, from: body).receipt
-        XCTAssertEqual(receipt, .sent(threadId: "t1", steered: false))
-    }
-
-    // MARK: - The fold
-
-    func testAHeldSendStaysOnScreenUntilItsLineLands() {
+    func testRememberShowsARowAndDeduplicates() {
         var state = CompanionState()
-        state.rememberQueued(QueuedSend(queueId: "q1", text: "and add tests"), inThread: "t1")
-        XCTAssertEqual(state.pendingQueued["t1"]?.map(\.text), ["and add tests"])
+        state.rememberQueued(held("q1"), threadId: "t1")
+        state.rememberQueued(held("q1", "again"), threadId: "t1")
+        XCTAssertEqual(state.pendingQueued["t1"], [held("q1")])
+        XCTAssertEqual(state.queuedThreadIds, ["t1"])
+    }
 
-        state.apply(.message(threadId: "t1", message: drained("m1", queueId: "q1")))
+    func testConsumeRetiresTheRowAndTombstonesIt() {
+        var state = CompanionState()
+        state.rememberQueued(held("q1"), threadId: "t1")
+        state.consumeQueued(queueId: "q1", threadId: "t1")
         XCTAssertNil(state.pendingQueued["t1"])
-        XCTAssertEqual(state.transcript(forThread: "t1").count, 1)
+        XCTAssertEqual(state.drainedQueueIds, ["q1"])
     }
 
-    func testHoldsAreKeptInSendOrderAndNeverTwice() {
+    func testDrainThatBeatsItsOwnPostCannotResurrectTheRow() {
         var state = CompanionState()
-        state.rememberQueued(QueuedSend(queueId: "q1", text: "first"), inThread: "t1")
-        state.rememberQueued(QueuedSend(queueId: "q2", text: "second"), inThread: "t1")
-        // a retried POST returns the same receipt
-        state.rememberQueued(QueuedSend(queueId: "q1", text: "first"), inThread: "t1")
-        XCTAssertEqual(state.pendingQueued["t1"]?.map(\.text), ["first", "second"])
+        state.consumeQueued(queueId: "q1", threadId: "t1")
+        XCTAssertTrue(state.drainedQueueIds.contains("q1"))
+        state.rememberQueued(held("q1"), threadId: "t1")
+        XCTAssertNil(state.pendingQueued["t1"], "the tombstone wins and is spent")
+        XCTAssertFalse(state.drainedQueueIds.contains("q1"))
     }
 
-    /// The turn can settle before the POST that queued the message has even
-    /// returned. Its line is already in the transcript by then, so the late
-    /// receipt must not put a ghost of it back on screen.
-    func testADrainThatBeatsItsOwnReceiptDoesNotResurrectTheGhost() {
+    func testMessageFrameWithAQueueIdConsumesTheRow() {
         var state = CompanionState()
-        state.apply(.message(threadId: "t1", message: drained("m1", queueId: "q1")))
-        state.rememberQueued(QueuedSend(queueId: "q1", text: "and add tests"), inThread: "t1")
+        state.rememberQueued(held("q1"), threadId: "t1")
+        state.apply(.message(threadId: "t1", message: landed("m1", queueId: "q1")))
         XCTAssertNil(state.pendingQueued["t1"])
+        XCTAssertEqual(state.drainedQueueIds, ["q1"])
     }
 
-    /// One tombstone, one use. A later queue entry that happens to reuse the
-    /// id is a different message and has to be shown.
-    func testTheTombstoneIsSpentOnce() {
+    func testTranscriptPagesRetireLandedSends() {
         var state = CompanionState()
-        state.apply(.message(threadId: "t1", message: drained("m1", queueId: "q1")))
-        state.rememberQueued(QueuedSend(queueId: "q1", text: "first"), inThread: "t1")
-        state.rememberQueued(QueuedSend(queueId: "q1", text: "first"), inThread: "t1")
-        XCTAssertEqual(state.pendingQueued["t1"]?.map(\.text), ["first"])
-    }
-
-    func testCancellingAHoldRemovesItAndOnlyIt() {
-        var state = CompanionState()
-        state.rememberQueued(QueuedSend(queueId: "q1", text: "first"), inThread: "t1")
-        state.rememberQueued(QueuedSend(queueId: "q2", text: "second"), inThread: "t1")
-        state.forgetQueued("q1", inThread: "t1")
-        XCTAssertEqual(state.pendingQueued["t1"]?.map(\.text), ["second"])
-        state.forgetQueued("q2", inThread: "t1")
-        XCTAssertNil(state.pendingQueued["t1"])
-    }
-
-    /// A phone that was asleep through the drain never saw the message
-    /// frame. The transcript it wakes up to is the correction.
-    func testAPageThatAlreadyContainsTheLineRetiresItsGhost() {
-        var state = CompanionState()
-        state.rememberQueued(QueuedSend(queueId: "q1", text: "and add tests"), inThread: "t1")
+        state.rememberQueued(held("q1"), threadId: "t1")
+        state.rememberQueued(held("q2"), threadId: "t1")
         state.merge(
-            ThreadPage(messages: [drained("m1", queueId: "q1")], hasMore: false),
+            ThreadPage(messages: [landed("m1", queueId: "q1")], hasMore: false),
             intoThread: "t1"
         )
-        XCTAssertNil(state.pendingQueued["t1"])
+        XCTAssertEqual(state.pendingQueued["t1"], [held("q2")])
+        XCTAssertTrue(state.drainedQueueIds.contains("q1"))
     }
 
-    func testHoldsAreKeptPerThread() {
+    func testTombstoneWindowStaysBounded() {
         var state = CompanionState()
-        state.rememberQueued(QueuedSend(queueId: "q1", text: "first"), inThread: "t1")
-        state.rememberQueued(QueuedSend(queueId: "q2", text: "second"), inThread: "t2")
-        state.apply(.message(threadId: "t1", message: drained("m1", queueId: "q1")))
-        XCTAssertNil(state.pendingQueued["t1"])
-        XCTAssertEqual(state.pendingQueued["t2"]?.map(\.text), ["second"])
+        for index in 0..<70 {
+            state.consumeQueued(queueId: "q\(index)", threadId: "t1")
+        }
+        XCTAssertEqual(state.drainedQueueIds.count, 64)
+        XCTAssertEqual(state.drainedQueueIds.first, "q6")
     }
 
-    /// A bot frame carrying a whole transcript replaces `messages` outright
-    /// rather than appending, so it never runs the retirement that `append`
-    /// does. Without reconciling here the held message sits above the chat
-    /// bar for ever, long after its line has landed.
-    func testAWholesaleTranscriptReplacementRetiresTheGhost() {
+    // MARK: - The server-owned snapshot
+
+    func testBotQueuedFrameReplacesBotQueuesWholesale() throws {
         var state = CompanionState()
-        var bot = echo()
-        state.apply(.bot(bot))
-        state.rememberQueued(QueuedSend(queueId: "q1", text: "Count to 5"), inThread: "t1")
-        XCTAssertEqual(state.pendingQueued["t1"]?.count, 1)
+        state.rooms = [try room("room", threadId: "room-thread")]
+        state.rememberQueued(held("bot-old"), threadId: "bot-thread")
+        state.rememberQueued(held("room-held"), threadId: "room-thread")
 
-        bot.messages = [drained("m1", queueId: "q1")]
-        state.apply(.bot(bot))
-        XCTAssertNil(state.pendingQueued["t1"])
+        state.apply(.botQueued(queues: ["bot-thread": [held("bot-new", reason: "capacity")]]))
+
+        XCTAssertEqual(state.pendingQueued["bot-thread"], [held("bot-new", reason: "capacity")])
+        XCTAssertEqual(state.pendingQueued["room-thread"], [held("room-held")], "room queues are a separate queue the frame does not describe")
+        XCTAssertTrue(state.drainedQueueIds.contains("bot-old"), "a vanished entry is tombstoned so a slow POST cannot resurrect it")
     }
 
-    /// An engine that dies mid-sentence reports the failure as activity, not
-    /// as a settled reply, so nothing else clears the buffer. Left alone it
-    /// renders as an answer that streams for ever.
-    func testAnIdleBotHasNothingStreaming() {
+    func testHydrateSeedsQueuesFromTheFleetAndReconcilesLandedLines() throws {
         var state = CompanionState()
-        var bot = echo()
-        bot.busy = true
+        state.rememberQueued(held("stale"), threadId: "bot-thread")
+        let fleet = try JSONDecoder().decode(Fleet.self, from: Data("""
+        {"bots":[{"id":"bot","threadId":"bot-thread","name":"Scout","title":"Researcher",
+          "description":"","notifications":true,"color":"green","unread":false,
+          "modelSelection":{"instanceId":"engine","model":"default"},"createdAt":1,
+          "messages":[{"id":"m1","role":"user","kind":"text","at":1,"text":"hello","queueId":"q-landed"}]}],
+         "groups":[],
+         "botQueuedMessages":{"bot-thread":[{"queueId":"q-held","text":"follow-up"}]}}
+        """.utf8))
+        state.hydrate(fleet)
+        XCTAssertEqual(state.pendingQueued["bot-thread"], [held("q-held")])
+        XCTAssertTrue(state.drainedQueueIds.contains("q-landed"))
+        XCTAssertTrue(state.drainedQueueIds.contains("stale"))
+    }
+
+    // MARK: - Defensive wire parsing
+
+    func testBotQueuedFrameDropsMalformedEntriesWithoutDroppingTheFrame() throws {
+        let frame = try JSONDecoder().decode(Frame.self, from: Data("""
+        {"kind":"bot.queued","queues":{"t1":[
+          {"queueId":"q1","text":"good"},
+          {"queueId":"q2"},
+          {"text":"no id"},
+          "not even an object"
+        ]}}
+        """.utf8))
+        guard case let .botQueued(queues) = frame else {
+            return XCTFail("expected bot.queued, got \(frame)")
+        }
+        XCTAssertEqual(queues["t1"], [held("q1", "good")])
+    }
+
+    func testAnUnreadableBotQueuedFrameIsIgnoredNotReadAsAnEmptyQueue() throws {
+        for payload in [
+            "{\"kind\":\"bot.queued\"}",
+            "{\"kind\":\"bot.queued\",\"queues\":\"not a dictionary\"}"
+        ] {
+            let frame = try JSONDecoder().decode(Frame.self, from: Data(payload.utf8))
+            guard case let .unknown(kind) = frame else {
+                return XCTFail("expected an ignored frame, got \(frame)")
+            }
+            XCTAssertEqual(kind, "bot.queued")
+        }
+
+        var state = CompanionState()
+        state.rememberQueued(held("q1"), threadId: "t1")
+        let frame = try JSONDecoder().decode(Frame.self, from: Data("{\"kind\":\"bot.queued\"}".utf8))
+        state.apply(frame)
+        XCTAssertEqual(state.pendingQueued["t1"], [held("q1")],
+                       "an unreadable frame is not the server retiring the queue")
+    }
+
+    func testSendReceiptDecodesQueuedAndDirectShapes() throws {
+        let queued = try JSONDecoder().decode(SendReceipt.self, from: Data("""
+        {"ok":true,"queued":true,"queueId":"q1","threadId":"t1","reason":"capacity"}
+        """.utf8))
+        XCTAssertEqual(queued.queued, true)
+        XCTAssertEqual(queued.queueId, "q1")
+        XCTAssertEqual(queued.threadId, "t1")
+        XCTAssertEqual(queued.reason, "capacity")
+
+        let direct = try JSONDecoder().decode(SendReceipt.self, from: Data("""
+        {"ok":true,"threadId":"t1","message":{"id":"m1","role":"user","kind":"text","at":1}}
+        """.utf8))
+        XCTAssertNil(direct.queued)
+        XCTAssertNil(direct.queueId)
+    }
+
+    // MARK: - Row and attention derivation
+
+    func testIdleMetadataClearsOnlyItsThreadWithoutNeedingAReply() {
+        var state = CompanionState()
+        var bot = Bot(id: "bot", threadId: "idle", name: "Scout", title: "Researcher",
+                      description: "", notifications: true, color: "green", unread: false,
+                      modelSelection: ModelSelection(instanceId: "engine", model: "default"), createdAt: 1)
+        bot.busy = true // A sibling can still be running when this task stops.
+        var idle = BotTask(threadId: "idle", title: "Idle", createdAt: 1)
+        idle.busy = false
+        var busy = BotTask(threadId: "busy", title: "Busy", createdAt: 1)
+        busy.busy = true
+        bot.tasks = [idle, busy]
+        state.bots = [bot]
+        state.streaming = ["idle": "unfinished", "busy": "still working"]
+        state.reasoning = ["idle": "unfinished"]
+
         state.apply(.bot(bot))
-        state.apply(.runtime(RuntimeEvent(
-            type: "content.delta", threadId: "t1", delta: "A History of Comp", streamKind: "assistant_text"
-        )))
-        XCTAssertFalse((state.streaming["t1"] ?? "").isEmpty)
 
-        bot.busy = false
-        state.apply(.bot(bot))
-        XCTAssertNil(state.streaming["t1"])
+        XCTAssertNil(state.streaming["idle"])
+        XCTAssertNil(state.reasoning["idle"])
+        XCTAssertEqual(state.streaming["busy"], "still working")
     }
 
-    // MARK: - Taking one back
-
-    /// The harness and the sidecar both answer 404. Only one of them means
-    /// the message is gone; the other means this computer cannot cancel at
-    /// all, and treating them alike takes the words off the phone while the
-    /// computer still intends to run them.
-    func testOnlyTheHarnessesOwn404CountsAsAlreadyGone() {
-        let drained = APIError.status(code: 404, message: CompanionClient.alreadyDrained)
-        let noRoute = APIError.status(code: 404, message: "no route: DELETE /api/bots/b1/queue/q1")
-        XCTAssertTrue(isAlreadyDrained(drained))
-        XCTAssertFalse(isAlreadyDrained(noRoute))
-        XCTAssertFalse(isAlreadyDrained(APIError.status(code: 404, message: nil)))
+    func testRoomReplacementRetiresTheExactQueuedSend() throws {
+        var state = CompanionState()
+        var snapshot = try room("room", threadId: "t1")
+        state.rooms = [snapshot]
+        state.rememberQueued(held("q1"), threadId: "t1")
+        state.rememberQueued(held("q2"), threadId: "t1")
+        snapshot.messages = [landed("m1", queueId: "q1")]
+        state.apply(.room(snapshot))
+        XCTAssertEqual(state.pendingQueued["t1"], [held("q2")])
     }
 
-    /// Mirrors the `catch` pattern in `cancelQueued`.
-    private func isAlreadyDrained(_ error: APIError) -> Bool {
-        guard case let .status(code, message) = error else { return false }
-        return code == 404
-            && message?.localizedCaseInsensitiveContains(CompanionClient.alreadyDrained) == true
-    }
-
-    // MARK: - The message
-
-    func testATranscriptLineCarriesItsMidTurnMarkers() throws {
-        let body = Data(#"""
-        {"id":"m1","role":"user","kind":"text","at":1,"text":"stop and explain","steered":true}
-        """#.utf8)
-        let message = try JSONDecoder().decode(Message.self, from: body)
+    func testLiveSteerWireFieldsRemainOptionalForOlderComputers() throws {
+        let decoder = JSONDecoder()
+        XCTAssertNil(try decoder.decode(InstanceCapabilities.self, from: Data("{}".utf8)).queueing)
+        XCTAssertEqual(try decoder.decode(InstanceCapabilities.self, from: Data("{\"queueing\":true}".utf8)).queueing, true)
+        let message = try decoder.decode(Message.self, from: Data("{\"id\":\"m1\",\"role\":\"user\",\"kind\":\"text\",\"at\":1,\"steered\":true}".utf8))
         XCTAssertEqual(message.steered, true)
-        XCTAssertNil(message.queueId)
+        XCTAssertNil(landed("m2", queueId: nil).steered)
     }
 
-    func testAnEngineThatCanTakeWordsIntoATurnSaysSo() throws {
-        let body = Data(#"{"effortLevels":["low"],"queueing":true}"#.utf8)
-        let capabilities = try JSONDecoder().decode(InstanceCapabilities.self, from: body)
-        XCTAssertEqual(capabilities.queueing, true)
+    func testWireQueuedActivityStillDemandsAttention() {
+        var task = BotTask(threadId: "t1", title: "t", createdAt: 1)
+        task.activity = "queued"
+        XCTAssertFalse(task.busy == true)
+        XCTAssertTrue(
+            task.demandsAttention(queued: false),
+            "main surfaces a thread whose wire activity says queued; the client flag covers the out-of-band queues"
+        )
+    }
+
+    func testClientQueuedStateDemandsAttentionAndFloatsClosedThreads() {
+        var task = BotTask(threadId: "t1", title: "t", createdAt: 1)
+        task.closedBy = ThreadCloser(botId: "bot", name: "Scout", at: 1)
+        XCTAssertTrue(task.demandsAttention(queued: true))
+
+        let bot = Bot(
+            id: "bot", threadId: "current", name: "Scout", title: "Researcher",
+            description: "", notifications: true, color: "green", unread: false,
+            modelSelection: ModelSelection(instanceId: "engine", model: "default"), createdAt: 1,
+            tasks: [task]
+        )
+        XCTAssertTrue(bot.threadGroups().flatMap(\.tasks).isEmpty, "closed and quiet folds away")
+        XCTAssertEqual(bot.threadGroups(queuedThreadIds: ["t1"]).flatMap(\.tasks).map(\.threadId), ["t1"], "a held send keeps the row up")
+    }
+
+    func testEditDraftLeadsWithTheHeldWordsAndKeepsTheTypedDraft() {
+        let send = held("q1", "actually stop at 10")
+        XCTAssertEqual(send.editDraft(keeping: ""), "actually stop at 10")
+        XCTAssertEqual(send.editDraft(keeping: "  \n"), "actually stop at 10", "whitespace is not a draft")
+        XCTAssertEqual(send.editDraft(keeping: "and use the smaller model"), "actually stop at 10\n\nand use the smaller model")
     }
 }

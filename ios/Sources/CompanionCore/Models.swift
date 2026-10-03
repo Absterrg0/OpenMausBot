@@ -57,6 +57,13 @@ public struct OptionCard: Codable, Hashable, Sendable {
     /// Learned skills must show their complete reviewed contents before an
     /// approval button is offered on a compact companion surface.
     public var skillRequest: SkillRequestCardData? = nil
+    /// The model's own questions and options (Claude's `AskUserQuestion`).
+    /// Present only on a structured ask; every other card leaves it nil.
+    public var questionRequest: QuestionRequestCardData? = nil
+    /// What an answered question was answered WITH. `answered` only records
+    /// the behavior once the harness settles a live ask, so without this a
+    /// settled question card would read "answer" instead of the reply.
+    public var answeredText: String? = nil
 
     /// A card is actionable while it is unanswered and still has a request
     /// behind it. Everything else is transcript.
@@ -66,6 +73,14 @@ public struct OptionCard: Codable, Hashable, Sendable {
 
     /// Permission cards carry a tool; questions do not.
     public var isPermission: Bool { tool != nil }
+
+    /// A structured ask draws its own card: the model posed real questions
+    /// with real options, and a flat row of buttons cannot say which
+    /// question a tap answered.
+    public var questions: [AskQuestion] {
+        guard let questionRequest, !questionRequest.questions.isEmpty else { return [] }
+        return questionRequest.questions
+    }
 
     /// The wire API accepts an approval behavior rather than the button's
     /// display text. Treat the one refusal as deny and every other offered
@@ -104,13 +119,52 @@ public struct ToolActivity: Codable, Hashable, Sendable {
     public var spoken: String?
     /// Marks an error fixed by installing something, not by retrying.
     public var setup: Bool?
+    /// Marks an error caused by a Claude Code CLI too old for the chosen
+    /// model; the phone offers to run Claude's updater. Absent on older
+    /// computers, so it stays optional.
+    public var claudeUpdate: Bool?
+    /// What the step returned, when the computer kept it. A teammate's
+    /// "X replied" chip carries the report itself here (redacted, ≤2000
+    /// characters) so it can be read without opening the teammate's thread.
+    /// Previews still read `name`: the chip label is the summary.
+    public var output: String?
+
+    /// The output worth expanding the chip for; nil when there is none.
+    public var expandableOutput: String? {
+        guard let text = output?.trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty else { return nil }
+        return text
+    }
+}
+
+/// A compaction record: from this message on, rebuilds of the thread's
+/// context carry `summary` instead of the earlier messages.
+public struct Compaction: Codable, Hashable, Sendable {
+    public var summary: String
+    public var tokensBefore: Int
+    public init(summary: String, tokensBefore: Int) {
+        self.summary = summary
+        self.tokensBefore = tokensBefore
+    }
+
+    public var chipText: String {
+        let tokens = NumberFormatter.localizedString(from: NSNumber(value: tokensBefore), number: .decimal)
+        return "Context compacted · \(tokens) tokens summarised"
+    }
+}
+
+/// The thread an activity chip opened — "Opened thread #Title on Scout" —
+/// so the phone can go there. Newer computers only; a chip without one is
+/// just a receipt.
+public struct ThreadRef: Codable, Hashable, Sendable {
+    public var botId: String
+    public var threadId: String
+    public var title: String
 }
 
 /// A credential request created by the desktop for one paused task.
 ///
-/// Paired phones deliberately cannot write host credentials. Keeping the
-/// payload lets the companion render an honest handoff card instead of
-/// turning this newer message kind into an invisible row.
+/// The phone may fill this request only through the QR-pinned HPKE transport.
+/// The payload contains identifiers and display copy, never the credential.
 public struct SecretRequestCardData: Codable, Hashable, Sendable {
     public var target: String?
     public var label: String?
@@ -147,6 +201,17 @@ public struct CommChip: Codable, Hashable, Sendable {
 public struct Message: Codable, Hashable, Identifiable, Sendable {
     public enum Kind: String, Codable, Sendable {
         case text, options, activity, screen, secret
+        /// The harness's receipt of a settled turn: "[digest] · tools: … ·
+        /// reply: …". Desktop shows it only behind "show tool calls"; it is
+        /// a log line, not something anyone said, so the phone draws it as
+        /// a chip that opens the parts (`DigestSummary`) and never previews
+        /// or speaks it. Named so it cannot fall into `unknown`, which draws
+        /// whatever text a message carries as a bubble.
+        case digest
+        case compaction
+        /// One background routine run, upserted into the thread that asked
+        /// for it and patched as the run moves. `routineRun` carries the card.
+        case routineRun = "routine.run"
         /// A kind this build has never heard of.
         ///
         /// Not decorative. `kind` is not optional, so without this a single
@@ -182,14 +247,33 @@ public struct Message: Codable, Hashable, Identifiable, Sendable {
     public var kind: Kind
     public var at: Double
     public var text: String?
+    /// Provider turn markers let clients fold settled narration while keeping
+    /// the final answer visible. Older servers may omit both fields.
+    public var turnId: String?
+    public var turnTerminal: Bool?
     public var card: OptionCard?
     public var secret: SecretRequestCardData?
     public var tool: ToolActivity?
+    public var threadRef: ThreadRef?
+    /// `kind == .compaction`: the record itself.
+    public var compaction: Compaction?
+    /// `kind == .routineRun`: the run's status and what it said. Absent
+    /// leaves the message's text, which the computer writes for exactly
+    /// the clients that cannot read the card.
+    public var routineRun: RoutineRunCard?
     /// The message this one follows; nil at the thread root. Two messages
     /// sharing a parent are a fork.
     public var parentId: String?
+    /// Set when this line began as a queued send: the id the harness quoted
+    /// when it held the message, echoed back on the line that finally landed.
+    /// Clients match it against their held-send rows to retire them.
+    public var queueId: String?
+    public var steered: Bool?
     /// Rooms: which member said this.
     public var from: Sender?
+    /// How a user-role message arrived: "api" through the server's HTTP API,
+    /// "call" spoken on a Live call and transcribed. Absent for a typed one.
+    public var via: String?
     public var reactions: [Reaction]?
     public var comm: CommChip?
     /// Screen messages in the paged shape: the pixels live behind
@@ -198,15 +282,16 @@ public struct Message: Codable, Hashable, Identifiable, Sendable {
     /// Screen messages in the full shape: base64 pixels, inline.
     public var png: String?
     public var mime: String?
-    /// A user line the engine took INTO the turn that was already running,
-    /// rather than one that started a turn of its own.
-    public var steered: Bool?
-    /// The steer-queue entry this user line drained from. It is how a client
-    /// that is showing the held message knows which placeholder to retire
-    /// when the real line finally lands.
-    public var queueId: String?
+    /// Agent-generated images carried on a text reply, including late message patches.
+    public var attachments: [MessageImageAttachment]?
 
     public var date: Date { Date(timeIntervalSince1970: at / 1000) }
+
+    /// A teammate's reply chip carrying its report: someone else's words,
+    /// so they read as prose in full rather than as a clipped tool log.
+    public var isTeammateReport: Bool {
+        kind == .activity && (threadRef != nil || comm != nil) && tool?.expandableOutput != nil
+    }
 }
 
 // MARK: - Bots and rooms
@@ -225,10 +310,181 @@ public struct ModelSelection: Codable, Hashable, Sendable {
     }
 }
 
+/// The bot that opened a thread, on itself or on a teammate. Absent — which
+/// is every thread from an older computer — means the person opened it.
+public struct ThreadOpener: Codable, Hashable, Sendable {
+    public var botId: String
+    public var name: String
+    public var delegationId: String?
+    public var at: Double
+}
+
+/// The bot that closed a thread with close_thread, once its result was
+/// read. Absent means the thread is open; the computer clears it the moment
+/// a new turn starts there, so a reopened thread simply loses the stamp.
+public struct ThreadCloser: Codable, Hashable, Sendable {
+    public var botId: String
+    public var name: String
+    public var at: Double
+}
+
+/// A folder within one bot, in the order saved by the desktop.
+public struct BotProject: Codable, Hashable, Identifiable, Sendable {
+    public var id: String
+    public var name: String
+    public var emoji: String?
+}
+
 public struct BotTask: Codable, Hashable, Sendable {
     public var threadId: String
     public var title: String
     public var createdAt: Double
+    public var modelSelection: ModelSelection?
+    public var busy: Bool?
+    /// Runtime state from newer computers; used to recover approvals in
+    /// background threads without downloading every conversation.
+    public var activity: String?
+    /// This thread's own turn is done and a dispatched teammate has not
+    /// settled yet (#1223): a wait, not work. Newer computers send it while
+    /// leaving busy/activity idle, so older builds simply see the thread
+    /// idle instead of spinning a work glyph for the whole teammate run.
+    public var waitingOnTeammate: Bool?
+    public var unread: Bool?
+    public var approvalMode: String?
+    public var autoApprove: Bool?
+    public var alwaysAllow: [String]?
+    public var projectId: String?
+    public var openedBy: ThreadOpener?
+    public var closedBy: ThreadCloser?
+    /// Asleep until: 0 is the "until new activity" sentinel and sleeps until
+    /// the thread does anything again, a timestamp sleeps until that moment,
+    /// and nil means awake. Expired time snoozes heal server-side on read,
+    /// so snapshots are authoritative; the sentinel wakes server-side on the
+    /// first activity too.
+    public var snoozedUntil: Double?
+
+    /// When the person put this thread away, in epoch milliseconds. The
+    /// field's presence — not its value — marks the thread archived: the
+    /// task API accepts any epoch number, so a thread persisted with
+    /// archivedAt: 0 is archived. Absent means it was never put away.
+    public var archivedAt: Double?
+    /// Bot-only internal execution. Keep it addressable, but out of thread pickers.
+    public var routineRunId: String?
+    /// The person pinned this thread above the update-ordered list.
+    public var pinned: Bool? = nil
+    /// Newest message time. Absent on older computers; the list uses createdAt.
+    public var updatedAt: Double? = nil
+
+    /// The time the thread list sorts and stamps by.
+    public var listStamp: Double { updatedAt ?? createdAt }
+
+    /// The thread list's quiet second line, worded as the desktop words it.
+    public var openedByLabel: String? {
+        openedBy.map { "opened by \($0.name)" }
+    }
+
+    /// A bot closed this thread and nothing has happened there since.
+    public var isClosed: Bool { closedBy != nil }
+
+    /// Archived means the field is present, not nonzero: the task API
+    /// accepts any epoch number, so a thread persisted with
+    /// archivedAt: 0 is archived.
+    public var isArchived: Bool { archivedAt != nil }
+
+    /// Working is activity or flag: the wire can carry either alone, so the
+    /// archive action's busy gate and the working status ask the same
+    /// question. A run counts as work here exactly as its row already
+    /// labels it Working.
+    public var isWorking: Bool { activity == "working" || activity == "running" || busy == true }
+
+    /// The one line under a title: who closed it once a bot has, "Archived"
+    /// once the person put it away, "Snoozed" while it sleeps, otherwise who
+    /// opened it, otherwise nothing. Closed wins because it is the newer
+    /// fact; archived and snoozed win over the opener because they explain
+    /// why the row sits where it does.
+    public var bylineLabel: String? {
+        if let closedBy { return "closed by \(closedBy.name)" }
+        if isArchived { return "Archived" }
+        if isSnoozed() { return "Snoozed" }
+        return openedByLabel
+    }
+
+    /// Snoozed means asleep right now: 0 is the "until new activity"
+    /// sentinel and sleeps until woken, while a timestamp sleeps only until
+    /// it passes. The server drops expired snoozes from snapshots, but a
+    /// live event never refreshes one, so the clock is checked too.
+    public func isSnoozed(now: Date = Date()) -> Bool {
+        guard let until = snoozedUntil else { return false }
+        return until == 0 || until > now.timeIntervalSince1970 * 1_000
+    }
+
+    /// Waiting on a dispatched teammate: the thread's own turn is done and
+    /// a teammate has not settled. Flag-only, matching Android: the live
+    /// #1228 wire paints busy, working, and this flag together during a
+    /// coordination wait, so the flag alone decides — a quiet wait, never
+    /// the work spinner.
+    public var isWaitingOnTeammate: Bool { waitingOnTeammate == true }
+
+    /// Whether the row must stay in the list regardless of closed state:
+    /// it is working, waiting on someone, has something they have not read,
+    /// or is holding a queued send. Queued is client state the harness
+    /// reports out-of-band, so it arrives as an input rather than living on
+    /// the wire-decoded task.
+    public func demandsAttention(queued: Bool = false) -> Bool {
+        if isWorking || isWaitingOnTeammate || unread == true { return true }
+        if queued { return true }
+        switch activity {
+        case "waiting-on-you", "waiting", "queued": return true
+        default: return false
+        }
+    }
+}
+
+/// The snooze presets the desktop offers, computed in the person's local
+/// time on purpose: it is their evening and their morning; the server
+/// stores the absolute moment either way.
+public enum ThreadSnoozePreset {
+    /// The next local 6 PM — "later today", rolling to tomorrow evening
+    /// once tonight's is already past.
+    public static func tonight(now: Date = Date(), calendar: Calendar = .current) -> Double {
+        var when = calendar.date(bySettingHour: 18, minute: 0, second: 0, of: now) ?? now
+        if when <= now { when = calendar.date(byAdding: .day, value: 1, to: when) ?? when }
+        return when.timeIntervalSince1970 * 1_000
+    }
+
+    /// Tomorrow morning at 9 local: a clean overnight break.
+    public static func tomorrowMorning(now: Date = Date(), calendar: Calendar = .current) -> Double {
+        let tomorrow = calendar.date(byAdding: .day, value: 1, to: now) ?? now
+        let when = calendar.date(bySettingHour: 9, minute: 0, second: 0, of: tomorrow) ?? tomorrow
+        return when.timeIntervalSince1970 * 1_000
+    }
+}
+
+/// A message the harness is holding until the running turn settles. The
+/// phone's copy of a server-owned queue entry, identified by the harness's
+/// queueId and never by its text.
+public struct QueuedSend: Codable, Hashable, Identifiable, Sendable {
+    public var queueId: String
+    public var text: String
+    /// Why the harness held it. "capacity" is the known value; anything else
+    /// parses and is shown as a plain queued line.
+    public var reason: String?
+
+    public var id: String { queueId }
+
+    public init(queueId: String, text: String, reason: String? = nil) {
+        self.queueId = queueId
+        self.text = text
+        self.reason = reason
+    }
+
+    /// The composer text after this held send is pulled back for editing.
+    /// Its words lead — they were written first — and anything already typed
+    /// stays below them after a blank line, so an edit never drops a draft.
+    public func editDraft(keeping draft: String) -> String {
+        if draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return text }
+        return "\(text)\n\n\(draft)"
+    }
 }
 
 public struct Bot: Codable, Hashable, Identifiable, Sendable {
@@ -250,16 +506,28 @@ public struct Bot: Codable, Hashable, Identifiable, Sendable {
     public var modelSelection: ModelSelection
     public var createdAt: Double
     public var busy: Bool?
+    /// What the bot is doing on its current thread: "working",
+    /// "waiting-on-you", "idle", "no-signal" or "dead". Transient on the
+    /// computer, and older computers omit it; a thread's own `activity`
+    /// outranks it.
+    public var activity: String?
+    /// A dispatched teammate has not settled yet; the bot itself is waiting
+    /// on it rather than working (#1223). Carries the active thread's wait;
+    /// per-thread waits live on the task.
+    public var waitingOnTeammate: Bool?
     public var pinned: Bool?
     public var hidden: Bool?
     /// Desktop sidebar section. Missing or blank means the built-in Bots area.
     public var section: String?
     public var chiefOfStaff: Bool?
+    /// ask, auto, full, or custom. Missing on older harnesses; autoApprove
+    /// remains the compatibility mirror for older companion builds.
+    public var approvalMode: String?
     public var autoApprove: Bool?
     public var alwaysAllow: [String]?
     public var computer: String?
     /// Which cloud computer backs `computer == "cloud"`. Absent (older
-    /// harnesses included) means the hosted Box; "vps" means the user's own
+    /// harnesses included) means the hosted Boat; "vps" means the user's own
     /// server, which has no interactive desktop to offer a phone.
     public var cloudBackend: String?
     public var speakReplies: Bool?
@@ -269,10 +537,49 @@ public struct Bot: Codable, Hashable, Identifiable, Sendable {
     /// older harness included) means the shipped `cursor` silhouette.
     public var mascotBody: String?
     public var tasks: [BotTask]?
+    public var projects: [BotProject]?
     public var messages: [Message]?
     public var activeLeafId: String?
     /// Paged responses only: there is more transcript above what you got.
     public var hasMore: Bool?
+
+    /// Routine results are ordinary tasks; only their per-run executions are hidden.
+    public var visibleTasks: [BotTask] {
+        (tasks ?? []).filter { $0.routineRunId == nil }
+    }
+
+    /// Older computers only send the profile default. Newer ones snapshot
+    /// each thread's model independently, including the thread open here.
+    public var currentTaskModelSelection: ModelSelection {
+        tasks?.first { $0.threadId == threadId }?.modelSelection ?? modelSelection
+    }
+
+    public var currentTaskBusy: Bool? {
+        tasks?.first { $0.threadId == threadId }?.busy ?? busy
+    }
+
+    /// A view snapshot, never a replacement for the shared profile record.
+    /// The selected thread stays local even when another client navigates.
+    public func projected(forThread selectedThreadId: String) -> Bot? {
+        let task = tasks?.first { $0.threadId == selectedThreadId }
+        guard task != nil || selectedThreadId == threadId else { return nil }
+        var view = self
+        view.threadId = selectedThreadId
+        view.modelSelection = task?.modelSelection ?? modelSelection
+        view.busy = task?.busy ?? (selectedThreadId == threadId ? busy : false)
+        view.activity = task?.activity ?? (selectedThreadId == threadId ? activity : nil)
+        view.waitingOnTeammate = task?.waitingOnTeammate ?? (selectedThreadId == threadId ? waitingOnTeammate : false)
+        view.unread = task?.unread ?? (selectedThreadId == threadId ? unread : false)
+        view.approvalMode = task?.approvalMode ?? task?.autoApprove.map { $0 ? "auto" : "ask" } ?? approvalMode
+        view.autoApprove = task?.autoApprove ?? autoApprove
+        view.alwaysAllow = task?.alwaysAllow ?? alwaysAllow
+        if selectedThreadId != threadId {
+            view.messages = nil
+            view.activeLeafId = nil
+            view.hasMore = nil
+        }
+        return view
+    }
 }
 
 public enum AvatarCrop: String, Codable, CaseIterable, Hashable, Sendable {
@@ -289,6 +596,109 @@ public enum AvatarCrop: String, Codable, CaseIterable, Hashable, Sendable {
     public func encode(to encoder: Encoder) throws {
         var container = encoder.singleValueContainer()
         try container.encode(rawValue)
+    }
+}
+
+/// The "who" section of a bot overview: identity and its soul in one line.
+public struct BotOverviewWho: Codable, Hashable, Sendable {
+    public var name: String
+    public var title: String
+    public var blurb: String
+    public var soulLead: String
+}
+
+public struct BotOverviewRecent: Codable, Hashable, Sendable {
+    /// epoch milliseconds, like every other timestamp on the wire
+    public var at: Double
+    public var summary: String
+}
+
+/// One service's connector tool grants, summarized for read-only display.
+/// Levels mirror the web grant editor: all tools, an exact list of
+/// `toolCount` tools, or no tools.
+public struct BotOverviewGrant: Codable, Hashable, Sendable {
+    public enum Level: String, Codable, Hashable, Sendable {
+        case all
+        case partial
+        case none
+
+        /// The server may add levels before this app updates. Falling back
+        /// to partial keeps the row honest ("some tools") without costing
+        /// the reader the whole overview.
+        public init(from decoder: Decoder) throws {
+            let raw = try decoder.singleValueContainer().decode(String.self)
+            self = Self(rawValue: raw) ?? .partial
+        }
+
+        public func encode(to encoder: Encoder) throws {
+            var container = encoder.singleValueContainer()
+            try container.encode(rawValue)
+        }
+    }
+
+    public var slug: String
+    public var level: Level
+    /// Granted tool count; 0 unless level is partial.
+    public var toolCount: Int
+
+    public init(slug: String, level: Level, toolCount: Int) {
+        self.slug = slug
+        self.level = level
+        self.toolCount = toolCount
+    }
+}
+
+/// A read-only summary of one bot: who it is, what it does, what it can
+/// reach, what it won't do, and its recent activity. No settings and no
+/// transcript — this is the shape a phone is allowed to poll for.
+public struct BotOverview: Codable, Hashable, Sendable {
+    public var who: BotOverviewWho
+    public var does: [String]
+    public var reaches: [String]
+    public var wont: [String]
+    public var recent: [BotOverviewRecent]
+    /// Per-service connector tool grants, when the bot carries a grants
+    /// record. Older computers omit the key entirely (legacy all-tools
+    /// behavior); an empty list is an explicit no-tools record.
+    public var grants: [BotOverviewGrant]?
+
+    private enum CodingKeys: String, CodingKey {
+        case who, does, reaches, wont, recent, grants
+    }
+
+    public init(
+        who: BotOverviewWho,
+        does: [String],
+        reaches: [String],
+        wont: [String],
+        recent: [BotOverviewRecent],
+        grants: [BotOverviewGrant]? = nil
+    ) {
+        self.who = who
+        self.does = does
+        self.reaches = reaches
+        self.wont = wont
+        self.recent = recent
+        self.grants = grants
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        who = try container.decode(BotOverviewWho.self, forKey: .who)
+        does = try container.decode([String].self, forKey: .does)
+        reaches = try container.decode([String].self, forKey: .reaches)
+        wont = try container.decode([String].self, forKey: .wont)
+        recent = try container.decode([BotOverviewRecent].self, forKey: .recent)
+        // One malformed entry must not cost the whole overview; a shape
+        // this build cannot read is dropped, like elsewhere in the fleet.
+        // If every entry is unreadable, though, the grants field stays
+        // absent rather than claiming the bot deliberately grants nothing.
+        if let list = try? container.decodeIfPresent([Lossy<BotOverviewGrant>].self, forKey: .grants) {
+            let readable = list.compactMap(\.value)
+            grants = readable.isEmpty && !list.isEmpty ? nil : readable
+        } else {
+            grants = nil
+        }
     }
 }
 
@@ -319,7 +729,7 @@ public struct Room: Codable, Hashable, Identifiable, Sendable {
 
 // MARK: - Responses
 
-private struct Lossy<Element: Decodable>: Decodable {
+struct Lossy<Element: Decodable>: Decodable {
     let value: Element?
 
     init(from decoder: Decoder) throws {
@@ -330,24 +740,35 @@ private struct Lossy<Element: Decodable>: Decodable {
 public struct Fleet: Decodable, Sendable {
     public var bots: [Bot]
     public var groups: [Room]
+    /// Held sends for every bot thread, the same snapshot the
+    /// bot.queued frames carry. Older computers omit it.
+    public var botQueuedMessages: [String: [QueuedSend]]?
 
-    private enum CodingKeys: String, CodingKey { case bots, groups }
+    private enum CodingKeys: String, CodingKey { case bots, groups, botQueuedMessages }
 
-    public init(bots: [Bot], groups: [Room]) {
+    public init(bots: [Bot], groups: [Room], botQueuedMessages: [String: [QueuedSend]]? = nil) {
         self.bots = bots
         self.groups = groups
+        self.botQueuedMessages = botQueuedMessages
     }
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         bots = try container.decodeIfPresent([Lossy<Bot>].self, forKey: .bots)?.compactMap(\.value) ?? []
         groups = try container.decodeIfPresent([Lossy<Room>].self, forKey: .groups)?.compactMap(\.value) ?? []
+        // One malformed entry must not cost the whole fleet: the roster is
+        // worth more than the queue note beside it.
+        botQueuedMessages = (try? container.decodeIfPresent(
+            [String: [Lossy<QueuedSend>]].self,
+            forKey: .botQueuedMessages
+        ))??.mapValues { list in list.compactMap(\.value) }
     }
 }
 
 public struct ThreadPage: Codable, Sendable {
     public var messages: [Message]
     public var hasMore: Bool?
+    public var activeLeafId: String?
 }
 
 public struct SearchHit: Codable, Hashable, Identifiable, Sendable {
@@ -473,6 +894,140 @@ public struct CompanionConnectionMetadata: Decodable, Sendable {
     }
 }
 
+/// Who is driving a bot's computer. `owned` is present only when the request
+/// named a control lease, and says whether that lease is the one holding it.
+public struct ComputerControlState: Decodable, Sendable, Equatable {
+    public let held: Bool
+    public let owned: Bool?
+
+    public init(held: Bool, owned: Bool? = nil) {
+        self.held = held
+        self.owned = owned
+    }
+}
+
+/// The Local VM's live desktop, as the sidecar relays it to this device: a
+/// WebSocket path that only this paired device may open, and the VNC password
+/// the desktop asks for. In memory only, like `CloudDesktopSession`; the path
+/// is a short-lived capability.
+public struct LocalVmViewerSession: Decodable, Sendable, Equatable {
+    /// The WebSocket path on the paired computer, without its leading slash:
+    /// `vps-viewer/<32 characters>/websockify` when the companion sidecar
+    /// relays the desktop, `api/desktop-viewer/local/<target>/websockify`
+    /// when the server itself proxies it to a directly paired phone.
+    public let socketPath: String
+    /// What the server's own proxy needs to bind the socket to the control
+    /// lease (`botId`, `controlLeaseId`, and the `threadId` whose VM seat the
+    /// join picked). Empty for a sidecar relay.
+    public let socketQuery: [String: String]
+    public let password: String?
+
+    /// Whether the companion sidecar relays this desktop. The sidecar speaks
+    /// websockify's `binary` subprotocol; the server's proxy negotiates none.
+    public var relayed: Bool { socketPath.hasPrefix("vps-viewer/") }
+
+    private enum CodingKeys: String, CodingKey { case joinUrl, socketPath, password }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        if let raw = try container.decodeIfPresent(String.self, forKey: .socketPath) {
+            guard let parsed = Self.parseDirect(raw) else {
+                throw DecodingError.dataCorruptedError(
+                    forKey: .socketPath,
+                    in: container,
+                    debugDescription: "Local VM viewer must be the paired server's own desktop proxy"
+                )
+            }
+            (socketPath, socketQuery) = parsed
+            let password = try container.decodeIfPresent(String.self, forKey: .password)
+            self.password = password?.isEmpty == false ? password : nil
+            return
+        }
+        let raw = try container.decode(String.self, forKey: .joinUrl)
+        guard let parsed = Self.parse(raw) else {
+            throw DecodingError.dataCorruptedError(
+                forKey: .joinUrl,
+                in: container,
+                debugDescription: "Local VM viewer must be a relayed path on the paired computer"
+            )
+        }
+        (socketPath, password) = parsed
+        socketQuery = [:]
+    }
+
+    /// Only the sidecar's relay shape is accepted: anything with a scheme or
+    /// host (a loopback address that was not rewritten, or somewhere else
+    /// entirely) is refused rather than dialled.
+    static func parse(_ raw: String) -> (String, String?)? {
+        guard let components = URLComponents(string: raw),
+              components.scheme == nil, components.host == nil,
+              let match = raw.range(of: #"^/vps-viewer/([A-Za-z0-9_-]{32})/"#, options: .regularExpression)
+        else { return nil }
+        let id = raw[match].dropFirst("/vps-viewer/".count).dropLast()
+        let settings = URLComponents(string: "?" + (components.fragment ?? ""))?.queryItems ?? []
+        let expected = "vps-viewer/\(id)/websockify"
+        let path = settings.first { $0.name == "path" }?.value ?? expected
+        guard path == expected else { return nil }
+        let password = settings.first { $0.name == "password" }?.value
+        return (path, password?.isEmpty == false ? password : nil)
+    }
+
+    /// Only the server's own desktop proxy, for a Local VM target, carrying
+    /// nothing but the lease binding. Like `parse`, a scheme or host means
+    /// somewhere other than the paired server and is refused.
+    static func parseDirect(_ raw: String) -> (String, [String: String])? {
+        guard let components = URLComponents(string: raw),
+              components.scheme == nil, components.host == nil, components.fragment == nil,
+              components.path.range(
+                  of: #"^api/desktop-viewer/local/(shared|bot-[a-f0-9]{64}|pool-\d+)/websockify$"#,
+                  options: .regularExpression
+              ) != nil
+        else { return nil }
+        var query: [String: String] = [:]
+        for item in components.queryItems ?? [] {
+            guard ["botId", "threadId", "controlLeaseId"].contains(item.name), let value = item.value, !value.isEmpty,
+                  query[item.name] == nil
+            else { return nil }
+            query[item.name] = value
+        }
+        guard query["botId"] != nil, query["controlLeaseId"] != nil else { return nil }
+        return (components.path, query)
+    }
+}
+
+/// One still of a bot's Local VM, fetched on demand. The harness answers
+/// with a `data:` URL; anything but a PNG or JPEG in base64 is refused rather
+/// than handed to an image decoder.
+public struct LocalVmScreenshot: Decodable, Sendable, Equatable {
+    public let data: Data
+    public let mime: String
+
+    private enum CodingKeys: String, CodingKey { case image }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let raw = try container.decode(String.self, forKey: .image)
+        guard let parsed = Self.parse(raw) else {
+            throw DecodingError.dataCorruptedError(
+                forKey: .image,
+                in: container,
+                debugDescription: "Local VM screenshot must be a base64 PNG or JPEG data URL"
+            )
+        }
+        (data, mime) = parsed
+    }
+
+    static func parse(_ raw: String) -> (Data, String)? {
+        for mime in ["image/png", "image/jpeg"] {
+            let prefix = "data:\(mime);base64,"
+            guard raw.hasPrefix(prefix) else { continue }
+            guard let data = Data(base64Encoded: String(raw.dropFirst(prefix.count))), !data.isEmpty else { return nil }
+            return (data, mime)
+        }
+        return nil
+    }
+}
+
 /// A freshly minted provider viewer. It is deliberately not Codable for
 /// persistence: the URL is a short-lived bearer credential and belongs only
 /// in memory for the browser session that requested it.
@@ -522,9 +1077,6 @@ public struct ModelCatalog: Codable, Hashable, Sendable {
 /// offer a reasoning control.
 public struct InstanceCapabilities: Codable, Hashable, Sendable {
     public var effortLevels: [String]?
-    /// The engine can take a message into a turn that is already running.
-    /// Engines without it hold mid-turn sends until the turn settles, which
-    /// is a different promise and deserves different words in the composer.
     public var queueing: Bool?
 
     public init(effortLevels: [String]? = nil, queueing: Bool? = nil) {
@@ -552,7 +1104,20 @@ public struct InstanceList: Codable, Sendable {
 /// Derived from `ConfigFlag.provider`, never decoded straight off the wire.
 public enum VoiceProvider: Hashable, Sendable {
     case elevenlabs
+    case fish
     case system
+    case chatterbox
+
+    /// The exact string the config write carries. The server matches
+    /// spellings, not meanings, so neither does this.
+    public var wireValue: String {
+        switch self {
+        case .elevenlabs: "elevenlabs"
+        case .fish: "fish"
+        case .system: "system"
+        case .chatterbox: "chatterbox"
+        }
+    }
 }
 
 public struct ConfigFlag: Codable, Hashable, Sendable {
@@ -564,6 +1129,11 @@ public struct ConfigFlag: Codable, Hashable, Sendable {
     /// it through `ConfigStatus.voiceProvider`, which applies the server's own
     /// fallback; nothing should compare this string directly.
     public var provider: String?
+    /// Chatterbox's credential is an address, not a key. `describeVoice`
+    /// sends it and the model id empty under every other engine — and an
+    /// older computer omits them — so both read as "not set".
+    public var baseUrl: String?
+    public var model: String?
 }
 
 public struct Profile: Codable, Hashable, Sendable {
@@ -577,6 +1147,9 @@ public struct ConfigStatus: Codable, Sendable {
     public var tts: ConfigFlag?
     public var imageGen: ConfigFlag?
     public var profile: Profile?
+    /// Live-call settings on the paired computer. Absent on a computer older
+    /// than Live calls; never carries the key.
+    public var live: LiveSettings?
 
     /// Whether synthesis is available on the paired computer. Deliberately
     /// provider-neutral: under ElevenLabs this is a key on file, while under
@@ -600,14 +1173,25 @@ public struct ConfigStatus: Codable, Sendable {
         return isTTSConfigured && (hasAgentVoice || hasWorkspaceDefaultVoice)
     }
 
-    /// `voiceProvider(cfg)` in `server/tts/index.ts`: only the exact string
-    /// `"system"` selects the built-in engine. A missing field — a computer
-    /// older than the choice — and an engine this build has never heard of
-    /// both fall back to ElevenLabs, which is the server's own rule and what
-    /// keeps an unrecognised engine from being explained to the user with
-    /// copy written for a different one.
+    /// `voiceProvider(cfg)` in `server/tts/index.ts`: only the exact
+    /// strings `"fish"`, `"system"`, and `"chatterbox"` select those engines. A missing
+    /// field — a computer older than the choice — and an engine this build
+    /// has never heard of both fall back to ElevenLabs, which is the
+    /// server's own rule and what keeps an unrecognised engine from being
+    /// explained to the user with copy written for a different one.
     public var voiceProvider: VoiceProvider {
-        tts?.provider == "system" ? .system : .elevenlabs
+        switch tts?.provider {
+        case "fish": .fish
+        case "system": .system
+        case "chatterbox": .chatterbox
+        default: .elevenlabs
+        }
+    }
+
+    /// Walkie synthesizes directly on the phone through its own ElevenLabs
+    /// key. A voice chosen from another provider's catalog is not compatible.
+    public func walkieAgentVoice(_ voice: String?) -> String? {
+        voiceProvider == .elevenlabs ? voice : nil
     }
 }
 
@@ -821,7 +1405,7 @@ public enum RoutineRunLocation: String, CaseIterable, Codable, Hashable, Sendabl
 
 /// Desktop-equivalent run-location availability, derived only from paired-safe
 /// status endpoints. Selecting Cloud VM requires both the host credential and
-/// an available Box agent. An existing cloud routine remains editable without
+/// an available Boat agent. An existing cloud routine remains editable without
 /// silently changing where it runs if that VM is temporarily unavailable.
 public struct RoutineRunAvailability: Equatable, Sendable {
     public var cloudConfigured: Bool
@@ -984,6 +1568,10 @@ struct MessageResponse: Codable, Sendable {
     var message: Message
 }
 
+struct EditResponse: Decodable, Sendable {
+    var message: Message?
+}
+
 struct ActiveBranchResponse: Codable, Sendable {
     var activeLeafId: String
 }
@@ -1024,4 +1612,73 @@ struct RoutineRunResponse: Codable, Sendable { var run: RoutineRun }
 
 struct ConnectorAuthorizationResponse: Codable, Sendable {
     var url: String
+}
+
+// MARK: - Server sessions (pairing with a server directly)
+
+/// What `POST /api/auth/pair` returns on a server: the bearer, the session
+/// it opened, and the server's public descriptor.
+public struct ServerPairResponse: Codable, Sendable {
+    public var token: String
+    public var session: ServerSession
+    public var environment: ServerEnvironment
+}
+
+public struct ServerSession: Codable, Hashable, Sendable {
+    public var id: String
+    public var label: String
+    public var scopes: [String]
+    public var expiresAt: Double?
+
+    public var isAdmin: Bool { scopes.contains("admin") }
+}
+
+/// `GET /.well-known/openmausbot/environment`, served without a session.
+public struct ServerEnvironment: Codable, Hashable, Sendable {
+    public var environmentId: String
+    public var label: String
+    public var platform: String?
+    public var version: String?
+}
+
+/// Keep future attachment kinds decodable; image entries display inline and
+/// audio entries render as voice notes (Message.voiceNotes). Unknown kinds
+/// decode without breaking, so a newer computer never gaps the transcript.
+public struct MessageImageAttachment: Codable, Hashable, Sendable {
+    public var kind: String
+    public var path: String?
+    public var mime: String?
+    /// The server's duration estimate for an audio attachment, in
+    /// milliseconds; shown until the player loads real metadata.
+    public var durationMs: Double?
+}
+
+/// One voice note in Message.attachments: the parked clip's bare generated
+/// filename plus the server's duration estimate. Mirrors the web bubble's
+/// VoiceNoteAttachment (PR #1801), the contract this rendering matches.
+public struct MessageVoiceNote: Hashable, Sendable, Identifiable {
+    public var path: String
+    public var mime: String?
+    public var durationMs: Double?
+
+    public var id: String { path }
+}
+
+extension Message {
+    /// Audio attachments that can render, in wire order: kind == "audio"
+    /// with a usable path, deduplicated the way generatedImages deduplicates
+    /// so a clip replayed by a late message patch renders once.
+    public var voiceNotes: [MessageVoiceNote] {
+        var seen = Set<String>()
+        return (attachments ?? []).compactMap { attachment in
+            guard attachment.kind == "audio", let path = attachment.path,
+                  !path.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                  seen.insert(path).inserted else { return nil }
+            return MessageVoiceNote(path: path, mime: attachment.mime, durationMs: attachment.durationMs)
+        }
+    }
+
+    /// A request a person spoke on a Live call. Only user lines get the
+    /// label: the bot's answers on a call are ordinary answers.
+    public var isViaCall: Bool { role == .user && via == "call" }
 }

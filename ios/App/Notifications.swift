@@ -8,6 +8,7 @@ import CompanionCore
 final class NotificationCoordinator: NSObject, UNUserNotificationCenterDelegate {
     static let shared = NotificationCoordinator()
     private let center = UNUserNotificationCenter.current()
+    private var lastBadgeCount: Int?
     /// Set by `Session`; kept as an id-only value so the notification layer
     /// does not know about SwiftUI navigation or mutable fleet state.
     var responseHandler: ((NotificationTarget) -> Void)?
@@ -46,7 +47,14 @@ final class NotificationCoordinator: NSObject, UNUserNotificationCenterDelegate 
     }
 
     func setBadge(_ count: Int) {
-        center.setBadgeCount(max(0, count))
+        let count = max(0, count)
+        guard count != lastBadgeCount else { return }
+        lastBadgeCount = count
+        center.setBadgeCount(count) { [weak self] error in
+            if error != nil {
+                DispatchQueue.main.async { self?.lastBadgeCount = nil }
+            }
+        }
     }
 
     func userNotificationCenter(

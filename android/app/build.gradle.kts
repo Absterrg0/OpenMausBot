@@ -126,6 +126,15 @@ android {
     }
 
     buildTypes {
+        create("preview") {
+            initWith(getByName("debug"))
+            applicationIdSuffix = ".preview"
+            versionNameSuffix = "-threads-preview"
+            matchingFallbacks += "debug"
+            // Reuse Gradle's local debug key; this package installs alongside
+            // the separately signed release and keeps its own pairing/data.
+            signingConfig = signingConfigs.getByName("debug")
+        }
         release {
             // Null whenever no signing material was supplied — the unsigned
             // handover build — and the "release" config whenever it was.
@@ -182,6 +191,10 @@ android {
             // handful of tests that mount a composition ask for it; the rest of
             // the suite never loads Robolectric at all.
             isIncludeAndroidResources = true
+            // Composition tests render real frames, and the conversation screen
+            // in particular drives enough of them that the Gradle default heap
+            // runs out before the swipe being tested can land.
+            all { test -> test.maxHeapSize = "2g" }
         }
     }
 }
@@ -192,6 +205,12 @@ kotlin {
 
 dependencies {
     implementation(project(":core"))
+    // Live calls: a prebuilt libwebrtc (BSD-3), the phone's own audio path to
+    // OpenAI GPT-Live. Only `audio/WebRtcLiveCallTransport.kt` may import
+    // `org.webrtc` (LiveCallNativeIsolationTest pins it), so the JVM suite
+    // never loads libjingle_peerconnection_so. Measured 2026-09-25: +53 MB on
+    // the universal debug APK (four ABIs); +12 MB on an arm64 phone.
+    implementation("io.github.webrtc-sdk:android:150.7871.01")
 
     val composeBom = platform("androidx.compose:compose-bom:2025.10.01")
     implementation(composeBom)

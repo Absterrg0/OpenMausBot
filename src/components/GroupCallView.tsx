@@ -15,7 +15,7 @@ import { useSpeech } from "@/lib/tts/useSpeech";
 import { usePushToTalk } from "@/lib/push-to-talk";
 import { useStore, type Bot, type Group, type Message } from "@/state/store";
 import { cn } from "@/lib/cn";
-import { MausAvatar } from "./Avatar";
+import { BotAvatar } from "./Avatar";
 import { CallTargetButton } from "./CallView";
 import { isRoutineApproval, isSkillApproval, pendingApprovals, spokenApprovalPrompt } from "./PendingApproval";
 
@@ -228,7 +228,7 @@ function GroupCall({ group, members }: { group: Group; members: Bot[] }) {
           if (allow && openApproval.skill) {
             setHeard("");
             enqueueSpeech(
-              "Open the channel chat to review the complete skill before enabling it. You can say no now to deny it.",
+              "Open the group thread to review the complete skill before enabling it. You can say no now to deny it.",
               openApproval.member,
               true,
             );
@@ -309,7 +309,11 @@ function GroupCall({ group, members }: { group: Group; members: Bot[] }) {
         setNote(
           reason === "helper-build-failed"
             ? "The dictation helper couldn't be built. Install Apple's Command Line Tools and try again."
-            : "Dictation needs Microphone + Speech Recognition access in System Settings.",
+            : reason === "dictation-disabled"
+              ? "Turn on Dictation in System Settings → Keyboard, then try again."
+              : reason === "speech-not-authorized"
+                ? "Allow Speech Recognition in System Settings → Privacy & Security, then try again."
+                : "Dictation couldn't start. Try again.",
         );
         return;
       }
@@ -354,10 +358,10 @@ function GroupCall({ group, members }: { group: Group; members: Bot[] }) {
         submitted: false,
       };
       spokenIds.current.add(approval.message.id);
-      const name = member?.name ?? approval.message.from?.name ?? "A channel member";
+      const name = member?.name ?? approval.message.from?.name ?? "A group member";
       const skillPrompt = approval.message.card?.skillRequest?.action === "update"
-        ? `${name} wants to update a learned skill. Open the channel chat to review the complete skill before replacing the current version. You can say no to deny it.`
-        : `${name} wants to enable a new learned skill. Open the channel chat to review the complete skill before enabling it. You can say no to deny it.`;
+        ? `${name} wants to update a learned skill. Open the group thread to review the complete skill before replacing the current version. You can say no to deny it.`
+        : `${name} wants to enable a new learned skill. Open the group thread to review the complete skill before enabling it. You can say no to deny it.`;
       enqueueSpeech(isSkillApproval(approval) ? skillPrompt : spokenApprovalPrompt(approval, name), member, true);
     }
 
@@ -365,7 +369,7 @@ function GroupCall({ group, members }: { group: Group; members: Bot[] }) {
       const member = members.find((candidate) => candidate.id === question.from?.botId);
       askedQuestion.current = { requestId: question.card.requestId, member };
       spokenIds.current.add(question.id);
-      const name = member?.name ?? question.from?.name ?? "A channel member";
+      const name = member?.name ?? question.from?.name ?? "A group member";
       const detail = question.card.subtitle.trim();
       const choices = question.card.options.length
         ? " The options are " + question.card.options.join(", ") + "."
@@ -445,9 +449,9 @@ function GroupCall({ group, members }: { group: Group; members: Bot[] }) {
         ? "Push to talk"
         : "Listening"
       : phase === "sending"
-        ? "Bringing the channel in"
+        ? "Bringing the group in"
         : phase === "speaking"
-          ? (speakingMember?.name ?? "Channel member") + " is speaking"
+          ? (speakingMember?.name ?? "Group member") + " is speaking"
           : workingMember
             ? workingMember.name + " is working"
             : "Working";
@@ -482,9 +486,8 @@ function GroupCall({ group, members }: { group: Group; members: Bot[] }) {
                   focused ? "scale-105 bg-raised/70 shadow-lg" : "opacity-75",
                 )}
               >
-                <MausAvatar
-                  color={member.color}
-                  bodyId={member.mascotBody ?? undefined}
+                <BotAvatar
+                  bot={member}
                   state={state}
                   size={94}
                   animated
@@ -514,7 +517,7 @@ function GroupCall({ group, members }: { group: Group; members: Bot[] }) {
             <span className="text-ink-secondary">
               {pushToTalk
                 ? "Release Control + Option to send…"
-                : "Say a name, say “everyone,” or just talk to the channel…"}
+                : "Say a name, say “everyone,” or just talk to the group…"}
             </span>
           )
         ) : phase === "speaking" ? (
@@ -554,7 +557,7 @@ function GroupCall({ group, members }: { group: Group; members: Bot[] }) {
         </button>
       </div>
 
-      <div className="text-[11.5px] text-ink-secondary/70">
+      <div className="text-[11.5px] text-ink-tertiary">
         Hold Control + Option to talk · Say a member’s name to direct the turn · Space interrupts · Esc hangs up
       </div>
     </div>

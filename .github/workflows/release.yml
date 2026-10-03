@@ -32,6 +32,11 @@ on:
         required: false
         type: boolean
         default: false
+      ship_without_ci:
+        description: "Emergency only: skip waiting for the commit's passing CI check"
+        required: false
+        type: boolean
+        default: false
   push:
     branches:
       - main
@@ -98,6 +103,41 @@ jobs:
             exit 1
           fi
 
+  ci:
+    # Ship only a commit whose own `CI` check (ci.yml's gate) passed. The wait
+    # overlaps the platform builds, so a green commit costs no time; a red or
+    # missing verdict stops the release before any draft exists. Main keeps
+    # one CI run going and one waiting, so a burst of merges can replace the
+    # release commit's own run: scripts/release-ci.mjs then runs CI on the
+    # commit in its own lane (a release-ci/v<version> branch no merge can
+    # touch) and deletes that branch afterwards.
+    name: CI passed on the release commit
+    needs: prepare
+    if: needs.prepare.outputs.should_release == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    permissions:
+      # read CI runs and start CI in the release lane
+      actions: write
+      # create and delete the release-ci/v<version> branch
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: scripts/release-ci.mjs
+          sparse-checkout-cone-mode: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+      - name: Wait for the CI check on the pinned commit
+        if: ${{ !inputs.ship_without_ci }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ needs.prepare.outputs.sha }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: node scripts/release-ci.mjs
+
   mac:
     name: macOS arm64 + x64 (sign, notarize, staple)
     needs: prepare
@@ -162,8 +202,24 @@ jobs:
             bin_team=$(codesign -dv --verbose=4 "$bin" 2>&1 | sed -n 's/^TeamIdentifier=//p')
             test -n "$app_team" && test "$bin_team" = "$app_team" || {
               echo "::error::cloudflared is not signed by the app's Developer ID team in $app"; exit 1; }
+            for browser_bin in "$app/Contents/Resources/browser-engine/agent-browser" "$app/Contents/Resources/browser-engine/chrome/"*/chrome-headless-shell; do
+              test -x "$browser_bin"
+              codesign --verify --strict "$browser_bin"
+              browser_team=$(codesign -dv --verbose=4 "$browser_bin" 2>&1 | sed -n 's/^TeamIdentifier=//p')
+              test "$browser_team" = "$app_team" || { echo "::error::browser runtime has the wrong signing team"; exit 1; }
+            done
             echo "ok: $app"
           done
+
+      - name: "Gate: signed native browser works with an empty home"
+        run: |
+          case "$(node -p process.arch)" in
+            arm64) resources="$PWD/release/mac-arm64/OpenMausBot.app/Contents/Resources" ;;
+            x64) resources="$PWD/release/mac/OpenMausBot.app/Contents/Resources" ;;
+            *) exit 1 ;;
+          esac
+          node scripts/smoke-browser-bundle.mjs --resources "$resources"
+          OMB_SMOKE_DIST="$resources/server" node scripts/smoke-packaged-server.mjs --browser-bundle "$resources/browser-engine"
 
       - name: "Gate: both packaged servers start and every helper path resolves"
         run: |
@@ -273,6 +329,12 @@ jobs:
         shell: bash
         run: rm -rf dist dist-server release
       - run: pnpm package:win
+      - name: "Gate: bundled browser works with an empty home"
+        run: node scripts/smoke-browser-bundle.mjs --resources "${{ github.workspace }}/release/win-unpacked/resources"
+      - name: "Gate: packaged Windows server discovers its browser"
+        env:
+          OMB_SMOKE_DIST: ${{ github.workspace }}/release/win-unpacked/resources/server
+        run: node scripts/smoke-packaged-server.mjs --browser-bundle "${{ github.workspace }}/release/win-unpacked/resources/browser-engine"
       - name: Verify the packaged tree and start the packaged server
         shell: bash
         run: |
@@ -375,6 +437,12 @@ jobs:
           sudo chown root:root release/linux-unpacked/chrome-sandbox
           sudo chmod 4755 release/linux-unpacked/chrome-sandbox
           test "$(stat -c '%U:%G %a' release/linux-unpacked/chrome-sandbox)" = "root:root 4755"
+      - name: "Gate: installed browser works with Ubuntu sandbox restrictions"
+        run: node scripts/smoke-browser-bundle.mjs --resources /opt/OpenMausBot/resources
+      - name: "Gate: packaged Linux server discovers its browser"
+        env:
+          OMB_SMOKE_DIST: /opt/OpenMausBot/resources/server
+        run: node scripts/smoke-packaged-server.mjs --browser-bundle /opt/OpenMausBot/resources/browser-engine
       - name: Smoke the packages
         env:
           OMB_KEEP_SMOKE_DIR: "1"
@@ -402,7 +470,7 @@ jobs:
 
   assemble:
     name: Assemble the draft and verify every feed
-    needs: [prepare, mac, windows, linux]
+    needs: [prepare, ci, mac, windows, linux]
     if: needs.prepare.outputs.should_release == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
@@ -411,6 +479,8 @@ jobs:
       cancel-in-progress: false
     permissions:
       contents: write
+      # to dispatch the npm and Docker publishes on the new tag
+      actions: write
     steps:
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
@@ -489,18 +559,35 @@ jobs:
           SHA: ${{ needs.prepare.outputs.sha }}
         run: |
           tag="v$VERSION"
-          if ! gh release view "$tag" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
-            gh release create "$tag" --repo "$GITHUB_REPOSITORY" --target "$SHA" \
-              --draft --title "OpenMausBot $VERSION" \
-              --generate-notes
-          else
-            target=$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json targetCommitish --jq .targetCommitish)
-            target_sha=$(gh api "repos/$GITHUB_REPOSITORY/commits/$target" --jq .sha)
-            test "$target_sha" = "$SHA" || {
-              echo "::error::$tag draft targets $target_sha, not pinned release commit $SHA"
-              exit 1
-            }
-          fi
+          ensure_draft() {
+            local repo=$1
+            shift
+            local attempt delay
+            for attempt in 1 2 3 4 5; do
+              gh release view "$tag" --repo "$repo" > /dev/null 2>&1 && return 0
+              if gh release create "$tag" --repo "$repo" "$@"; then
+                return 0
+              fi
+              # The API can create the release before a transient response
+              # failure reaches gh. Recover that success before retrying.
+              gh release view "$tag" --repo "$repo" > /dev/null 2>&1 && return 0
+              test "$attempt" -lt 5 || {
+                echo "::error::could not create $tag in $repo after $attempt attempts"
+                return 1
+              }
+              delay=$((5 << (attempt - 1)))
+              echo "::warning::release creation failed for $repo; retrying in ${delay}s ($attempt/5)"
+              sleep "$delay"
+            done
+          }
+          ensure_draft "$GITHUB_REPOSITORY" --target "$SHA" \
+            --draft --title "OpenMausBot $VERSION" --generate-notes
+          target=$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json targetCommitish --jq .targetCommitish)
+          target_sha=$(gh api "repos/$GITHUB_REPOSITORY/commits/$target" --jq .sha)
+          test "$target_sha" = "$SHA" || {
+            echo "::error::$tag draft targets $target_sha, not pinned release commit $SHA"
+            exit 1
+          }
           for file in assets/*; do
             gh release upload "$tag" "$file" --repo "$GITHUB_REPOSITORY" --clobber
           done
@@ -515,10 +602,27 @@ jobs:
           VERSION: ${{ needs.prepare.outputs.version }}
         run: |
           tag="v$VERSION"
-          if ! gh release view "$tag" --repo milind-soni/openmausbot-releases > /dev/null 2>&1; then
-            gh release create "$tag" --repo milind-soni/openmausbot-releases \
-              --draft --title "OpenMausBot $VERSION" --notes-file "$RUNNER_TEMP/release-notes.md"
-          fi
+          ensure_draft() {
+            local repo=$1
+            shift
+            local attempt delay
+            for attempt in 1 2 3 4 5; do
+              gh release view "$tag" --repo "$repo" > /dev/null 2>&1 && return 0
+              if gh release create "$tag" --repo "$repo" "$@"; then
+                return 0
+              fi
+              gh release view "$tag" --repo "$repo" > /dev/null 2>&1 && return 0
+              test "$attempt" -lt 5 || {
+                echo "::error::could not create $tag in $repo after $attempt attempts"
+                return 1
+              }
+              delay=$((5 << (attempt - 1)))
+              echo "::warning::release creation failed for $repo; retrying in ${delay}s ($attempt/5)"
+              sleep "$delay"
+            done
+          }
+          ensure_draft milind-soni/openmausbot-releases \
+            --draft --title "OpenMausBot $VERSION" --notes-file "$RUNNER_TEMP/release-notes.md"
           gh release edit "$tag" --repo milind-soni/openmausbot-releases \
             --title "OpenMausBot $VERSION" --notes-file "$RUNNER_TEMP/release-notes.md"
           for file in assets/*; do
@@ -577,3 +681,10 @@ jobs:
           GH_TOKEN="$LEGACY_TOKEN" gh release view "v$VERSION" \
             --repo milind-soni/openmausbot-releases --json isDraft --jq .isDraft | grep -q false
           echo "v$VERSION is live on the canonical feed and its legacy updater bridge"
+          # Publishing created the tag with this workflow's token, and GitHub
+          # starts no workflow from events that token creates. Start the two
+          # tag-driven publishes by hand, on the tag, so they see refs/tags/v*.
+          for workflow in npm-package.yml docker.yml; do
+            GH_TOKEN="$CANONICAL_TOKEN" gh workflow run "$workflow" --repo "$GITHUB_REPOSITORY" --ref "v$VERSION"
+          done
+          echo "dispatched the npm package and Docker image publishes on v$VERSION"

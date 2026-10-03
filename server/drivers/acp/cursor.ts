@@ -9,6 +9,7 @@
 // `acp` subcommand. `session/set_model` is attempted when the CLI supports it;
 // a missing method falls back to the argv `--model` pin.
 import type { ModelCatalog, ProviderErrorCode } from "../../contracts.ts";
+import { titleCaseModelId } from "../../contracts.ts";
 import { execCli } from "../../procs.ts";
 import { createAcpDriver, type AcpSupport } from "./core.ts";
 
@@ -43,8 +44,20 @@ export function resolveCursorAcpModelId(
   const exact = ids.find((m) => m.modelId!.toLowerCase() === want);
   if (exact) return exact.modelId!;
 
-  const byBase = ids.find((m) => base(m.modelId!) === want);
+  // A base can be advertised several times with different parameters, e.g.
+  // `composer-2.5[fast=false]` and `composer-2.5[fast=true]`. The plain slug
+  // means Standard, so prefer the non-fast variant; a `-fast` slug has no base
+  // of its own and means the fast=true variant of the base without the suffix.
+  const isFast = (id: string) => /[[,]\s*fast\s*=\s*true\s*[\],]/i.test(id);
+  const sameBase = ids.filter((m) => base(m.modelId!) === want);
+  const byBase = sameBase.find((m) => !isFast(m.modelId!)) ?? sameBase[0];
   if (byBase) return byBase.modelId!;
+
+  if (want.endsWith("-fast")) {
+    const stem = want.slice(0, -"-fast".length);
+    const fast = ids.find((m) => base(m.modelId!) === stem && isFast(m.modelId!));
+    if (fast) return fast.modelId!;
+  }
 
   const byName = ids.find((m) => (m.name ?? "").trim().toLowerCase() === want);
   if (byName) return byName.modelId!;
@@ -100,12 +113,8 @@ function asRecord(value: unknown): Record<string, unknown> | null {
 }
 
 function labelFor(id: string, explicit?: string): string {
-  if (explicit?.trim()) return explicit.trim();
-  return id
-    .split(/[-_./]+/g)
-    .filter(Boolean)
-    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
-    .join(" ");
+  const trimmed = explicit?.trim();
+  return trimmed || titleCaseModelId(id, /[-_./]+/);
 }
 
 function pushModel(
@@ -198,7 +207,7 @@ export function decodeCursorModelText(text: string): ModelCatalog | null {
   for (const raw of text.split(/\r?\n/)) {
     const line = raw.trim();
     if (!line || line.startsWith("#") || /^available\s+models?\b/i.test(line) || /^models?\b/i.test(line)) continue;
-    const stripped = line.replace(/^[\s*•\-]+\s*/, "");
+    const stripped = line.replace(/^[\s*•-]+\s*/, "");
     const parts = stripped.split(/\s+[—–|:]\s+|\s+-\s+|\s{2,}/);
     const id = (parts[0] ?? "").trim();
     const rawLabel = parts.slice(1).join(" ").trim();
@@ -353,7 +362,7 @@ const support = (run: typeof execCli): AcpSupport => ({
   // `--force` is the documented auto-approve switch (`--yolo` is an alias);
   // `--model` is the reliable pin — ACP session/set_model is best-effort below.
   spawnArgs: (config, turn) => [
-    ...(config.fullAuto ? ["--force"] : []),
+    ...(config.fullAuto ? ["--force"] : turn.approvalMode === "auto" ? ["--auto-review"] : []),
     ...(turn.model ? ["--model", turn.model] : []),
     "acp",
   ],

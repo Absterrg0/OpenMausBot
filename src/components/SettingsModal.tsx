@@ -1,50 +1,168 @@
 // App settings, as a real modal with sections rather than one long panel.
-// Per-bot settings (persona, model, computer) stay in SettingsPanel — this
+// Per-bot settings (persona, model, computer) live in BotSettingsDialog — this
 // is the stuff shared by every bot: who you are, your keys, and the
 // machine your bots can borrow.
 import { useEffect, useRef, useState } from "react";
-import { Coins, FlaskConical, Globe, KeyRound, Monitor, Search, Smartphone, Terminal, Trash2, User, X } from "lucide-react";
+import { Archive, CircleUser, Coins, FlaskConical, KeyRound, Monitor, Palette, ScrollText, Search, Sparkles, TabletSmartphone, Terminal, User, Users, X, Building2, Zap, BookOpen } from "lucide-react";
 import { api, useStore, type AppSettingsSection, type ConfigStatus } from "@/state/store";
 import { analyticsEnabled, setAnalyticsEnabled } from "@/lib/analytics";
-import { builtInBrowserEnabled, showToolCallsEnabled, skillRecorderEnabled } from "@/lib/feature-flags";
-import { localeChoices } from "@/locales";
-import { ApiKeyRow, VpsConnection } from "./ApiKeys";
+import { browserAvailable, browserUnavailableReason, builtInBrowserEnabled, routinesInConversationEnabled, showToolCallsEnabled, skillAuthoringEnabled, skillsLibraryEnabled } from "@/lib/feature-flags";
+import { localeChoices, type LocaleKey } from "@/locales";
+import { t } from "@/lib/i18n";
+import { withTourReset } from "@/lib/guided-tour";
+import { completionPatch } from "@/lib/onboarding";
+import { AnthropicEveryClaudeBot, ApiKeyRow, OpenAiCompatUrl, VpsConnection } from "./ApiKeys";
+import { DecisionModelSettings } from "./DecisionModelSettings";
 import { useUpdaterState } from "@/lib/updater";
 import { EnginesSettings } from "./EnginesSettings";
 import { LocalComputerSection } from "./LocalComputerSection";
 import { CompanionSection } from "./CompanionSection";
-import { Card, Switch } from "./SettingsPrimitives";
+import { ServerPairingCard } from "./ServerPairingCard";
+import { PeopleSection } from "./PeopleSection";
+import { ActivitySection } from "./ActivitySection";
+import { useOwnerOrAdmin } from "@/lib/use-owner-or-admin";
+import { currentPhonePairingTarget, phonePairingSettingsAction } from "@/lib/phone-pairing";
+import { CustomDomainSettings } from "./CustomDomainSettings";
+import { BrowserProfilesManager } from "./BrowserProfilesManager";
+import { RemoteComputerSection } from "./RemoteComputerSection";
+import { ConnectedWorkspacesSettings } from "./ConnectedWorkspacesSettings";
+import { OrganizationSettings } from "./OrganizationSettings";
+import { CloudAccountSettings } from "./CloudAccountSettings";
+import { ProSettingsCard } from "./ProIntroduction";
+import { Card, SettingRow, Switch } from "./SettingsPrimitives";
+import { effortLabel } from "./ModelPicker";
+import { EFFORT_LEVELS, isEffortLevel } from "../../shared/wire";
+import { shortcutLabel } from "./ShortcutHint";
 import { UsageSection } from "./UsageSection";
+import { SkillsSection } from "./SkillsSection";
+import { LicenseExpiryBanner } from "./LicenseExpiryBanner";
+import { WorkspacesSection, workspacesAvailable } from "./WorkspacesSection";
 import { SkinPicker } from "./SkinPicker";
+import { FONT_IDS, applyFont, readFont, type FontId } from "@/lib/fonts";
 import { RoomTurnTimeoutSettings } from "./RoomTurnTimeoutSettings";
-import { TranscriptionSettings } from "./TranscriptionSettings";
+import { AboutMeSettings } from "./AboutMeSettings";
+import { ThreadConcurrencySettings } from "./ThreadConcurrencySettings";
+import { AutomaticRecoverySettings } from "./AutomaticRecoverySettings";
+import { ThreadCleanupSettings } from "./ThreadCleanupSettings";
+import { DefaultBotSettings } from "./NewBotDialog";
+import { WorkspaceBackupSettings } from "./WorkspaceBackupSettings";
+import { CompanyBackupSettings } from "./CompanyBackupSettings";
 import { cn } from "@/lib/cn";
-import {
-  browserProfileDeletionBlockReason,
-  browserProfilesForPatch,
-} from "@/lib/browser-profiles";
+import { glassPopupFrameStyle } from "@/lib/glass-popup";
+import { setNotificationSounds, useNotificationSounds } from "@/lib/notification-preferences";
+import { setPinnedCircles, setUniversalPins, usePinnedCircles, useUniversalPins } from "@/lib/sidebar-preferences";
+import { setShowThreads, useShowThreads } from "@/lib/thread-preferences";
+import { setAdvancedMode, useAdvancedMode } from "@/lib/interface-mode";
+import { parseSidebarDensity, setSidebarDensity, SIDEBAR_DENSITIES, useSidebarDensity, type SidebarDensity } from "@/lib/sidebar-preferences";
+import { setShowRunCard, useShowRunCard } from "@/lib/run-card-preferences";
+import { effectiveLanguage, setLanguageChoice, useLanguageChoice } from "@/lib/language-preference";
 
-const SECTIONS: Array<{
+// `labelKey`, not a label: t() reads the active pack when it is called, so a
+// label resolved here at module scope would freeze the language the app booted
+// in. The English keywords stay untranslated — they are a search index, and a
+// pack that omits them still matches what people type.
+export type SettingsGroup = "you" | "ai" | "computers" | "account";
+
+/** The rail's labelled groups, in the order they are drawn. */
+export const SETTINGS_GROUPS: Array<{ id: SettingsGroup; labelKey: LocaleKey }> = [
+  { id: "you", labelKey: "settings.group.you" },
+  { id: "ai", labelKey: "settings.group.ai" },
+  { id: "computers", labelKey: "settings.group.computers" },
+  { id: "account", labelKey: "settings.group.account" },
+];
+
+export const SECTIONS: Array<{
   id: AppSettingsSection;
-  label: string;
+  group: SettingsGroup;
+  labelKey: LocaleKey;
   icon: typeof User;
   keywords: string[];
 }> = [
-  { id: "general", label: "General", icon: User, keywords: ["profile", "name", "email", "skin", "theme", "appearance", "analytics", "updates", "tools", "tool calls"] },
-  { id: "experimental", label: "Experimental", icon: FlaskConical, keywords: ["early", "preview", "teach", "skill", "browser", "profiles"] },
-  { id: "connections", label: "Connections", icon: KeyRound, keywords: ["keys", "api", "composio", "box", "xai", "vps"] },
-  { id: "engines", label: "Engines", icon: Terminal, keywords: ["models", "claude", "grok", "providers", "cli"] },
-  { id: "companion", label: "Phone", icon: Smartphone, keywords: ["companion", "phone", "pair", "pairing", "mobile", "https", "secure", "tailscale", "wifi", "advanced"] },
-  { id: "computer", label: "Local VM", icon: Monitor, keywords: ["vm", "virtual", "desktop"] },
-  { id: "usage", label: "Usage", icon: Coins, keywords: ["tokens", "cost", "billing"] },
+  { id: "general", group: "you", labelKey: "settings.section.general", icon: User, keywords: ["profile", "name", "email", "about me", "about", "suggestions", "suggested", "memory", "analytics", "updates", "effort", "new bots", "reasoning", "threads", "parallel", "concurrency", "cleanup", "retention", "event log", "event-log", "log size", "automatic recovery", "backup model", "fallback", "routines", "conversation", "schedule"] },
+  { id: "appearance", group: "you", labelKey: "settings.section.appearance", icon: Palette, keywords: ["skin", "theme", "appearance", "tools", "tool calls", "threads", "show threads", "hide threads", "sidebar", "density", "compact", "comfortable", "avatars", "display", "run", "this run", "run card", "commands", "notifications", "sound", "sounds", "mute", "silent", "chime", "pinned", "circles", "universal", "groups", "top"] },
+  { id: "companion", group: "you", labelKey: "settings.section.companion", icon: TabletSmartphone, keywords: ["companion", "device", "phone", "desktop", "client", "host", "pair", "pairing", "mobile", "https", "secure", "tailscale", "wifi", "remote", "advanced", "domain", "dns", "self-hosted", "server", "caddy"] },
+  { id: "engines", group: "ai", labelKey: "settings.section.engines", icon: Terminal, keywords: ["models", "model providers", "engines", "claude", "codex", "grok", "providers", "cli", "sign in", "subscription"] },
+  { id: "connections", group: "ai", labelKey: "settings.section.connections", icon: KeyRound, keywords: ["keys", "api", "api key", "api keys", "connections", "composio", "box", "xai", "mistral", "cerebras", "vps", "router", "openrouter", "base url", "openai", "anthropic", "groq", "opencode", "provider"] },
+  { id: "decisionModel", group: "ai", labelKey: "settings.section.decisionModel", icon: Zap, keywords: ["decision", "jev", "typesafe", "routing", "auto", "rooms", "who answers"] },
+  { id: "skills", group: "ai", labelKey: "settings.section.skills", icon: BookOpen, keywords: ["skills", "library", "assign", "agent skills", "skill md"] },
+  { id: "desktopWorkspaces", group: "computers", labelKey: "settings.section.desktopWorkspaces", icon: Building2, keywords: ["workspace", "cloud", "hosted", "vps", "server", "servers", "connect", "pair", "switch", "local"] },
+  { id: "computer", group: "computers", labelKey: "settings.section.computer", icon: Monitor, keywords: ["vm", "virtual", "desktop", "browser", "built-in browser", "profiles", "browser profiles"] },
+  { id: "cloudAccount", group: "account", labelKey: "settings.section.cloudAccount", icon: User, keywords: ["cloud", "account", "personal", "sign in", "pro", "subscription", "billing"] },
+  { id: "organization", group: "account", labelKey: "settings.section.organization", icon: Building2, keywords: ["company", "organization", "organisation", "sign in", "enroll", "managed", "models", "disconnect"] },
+  { id: "usage", group: "account", labelKey: "settings.section.usage", icon: Coins, keywords: ["tokens", "cost", "billing", "plan", "quota", "remaining", "weekly", "5-hour", "model", "used"] },
+  { id: "backups", group: "account", labelKey: "settings.section.backups", icon: Archive, keywords: ["export", "import", "restore", "full backup", "password", "recovery"] },
+  { id: "people", group: "account", labelKey: "settings.section.people", icon: Users, keywords: ["people", "users", "invite", "sign in", "members", "admins", "access"] },
+  { id: "activity", group: "account", labelKey: "settings.section.activity", icon: ScrollText, keywords: ["activity", "audit", "log", "history", "who changed", "approvals", "decisions", "admin"] },
+  { id: "workspaces", group: "account", labelKey: "settings.section.workspaces", icon: Building2, keywords: ["clients", "tenants", "fleet", "workspaces", "installation", "installations"] },
+  { id: "experimental", group: "account", labelKey: "settings.section.experimental", icon: FlaskConical, keywords: ["early", "preview", "learn", "skill", "authoring"] },
 ];
 
-function sectionMatches(section: (typeof SECTIONS)[number], query: string): boolean {
-  if (!query) return true;
-  return [section.label, ...section.keywords].some((part) => part.toLowerCase().includes(query));
+/** A page of the Simple rail: one or more of the pages above, stacked. */
+export type SimpleSettingsPage = {
+  id: string;
+  labelKey: LocaleKey;
+  icon: typeof User;
+  sections: AppSettingsSection[];
+};
+
+/** Simple mode's rail: at most five pages. A page is drawn only when one of
+ * its sections passes the same visibility filters the Advanced rail uses. */
+export const SIMPLE_PAGES: SimpleSettingsPage[] = [
+  { id: "general", labelKey: "settings.section.general", icon: User, sections: ["general"] },
+  { id: "appearance", labelKey: "settings.section.appearance", icon: Palette, sections: ["appearance"] },
+  { id: "ai", labelKey: "settings.group.ai", icon: Sparkles, sections: ["engines", "connections", "decisionModel"] },
+  { id: "computers", labelKey: "settings.group.computers", icon: Monitor, sections: ["companion", "desktopWorkspaces", "computer"] },
+  { id: "account", labelKey: "settings.group.account", icon: CircleUser, sections: ["cloudAccount", "organization", "people", "activity"] },
+];
+
+/** Advanced-only pages. A deep link to one still opens it in Simple mode, as
+ * a page of its own for as long as it is the open one. */
+export const SIMPLE_HIDDEN_SECTIONS: readonly AppSettingsSection[] = ["usage", "backups", "experimental", "workspaces", "skills"];
+
+/** The Simple pages to draw, given the sections the filters allow and the
+ * one that is open. Each page keeps only its allowed sections, in order. */
+export function simpleSettingsPages(
+  available: ReadonlyArray<(typeof SECTIONS)[number]>,
+  open: AppSettingsSection,
+): SimpleSettingsPage[] {
+  const allowed = new Set(available.map((entry) => entry.id));
+  const pages = SIMPLE_PAGES
+    .map((page) => ({ ...page, sections: page.sections.filter((id) => allowed.has(id)) }))
+    .filter((page) => page.sections.length > 0);
+  const hidden = SIMPLE_HIDDEN_SECTIONS.includes(open) ? available.find((entry) => entry.id === open) : undefined;
+  if (hidden) pages.push({ id: hidden.id, labelKey: hidden.labelKey, icon: hidden.icon, sections: [hidden.id] });
+  return pages;
 }
 
-/** Name + email, persisted to /api/config {profile} on blur. */
+/** Simple mode: a deep link to a later section of a stacked page scrolls
+ * that section into view; opening a page (its first section) starts at the top. */
+export function revealSettingsBlock(
+  scroller: { scrollTop: number; querySelector: (selector: string) => { scrollIntoView?: (options: ScrollIntoViewOptions) => void } | null },
+  section: AppSettingsSection,
+  indexInPage: number,
+): void {
+  if (indexInPage <= 0) {
+    scroller.scrollTop = 0;
+    return;
+  }
+  scroller.querySelector(`[data-settings-block="${section}"]`)?.scrollIntoView?.({ block: "start" });
+}
+
+function simplePageMatches(page: SimpleSettingsPage, query: string): boolean {
+  if (!query) return true;
+  if (t(page.labelKey).toLowerCase().includes(query)) return true;
+  return page.sections.some((id) => {
+    const entry = SECTIONS.find((candidate) => candidate.id === id);
+    return entry ? sectionMatches(entry, query) : false;
+  });
+}
+
+export function sectionMatches(section: (typeof SECTIONS)[number], query: string): boolean {
+  if (!query) return true;
+  return [t(section.labelKey), ...section.keywords].some((part) => part.toLowerCase().includes(query));
+}
+
+/** Name and email save on blur; shared context has its own autosave. */
 function ProfileFields() {
   const { state, dispatch } = useStore();
   const [name, setName] = useState(state.config?.profile?.name ?? "");
@@ -60,24 +178,28 @@ function ProfileFields() {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ profile: { name: name.trim(), email: email.trim().toLowerCase() } }),
     })
-      .then((r) => r.json())
-      .then((config) => dispatch({ type: "configStatus", config }))
+      .then((r) => { if (!r.ok) throw new Error("Profile save failed"); return r.json(); })
+      .then((config: ConfigStatus) => {
+        if (config.profile) dispatch({ type: "profileSaved", profile: { name: config.profile.name, email: config.profile.email } });
+      })
       .catch(() => {});
   };
 
   const inputClass =
-    "w-full rounded-lg border border-hairline/40 bg-inset px-3 py-2 text-[14px] text-ink placeholder:text-ink-secondary focus:border-hairline focus:outline-none";
+    "w-full rounded-lg border border-hairline/40 bg-inset px-3 py-2 text-[14px] text-ink placeholder:text-ink-secondary focus:outline-none";
   return (
     <div className="flex flex-col gap-3">
-      <input value={name} onChange={(e) => setName(e.target.value)} onBlur={save} placeholder="Your name" className={inputClass} />
+      <input aria-label={t("settings.profile.name")} value={name} onChange={(e) => setName(e.target.value)} onBlur={save} placeholder={t("settings.profile.name")} className={inputClass} />
       <input
         type="email"
+        aria-label={t("phone.signIn.email")}
         value={email}
         onChange={(e) => setEmail(e.target.value)}
         onBlur={save}
         placeholder="you@example.com"
         className={inputClass}
       />
+      <AboutMeSettings />
     </div>
   );
 }
@@ -88,34 +210,60 @@ function UpdatesRow() {
   const updater = window.ogb.updater;
   const label =
     s?.status === "checking"
-      ? "Checking…"
+      ? t("settings.updates.checking")
       : s?.status === "available"
-        ? `${s.version} available`
+        ? t("settings.updates.available", { version: s.version ?? "" })
         : s?.status === "downloading"
-          ? `Downloading ${Math.round(s.percent ?? 0)}%`
-          : s?.status === "downloaded"
-            ? `${s.version} ready — restart to apply`
-            : s?.status === "error"
-              ? `Check failed: ${s.message ?? "unknown error"}`
-              : "You're on the latest version we know of.";
+          ? s.percent == null
+            ? t("settings.updates.startingDownload")
+            : t("settings.updates.downloading", { percent: Math.round(s.percent) })
+          : s?.status === "preparing"
+            ? t("settings.updates.preparing")
+            : s?.status === "downloaded"
+              ? s.installMode === "handoff"
+                ? t("settings.updates.readyInstall", { version: s.version ?? "" })
+                : t("settings.updates.ready", { version: s.version ?? "" })
+              : s?.status === "installing"
+                ? s.message ||
+                  (s.installMode === "handoff"
+                    ? t("settings.updates.openingTerminal")
+                    : t("settings.updates.restarting"))
+                : s?.status === "handed-off"
+                  ? t("settings.updates.handedOff")
+                  : s?.status === "error"
+                    ? t("settings.updates.failed", { message: s.message ?? t("settings.updates.unknownError") })
+                    : t("settings.updates.latest");
   return (
-    <Card title="Updates" subtitle={label}>
+    <SettingRow title={t("settings.updates.title")} subtitle={label}>
       <button
         onClick={() => {
           if (s?.status === "available") return void updater.download();
           if (s?.status === "downloaded") return void updater.install();
           void updater.check();
         }}
-        disabled={s?.status === "checking" || s?.status === "downloading"}
-        className="rounded-lg border border-hairline/40 px-3 py-1.5 text-[13px] text-ink hover:bg-control disabled:opacity-40"
+        disabled={
+          s?.status === "checking" || s?.status === "downloading" || s?.status === "preparing" ||
+          s?.status === "installing" || s?.retryable === false
+        }
+        className="ui-button"
       >
-        {s?.status === "available"
-          ? "Download"
-          : s?.status === "downloaded"
-            ? "Restart and install"
-            : "Check for updates"}
+        {s?.retryable === false
+          ? t("settings.updates.quitReopen")
+          : s?.status === "available"
+            ? t("settings.updates.download")
+            : s?.status === "downloaded"
+              ? s.installMode === "handoff"
+                ? t("settings.updates.install")
+                : t("settings.updates.restart")
+              : s?.status === "preparing"
+                ? t("settings.updates.preparingShort")
+                : s?.status === "installing"
+                  ? s.installMode === "handoff"
+                    ? t("settings.updates.opening")
+                    : t("settings.updates.restartingShort")
+                  : t("settings.updates.check")}
       </button>
-    </Card>
+    </SettingRow>
   );
 }
 
@@ -123,70 +271,317 @@ function UpdatesRow() {
  * matters more than the switch: people who cannot see the scope assume the
  * worst, and the worst — conversation text — is exactly what this never
  * sends (autocapture is off; see lib/analytics.ts). */
-function AnalyticsRow() {
-  const [on, setOn] = useState(analyticsEnabled);
-  return (
-    <Card
-      title="Usage analytics"
-      subtitle="Anonymous product events — app opened, which features get used. Never conversations, prompts, file contents, or bot output. Your email is only attached if you shared it during setup."
-    >
-      <Switch
-        checked={on}
-        aria-label="Send usage analytics"
-        onClick={() => {
-          const next = !on;
-          setAnalyticsEnabled(next);
-          setOn(next);
-        }}
-      />
-    </Card>
-  );
-}
-
-function LanguageRow() {
+/** The effort every new bot starts with. The server skips a level the new
+ * bot's engine does not offer, and a bot's own choice always wins. */
+function NewBotEffortRow() {
   const { state, dispatch } = useStore();
-  const current = state.config?.language ?? "";
+  const current = state.config?.newBots?.effort ?? "";
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
 
-  const save = async (language: string) => {
+  const save = async (value: string) => {
     if (saving) return;
     setSaving(true);
     setError("");
     try {
       const config: ConfigStatus = await api("/api/config", {
         method: "PATCH",
-        body: JSON.stringify({ language }),
+        body: JSON.stringify({ newBots: { effort: isEffortLevel(value) ? value : null } }),
       });
       dispatch({ type: "configStatus", config });
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Could not save the language.");
+      setError(cause instanceof Error ? cause.message : t("settings.newBotEffort.error"));
     } finally {
       setSaving(false);
     }
   };
 
   return (
-    <Card
-      title="Language"
-      subtitle="The app follows your system language unless you pick one here. Only part of the interface is translated so far — untranslated text stays in English."
+    <SettingRow
+      title={t("settings.newBotEffort.title")}
+      subtitle={t("settings.newBotEffort.subtitle")}
+      message={error ? <p role="alert" className="text-danger">{error}</p> : null}
     >
       <select
         value={current}
         disabled={saving}
-        aria-label="App language"
+        aria-label={t("settings.newBotEffort.aria")}
         onChange={(event) => void save(event.target.value)}
-        className="w-full max-w-[280px] rounded-lg border border-hairline/40 bg-inset px-2.5 py-1.5 text-[13.5px] text-ink disabled:cursor-wait disabled:opacity-50"
+        className="min-h-8 w-full max-w-[240px] rounded-lg border border-hairline/40 bg-inset px-2.5 py-1.5 text-[13px] text-ink focus:border-focus disabled:cursor-wait disabled:opacity-50"
       >
-        <option value="">System</option>
+        <option value="">{t("settings.newBotEffort.default")}</option>
+        {EFFORT_LEVELS.map((level) => (
+          <option key={level} value={level}>
+            {effortLabel(level)}
+          </option>
+        ))}
+      </select>
+    </SettingRow>
+  );
+}
+
+function AnalyticsRow() {
+  const [on, setOn] = useState(analyticsEnabled);
+  return (
+    <SettingRow title={t("settings.analytics.title")} subtitle={t("settings.analytics.subtitle")}>
+      <Switch
+        checked={on}
+        aria-label={t("settings.analytics.aria")}
+        onClick={() => {
+          const next = !on;
+          setAnalyticsEnabled(next);
+          setOn(next);
+        }}
+      />
+    </SettingRow>
+  );
+}
+
+/** Clears the tour's steps and opens it again on the live interface. */
+function ReplayAppTourButton() {
+  const { state, dispatch } = useStore();
+  const [saving, setSaving] = useState(false);
+  const [failed, setFailed] = useState(false);
+  return (
+    <div>
+      <button
+        disabled={saving}
+        onClick={() => {
+          setSaving(true);
+          setFailed(false);
+          void api("/api/config", {
+            method: "PUT",
+            body: JSON.stringify({ onboarding: {
+              // Upgraded users may have completed only the legacy browser gate.
+              ...(!state.config?.onboarding?.completedAt ? completionPatch().onboarding : {}),
+              hintsSeen: withTourReset(state.config?.onboarding),
+            } }),
+            signal: AbortSignal.timeout(10_000),
+          })
+            .then((config) => {
+              dispatch({ type: "configStatus", config });
+              dispatch({ type: "toggleTour", open: true });
+            })
+            .catch(() => setFailed(true))
+            .finally(() => setSaving(false));
+        }}
+        className="ui-button"
+      >
+        {t("settings.welcome.appTour")}
+      </button>
+      {failed && <p role="alert" className="mt-2 text-[13px] text-danger">{t("onboarding.tour.error")}</p>}
+    </div>
+  );
+}
+
+function ReplayTourRow() {
+  const { dispatch } = useStore();
+  return (
+    <SettingRow title={t("settings.welcome.title")} subtitle={t("settings.welcome.subtitle")}>
+      <div className="flex flex-wrap gap-2">
+        <ReplayAppTourButton />
+        <button
+          onClick={() => dispatch({ type: "toggleWelcome", open: true })}
+          className="ui-button"
+        >
+          {t("settings.welcome.replay")}
+        </button>
+      </div>
+    </SettingRow>
+  );
+}
+
+function LanguageRow() {
+  const { state } = useStore();
+  // Saved on this device only: anyone can switch, including a chat-only
+  // teammate, and nobody changes another person's screen. The server's
+  // language is the default until this device picks one.
+  const current = effectiveLanguage(useLanguageChoice(), state.config?.language);
+
+  return (
+    <SettingRow
+      title={t("settings.language.title")}
+      subtitle={t("settings.language.subtitle")}
+    >
+      <select
+        value={current}
+        aria-label={t("settings.language.aria")}
+        onChange={(event) => setLanguageChoice(event.target.value)}
+        className="min-h-8 w-full max-w-[240px] rounded-lg border border-hairline/40 bg-inset px-2.5 py-1.5 text-[13px] text-ink focus:border-focus disabled:cursor-wait disabled:opacity-50"
+      >
+        <option value="">{t("settings.language.system")}</option>
         {localeChoices.map(({ code, label }) => (
           <option key={code} value={code}>
             {label}
           </option>
         ))}
       </select>
-      {error ? <p role="alert" className="mt-2 text-[12px] text-danger">{error}</p> : null}
-    </Card>
+    </SettingRow>
+  );
+}
+
+function NotificationSoundsRow() {
+  const enabled = useNotificationSounds();
+  return (
+    <SettingRow title={t("settings.notificationSounds.title")} subtitle={t("settings.notificationSounds.subtitle")}>
+      <Switch
+        checked={enabled}
+        aria-label={t("settings.notificationSounds.play")}
+        onClick={() => setNotificationSounds(!enabled)}
+      />
+    </SettingRow>
+  );
+}
+
+function FontRow() {
+  const [current, setCurrent] = useState<FontId>(readFont);
+  return (
+    <SettingRow title={t("settings.font.title")} subtitle={t("settings.font.subtitle")}>
+      <select
+        value={current}
+        aria-label={t("settings.font.aria")}
+        onChange={(event) => {
+          // SAFETY: the options are rendered from FONT_IDS, so the value is always a member.
+          const id = event.target.value as FontId;
+          applyFont(id);
+          setCurrent(id);
+        }}
+        className="min-h-8 w-full max-w-[240px] rounded-lg border border-hairline/40 bg-inset px-2.5 py-1.5 text-[13px] text-ink focus:border-focus"
+      >
+        {FONT_IDS.map((id) => (
+          <option key={id} value={id}>{t(`settings.font.${id}`)}</option>
+        ))}
+      </select>
+    </SettingRow>
+  );
+}
+
+function AdvancedModeRow() {
+  const enabled = useAdvancedMode();
+  return (
+    <SettingRow title={t("settings.advancedMode.title")} subtitle={t("settings.advancedMode.subtitle")}>
+      <Switch
+        checked={enabled}
+        aria-label={t("settings.advancedMode.title")}
+        onClick={() => setAdvancedMode(!enabled)}
+      />
+    </SettingRow>
+  );
+}
+
+function ShowThreadsRow() {
+  const enabled = useShowThreads();
+  return (
+    <SettingRow title={t("settings.threadDisplay.title")} subtitle={t("settings.threadDisplay.subtitle")}>
+      <Switch
+        checked={enabled}
+        aria-label={t("settings.threadDisplay.show")}
+        onClick={() => setShowThreads(!enabled)}
+      />
+    </SettingRow>
+  );
+}
+
+function PinnedCirclesRow() {
+  const enabled = usePinnedCircles();
+  return (
+    <SettingRow title={t("settings.pinnedCircles.title")} subtitle={t("settings.pinnedCircles.subtitle")}>
+      <Switch
+        checked={enabled}
+        aria-label={t("settings.pinnedCircles.title")}
+        onClick={() => setPinnedCircles(!enabled)}
+      />
+    </SettingRow>
+  );
+}
+
+const SIDEBAR_DENSITY_LABEL_KEYS: Record<SidebarDensity, LocaleKey> = {
+  comfortable: "sidebar.density.comfortable",
+  compact: "sidebar.density.compact",
+  icons: "sidebar.density.iconsOnly",
+};
+
+function SidebarDensityRow() {
+  const density = useSidebarDensity();
+  return (
+    <SettingRow title={t("sidebar.density.title")} subtitle={t("settings.sidebarDensity.subtitle")}>
+      <select
+        value={density}
+        aria-label={t("sidebar.density.chooseAria")}
+        onChange={(event) => setSidebarDensity(parseSidebarDensity(event.target.value))}
+        className="min-h-8 w-full max-w-[240px] rounded-lg border border-hairline/40 bg-inset px-2.5 py-1.5 text-[13px] text-ink focus:border-focus"
+      >
+        {SIDEBAR_DENSITIES.map((option) => (
+          <option key={option} value={option}>{t(SIDEBAR_DENSITY_LABEL_KEYS[option])}</option>
+        ))}
+      </select>
+    </SettingRow>
+  );
+}
+
+function RunCardRow() {
+  const enabled = useShowRunCard();
+  return (
+    <SettingRow title={t("settings.runCard.title")} subtitle={t("settings.runCard.subtitle")}>
+      <Switch
+        checked={enabled}
+        aria-label={t("settings.runCard.show")}
+        onClick={() => setShowRunCard(!enabled)}
+      />
+    </SettingRow>
+  );
+}
+
+function UniversalPinsRow() {
+  const enabled = useUniversalPins();
+  return (
+    <SettingRow title={t("settings.universalPins.title")} subtitle={t("settings.universalPins.subtitle")}>
+      <Switch
+        checked={enabled}
+        aria-label={t("settings.universalPins.title")}
+        onClick={() => setUniversalPins(!enabled)}
+      />
+    </SettingRow>
+  );
+}
+
+function RoutinesInConversationRow() {
+  const { state, dispatch } = useStore();
+  const enabled = routinesInConversationEnabled(state.config);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  const toggle = async () => {
+    if (saving) return;
+    setSaving(true);
+    setError("");
+    try {
+      const config: ConfigStatus = await api("/api/config", {
+        method: "PATCH",
+        body: JSON.stringify({ features: { routinesInConversation: !enabled } }),
+      });
+      dispatch({ type: "configStatus", config });
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : t("settings.routinesInConversation.error"));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <SettingRow
+      title={t("settings.routinesInConversation.title")}
+      subtitle={t("settings.routinesInConversation.subtitle")}
+      message={error ? <p role="alert" className="text-danger">{error}</p> : null}
+    >
+      <Switch
+        checked={enabled}
+        aria-label={t("settings.routinesInConversation.aria")}
+        disabled={saving}
+        onClick={() => void toggle()}
+        className="disabled:cursor-wait disabled:opacity-50"
+      />
+    </SettingRow>
   );
 }
 
@@ -207,101 +602,66 @@ function ToolCallsRow() {
       });
       dispatch({ type: "configStatus", config });
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Could not save the tool-call setting.");
+      setError(cause instanceof Error ? cause.message : t("settings.toolCalls.error"));
     } finally {
       setSaving(false);
     }
   };
 
   return (
-    <Card
-      title="Tool calls"
-      subtitle="Show each tool a bot runs in the transcript. Off by default — the mascot already shows that work is happening."
+    <SettingRow
+      title={t("settings.toolCalls.title")}
+      subtitle={<>{t("settings.toolCalls.subtitle")} {t("settings.toolCalls.detail")}</>}
+      message={error ? <p role="alert" className="text-danger">{error}</p> : null}
     >
-      <div className="flex items-center justify-between gap-4">
-        <div className="min-w-0">
-          <div className="text-[14px] font-medium text-ink">Show tool calls</div>
-          <div className="mt-0.5 text-[12px] leading-relaxed text-ink-secondary">
-            Named chips for Bash, search, and other tools. Errors and bot-to-bot messages still appear.
-          </div>
-        </div>
-        <Switch
-          checked={enabled}
-          aria-label="Show tool calls in chat"
-          disabled={saving}
-          onClick={() => void toggle()}
-          className="disabled:cursor-wait disabled:opacity-50"
-        />
-      </div>
-      {error ? <p role="alert" className="mt-2 text-[12px] text-danger">{error}</p> : null}
-    </Card>
+      <Switch
+        checked={enabled}
+        aria-label={t("settings.toolCalls.aria")}
+        disabled={saving}
+        onClick={() => void toggle()}
+        className="disabled:cursor-wait disabled:opacity-50"
+      />
+    </SettingRow>
   );
 }
 
 function ExperimentalFeaturesRow() {
   const { state, dispatch } = useStore();
-  const skillRecorder = skillRecorderEnabled(state.config);
-  const browser = builtInBrowserEnabled(state.config);
-  const desktopBrowser = Boolean(window.ogb?.browser);
-  const browserBlockedOnWindows = window.ogb?.platform === "win32" && !desktopBrowser;
-  const [saving, setSaving] = useState<"skillRecorder" | "browser" | null>(null);
+  const skillAuthoring = skillAuthoringEnabled(state.config);
+  const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
 
-  const toggle = async (feature: "skillRecorder" | "browser", next: boolean) => {
+  const toggle = async (next: boolean) => {
     if (saving) return;
-    setSaving(feature);
+    setSaving(true);
     setError("");
     try {
       const config: ConfigStatus = await api("/api/config", {
         method: "PATCH",
-        body: JSON.stringify({ features: { [feature]: next } }),
+        body: JSON.stringify({ features: { skillAuthoring: next } }),
       });
       dispatch({ type: "configStatus", config });
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Could not save the experimental feature setting.");
+      setError(cause instanceof Error ? cause.message : t("settings.experimental.error"));
     } finally {
-      setSaving(null);
+      setSaving(false);
     }
   };
 
   return (
-    <Card
-      title="Experimental features"
-      subtitle="Early features may change while we test them. They stay off unless you enable them."
-    >
+    <Card title={t("settings.experimental.title")} subtitle={t("settings.experimental.subtitle")}>
       <div className="flex items-center justify-between gap-4">
         <div className="min-w-0">
-          <div className="text-[14px] font-medium text-ink">Teach a skill</div>
+          <div className="text-[14px] font-medium text-ink">{t("settings.experimental.skillAuthoring")}</div>
           <div className="mt-0.5 text-[12px] leading-relaxed text-ink-secondary">
-            Record a workflow, use /learn, or ask a supported bot to run /create-verification-skill. Every change waits for your review.
+            {t("settings.experimental.skillAuthoringDetail")}
           </div>
         </div>
         <Switch
-          checked={skillRecorder}
-          aria-label="Show Teach a skill"
-          disabled={saving !== null}
-          onClick={() => void toggle("skillRecorder", !skillRecorder)}
-          className="disabled:cursor-wait disabled:opacity-50"
-        />
-      </div>
-      <div className="mt-4 flex items-center justify-between gap-4 border-t border-hairline/30 pt-4">
-        <div className="min-w-0">
-          <div className="text-[14px] font-medium text-ink">Built-in browser</div>
-          <div className="mt-0.5 text-[12px] leading-relaxed text-ink-secondary">
-            {desktopBrowser
-              ? browser
-                ? "Enabled for this workspace. Each bot also has its own browser switch."
-                : "Off by default. Enable it to let supported bots use a browser tab you can watch and take over."
-              : browserBlockedOnWindows
-                ? "Temporarily unavailable on Windows while Electron's production sandbox support is being verified."
-                : "Needs the OpenMausBot desktop app."}
-          </div>
-        </div>
-        <Switch
-          checked={browser}
-          aria-label="Enable the built-in browser"
-          disabled={saving !== null || (!browser && !desktopBrowser)}
-          onClick={() => void toggle("browser", !browser)}
+          checked={skillAuthoring}
+          aria-label={t("settings.experimental.skillAuthoringAria")}
+          disabled={saving}
+          onClick={() => void toggle(!skillAuthoring)}
           className="disabled:cursor-wait disabled:opacity-50"
         />
       </div>
@@ -310,156 +670,67 @@ function ExperimentalFeaturesRow() {
   );
 }
 
-/** Named browser sessions: rename or delete; deleting wipes that session's
- * logins, storage and cache and sends any bot on it back to its own. */
-function BrowserProfilesRow() {
+/** The installation's built-in browser switch. It lives with the computers
+ * a bot can use (Computers in Simple, the top of Local VM in Advanced); the
+ * setting and its write are the same `features.browser` it always was. */
+function BuiltInBrowserRow() {
   const { state, dispatch } = useStore();
-  const profiles = state.config?.browserProfiles ?? [];
-  const [busy, setBusy] = useState<string | null>(null);
-  const [renaming, setRenaming] = useState<{ id: string; name: string } | null>(null);
+  const browser = builtInBrowserEnabled(state.config);
+  const desktopBrowser = browserAvailable(state.config);
+  const browserInstallable = state.config?.browserEngine?.installable === true;
+  const browserBlockedOnWindows = window.ogb?.platform === "win32" && !desktopBrowser && !browserInstallable;
+  const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
-  // Windows temporarily gates the live browser surface, but upgraded users
-  // must still be able to rename or permanently erase existing sessions.
-  // The packaged server can perform that private lifecycle cleanup without
-  // exposing the browser renderer bridge.
-  if (!window.ogb || (!builtInBrowserEnabled(state.config) && profiles.length === 0)) return null;
 
-  const save = async (next: typeof profiles) => {
+  const toggle = async (next: boolean) => {
+    if (saving) return;
+    setSaving(true);
+    setError("");
     try {
       const config: ConfigStatus = await api("/api/config", {
         method: "PATCH",
-        body: JSON.stringify({ browserProfiles: browserProfilesForPatch(next) }),
+        body: JSON.stringify({ features: { browser: next } }),
       });
       dispatch({ type: "configStatus", config });
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Could not save browser profiles.");
+      setError(cause instanceof Error ? cause.message : t("settings.experimental.error"));
     } finally {
-      setBusy(null);
-      setRenaming(null);
+      setSaving(false);
     }
   };
-  const remove = async (id: string) => {
-    if (busy) return;
-    const profile = profiles.find((candidate) => candidate.id === id);
-    if (!profile) return;
-    const referencedBots = state.bots.filter((bot) => bot.browserProfile === id);
-    const blocked = browserProfileDeletionBlockReason(state.bots, id);
-    if (blocked) {
-      setError(blocked);
-      return;
-    }
-    const botSummary = referencedBots.length
-      ? ` ${referencedBots.length === 1 ? referencedBots[0]!.name : `${referencedBots.length} bots`} will switch to their own browser sessions.`
-      : "";
-    if (!window.confirm(`Delete “${profile.name}”?${botSummary} This permanently signs out of this profile and erases its browser data.`)) {
-      return;
-    }
-    setBusy(id);
-    setError("");
-    try {
-      // The server commits the profile list and clears every bot reference as
-      // one transaction, then privately asks Electron to erase the partition.
-      // Never wipe browser data from the renderer before that commit succeeds:
-      // a rejected config save must leave the user's signed-in session intact.
-      const config: ConfigStatus = await api("/api/config", {
-        method: "PATCH",
-        body: JSON.stringify({
-          browserProfiles: browserProfilesForPatch(profiles.filter((candidate) => candidate.id !== id)),
-        }),
-      });
-      dispatch({ type: "configStatus", config });
-      // Packaged Electron receives the same post-commit cleanup privately
-      // from the server. Keep this idempotent fallback for split-process
-      // desktop development, where the server has no parent message port.
-      try {
-        await window.ogb?.browser?.forgetProfile?.(profile.partitionId ?? profile.id);
-      } catch {
-        setError("The profile was removed, but its local browser data could not be erased. Restart OpenMausBot before reusing that profile name.");
-      }
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Could not delete the browser profile.");
-    } finally {
-      setBusy(null);
-    }
-  };
-  const rename = () => {
-    if (!renaming || busy) return;
-    const name = renaming.name.trim();
-    if (!name) return;
-    setBusy(renaming.id);
-    setError("");
-    void save(profiles.map((profile) => (profile.id === renaming.id ? { ...profile, name } : profile)));
-  };
-  const usersOf = (id: string) => state.bots.filter((bot) => !bot.hidden && bot.browserProfile === id).map((bot) => bot.name);
 
   return (
-    <Card
-      title="Browser profiles"
-      subtitle="Named sign-in sessions any bot can use. Create one from a bot's Browser tab; sign in once and it stays."
-    >
-      {profiles.length === 0 ? (
-        <div className="text-[13px] text-ink-secondary">No profiles yet — pick "+ Add profile…" under a bot's browser.</div>
-      ) : (
-        <div className="flex flex-col divide-y divide-hairline/30">
-          {profiles.map((profile) => {
-            const users = usersOf(profile.id);
-            const editing = renaming?.id === profile.id;
-            return (
-              <div key={profile.id} className="flex items-center justify-between gap-3 py-2.5">
-                <div className="flex min-w-0 items-center gap-2">
-                  <Globe size={14} className="shrink-0 text-ink-secondary" />
-                  {editing ? (
-                    <form
-                      className="flex items-center gap-2"
-                      onSubmit={(event) => {
-                        event.preventDefault();
-                        rename();
-                      }}
-                    >
-                      <input
-                        autoFocus
-                        value={renaming.name}
-                        onChange={(event) => setRenaming({ id: profile.id, name: event.target.value })}
-                        maxLength={40}
-                        className="rounded-md bg-inset px-2 py-1 text-[13px] text-ink outline-none"
-                        aria-label="Profile name"
-                      />
-                      <button type="submit" disabled={busy !== null} className="rounded-md bg-accent px-2.5 py-1 text-[12px] font-medium text-accent-ink disabled:opacity-50">
-                        Save
-                      </button>
-                      <button type="button" onClick={() => setRenaming(null)} className="text-[12px] text-ink-secondary hover:text-ink">
-                        Cancel
-                      </button>
-                    </form>
-                  ) : (
-                    <button
-                      type="button"
-                      onClick={() => setRenaming({ id: profile.id, name: profile.name })}
-                      className="truncate text-left text-[14px] font-medium text-ink hover:underline"
-                      title="Rename"
-                    >
-                      {profile.name}
-                    </button>
-                  )}
-                  <span className="truncate text-[12px] text-ink-secondary">
-                    {users.length ? `used by ${users.join(", ")}` : "not in use"}
-                  </span>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => void remove(profile.id)}
-                  disabled={busy !== null}
-                  className="flex shrink-0 items-center gap-1 rounded-md px-2 py-1 text-[12px] text-ink-secondary hover:bg-control hover:text-danger disabled:opacity-50"
-                  title="Delete this profile and forget its logins"
-                >
-                  <Trash2 size={13} /> Delete
-                </button>
-              </div>
-            );
-          })}
-        </div>
-      )}
-      {error ? <p role="alert" className="mt-2 text-[12px] text-danger">{error}</p> : null}
+    <div data-built-in-browser className="rounded-xl bg-card px-4">
+      <SettingRow
+        title={t("settings.experimental.browserAria")}
+        subtitle={desktopBrowser
+          ? browser
+            ? t("settings.experimental.browserOn")
+            : t("settings.experimental.browserOff")
+          : browserBlockedOnWindows
+            ? t("settings.experimental.browserWindows")
+            : browserUnavailableReason(state.config)}
+        message={error ? <p role="alert" className="text-danger">{error}</p> : null}
+      >
+        <Switch
+          checked={browser}
+          aria-label={t("settings.experimental.browserAria")}
+          disabled={saving || (!browser && !desktopBrowser && !browserInstallable)}
+          onClick={() => void toggle(!browser)}
+          className="disabled:cursor-wait disabled:opacity-50"
+        />
+      </SettingRow>
+    </div>
+  );
+}
+
+function BrowserProfilesRow() {
+  const { state } = useStore();
+  const profiles = state.config?.browserProfiles ?? [];
+  if (!builtInBrowserEnabled(state.config) && profiles.length === 0) return null;
+  return (
+    <Card title={t("settings.profiles.title")} subtitle={t("settings.profiles.sharedSubtitle")}>
+      <BrowserProfilesManager />
     </Card>
   );
 }
@@ -477,7 +748,7 @@ function DiagnosticsRow() {
     setResult(null);
     try {
       const path = await window.ogb.exportDiagnostics();
-      if (path) setResult({ kind: "success", message: `Saved to ${path}` });
+      if (path) setResult({ kind: "success", message: t("settings.diagnostics.saved", { path }) });
     } catch (e) {
       setResult({ kind: "error", message: e instanceof Error ? e.message : String(e) });
     } finally {
@@ -486,53 +757,97 @@ function DiagnosticsRow() {
   };
 
   return (
-    <Card
-      title="Diagnostics"
-      subtitle="Versions, configuration on/off state and a redacted server log tail. Review the file before sharing it."
+    <SettingRow
+      title={t("settings.diagnostics.title")}
+      subtitle={t("settings.diagnostics.subtitle")}
+      message={result ? (
+        <p role={result.kind === "error" ? "alert" : "status"} className={cn("break-all", result.kind === "error" ? "text-danger" : "text-success")}>
+          {result.message}
+        </p>
+      ) : null}
     >
-      <div className="flex min-w-0 flex-col items-end gap-2">
-        <button
-          onClick={() => void exportDiagnostics()}
-          disabled={exporting}
-          aria-label="Export diagnostics to a text file"
-          className="rounded-lg border border-hairline/40 px-3 py-1.5 text-[13px] text-ink hover:bg-control disabled:opacity-40"
-        >
-          {exporting ? "Exporting…" : "Export Diagnostics…"}
-        </button>
-        {result ? (
-          <span
-            role={result.kind === "error" ? "alert" : "status"}
-            className={`max-w-64 break-all text-right text-[12px] ${result.kind === "error" ? "text-danger" : "text-success"}`}
-          >
-            {result.message}
-          </span>
-        ) : null}
-      </div>
-    </Card>
+      <button
+        onClick={() => void exportDiagnostics()}
+        disabled={exporting}
+        aria-label={t("settings.diagnostics.aria")}
+        className="ui-button"
+      >
+        {exporting ? t("settings.diagnostics.exporting") : t("settings.diagnostics.export")}
+      </button>
+    </SettingRow>
   );
 }
 
 export function SettingsModal() {
   const { state, dispatch } = useStore();
-  const section = state.appSettingsSection;
+  const advanced = useAdvancedMode();
+  const remoteActive = window.ogb?.remoteClient?.active === true;
+  const section: AppSettingsSection =
+    (remoteActive && !["appearance", "desktopWorkspaces"].includes(state.appSettingsSection)) || state.appSettingsSection === "remote"
+      ? "companion"
+      : state.appSettingsSection;
   const dialogRef = useRef<HTMLDivElement>(null);
+  const scrollRef = useRef<HTMLDivElement>(null);
   const [query, setQuery] = useState("");
+  useEffect(() => window.ogb?.environments?.onOpenSettings?.(() => setQuery("")), []);
+  useEffect(() => window.ogb?.onOpenAppSettings?.(() => setQuery("")), []);
   const q = query.trim().toLowerCase();
-  const visibleSections = SECTIONS.filter((entry) => sectionMatches(entry, q));
+  const ownerOrAdmin = useOwnerOrAdmin();
+  const baseSections = SECTIONS.filter((entry) => !remoteActive || entry.id === "companion" || entry.id === "appearance" || entry.id === "desktopWorkspaces")
+    .filter((entry) => entry.id !== "desktopWorkspaces" || Boolean(window.ogb?.environments))
+    .filter((entry) => entry.id !== "organization" || Boolean(window.ogb?.organization))
+    // On the person's own Cloud in this app's window, the plan shows read only (cloudPlan);
+    // never on any other server open here (a VPS, a hosted workspace, someone else's).
+    .filter((entry) => entry.id !== "cloudAccount" || Boolean(window.ogb?.cloudAccount || (window.ogb?.cloudPlan && state.config?.cloudHome === true)))
+    // the operator's screen for other workspaces exists only where a fleet agent does
+    .filter((entry) => entry.id !== "workspaces" || workspacesAvailable(state.config))
+    // sign-in by email is a hosted server's; the desktop app pairs devices under Remote access,
+    // and an OMB Cloud home is personal: nobody is invited to it
+    .filter((entry) => entry.id !== "people" || (!window.ogb && state.config?.cloudHome !== true))
+    // the activity log belongs to a workspace served to a browser, and to its admins
+    .filter((entry) => entry.id !== "activity" || (!window.ogb && ownerOrAdmin === true));
+  // the Skills surface browses the shared library, which exists only where
+  // features.skillsLibrary switched it on
+  const availableSections = baseSections.filter((entry) => entry.id !== "skills" || skillsLibraryEnabled(state.config));
+  const visibleSections = availableSections.filter((entry) => sectionMatches(entry, q));
+
+  // Simple mode stacks several sections on one page. The open section picks
+  // the page; scrolling brings that section into view.
+  const simplePages = advanced ? [] : simpleSettingsPages(availableSections, section);
+  const visiblePages = simplePages.filter((page) => simplePageMatches(page, q));
+  const currentPage = simplePages.find((page) => page.sections.includes(section));
+
+  const sectionLabelKey = advanced
+    ? SECTIONS.find((entry) => entry.id === section)?.labelKey
+    : currentPage?.labelKey;
+  const nextVisibleSection = advanced
+    ? visibleSections.some((entry) => entry.id === section) ? undefined : visibleSections[0]?.id
+    : currentPage && visiblePages.includes(currentPage)
+      ? undefined
+      : visiblePages[0] && (visiblePages[0].sections.find((id) => visibleSections.some((entry) => entry.id === id)) ?? visiblePages[0].sections[0]);
 
   useEffect(() => {
-    const visible = SECTIONS.filter((entry) => sectionMatches(entry, q));
-    if (visible.some((entry) => entry.id === section)) return;
-    const first = visible[0];
-    if (first) dispatch({ type: "toggleAppSettings", open: true, section: first.id });
-  }, [dispatch, q, section]);
+    // Translated matches can change without the query changing. Follow the
+    // rendered results instead of a second filter with stale effect inputs.
+    if (nextVisibleSection) dispatch({ type: "toggleAppSettings", open: true, section: nextVisibleSection });
+  }, [dispatch, nextVisibleSection]);
+
+  const sectionIndex = currentPage?.sections.indexOf(section) ?? 0;
+  useEffect(() => {
+    if (!advanced && scrollRef.current) revealSettingsBlock(scrollRef.current, section, sectionIndex);
+  }, [advanced, section, sectionIndex]);
 
   useEffect(() => {
     const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     const dialog = dialogRef.current;
-    dialog?.focus();
+    const search = dialog?.querySelector<HTMLInputElement>("[data-settings-search]");
+    if (search?.checkVisibility()) search.focus();
+    else dialog?.focus();
 
     const onKey = (event: KeyboardEvent) => {
+      // A child editor owns Escape and its focus trap, including while saving.
+      if (event.defaultPrevented || (dialog && [...dialog.querySelectorAll<HTMLElement>('[role="dialog"], [role="alertdialog"]')]
+        .some(child => child.getClientRects().length))) return;
       if (event.key === "Escape") {
         event.preventDefault();
         dispatch({ type: "toggleAppSettings", open: false });
@@ -542,9 +857,9 @@ export function SettingsModal() {
 
       const focusable = Array.from(
         dialog.querySelectorAll<HTMLElement>(
-          'button:not([disabled]), a[href], input:not([disabled]), [tabindex]:not([tabindex="-1"])',
+          'button:not([disabled]), a[href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), summary, [tabindex]:not([tabindex="-1"])',
         ),
-      );
+      ).filter((element) => element.checkVisibility());
       if (focusable.length === 0) {
         event.preventDefault();
         dialog.focus();
@@ -570,27 +885,198 @@ export function SettingsModal() {
     };
   }, [dispatch]);
 
+  const openSection = (id: AppSettingsSection) => dispatch({ type: "toggleAppSettings", open: true, section: id });
+
+  /** One section's content, as its own Advanced page or one block of a
+   * stacked Simple page. */
+  const renderSection = (id: AppSettingsSection) => {
+    switch (id) {
+      case "desktopWorkspaces":
+        return <ConnectedWorkspacesSettings />;
+      case "organization":
+        return window.ogb?.organization && !remoteActive ? <OrganizationSettings /> : null;
+      case "cloudAccount":
+        return (window.ogb?.cloudAccount || (window.ogb?.cloudPlan && state.config?.cloudHome === true)) && !remoteActive
+          ? <CloudAccountSettings linkRequest={state.appSettingsCloudLink} cloudHome={state.config?.cloudHome === true}
+            onConnectPhone={() => dispatch(phonePairingSettingsAction())} />
+          : null;
+      case "general":
+        return (
+          <>
+            <div className="rounded-2xl border border-accent-border/40 bg-raised-hover/40 px-1">
+              <AdvancedModeRow />
+            </div>
+            <ProSettingsCard />
+            <Card title={t("settings.profile.title")} subtitle={t("settings.profile.sharedSubtitle")}>
+              <ProfileFields />
+            </Card>
+            <div>
+              <LanguageRow />
+              <NewBotEffortRow />
+              <AnalyticsRow />
+              <DefaultBotSettings />
+            </div>
+            <Card title={t("settings.roomTurns.title")} subtitle={t("settings.roomTurns.subtitle")}>
+              <RoomTurnTimeoutSettings />
+            </Card>
+            <ThreadConcurrencySettings />
+            {!remoteActive && <RoutinesInConversationRow />}
+            <AutomaticRecoverySettings />
+            <ThreadCleanupSettings />
+            <div>
+              {!remoteActive && <ReplayTourRow />}
+              <UpdatesRow />
+              <DiagnosticsRow />
+            </div>
+          </>
+        );
+      case "appearance":
+        return (
+          <>
+            <Card title={t("settings.skin.title")} subtitle={t("settings.skin.subtitle")}>
+              <SkinPicker />
+            </Card>
+            <div>
+              {/* A paired remote client has no General page; keep the switch reachable. */}
+              {remoteActive && <AdvancedModeRow />}
+              <FontRow />
+              <SidebarDensityRow />
+              <ShowThreadsRow />
+              <PinnedCirclesRow />
+              <UniversalPinsRow />
+              <NotificationSoundsRow />
+              {!remoteActive && <ToolCallsRow />}
+              <RunCardRow />
+            </div>
+          </>
+        );
+      case "experimental":
+        return <ExperimentalFeaturesRow />;
+      case "connections":
+        return (
+          <Card
+            title={t("settings.connections.title")}
+            subtitle={t("settings.connections.subtitle")}
+          >
+            <div className="flex flex-col gap-4">
+              {state.config?.composio.mode === "managed" ? (
+                <div className="rounded-lg border border-success/25 bg-success/10 px-3 py-2 text-[13px] text-success">
+                  {t("settings.connections.ready")}
+                </div>
+              ) : null}
+              <div className="text-[11.5px] font-medium uppercase tracking-wide text-ink-secondary">{t("keys.providers.title")}</div>
+              <p className="-mt-3 text-[12px] leading-relaxed text-ink-secondary">{t("keys.providers.subtitle")}</p>
+              <ApiKeyRow section="openai" testProvider="openai" />
+              <ApiKeyRow section="anthropic" testProvider="anthropic" />
+              <AnthropicEveryClaudeBot />
+              <ApiKeyRow section="xai" testProvider="xai" />
+              <ApiKeyRow section="openrouter" testProvider="openrouter" />
+              <ApiKeyRow section="mistral" testProvider="mistral" />
+              <ApiKeyRow section="cerebras" testProvider="cerebras" />
+              <details data-api-keys-other className="rounded-lg border border-hairline/40 bg-inset px-3 py-2" open={Boolean(state.config?.openaiCompat?.configured)}>
+                <summary className="cursor-pointer text-[13px] text-ink-secondary">{t("keys.other.title")}</summary>
+                <div className="mt-3 flex flex-col gap-4">
+                  <ApiKeyRow section="openaiCompat" testProvider="openaiCompat" />
+                  <OpenAiCompatUrl />
+                </div>
+              </details>
+              <div className="pt-2 text-[11.5px] font-medium uppercase tracking-wide text-ink-secondary">{t("keys.integrations.title")}</div>
+              <ApiKeyRow section="box" />
+              <VpsConnection />
+              <ApiKeyRow section="opencodeGo" />
+              <p className="-mt-2 text-[11.5px] leading-relaxed text-ink-secondary">
+                {/* {command} marks where the code chip goes, so a translator can move it */}
+                {t("keys.opencode.providersHint").split("{command}").flatMap((part, index) =>
+                  index === 0 ? [part] : [<code key={index} className="font-mono">opencode auth login</code>, part])}
+              </p>
+              <details className="rounded-lg border border-hairline/40 bg-inset px-3 py-2">
+                <summary className="cursor-pointer text-[13px] text-ink-secondary">{t("settings.connections.selfHost")}</summary>
+                <div className="mt-3">
+                  <ApiKeyRow section="composio" />
+                </div>
+              </details>
+            </div>
+          </Card>
+        );
+      case "decisionModel":
+        return <DecisionModelSettings />;
+      case "engines":
+        return <EnginesSettings />;
+      case "backups":
+        return <><WorkspaceBackupSettings /><CompanyBackupSettings /></>;
+      case "companion": {
+        // "Connect your phone" lands on the one pairing that fits this window:
+        // this computer's phone flow, or this server's (or Cloud's) pairing code.
+        const phoneFocus = state.appSettingsPhonePairing;
+        const computerPairs = currentPhonePairingTarget(state.config?.cloudHome === true) === "computer";
+        return (
+          <>
+            <RemoteComputerSection />
+            {!remoteActive && <CustomDomainSettings />}
+            {/* mints an admin/client session token for anything that isn't the phone companion
+                flow (MCP clients, `openmausbot pair`, a second desktop app), and pairs phones to a
+                hosted server. Shown for the desktop app's own server (#950) AND when this desktop is
+                a remote client of a hosted workspace: its requests carry that server's session, and
+                Settings there is the only place that server's phones can be paired from (MOCA-84).
+                The server decides who may act — an owner or an admin session — not this gate. */}
+            <ServerPairingCard cloudHome={state.config?.cloudHome === true} focusRequest={computerPairs ? 0 : phoneFocus} />
+            {!remoteActive && <CompanionSection profileEmail={state.config?.profile?.email} focusRequest={computerPairs ? phoneFocus : 0} />}
+          </>
+        );
+      }
+      case "computer":
+        // Advanced: the built-in browser switch heads the Local VM page.
+        // Simple stacks it as its own block after Local VM instead.
+        return advanced
+          ? <><BuiltInBrowserRow /><BrowserProfilesRow /><LocalComputerSection /></>
+          : <LocalComputerSection />;
+      case "usage":
+        return <UsageSection />;
+      case "skills":
+        // the shared skills library exists only where features.skillsLibrary is on
+        return skillsLibraryEnabled(state.config) ? <SkillsSection /> : null;
+      case "people":
+        return <PeopleSection />;
+      case "activity":
+        return <ActivitySection />;
+      case "workspaces":
+        return <WorkspacesSection />;
+      default:
+        return null;
+    }
+  };
+
+  const blockHeading = (labelKey: LocaleKey) => (
+    <h3 className="px-1 text-[13px] font-semibold uppercase tracking-[0.06em] text-ink-secondary">{t(labelKey)}</h3>
+  );
+
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-6"
+      className="glass-popup-frame"
+      style={glassPopupFrameStyle()}
       onMouseDown={(e) => e.target === e.currentTarget && dispatch({ type: "toggleAppSettings", open: false })}
     >
+      {/* A sibling, not the parent: a backdrop-filter on an ancestor would
+          stop the pop-up's own glass from seeing the app behind it. */}
+      <div aria-hidden="true" className="glass-scrim pointer-events-none absolute inset-0" />
       <div
         ref={dialogRef}
         role="dialog"
         aria-modal="true"
         aria-labelledby="app-settings-title"
         tabIndex={-1}
-        className="flex h-[560px] w-full max-w-[860px] overflow-hidden rounded-2xl border border-hairline/50 bg-panel shadow-2xl outline-none"
+        className="glass-surface glass-popup animate-pop-in relative flex overflow-hidden rounded-[24px] outline-none"
       >
         {/* section nav */}
-        <nav className="flex w-[190px] shrink-0 flex-col gap-0.5 border-r border-hairline/40 p-3">
-          <div id="app-settings-title" className="px-2 pb-2 pt-1 text-[15px] font-semibold text-ink">
-            Settings
+        <span id="app-settings-title" className="sr-only">{t("settings.title")}</span>
+        <nav className="glass-rail hidden min-h-0 w-[200px] shrink-0 flex-col gap-1 overflow-y-auto border-r border-hairline/30 p-3 sm:flex">
+          <div className="shrink-0 px-2 py-3 text-[15px] font-semibold text-ink">
+            {t("settings.title")}
           </div>
-          <div className="mb-1.5 flex items-center gap-2 rounded-lg bg-control/70 px-2.5 py-1.5">
+          <div className="mb-2 mt-1 flex min-h-8 shrink-0 items-center gap-2 rounded-lg border border-transparent bg-control/70 px-2.5 py-2 focus-within:border-focus">
             <Search size={14} className="shrink-0 text-ink-secondary" />
             <input
+              data-settings-search
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               onKeyDown={(e) => {
@@ -599,109 +1085,142 @@ export function SettingsModal() {
                 if (query) setQuery("");
                 else dispatch({ type: "toggleAppSettings", open: false });
               }}
-              placeholder="Search"
-              aria-label="Search settings"
+              placeholder={t("settings.search")}
+              aria-label={t("settings.searchAria")}
               className="w-full bg-transparent text-[13px] text-ink placeholder:text-ink-secondary focus:outline-none"
             />
           </div>
-          {visibleSections.length === 0 && (
+          {(advanced ? visibleSections.length === 0 : visiblePages.length === 0) && (
             <div className="px-2.5 py-4 text-[12.5px] leading-relaxed text-ink-secondary">
-              Nothing matches “{query.trim()}”
+              {t("settings.noMatch", { query: query.trim() })}
             </div>
           )}
-          {visibleSections.map(({ id, label, icon: Icon }) => (
-            <button
-              key={id}
-              onClick={() => dispatch({ type: "toggleAppSettings", open: true, section: id })}
-              aria-current={section === id ? "page" : undefined}
-              className={cn(
-                "flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-[14px]",
-                section === id ? "bg-control text-ink" : "text-ink-secondary hover:bg-control/50 hover:text-ink",
-              )}
-            >
-              <Icon size={15} />
-              {label}
-            </button>
-          ))}
+          {advanced ? SETTINGS_GROUPS.map((group) => {
+            const entries = visibleSections.filter((entry) => entry.group === group.id);
+            if (entries.length === 0) return null;
+            return (
+              <div key={group.id} role="group" aria-labelledby={`settings-group-${group.id}`} data-settings-group={group.id} className="flex flex-col gap-0.5 pb-2">
+                <div id={`settings-group-${group.id}`} className="px-2.5 pb-1 pt-2 text-[11px] font-medium uppercase tracking-[0.08em] text-ink-tertiary">
+                  {t(group.labelKey)}
+                </div>
+                {entries.map(({ id, labelKey, icon: Icon }) => (
+                  <button
+                    key={id}
+                    data-settings-section={id}
+                    onClick={() => openSection(id)}
+                    aria-current={section === id ? "page" : undefined}
+                    className={cn(
+                      "flex min-h-9 items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-[13px] transition-colors motion-reduce:transition-none",
+                      section === id ? "bg-control text-ink" : "text-ink-secondary hover:bg-control/50 hover:text-ink",
+                    )}
+                  >
+                    <Icon size={15} className="shrink-0" />
+                    {t(labelKey)}
+                  </button>
+                ))}
+              </div>
+            );
+          }) : (
+            <div className="flex flex-col gap-0.5 pb-2">
+              {visiblePages.map((page) => {
+                const Icon = page.icon;
+                const current = page === currentPage;
+                return (
+                  <button
+                    key={page.id}
+                    data-settings-page={page.id}
+                    onClick={() => openSection(page.sections[0]!)}
+                    aria-current={current ? "page" : undefined}
+                    className={cn(
+                      "flex min-h-9 items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-[13px] transition-colors motion-reduce:transition-none",
+                      current ? "bg-control text-ink" : "text-ink-secondary hover:bg-control/50 hover:text-ink",
+                    )}
+                  >
+                    <Icon size={15} className="shrink-0" />
+                    {t(page.labelKey)}
+                  </button>
+                );
+              })}
+            </div>
+          )}
         </nav>
 
-        <div className="flex min-w-0 flex-1 flex-col">
-          <div className="flex items-center justify-between px-5 py-3">
-            <span className="text-[15px] font-semibold text-ink">
-              {SECTIONS.find((s) => s.id === section)?.label}
+        <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+          <div className="flex shrink-0 items-center justify-between gap-3 border-b border-hairline/30 px-3 py-3 sm:px-5">
+            {advanced ? (
+              <select
+                aria-label={t("settings.title")}
+                value={section}
+                onChange={(event) => {
+                  setQuery("");
+                  openSection(event.target.value as AppSettingsSection);
+                }}
+                className="min-w-0 rounded-lg bg-control px-3 py-2 text-[14px] text-ink sm:hidden"
+              >
+                {SETTINGS_GROUPS.map((group) => {
+                  const entries = availableSections.filter((entry) => entry.group === group.id);
+                  return entries.length === 0 ? null : (
+                    <optgroup key={group.id} label={t(group.labelKey)}>
+                      {entries.map(({ id, labelKey }) => (
+                        <option key={id} value={id}>{t(labelKey)}</option>
+                      ))}
+                    </optgroup>
+                  );
+                })}
+              </select>
+            ) : (
+              <select
+                aria-label={t("settings.title")}
+                value={currentPage?.id ?? ""}
+                onChange={(event) => {
+                  setQuery("");
+                  const page = simplePages.find((candidate) => candidate.id === event.target.value);
+                  if (page) openSection(page.sections[0]!);
+                }}
+                className="min-w-0 rounded-lg bg-control px-3 py-2 text-[14px] text-ink sm:hidden"
+              >
+                {simplePages.map((page) => (
+                  <option key={page.id} value={page.id}>{t(page.labelKey)}</option>
+                ))}
+              </select>
+            )}
+            <span className="hidden text-[15px] font-semibold text-ink sm:block">
+              {sectionLabelKey ? t(sectionLabelKey) : null}
             </span>
             <button
               onClick={() => dispatch({ type: "toggleAppSettings", open: false })}
-              aria-label="Close settings"
-              className="rounded-md p-1 text-ink-secondary hover:bg-control hover:text-ink"
+              aria-label={t("settings.close")}
+              title={`${t("settings.close")} (${shortcutLabel("close-panel")})`}
+              className="ui-icon-button shrink-0"
             >
               <X size={18} />
             </button>
           </div>
 
-          <div className="flex flex-1 flex-col gap-4 overflow-y-auto px-5 pb-5">
-            {section === "general" && (
-              <>
-                <Card title="Profile" subtitle="Shown in the sidebar. Saved as you go.">
-                  <ProfileFields />
-                </Card>
-                <Card title="Skin" subtitle="Applies instantly and is remembered on this machine.">
-                  <SkinPicker />
-                </Card>
-                <Card title="Channel turns" subtitle="Set one maximum duration for every bot turn in a channel.">
-                  <RoomTurnTimeoutSettings />
-                </Card>
-                <LanguageRow />
-          <ToolCallsRow />
-                <UpdatesRow />
-                <DiagnosticsRow />
-                <AnalyticsRow />
-              </>
-            )}
-
-            {section === "experimental" && (
-              <>
-                <ExperimentalFeaturesRow />
-                <BrowserProfilesRow />
-              </>
-            )}
-
-            {section === "connections" && (
-              <Card
-                title="Connections"
-                subtitle="Connected apps work automatically in the installed app. Other optional service keys stay on this computer."
-              >
-                <div className="flex flex-col gap-4">
-                  {state.config?.composio.mode === "managed" ? (
-                    <div className="rounded-lg border border-success/25 bg-success/10 px-3 py-2 text-[13px] text-success">
-                      Connected apps service is ready
-                    </div>
-                  ) : null}
-                  <TranscriptionSettings />
-                  <ApiKeyRow section="box" />
-                  <VpsConnection />
-                  <ApiKeyRow section="opencodeGo" />
-                  <details className="rounded-lg border border-hairline/40 bg-inset px-3 py-2">
-                    <summary className="cursor-pointer text-[13px] text-ink-secondary">Self-host connected apps</summary>
-                    <div className="mt-3">
-                      <ApiKeyRow section="composio" />
-                    </div>
-                  </details>
-                </div>
-              </Card>
-            )}
-
-            {section === "engines" && (
-              <Card title="Engine CLIs" subtitle="Which binary each engine runs. Saved as you go.">
-                <EnginesSettings />
-              </Card>
-            )}
-
-            {section === "companion" && <CompanionSection profileEmail={state.config?.profile?.email} />}
-
-            {section === "computer" && <LocalComputerSection />}
-
-            {section === "usage" && <UsageSection />}
+          <div ref={scrollRef} className="flex flex-1 flex-col gap-4 overflow-y-auto px-3 py-4 sm:px-5 sm:pb-5">
+            <LicenseExpiryBanner config={state.config} />
+            {advanced ? (
+              renderSection(section)
+            ) : currentPage ? (
+              currentPage.sections.map((id) => {
+                const stacked = currentPage.sections.length > 1;
+                const labelKey = SECTIONS.find((entry) => entry.id === id)?.labelKey;
+                return (
+                  <section key={id} data-settings-block={id} className="flex scroll-mt-2 flex-col gap-4">
+                    {stacked && labelKey ? blockHeading(labelKey) : null}
+                    {renderSection(id)}
+                    {/* Simple: the built-in browser is its own block after Local VM. */}
+                    {id === "computer" && (
+                      <div data-settings-block="browser" className="flex flex-col gap-4 pt-2">
+                        {blockHeading("settings.experimental.browser")}
+                        <BuiltInBrowserRow />
+                        <BrowserProfilesRow />
+                      </div>
+                    )}
+                  </section>
+                );
+              })
+            ) : null}
           </div>
         </div>
       </div>

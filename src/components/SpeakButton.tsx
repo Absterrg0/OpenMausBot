@@ -1,9 +1,11 @@
 import { Loader2, Square, Volume2 } from "lucide-react";
 
 import { speaker } from "@/lib/tts";
+import { localSystemVoiceActive } from "@/lib/local-voice";
 import { useSpeech } from "@/lib/tts/useSpeech";
 import { useStore } from "@/state/store";
 import { cn } from "@/lib/cn";
+import { t } from "@/lib/i18n";
 
 /** Read one message aloud. Hover-revealed beside the copy control, and it
  * becomes a stop button while this message is the one speaking — the same
@@ -27,18 +29,19 @@ export function SpeakButton({
   const { state } = useStore();
   const speech = useSpeech();
   const tts = state.config?.tts;
-  const configured = Boolean(tts?.configured);
-  const ready = configured && Boolean(voiceId || tts?.voice);
+  const localVoice = localSystemVoiceActive();
+  const configured = localVoice || Boolean(tts?.configured);
+  const ready = localVoice || (configured && Boolean(voiceId || tts?.voice));
   const mine = speech.messageId === messageId && speech.status !== "idle";
   const preparing = mine && speech.status === "preparing";
 
   const label = !configured
-    ? "Add an ElevenLabs key in an agent profile to read messages aloud"
+    ? t((tts?.provider ?? "elevenlabs") === "elevenlabs" ? "chat.speak.needsKey" : "chat.speak.needsSetup")
     : !ready
-      ? "Pick a voice in this agent's profile to read messages aloud"
+      ? t("chat.speak.needsVoice")
     : mine
-      ? "Stop speaking"
-      : "Read this aloud";
+      ? t("chat.speak.stop")
+      : t("chat.speak.read");
   return (
     <button
       onClick={() => {
@@ -49,10 +52,10 @@ export function SpeakButton({
       aria-label={label}
       title={label}
       className={cn(
-        "rounded-md p-1.5 text-ink-secondary transition-opacity hover:bg-raised hover:text-ink focus-visible:opacity-100 group-focus-within:opacity-100 disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-ink-secondary",
+        "rounded-md p-1.5 text-ink-secondary transition-opacity hover:bg-raised hover:text-ink disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-ink-secondary",
         // stays visible while speaking — a stop button you have to hunt for
         // is not a stop button
-        mine ? "text-accent opacity-100" : "opacity-0 group-hover:opacity-100",
+        mine ? "text-accent opacity-100" : "opacity-0 focus-visible:opacity-100 group-hover:opacity-100 group-focus-within:opacity-100 touch:opacity-100",
         className,
       )}
     >

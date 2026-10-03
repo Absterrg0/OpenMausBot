@@ -19,12 +19,15 @@ export default defineConfig({
   test: {
     environment: "node",
     include: [
+      "evals/**/*.test.ts",
       "server/**/*.test.ts",
       "electron/**/*.test.mjs",
       "src/**/*.test.ts",
+      "shared/**/*.test.ts",
       "companion/**/*.test.ts",
       "enterprise/**/*.test.ts",
       "scripts/**/*.test.mjs",
+      "scripts/**/*.test.ts",
     ],
     setupFiles: ["server/testing/setup.ts"],
     // the suite spawns fake provider CLIs and a real harness server;
@@ -52,6 +55,10 @@ export default defineConfig({
     // talks to /api — clients hold no transports
     proxy: {
       "/api": {
+        ws: true,
+        target: `http://127.0.0.1:${process.env.OMB_PORT || process.env.OGB_PORT || 8799}`,
+      },
+      "/.well-known/openmausbot/environment": {
         target: `http://127.0.0.1:${process.env.OMB_PORT || process.env.OGB_PORT || 8799}`,
       },
     },

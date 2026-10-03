@@ -13,8 +13,8 @@ struct TasksRoutinesView: View {
         List {
             Section {
                 VStack(alignment: .leading, spacing: 8) {
-                    Label("Task = one conversation and result", systemImage: "bubble.left.and.text.bubble.right")
-                    Label("Routine = a schedule that creates a fresh task", systemImage: "calendar.badge.clock")
+                    Label("Thread = one conversation and result", systemImage: "bubble.left.and.text.bubble.right")
+                    Label("Routine = scheduled work with one results thread", systemImage: "calendar.badge.clock")
                 }
                 .font(.subheadline)
             } footer: {
@@ -23,7 +23,7 @@ struct TasksRoutinesView: View {
 
             Section("Routines") {
                 if routines.isEmpty && !loading {
-                    ContentUnavailableView("No routines", systemImage: "calendar.badge.plus", description: Text("Schedule recurring or one-time agent work."))
+                    EmptyStateView("No routines", systemImage: "calendar.badge.plus", description: Text("Schedule recurring or one-time agent work."))
                 }
                 ForEach(routines) { routine in
                     let canToggle = routine.canToggle()
@@ -74,7 +74,7 @@ struct TasksRoutinesView: View {
                 Text("Creating or rotating a webhook changes an internet-reachable trigger and signing secret, so webhook management remains on the paired computer. Webhook run receipts still appear above.")
             }
         }
-        .navigationTitle("Tasks & Routines")
+        .navigationTitle("Threads & Routines")
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
                 Button("New routine", systemImage: "plus") { editor = .new }
@@ -140,7 +140,9 @@ private struct RoutineRow: View {
             else { Image(systemName: "calendar.badge.exclamationmark").frame(width: 42, height: 42) }
             VStack(alignment: .leading, spacing: 3) {
                 Text(routine.name).font(.headline)
-                Text("\(bot?.name ?? "Deleted agent") · \(routine.schedule.summary) · \(routine.runLocation.label)")
+                ((bot.map { Text(verbatim: $0.name) } ?? Text("Deleted agent"))
+                    + Text(verbatim: " · \(routine.schedule.summary) · ")
+                    + Text(LocalizedStringKey(routine.runLocation.label)))
                     .font(.caption).foregroundStyle(.secondary).lineLimit(2)
             }
             Spacer()
@@ -163,10 +165,10 @@ private struct RoutineRunRow: View {
             VStack(alignment: .leading, spacing: 8) {
                 if let output = run.output, !output.isEmpty { Text(output).textSelection(.enabled) }
                 if let error = run.error, !error.isEmpty { Text(error).foregroundStyle(.red).textSelection(.enabled) }
-                if run.status == "waiting" { Text("This task is waiting for your answer.").foregroundStyle(.orange) }
+                if run.status == "waiting" { Text("This thread is waiting for your answer.").foregroundStyle(.orange) }
                 if let threadId = run.threadId,
                    let target = NotificationTarget(botId: run.botId, threadId: threadId) {
-                    Button("Open task", systemImage: "arrow.up.right.square") {
+                    Button("Open thread", systemImage: "arrow.up.right.square") {
                         Task { await session.openNotification(target) }
                     }
                 }
@@ -177,7 +179,8 @@ private struct RoutineRunRow: View {
                 Image(systemName: run.status.symbol).foregroundStyle(run.status.tint)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(run.routineName)
-                    Text("\(bot?.name ?? "Deleted agent") · \(Date(timeIntervalSince1970: run.scheduledFor / 1_000).formatted(date: .abbreviated, time: .shortened))")
+                    ((bot.map { Text(verbatim: $0.name) } ?? Text("Deleted agent"))
+                        + Text(verbatim: " · \(Date(timeIntervalSince1970: run.scheduledFor / 1_000).formatted(date: .abbreviated, time: .shortened))"))
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 Spacer()
@@ -258,7 +261,7 @@ private struct RoutineEditorView: View {
                             .tag(RoutineRunLocation.maus)
                         Label("Cloud VM", systemImage: "cloud")
                             .tag(RoutineRunLocation.cloud)
-                            .selectionDisabled(!cloudSelectable)
+                            .rowSelectionDisabled(!cloudSelectable)
                     }
                     .pickerStyle(.inline)
 
@@ -274,9 +277,9 @@ private struct RoutineEditorView: View {
                     if runOn == .maus {
                         Text("Uses this agent's selected model and computer setting on the paired computer.")
                     } else if runAvailability?.cloudReady == true {
-                        Text("Runs the agent and its tools inside its Box virtual machine. The VM wakes automatically for each run; keep OpenMausBot running so its scheduler can launch the job.")
+                        Text("Runs the agent and its tools inside its Boat virtual machine. The VM wakes automatically for each run; keep OpenMausBot running so its scheduler can launch the job.")
                     } else {
-                        Text("This existing Cloud VM choice is preserved, but it cannot run until the paired computer has a configured Box API key and an available Box agent.")
+                        Text("This existing Cloud VM choice is preserved, but it cannot run until the paired computer has a configured Boat API key and an available Boat agent.")
                     }
                 }
 
@@ -284,7 +287,7 @@ private struct RoutineEditorView: View {
                     Picker("Repeats", selection: $kind) {
                         if kind == .unknown {
                             Text("Newer schedule").tag(RoutineSchedule.Kind.unknown)
-                                .selectionDisabled()
+                                .rowSelectionDisabled()
                         }
                         Text("One time").tag(RoutineSchedule.Kind.once)
                         Text("Selected days").tag(RoutineSchedule.Kind.daily)
@@ -362,9 +365,9 @@ private struct RoutineEditorView: View {
                     Text("Schedule")
                 } footer: {
                     if kind == .interval {
-                        Text("Each occurrence creates a fresh task. If the previous run is still active, the next occurrence is skipped instead of queued.")
+                        Text("Each occurrence starts with fresh context. Results collect in one thread, and full run logs remain available. If the previous run is still active, the next occurrence is skipped instead of queued.")
                     } else {
-                        Text("Each occurrence creates a fresh task. No cron syntax is used.")
+                        Text("Each occurrence starts with fresh context. Results collect in one thread, and full run logs remain available. No cron syntax is used.")
                     }
                 }
 
@@ -377,7 +380,7 @@ private struct RoutineEditorView: View {
                             }
                         }
                     } label: {
-                        Text("Advanced · \(timeoutMinutes.map { "\(Self.durationLabel($0)) run limit" } ?? "no run limit")")
+                        timeoutMinutes.map { Text("Advanced · \(Self.durationLabel($0)) run limit") } ?? Text("Advanced · no run limit")
                     }
                 } footer: {
                     if advancedExpanded {
@@ -402,7 +405,7 @@ private struct RoutineEditorView: View {
                 }
             }
             .onAppear { if botId.isEmpty { botId = session.state.bots.first(where: { $0.hidden != true })?.id ?? "" } }
-            .onChange(of: kind) { _, nextKind in
+            .onValueChange(of: kind) { nextKind in
                 guard nextKind == .interval, !intervalTimeoutDefaultApplied else { return }
                 timeoutMinutes = timeoutMinutes ?? 30
                 intervalTimeoutDefaultApplied = true

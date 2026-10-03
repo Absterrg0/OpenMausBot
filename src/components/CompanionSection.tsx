@@ -1,4 +1,5 @@
-import { useRef } from "react";
+import { useEffect, useRef } from "react";
+import { t } from "@/lib/i18n";
 import {
   Cloud,
   Loader2,
@@ -19,9 +20,11 @@ import {
   usePhoneSetupController,
 } from "./PhoneSetupFlow";
 import { companionPairingMode } from "../lib/phone-setup";
+import { revealPhonePairing } from "../lib/phone-pairing";
 import { ConnectionDetail } from "./ConnectionDetail";
 import { Card, Switch } from "./SettingsPrimitives";
 import { brand } from "../lib/brand";
+import { useStore } from "@/state/store";
 
 export {
   companionAccountActionError,
@@ -48,35 +51,35 @@ export function deriveTailscalePairingStatus(
   if (state.error) {
     return {
       kind: "error",
-      title: "Phone access needs attention",
+      title: t("remote.status.attention"),
       detail: state.error,
     };
   }
   if (routeAvailable && state.tailnetName) {
     return {
       kind: "ready",
-      title: `Ready on ${state.tailnetName}`,
-      detail: "Keep Tailscale connected on this computer and your phone while they pair.",
+      title: t("remote.tailscale.ready", { name: state.tailnetName }),
+      detail: t("remote.tailscale.readyDetail"),
     };
   }
   if (state.tailscale) {
     return {
       kind: "magicdns",
-      title: "Tailscale found — MagicDNS is still needed",
-      detail: "Turn on MagicDNS in Tailscale, then check again so the iPhone gets a secure tailnet name.",
+      title: t("remote.tailscale.magicDns"),
+      detail: t("remote.tailscale.magicDnsDetail"),
     };
   }
   if (state.enabled) {
     return {
       kind: "unavailable",
-      title: "Tailscale is not connected yet",
-      detail: "Open Tailscale on both devices, sign in to the same tailnet, then check again.",
+      title: t("remote.tailscale.notConnected"),
+      detail: t("remote.tailscale.notConnectedDetail"),
     };
   }
   return {
     kind: "unchecked",
-    title: "Already use Tailscale?",
-    detail: "Connect both devices to the same tailnet. Checking turns on Phone access so your phone can reach this computer.",
+    title: t("remote.tailscale.already"),
+    detail: t("remote.tailscale.alreadyDetail"),
   };
 }
 
@@ -85,43 +88,43 @@ export function pairingSurfaceCopy(
 ): { title: string; subtitle: string } {
   if (route.tailscaleFallback) {
     return {
-      title: "Tailscale pairing",
-      subtitle: "Private pairing through the tailnet shared by this computer and your phone.",
+      title: t("remote.pairing.tailscale.title"),
+      subtitle: t("remote.pairing.tailscale.subtitle"),
     };
   }
   if (route.localFallback) {
     return {
-      title: "Direct Wi-Fi pairing",
-      subtitle: "Use only on a trusted network where both devices can see each other.",
+      title: t("remote.pairing.wifi.title"),
+      subtitle: t("remote.pairing.wifi.subtitle"),
     };
   }
   return {
-    title: "Secure HTTPS pairing",
-    subtitle: "Recommended — the simplest setup, and it keeps working when your phone leaves this Wi-Fi.",
+    title: t("remote.pairing.https.title"),
+    subtitle: t("remote.pairing.https.subtitle"),
   };
 }
 
 export function deriveCompanionPanelStatus(
   state: Pick<CompanionState, "enabled" | "devices" | "error">,
 ): CompanionPanelStatus | null {
-  if (state.error) return { label: "Phone access needs attention", good: false };
-  if (!state.enabled) return { label: "Phone access off", good: false };
+  if (state.error) return { label: t("remote.status.attention"), good: false };
+  if (!state.enabled) return { label: t("remote.status.off"), good: false };
   const pairedCount = state.devices.length;
   if (!pairedCount) return null;
   return {
-    label: `${pairedCount} ${pairedCount === 1 ? "phone" : "phones"} paired`,
+    label: `${pairedCount} ${pairedCount === 1 ? "device" : "devices"} paired`,
     good: true,
   };
 }
 
 const relative = (at: number) => {
   const seconds = Math.round((Date.now() - at) / 1000);
-  if (seconds < 90) return "just now";
+  if (seconds < 90) return t("remote.time.justNow");
   const minutes = Math.round(seconds / 60);
-  if (minutes < 60) return `${minutes} min ago`;
+  if (minutes < 60) return t("remote.time.minutes", { count: minutes });
   const hours = Math.round(minutes / 60);
-  if (hours < 24) return `${hours} h ago`;
-  return `${Math.round(hours / 24)} d ago`;
+  if (hours < 24) return t("remote.time.hours", { count: hours });
+  return t("remote.time.days", { count: Math.round(hours / 24) });
 };
 
 const endpointHost = (url: string): string => {
@@ -132,23 +135,38 @@ const endpointHost = (url: string): string => {
   }
 };
 
-export function CompanionSection({ profileEmail = "" }: { profileEmail?: string }) {
+/** `focusRequest` counts up when "Connect your phone" opened Settings here:
+ * the phone flow scrolls into view with focus on Pair your phone. */
+export function CompanionSection({ profileEmail = "", focusRequest = 0 }: { profileEmail?: string; focusRequest?: number }) {
   const c = usePhoneSetupController(profileEmail);
   const state = c.state;
   const pairingFlow = useRef<HTMLDivElement>(null);
+  const revealed = useRef(0);
+  const loaded = Boolean(state);
+  // The flow is drawn once the companion's state is read; reveal it then,
+  // once per request. Any other Settings navigation ends the request (0).
+  useEffect(() => {
+    if (!focusRequest) revealed.current = 0;
+    else if (revealed.current !== focusRequest && revealPhonePairing(pairingFlow.current)) revealed.current = focusRequest;
+  }, [focusRequest, loaded]);
+  // An enrolled organisation can turn remote access off; the desktop refuses
+  // new pairing and turning the companion on. Existing devices are listed as before.
+  const managedPolicy = useStore().state.config?.managedPolicy;
+  const remoteBlocked = managedPolicy?.remoteAccess === false ? t("policy.remoteBlocked", { organization: managedPolicy.organizationName }) : null;
+  const managedBy = managedPolicy?.remoteAccess === false ? t("policy.managedBy", { organization: managedPolicy.organizationName }) : null;
 
   if (!companionBridge()) {
     return (
       <Card
-        title={`Use ${brand().name} from your phone`}
-        subtitle={`Open Settings in the ${brand().name} desktop app to set up a phone.`}
+        title={t("remote.desktopOnly.title", { app: brand().name })}
+        subtitle={t("remote.desktopOnly.subtitle")}
       />
     );
   }
 
   if (!state) {
     return (
-      <Card title="Phone" subtitle="Checking phone access…">
+      <Card title={t("remote.title")} subtitle={t("remote.checking")}>
         <Loader2 size={15} className="animate-spin text-ink-secondary" />
       </Card>
     );
@@ -162,18 +180,22 @@ export function CompanionSection({ profileEmail = "" }: { profileEmail?: string 
   const hosted = state.endpoints?.find((endpoint) => endpoint.kind === "hosted");
   const localRoutes = [
     state.tailnetName ? { label: "Tailscale", value: `${state.tailnetName}:${state.port}` } : null,
-    state.lan ? { label: "Wi-Fi", value: `${state.lan}:${state.port}` } : null,
+    state.lan ? { label: t("remote.connection.wifi"), value: `${state.lan}:${state.port}` } : null,
     state.discovery?.name
-      ? { label: "Nearby discovery", value: `${state.discovery.name}:${state.port}` }
+      ? { label: t("remote.connection.discovery"), value: `${state.discovery.name}:${state.port}` }
       : null,
     ...(state.addresses ?? [])
       .filter((address) => address !== state.lan && address !== state.tailscale)
-      .map((address, index) => ({ label: `Local route ${index + 1}`, value: `${address}:${state.port}` })),
+      .map((address, index) => ({
+        label: t("remote.connection.localRoute", { index: index + 1 }),
+        value: `${address}:${state.port}`,
+      })),
   ].filter((route): route is { label: string; value: string } => Boolean(route));
 
   return (
     <div className="flex flex-col gap-4">
-      <div ref={pairingFlow} tabIndex={-1} className="scroll-mt-4 focus:outline-none">
+      {remoteBlocked && <p role="status" className="text-[13px] leading-relaxed text-ink-secondary">{remoteBlocked}</p>}
+      <div ref={pairingFlow} tabIndex={-1} data-phone-pairing="computer" className="scroll-mt-4 rounded-xl ring-1 ring-accent/40 focus:outline-none">
         <Card title={pairingCopy.title} subtitle={pairingCopy.subtitle}>
           {(panelStatus || (pairedCount > 0 && c.hostedReady)) && (
             <div className="mb-4 flex items-center justify-between gap-3">
@@ -189,7 +211,7 @@ export function CompanionSection({ profileEmail = "" }: { profileEmail?: string 
               )}
               {pairedCount > 0 && c.hostedReady && (
                 <div className="flex items-center gap-1.5 text-[11.5px] text-ink-secondary">
-                  <ShieldCheck size={13} className="text-accent" /> Works away from home
+                  <ShieldCheck size={13} className="text-accent" /> {t("remote.worksAway")}
                 </div>
               )}
             </div>
@@ -198,126 +220,130 @@ export function CompanionSection({ profileEmail = "" }: { profileEmail?: string 
         </Card>
       </div>
 
-      <Card
-        title="Tailscale pairing"
-        subtitle="Optional — for people who already use Tailscale. Secure HTTPS above remains the recommended setup."
-      >
-        <div className="rounded-xl bg-inset px-3 py-3" aria-live="polite">
-          <div className="flex items-start gap-2.5">
-            <ShieldCheck
-              size={16}
-              className={`mt-0.5 shrink-0 ${tailscaleStatus.kind === "ready" ? "text-success" : "text-ink-secondary"}`}
-            />
-            <div className="min-w-0">
-              <div className="text-[13px] font-medium text-ink">{tailscaleStatus.title}</div>
-              <div className="mt-0.5 text-[11.5px] leading-relaxed text-ink-secondary">
-                {tailscaleStatus.detail}
-              </div>
-            </div>
-          </div>
-        </div>
-        {tailscaleStatus.kind === "ready" ? (
-          <button
-            disabled={c.busy || c.accountBusy}
-            onClick={() => {
-              c.useTailscale();
-              window.requestAnimationFrame(() => {
-                pairingFlow.current?.scrollIntoView({ block: "start" });
-                pairingFlow.current?.focus({ preventScroll: true });
-              });
-            }}
-            className="mt-3 rounded-lg border border-hairline/40 px-3 py-1.5 text-[12px] text-ink hover:bg-control disabled:opacity-40"
-          >
-            Pair over Tailscale
-          </button>
-        ) : (
-          <button
-            disabled={c.busy || c.accountBusy}
-            onClick={c.refreshTailscale}
-            className="mt-3 rounded-lg border border-hairline/40 px-3 py-1.5 text-[12px] text-ink hover:bg-control disabled:opacity-40"
-          >
-            {c.busy ? "Checking…" : state.enabled ? "Check again" : "Turn on phone access & check"}
-          </button>
-        )}
-      </Card>
-
-      <Card
-        title="Paired phones"
-        subtitle={pairedCount ? `Manage the phones that can use this ${brand().name}.` : "No phones are paired yet."}
-      >
-        {pairedCount > 0 && (
-          <ul className="flex flex-col gap-2">
-            {state.devices.map((device) => (
-              <li key={device.id} className="rounded-xl bg-inset px-3 py-3">
-                <div className="flex items-center gap-3">
-                  <div className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-control text-ink-secondary">
-                    <Smartphone size={15} />
-                  </div>
-                  <div className="min-w-0 flex-1">
-                    <div className="truncate text-[13.5px] font-medium text-ink">{device.name}</div>
-                    <div className="text-[11.5px] text-ink-secondary">Last seen {relative(device.lastSeenAt)}</div>
-                  </div>
-                  <button
-                    disabled={c.busy}
-                    onClick={() => void c.act((companion) => companion.revoke(device.id))}
-                    aria-label={`Remove ${device.name}`}
-                    className="shrink-0 rounded p-1.5 text-ink-secondary hover:bg-control hover:text-danger disabled:opacity-40"
-                  >
-                    <Trash2 size={14} />
-                  </button>
-                </div>
-                <div className="mt-3 flex items-center justify-between gap-3 border-t border-hairline/30 pt-3">
-                  <div>
-                    <div className="text-[12px] text-ink">Allow computer view</div>
-                    <div className="mt-0.5 text-[11px] text-ink-secondary">Full interactive access from this phone.</div>
-                  </div>
-                  <Switch
-                    checked={device.cloudDesktopAccess}
-                    aria-label={`Computer view access for ${device.name}`}
-                    disabled={c.busy}
-                    onClick={() =>
-                      void c.act((companion) =>
-                        companion.cloudDesktop(device.id, !device.cloudDesktopAccess),
-                      )
-                    }
-                  />
-                </div>
-              </li>
-            ))}
-          </ul>
-        )}
-      </Card>
-
       <details className="rounded-xl border border-hairline/40 bg-card">
         <summary className="cursor-pointer px-4 py-3.5 text-[13px] font-medium text-ink">
-          Advanced & troubleshooting
+          {t("remote.advanced")}
         </summary>
         <div className="flex flex-col gap-4 border-t border-hairline/30 px-4 py-4">
           <div className="flex items-center justify-between gap-4">
             <div className="min-w-0">
-              <div className="text-[13px] text-ink">Phone access</div>
+              <div className="text-[13px] text-ink">{t("remote.title")}</div>
               <div className="mt-0.5 text-[11.5px] leading-relaxed text-ink-secondary">
-                Turn off all phone connections to this computer.
+                {t("remote.toggleDetail")}
               </div>
             </div>
             <Switch
               checked={state.enabled}
-              aria-label="Phone access"
-              disabled={c.busy}
+              aria-label={t("remote.title")}
+              disabled={c.busy || (Boolean(remoteBlocked) && !state.enabled)}
               onClick={() => void c.act((companion) => (state.enabled ? companion.stop() : companion.start()))}
             />
           </div>
 
+          <div className="border-t border-hairline/30 pt-4">
+            <div className="text-[13px] text-ink">{t("remote.devices.title")}</div>
+            <div className="mt-0.5 text-[11.5px] leading-relaxed text-ink-secondary">{pairedCount ? t("remote.devices.subtitle", { app: brand().name }) : t("remote.devices.empty")}</div>
+            <div className="mt-3">
+              {pairedCount > 0 && (
+                <ul className="flex flex-col gap-2">
+                  {state.devices.map((device) => (
+                    <li key={device.id} className="rounded-xl bg-inset px-3 py-3">
+                      <div className="flex items-center gap-3">
+                        <div className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-control text-ink-secondary">
+                          <Smartphone size={15} />
+                        </div>
+                        <div className="min-w-0 flex-1">
+                          <div className="truncate text-[13.5px] font-medium text-ink">{device.name}</div>
+                          <div className="text-[11.5px] text-ink-secondary">{t("remote.devices.lastSeen", { when: relative(device.lastSeenAt) })}</div>
+                        </div>
+                        <button
+                          disabled={c.busy}
+                          onClick={() => void c.act((companion) => companion.revoke(device.id))}
+                          aria-label={t("remote.devices.remove", { name: device.name })}
+                          className="shrink-0 rounded p-1.5 text-ink-secondary hover:bg-control hover:text-danger disabled:opacity-40"
+                        >
+                          <Trash2 size={14} />
+                        </button>
+                      </div>
+                      <div className="mt-3 flex items-center justify-between gap-3 border-t border-hairline/30 pt-3">
+                        <div>
+                          <div className="text-[12px] text-ink">{t("remote.devices.allowView")}</div>
+                          <div className="mt-0.5 text-[11px] text-ink-secondary">{t("remote.devices.allowViewDetail")}</div>
+                        </div>
+                        <Switch
+                          checked={device.cloudDesktopAccess}
+                          aria-label={t("remote.devices.viewAria", { name: device.name })}
+                          disabled={c.busy}
+                          onClick={() =>
+                            void c.act((companion) =>
+                              companion.cloudDesktop(device.id, !device.cloudDesktopAccess),
+                            )
+                          }
+                        />
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          </div>
+
+          <div className="border-t border-hairline/30 pt-4">
+            <div className="text-[13px] text-ink">{t("remote.pairing.tailscale.title")}</div>
+            <div className="mt-0.5 text-[11.5px] leading-relaxed text-ink-secondary">{t("remote.tailscaleCard.subtitle")}</div>
+            <div className="mt-3">
+              <div className="rounded-xl bg-inset px-3 py-3" aria-live="polite">
+                <div className="flex items-start gap-2.5">
+                  <ShieldCheck
+                    size={16}
+                    className={`mt-0.5 shrink-0 ${tailscaleStatus.kind === "ready" ? "text-success" : "text-ink-secondary"}`}
+                  />
+                  <div className="min-w-0">
+                    <div className="text-[13px] font-medium text-ink">{tailscaleStatus.title}</div>
+                    <div className="mt-0.5 text-[11.5px] leading-relaxed text-ink-secondary">
+                      {tailscaleStatus.detail}
+                    </div>
+                  </div>
+            </div>
+          </div>
+          {tailscaleStatus.kind === "ready" ? (
+            <button
+              disabled={c.busy || c.accountBusy || Boolean(managedBy)}
+              title={managedBy ?? undefined}
+              onClick={() => {
+                c.useTailscale();
+                window.requestAnimationFrame(() => {
+                  pairingFlow.current?.scrollIntoView({ block: "start" });
+                  pairingFlow.current?.focus({ preventScroll: true });
+                });
+              }}
+              className="mt-3 rounded-lg border border-hairline/40 px-3 py-1.5 text-[12px] text-ink hover:bg-control disabled:opacity-40"
+            >
+              {t("remote.pairOverTailscale")}
+            </button>
+          ) : (
+            <button
+              disabled={c.busy || c.accountBusy || (Boolean(managedBy) && !state.enabled)}
+              title={managedBy ?? undefined}
+              onClick={c.refreshTailscale}
+              className="mt-3 rounded-lg border border-hairline/40 px-3 py-1.5 text-[12px] text-ink hover:bg-control disabled:opacity-40"
+            >
+              {c.busy ? t("common.checking") : managedBy && !state.enabled ? managedBy : state.enabled ? t("remote.checkAgain") : t("remote.turnOnAndCheck")}
+            </button>
+          )}
+            </div>
+          </div>
+
           <div className="flex items-center justify-between gap-4 border-t border-hairline/30 pt-4">
             <div className="min-w-0">
-              <div className="text-[13px] text-ink">Keep this computer awake</div>
+              <div className="text-[13px] text-ink">{t("remote.keepAwake")}</div>
               <div className="mt-0.5 text-[11.5px] leading-relaxed text-ink-secondary">
-                Keeps phone access and scheduled work available while the screen is off.
+                {t("remote.keepAwakeDetail")}
               </div>
             </div>
             <Switch
               checked={state.keepAwake}
-              aria-label="Keep this computer awake while Phone access is on"
+              aria-label={t("remote.keepAwakeAria")}
               disabled={c.busy || !state.enabled}
               onClick={() => void c.act((companion) => companion.keepAwake(!state.keepAwake))}
             />
@@ -328,15 +354,17 @@ export function CompanionSection({ profileEmail = "" }: { profileEmail?: string 
               <div className="flex min-w-0 items-start gap-2.5">
                 <Cloud size={15} className="mt-0.5 shrink-0 text-accent" />
                 <div className="min-w-0">
-                  <div className="text-[13px] text-ink">Secure phone account</div>
+                  <div className="text-[13px] text-ink">{t("remote.account.title")}</div>
                   <div className="mt-0.5 text-[11.5px] leading-relaxed text-ink-secondary">
                     {c.account?.status === "ready"
-                      ? `Signed in as ${c.account.email ?? "your account"}.`
+                      ? t("remote.account.signedIn", {
+                          email: c.account.email ?? t("remote.account.yourAccount"),
+                        })
                       : c.account?.status === "connecting"
-                        ? "Finishing secure access…"
+                        ? t("remote.account.connecting")
                         : c.account?.status === "error"
-                          ? c.account.message ?? "Secure access needs attention."
-                          : "You’ll be asked to sign in when you pair a phone."}
+                          ? c.account.message ?? t("remote.account.error")
+                          : t("remote.account.idle")}
                   </div>
                 </div>
               </div>
@@ -346,7 +374,7 @@ export function CompanionSection({ profileEmail = "" }: { profileEmail?: string 
                   onClick={() => void c.accountAct((remote) => remote.signOut())}
                   className="flex shrink-0 items-center gap-1.5 rounded-lg border border-hairline/40 px-2.5 py-1.5 text-[11.5px] text-ink-secondary hover:bg-control hover:text-ink disabled:opacity-40"
                 >
-                  <LogOut size={12} /> Sign out
+                  <LogOut size={12} /> {t("remote.account.signOut")}
                 </button>
               )}
             </div>
@@ -356,22 +384,22 @@ export function CompanionSection({ profileEmail = "" }: { profileEmail?: string 
                 onClick={c.retryAccount}
                 className="mt-3 rounded-lg border border-hairline/40 px-3 py-1.5 text-[12px] text-ink hover:bg-control disabled:opacity-40"
               >
-                {c.accountBusy ? "Trying again…" : "Retry secure access"}
+                {c.accountBusy ? t("remote.account.retrying") : t("remote.account.retry")}
               </button>
             )}
             {accountActionError && <div className="mt-2 text-[12px] text-danger">{accountActionError}</div>}
           </div>
 
           <div className="border-t border-hairline/30 pt-4">
-            <div className="text-[13px] text-ink">Connection details</div>
+            <div className="text-[13px] text-ink">{t("remote.connection.title")}</div>
             <div className="mt-0.5 text-[11.5px] text-ink-secondary">
-              Reveal or copy an address only when troubleshooting manual pairing.
+              {t("remote.connection.detail")}
             </div>
             <div className="mt-3 flex flex-col gap-2">
-              {hosted && <ConnectionDetail label="Secure route" value={endpointHost(hosted.url)} />}
+              {hosted && <ConnectionDetail label={t("remote.connection.secureRoute")} value={endpointHost(hosted.url)} />}
               {localRoutes.map((route) => <ConnectionDetail key={`${route.label}:${route.value}`} {...route} />)}
               {!hosted && localRoutes.length === 0 && (
-                <div className="text-[12px] text-ink-secondary">No reachable address is available yet.</div>
+                <div className="text-[12px] text-ink-secondary">{t("remote.connection.none")}</div>
               )}
             </div>
           </div>
@@ -380,9 +408,9 @@ export function CompanionSection({ profileEmail = "" }: { profileEmail?: string 
             <div className="flex items-start gap-2.5">
               <Wifi size={15} className="mt-0.5 shrink-0 text-ink-secondary" />
               <div>
-                <div className="text-[13px] text-ink">Direct Wi-Fi pairing</div>
+                <div className="text-[13px] text-ink">{t("remote.pairing.wifi.title")}</div>
                 <div className="mt-0.5 text-[11.5px] leading-relaxed text-ink-secondary">
-                  Use this only when both devices are nearby and the network allows devices to see each other.
+                  {t("remote.wifi.detail")}
                 </div>
               </div>
             </div>
@@ -391,13 +419,13 @@ export function CompanionSection({ profileEmail = "" }: { profileEmail?: string 
               onClick={c.useLocal}
               className="mt-3 rounded-lg border border-hairline/40 px-3 py-1.5 text-[12px] text-ink hover:bg-control disabled:opacity-40"
             >
-              Pair on this Wi-Fi
+              {t("remote.wifi.pair")}
             </button>
           </div>
 
           {state.enabled && !hosted && !state.tailscale && (
             <div className="rounded-lg bg-inset px-3 py-2 text-[11.5px] leading-relaxed text-ink-secondary">
-              Without secure phone access or Tailscale, this computer is reachable only on a compatible local network.
+              {t("remote.localOnly")}
             </div>
           )}
           {(c.error || state.error) && <div className="text-[12px] text-danger">{c.error ?? state.error}</div>}

@@ -16,6 +16,7 @@ export function SecretRequestCard({
 }) {
   const { dispatch } = useStore();
   const secret = message.secret!;
+  const remoteClient = window.ogb?.remoteClient?.active === true;
   const [value, setValue] = useState("");
   const [saving, setSaving] = useState(false);
   const [savedLocally, setSavedLocally] = useState(false);
@@ -25,7 +26,11 @@ export function SecretRequestCard({
   const outcome = credentialResumeOutcome(secret);
   const provided = outcome === "provided";
   const declined = outcome === "dismissed";
-  const description = provided
+  const superseded = secret.superseded === true;
+  const pending = !provided && !declined && !superseded;
+  const description = superseded
+    ? "This request was replaced by a newer one for the same key. Use the newest card to provide it."
+    : provided
     ? secret.resumed
       ? "Saved securely. Your bot is continuing the task."
       : "Saved securely. Your bot will continue when its current turn settles."
@@ -115,18 +120,23 @@ export function SecretRequestCard({
                   <Check size={11} /> Saved
                 </span>
               )}
+              {superseded && (
+                <span className="rounded-full bg-warning/15 px-2 py-0.5 text-[11px] font-medium text-warning">
+                  Superseded
+                </span>
+              )}
             </div>
             <p className="mt-0.5 text-[12.5px] leading-relaxed text-ink-secondary">
               {description}
             </p>
-            {!provided && !declined && (
-              <p className="mt-1 flex items-center gap-1 text-[11.5px] text-ink-secondary/80">
+            {pending && (
+              <p className="mt-1 flex items-center gap-1 text-[11.5px] text-ink-tertiary">
                 <LockKeyhole size={11} /> Stored securely by OpenMausBot and never added to chat.
               </p>
             )}
             {error && <p role="alert" className="mt-2 text-[12px] text-danger">{error}</p>}
           </div>
-          {!provided && !declined && (
+          {pending && (
             <button
               onClick={dismiss}
               aria-label="Not now"
@@ -137,7 +147,12 @@ export function SecretRequestCard({
             </button>
           )}
         </div>
-        {!provided && !declined && (
+        {remoteClient && pending && (
+          <div className="border-t border-hairline/40 bg-panel/40 px-4 py-3 text-[12.5px] leading-relaxed text-ink-secondary">
+            This key must be saved on the host computer. Open this conversation on the host to continue securely.
+          </div>
+        )}
+        {!remoteClient && pending && (
           <form onSubmit={(event) => void save(event)} className="border-t border-hairline/40 bg-panel/40 px-4 py-3">
             <div className="flex gap-2">
               <input
@@ -149,7 +164,7 @@ export function SecretRequestCard({
                 placeholder={secret.placeholder}
                 disabled={saving || savedLocally}
                 aria-label={secret.label}
-                className="min-w-0 flex-1 rounded-lg border border-hairline bg-inset px-3 py-2 text-[13px] text-ink outline-none placeholder:text-ink-secondary/60 focus:border-accent disabled:opacity-60"
+                className="min-w-0 flex-1 rounded-lg border border-hairline bg-inset px-3 py-2 text-[13px] text-ink outline-none placeholder:text-ink-tertiary focus:border-accent disabled:opacity-60"
               />
               <button
                 type="submit"
@@ -188,6 +203,13 @@ export function SecretRequestCard({
                 {saving ? <Loader2 size={12} className="animate-spin" /> : <RefreshCw size={12} />} Try again
               </button>
             )}
+          </div>
+        )}
+        {superseded && (
+          <div className="flex items-center border-t border-hairline/40 bg-panel/40 px-4 py-2.5 text-[11.5px] text-ink-secondary">
+            <span className="flex items-center gap-1.5">
+              <X size={12} /> Superseded by a newer request
+            </span>
           </div>
         )}
       </div>

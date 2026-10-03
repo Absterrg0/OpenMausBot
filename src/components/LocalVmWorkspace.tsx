@@ -82,19 +82,14 @@ function bestEffortRelease(botId: string, controlLeaseId: string) {
     keepalive: true,
   }).then(async (response) => {
     if (!response.ok) return;
-    const snapshot = await response.json().catch(() => null);
     // The server lease is the source of truth; only clear Electron after the
     // workspace-owned release was actually accepted.
-    if (snapshot?.held === false) {
-      await window.ogb?.browser?.setHumanControl?.(botId, false).catch(() => {});
-    }
   }).catch(() => {});
 }
 
-async function setNativeBrowserControl(botId: string, held: boolean): Promise<boolean> {
-  const setter = window.ogb?.browser?.setHumanControl;
-  if (!setter) return true;
-  return (await setter(botId, held)) === true;
+async function setNativeBrowserControl(_botId: string, _held: boolean): Promise<boolean> {
+  // The engine owns its browser; there is no native surface to hold.
+  return true;
 }
 
 function dispatchControl(
@@ -274,6 +269,23 @@ function LocalVmPane({
   });
   const [error, setError] = useState<string | null>(null);
 
+  // The open flow below reads status once per selection, but a ready desktop
+  // can still be stopped or reaped server-side; every later re-check writes
+  // through this same sanitized setStatus path.
+  const refreshStatus = useCallback(async (signal?: AbortSignal) => {
+    if (!botId) return;
+    try {
+      const raw = await api(`/api/bots/${botId}/local-computer`, { signal });
+      if (!signal?.aborted) setStatus(sanitizeLocalVmWorkspaceStatus(raw));
+    } catch {
+      /* transient read; the slow interval or Retry re-checks */
+    }
+  }, [botId]);
+  const refreshStatusRef = useRef(refreshStatus);
+  useEffect(() => {
+    refreshStatusRef.current = refreshStatus;
+  }, [refreshStatus]);
+
   useEffect(() => {
     obscuredRef.current = obscured;
   }, [obscured]);
@@ -281,7 +293,10 @@ function LocalVmPane({
   useEffect(() => {
     const bridge = window.ogb?.desktopWorkspace;
     return bridge?.onState((next) => {
-      if (next.contextId === contextId) setNativeState(next);
+      if (next.contextId !== contextId) return;
+      setNativeState(next);
+      // A dead native view may mean the VM itself went away; re-read it.
+      if (next.status === "error" || next.status === "closed") void refreshStatusRef.current();
     });
   }, [contextId]);
 
@@ -297,7 +312,7 @@ function LocalVmPane({
       if (bridge) await bridge.close(contextId).catch(() => {});
       if (!alive || !botId) return;
       if (!bridge) {
-        setError("The two-desktop workspace requires the OpenMausBot desktop app.");
+        setError("The two-desktop view requires the OpenMausBot desktop app.");
         return;
       }
       try {
@@ -364,6 +379,16 @@ function LocalVmPane({
       }
     };
   }, [botId, botName, contextId, retry]);
+
+  useEffect(() => {
+    if (!botId) return;
+    const controller = new AbortController();
+    const timer = window.setInterval(() => void refreshStatus(controller.signal), 30_000);
+    return () => {
+      controller.abort();
+      window.clearInterval(timer);
+    };
+  }, [botId, refreshStatus]);
 
   const updateLayout = useCallback(() => {
     const bridge = window.ogb?.desktopWorkspace;
@@ -571,7 +596,7 @@ export function LocalVmWorkspace({
       },
       async setInteractive(contextId) {
         const bridge = window.ogb?.desktopWorkspace;
-        if (!bridge) throw new Error("The desktop workspace bridge is unavailable");
+        if (!bridge) throw new Error("The two-desktop view bridge is unavailable");
         return bridge.setInteractive(contextId);
       },
     }),
@@ -659,7 +684,7 @@ export function LocalVmWorkspace({
       setControlledBotId(null);
       return true;
     } catch {
-      setControlError("OpenMausBot could not hand control back. The workspace stayed open.");
+      setControlError("OpenMausBot could not hand control back. The view stayed open.");
       return false;
     } finally {
       controlBusyRef.current = false;
@@ -716,7 +741,7 @@ export function LocalVmWorkspace({
   const selectSlot = useCallback(
     async (index: 0 | 1, botId: string | null) => {
       if (controlBusyRef.current) return;
-      const current = slots[index];
+      const current = slotsRef.current[index];
       if (current === botId) return;
       if (current && controlledBotIdRef.current === current) {
         const released = await handBack();
@@ -724,7 +749,7 @@ export function LocalVmWorkspace({
       }
       setSlots((existing) => selectLocalVmWorkspaceSlot(existing, index, botId));
     },
-    [handBack, slots],
+    [handBack],
   );
 
   const closeWorkspace = useCallback(async () => {
@@ -747,7 +772,7 @@ export function LocalVmWorkspace({
           <Monitor size={18} />
         </div>
         <div className="min-w-0 flex-1">
-          <h1 className="truncate text-[14px] font-semibold text-ink">Local VM workspace</h1>
+          <h1 className="truncate text-[14px] font-semibold text-ink">Local VM view</h1>
           <p className="truncate text-[11.5px] text-ink-secondary">
             Two live desktops · one active controller · watch-only by default
           </p>
@@ -757,7 +782,7 @@ export function LocalVmWorkspace({
           onClick={() => void closeWorkspace()}
           disabled={controlPending}
           className="rounded-md p-1.5 text-ink-secondary hover:bg-raised hover:text-ink disabled:opacity-50"
-          aria-label="Close Local VM workspace"
+          aria-label="Close Local VM view"
         >
           <X size={18} />
         </button>

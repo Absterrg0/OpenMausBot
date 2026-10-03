@@ -9,6 +9,8 @@ import { fileURLToPath } from "node:url";
 
 import { fromMarkdown } from "mdast-util-from-markdown";
 
+import { windowsPathDestinations } from "../shared/markdown-windows-paths.ts";
+
 export const MESSAGE_FILE_MAX_BYTES = 25 * 1024 * 1024;
 
 export interface OpenedMessageFile {
@@ -160,7 +162,7 @@ function renderedMarkdownTargets(markdown: string): string[] {
   const links: string[] = [];
   const references: string[] = [];
 
-  walkMarkdown(fromMarkdown(markdown), (node) => {
+  walkMarkdown(fromMarkdown(markdown, { mdastExtensions: [windowsPathDestinations] }), (node) => {
     if (node.type === "definition" && node.identifier && node.url) {
       if (!definitions.has(node.identifier)) definitions.set(node.identifier, node.url);
     } else if ((node.type === "link" || node.type === "image") && node.url) {
@@ -175,6 +177,29 @@ function renderedMarkdownTargets(markdown: string): string[] {
     if (target) links.push(target);
   }
   return links;
+}
+
+/** Resolve the local image authored at one Markdown source offset. The
+ * browser can use this small message-scoped reference instead of putting an
+ * absolute host path in a GET URL. Definitions are collected first because
+ * CommonMark permits them to appear after the image reference. */
+export function messageImageTargetAt(text: string, sourceOffset: number): string | null {
+  if (!Number.isSafeInteger(sourceOffset) || sourceOffset < 0) return null;
+  const definitions = new Map<string, string>();
+  let direct: string | null = null;
+  let reference: string | null = null;
+
+  walkMarkdown(fromMarkdown(text, { mdastExtensions: [windowsPathDestinations] }), (node) => {
+    if (node.type === "definition" && node.identifier && node.url) {
+      if (!definitions.has(node.identifier)) definitions.set(node.identifier, node.url);
+      return;
+    }
+    if (node.position?.start.offset !== sourceOffset) return;
+    if (node.type === "image" && node.url) direct = node.url;
+    else if (node.type === "imageReference" && node.identifier) reference = node.identifier;
+  });
+
+  return direct ?? (reference ? definitions.get(reference) ?? null : null);
 }
 
 /**
@@ -311,7 +336,7 @@ function containedBy(root: string, candidate: string): boolean {
   return suffix === "" || (suffix !== ".." && !suffix.startsWith(`..${sep}`) && !isAbsolute(suffix));
 }
 
-function mimeFor(path: string): string {
+export function mimeFor(path: string): string {
   switch (extname(path).toLowerCase()) {
     case ".md": return "text/markdown; charset=utf-8";
     case ".txt": return "text/plain; charset=utf-8";
@@ -325,6 +350,18 @@ function mimeFor(path: string): string {
     case ".jpeg": return "image/jpeg";
     case ".gif": return "image/gif";
     case ".webp": return "image/webp";
+    case ".mp4": return "video/mp4";
+    case ".m4v": return "video/x-m4v";
+    case ".webm": return "video/webm";
+    case ".mov": return "video/quicktime";
+    case ".mp3": return "audio/mpeg";
+    case ".m4a": return "audio/mp4";
+    case ".aac": return "audio/aac";
+    case ".wav": return "audio/wav";
+    case ".ogg":
+    case ".oga": return "audio/ogg";
+    case ".opus": return "audio/opus";
+    case ".flac": return "audio/flac";
     case ".doc": return "application/msword";
     case ".docx": return "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
     case ".xls": return "application/vnd.ms-excel";

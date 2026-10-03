@@ -8,12 +8,44 @@
  * app restart without asking the model to interpret the request again.
  */
 
+import type { RoutineCronSchedule } from "./routine-schedule.ts";
+
 export type RoutineRequestRunOn = "maus" | "cloud";
+
+export interface RoutineRequestIntervalWindow {
+  start: string;
+  end: string;
+}
 
 export type RoutineRequestSchedule =
   | { type: "once"; at: number }
   | { type: "daily"; time: string; weekdays: number[] }
-  | { type: "interval"; everyMinutes: number; anchorAt?: number };
+  | RoutineCronSchedule
+  | {
+    type: "interval";
+    everyMinutes: number;
+    anchorAt?: number;
+    /** Local weekdays (Sunday = 0). Missing means every day. */
+    weekdays?: number[];
+    /** Local wall-clock window. Missing means all day. */
+    window?: RoutineRequestIntervalWindow;
+    /** Inclusive epoch-millisecond cutoff. Missing means never. */
+    endsAt?: number;
+  };
+
+export type RoutineRequestScheduleChanges =
+  | Exclude<RoutineRequestSchedule, { type: "interval" }>
+  | {
+    type: "interval";
+    everyMinutes: number;
+    anchorAt?: number;
+    /** `null` explicitly restores the every-day default. */
+    weekdays?: number[] | null;
+    /** `null` explicitly restores the all-day default. */
+    window?: RoutineRequestIntervalWindow | null;
+    /** `null` explicitly removes an existing end date. */
+    endsAt?: number | null;
+  };
 
 export interface RoutineRequestDefinition {
   name: string;
@@ -24,16 +56,25 @@ export interface RoutineRequestDefinition {
   durationMinutes: number;
   /** Optional safety cap for active work. Missing means no timeout. */
   timeoutMinutes?: number;
+  /** Carry the previous run's report into the next run. */
+  continuity?: boolean;
+  /** Skip by default, or keep at most one scheduled run waiting. */
+  overlap?: "skip" | "queue";
 }
 
 export type RoutineRequestChanges =
-  & Omit<Partial<RoutineRequestDefinition>, "timeoutMinutes">
-  & { /** `null` removes an existing safety cap. */ timeoutMinutes?: number | null };
+  & Omit<Partial<RoutineRequestDefinition>, "schedule" | "timeoutMinutes">
+  & {
+    schedule?: RoutineRequestScheduleChanges;
+    /** `null` removes an existing safety cap. */
+    timeoutMinutes?: number | null;
+  };
 
-/** Another bot in the proposer's section that the routine is scheduled for.
- * Captured (id + display name) when the card is created so the card stays
- * meaningful if the bot is later renamed; authority over the card remains
- * with the proposing conversation. */
+/** Another bot in the proposer's section that this proposal targets: a
+ * routine scheduled for it, or one of its routines being changed. Captured
+ * (id + display name) when the card is created so the card stays meaningful
+ * if the bot is later renamed; authority over the card remains with the
+ * proposing conversation. */
 export interface RoutineRequestTargetBot {
   botId: string;
   name: string;
@@ -41,11 +82,11 @@ export interface RoutineRequestTargetBot {
 
 export type RoutineRequestOperation =
   | { action: "create"; routine: RoutineRequestDefinition; forBot?: RoutineRequestTargetBot }
-  | { action: "update"; routineId: string; expectedUpdatedAt: number; changes: RoutineRequestChanges }
-  | { action: "pause"; routineId: string; expectedUpdatedAt: number }
-  | { action: "resume"; routineId: string; expectedUpdatedAt: number }
-  | { action: "run_now"; routineId: string; expectedUpdatedAt: number }
-  | { action: "delete"; routineId: string; expectedUpdatedAt: number };
+  | { action: "update"; routineId: string; expectedUpdatedAt: number; changes: RoutineRequestChanges; forBot?: RoutineRequestTargetBot }
+  | { action: "pause"; routineId: string; expectedUpdatedAt: number; forBot?: RoutineRequestTargetBot }
+  | { action: "resume"; routineId: string; expectedUpdatedAt: number; forBot?: RoutineRequestTargetBot }
+  | { action: "run_now"; routineId: string; expectedUpdatedAt: number; forBot?: RoutineRequestTargetBot }
+  | { action: "delete"; routineId: string; expectedUpdatedAt: number; forBot?: RoutineRequestTargetBot };
 
 export interface RoutineRequestCardData {
   version: 1;

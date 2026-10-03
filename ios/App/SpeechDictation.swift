@@ -19,6 +19,7 @@ import AVFoundation
 import Combine
 import Speech
 import CompanionCore
+import SwiftUI
 
 @MainActor
 final class SpeechDictation: ObservableObject {
@@ -33,7 +34,7 @@ final class SpeechDictation: ObservableObject {
     /// system permission sheets are still in flight.
     @Published private(set) var isStarting = false
     @Published private(set) var transcript = ""
-    @Published private(set) var error: String?
+    @Published private(set) var error: LocalizedStringKey?
 
     /// Composer text captured when listening started. Frozen for the
     /// session so each partial replaces the last rather than stacking.
@@ -94,7 +95,7 @@ final class SpeechDictation: ObservableObject {
             return
         }
 
-        let mic = await AVAudioApplication.requestRecordPermission()
+        let mic = await MicrophonePermission.request()
         guard gen == generation, !Task.isCancelled else {
             return
         }
@@ -136,6 +137,11 @@ final class SpeechDictation: ObservableObject {
             throw CaptureError.noRecognizer
         }
         self.recognizer = recognizer
+
+        // Take ownership of the shared session before reconfiguring it:
+        // the audible voice note (if any) pauses here, and transcript
+        // playback stays off until teardown() returns the session.
+        VoiceNoteCenter.shared.beginInputOwnership(.dictation)
 
         let session = AVAudioSession.sharedInstance()
         // `.record` rather than `.playAndRecord`: this is composer
@@ -204,7 +210,7 @@ final class SpeechDictation: ObservableObject {
         // new draft or stopping the new capture.
         guard gen == generation, !stopping, isListening else { return }
         if let result {
-            transcript = result.bestTranscription.formattedString
+            transcript = Dictation.updateTranscript(transcript, new: result.bestTranscription.formattedString)
             // Composer dictation does not wait for isFinal — the last
             // partial is what you send. If the recognizer finalizes on
             // its own (rare without endAudio), just stop listening.
@@ -244,6 +250,7 @@ final class SpeechDictation: ObservableObject {
         audioEngine = nil
         recognizer = nil
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+        VoiceNoteCenter.shared.endInputOwnership(.dictation)
     }
 
     private enum CaptureError: Error {
@@ -251,8 +258,8 @@ final class SpeechDictation: ObservableObject {
         case noRecognizer
     }
 
-    static let speechDeniedMessage =
+    static let speechDeniedMessage: LocalizedStringKey =
         "Dictation needs Speech Recognition access. Enable it in Settings → OpenMausMobile."
-    static let micDeniedMessage =
+    static let micDeniedMessage: LocalizedStringKey =
         "Dictation needs Microphone access. Enable it in Settings → OpenMausMobile."
 }

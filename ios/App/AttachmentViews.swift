@@ -107,12 +107,13 @@ struct TranscriptAttachmentView: View {
     let attachment: DisplayedMessageAttachment
     let threadId: String
     let messageId: String
+    var foreground: Color = BubbleColor.mineText
 
     @EnvironmentObject private var session: Session
     @State private var thumbnail: UIImage?
     @State private var thumbnailLoading = false
     @State private var previewLoading = false
-    @State private var errorMessage: String?
+    @State private var errorMessage: Text?
     @State private var thumbnailAttempt = 0
     @State private var thumbnailVisible = false
     @State private var preview: FilePreviewItem?
@@ -134,15 +135,15 @@ struct TranscriptAttachmentView: View {
                 HStack(alignment: .firstTextBaseline, spacing: 6) {
                     Image(systemName: "exclamationmark.triangle.fill")
                         .accessibilityHidden(true)
-                    Text(errorMessage)
+                    errorMessage
                         .fixedSize(horizontal: false, vertical: true)
                     Spacer(minLength: 2)
                     Button("Retry", action: retry)
                         .fontWeight(.semibold)
-                        .foregroundStyle(BubbleColor.mineText)
+                        .foregroundStyle(foreground)
                 }
                 .font(.system(size: 11))
-                .foregroundStyle(BubbleColor.mineText.opacity(0.92))
+                .foregroundStyle(foreground.opacity(0.92))
                 .accessibilityElement(children: .contain)
             }
         }
@@ -153,7 +154,7 @@ struct TranscriptAttachmentView: View {
                     let frame = proxy.frame(in: .global)
                     Color.clear
                         .onAppear { updateThumbnailVisibility(frame) }
-                        .onChange(of: frame) { _, nextFrame in
+                        .onValueChange(of: frame) { nextFrame in
                             updateThumbnailVisibility(nextFrame)
                         }
                 }
@@ -175,7 +176,7 @@ struct TranscriptAttachmentView: View {
         Button(action: openPreview) {
             ZStack(alignment: .bottomLeading) {
                 RoundedRectangle(cornerRadius: 13)
-                    .fill(BubbleColor.mineText.opacity(0.12))
+                    .fill(foreground.opacity(0.12))
 
                 if let thumbnail {
                     Image(uiImage: thumbnail)
@@ -185,12 +186,12 @@ struct TranscriptAttachmentView: View {
                         .clipped()
                 } else if thumbnailLoading {
                     ProgressView()
-                        .tint(BubbleColor.mineText)
+                        .tint(foreground)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {
                     Image(systemName: "photo")
                         .font(.system(size: 30, weight: .medium))
-                        .foregroundStyle(BubbleColor.mineText.opacity(0.72))
+                        .foregroundStyle(foreground.opacity(0.72))
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
 
@@ -222,13 +223,14 @@ struct TranscriptAttachmentView: View {
             .clipShape(RoundedRectangle(cornerRadius: 13))
             .overlay {
                 RoundedRectangle(cornerRadius: 13)
-                    .strokeBorder(BubbleColor.mineText.opacity(0.18))
+                    .strokeBorder(foreground.opacity(0.18))
             }
             .contentShape(RoundedRectangle(cornerRadius: 13))
         }
         .buttonStyle(.plain)
         .disabled(previewLoading || thumbnailLoading)
         .accessibilityLabel("Image: \(attachment.name)")
+        .accessibilityValue(thumbnail != nil ? "Loaded" : (thumbnailLoading ? "Loading" : "Unavailable"))
         .accessibilityHint(thumbnail == nil ? "Loads the image preview" : "Opens the image full screen")
     }
 
@@ -237,9 +239,9 @@ struct TranscriptAttachmentView: View {
             HStack(spacing: 10) {
                 Image(systemName: "doc.fill")
                     .font(.system(size: 16, weight: .medium))
-                    .foregroundStyle(BubbleColor.mineText)
+                    .foregroundStyle(foreground)
                     .frame(width: 38, height: 38)
-                    .background(BubbleColor.mineText.opacity(0.12), in: RoundedRectangle(cornerRadius: 9))
+                    .background(foreground.opacity(0.12), in: RoundedRectangle(cornerRadius: 9))
                     .accessibilityHidden(true)
 
                 VStack(alignment: .leading, spacing: 2) {
@@ -248,29 +250,29 @@ struct TranscriptAttachmentView: View {
                         .lineLimit(1)
                     Text(previewLoading ? "Opening…" : "Tap to preview")
                         .font(.system(size: 11))
-                        .foregroundStyle(BubbleColor.mineText.opacity(0.68))
+                        .foregroundStyle(foreground.opacity(0.68))
                 }
 
                 Spacer(minLength: 8)
                 if previewLoading {
                     ProgressView()
                         .controlSize(.small)
-                        .tint(BubbleColor.mineText)
+                        .tint(foreground)
                         .accessibilityHidden(true)
                 } else {
                     Image(systemName: "chevron.right")
                         .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(BubbleColor.mineText.opacity(0.65))
+                        .foregroundStyle(foreground.opacity(0.65))
                         .accessibilityHidden(true)
                 }
             }
-            .foregroundStyle(BubbleColor.mineText)
+            .foregroundStyle(foreground)
             .padding(8)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(BubbleColor.mineText.opacity(0.10), in: RoundedRectangle(cornerRadius: 13))
+            .background(foreground.opacity(0.10), in: RoundedRectangle(cornerRadius: 13))
             .overlay {
                 RoundedRectangle(cornerRadius: 13)
-                    .strokeBorder(BubbleColor.mineText.opacity(0.12))
+                    .strokeBorder(foreground.opacity(0.12))
             }
             .contentShape(RoundedRectangle(cornerRadius: 13))
         }
@@ -296,7 +298,7 @@ struct TranscriptAttachmentView: View {
             guard downloaded.data.count <= AttachmentPolicy.maximumImageBytes,
                   AttachmentPolicy.normalizedMIME(downloaded.contentType).hasPrefix("image/")
             else {
-                errorMessage = "This image couldn't be previewed."
+                errorMessage = Text("This image couldn't be previewed.")
                 return
             }
             let decoded = await Task.detached(priority: .userInitiated) {
@@ -304,7 +306,7 @@ struct TranscriptAttachmentView: View {
             }.value
             try Task.checkCancellation()
             guard let image = decoded.value else {
-                errorMessage = "This image couldn't be previewed."
+                errorMessage = Text("This image couldn't be previewed.")
                 return
             }
             thumbnail = UIImage(cgImage: image)
@@ -312,7 +314,7 @@ struct TranscriptAttachmentView: View {
             return
         } catch {
             guard !Task.isCancelled else { return }
-            errorMessage = error.localizedDescription
+            errorMessage = Text(verbatim: error.localizedDescription)
         }
     }
 
@@ -335,7 +337,7 @@ struct TranscriptAttachmentView: View {
                     cacheResult: attachment.kind == .image
                 )
                 guard let item = FilePreviewItem(downloaded: downloaded) else {
-                    errorMessage = "The downloaded file couldn't be previewed."
+                    errorMessage = Text("The downloaded file couldn't be previewed.")
                     return
                 }
                 // Adopt cleanup ownership before observing cancellation. The
@@ -347,7 +349,7 @@ struct TranscriptAttachmentView: View {
                     guard downloaded.data.count <= AttachmentPolicy.maximumImageBytes,
                           AttachmentPolicy.normalizedMIME(downloaded.contentType).hasPrefix("image/")
                     else {
-                        errorMessage = "This image couldn't be previewed."
+                        errorMessage = Text("This image couldn't be previewed.")
                         return
                     }
                     if thumbnail == nil {
@@ -356,7 +358,7 @@ struct TranscriptAttachmentView: View {
                         }.value
                         try Task.checkCancellation()
                         guard decoded.value != nil else {
-                            errorMessage = "This image couldn't be previewed."
+                            errorMessage = Text("This image couldn't be previewed.")
                             return
                         }
                     }
@@ -367,7 +369,7 @@ struct TranscriptAttachmentView: View {
                 return
             } catch {
                 guard !Task.isCancelled else { return }
-                errorMessage = error.localizedDescription
+                errorMessage = Text(verbatim: error.localizedDescription)
             }
         }
     }
@@ -452,7 +454,7 @@ struct FilePreviewItem: Identifiable {
 struct FilePreviewView: View {
     let item: FilePreviewItem
     let close: () -> Void
-    @State private var linkError: String?
+    @State private var linkError: LocalizedStringKey?
 
     var body: some View {
         NavigationStack {

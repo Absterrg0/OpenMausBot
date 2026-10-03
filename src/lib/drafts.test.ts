@@ -1,14 +1,29 @@
 import { afterEach, describe, expect, it } from "vitest";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 
 import {
+  appendComposerDraft,
   appendDraftAttachments,
   changeDraftAttachmentPending,
+  draftRevision,
+  failedComposerSends,
   getDraft,
   getDraftAttachments,
+  getDraftChannelMode,
   isDraftAttachmentPending,
+  markDraftEdited,
+  prependComposerDraft,
+  recoverFailedComposerSend,
+  replaceDraftAttachment,
+  restoredSendId,
   setDraft,
   setDraftAttachments,
+  setDraftChannelMode,
+  useComposerChannelMode,
 } from "./drafts";
+import { citationAttachment, createCitationTextSelector } from "./citations";
+import { composeMessage } from "./composer-attachments";
 
 function memoryStorage(): Storage {
   const values = new Map<string, string>();
@@ -26,7 +41,216 @@ afterEach(() => {
   Reflect.deleteProperty(globalThis, "localStorage");
 });
 
+function renderedChannelMode(id: string): string {
+  function Mode() {
+    const [mode] = useComposerChannelMode(id);
+    return createElement("span", null, mode);
+  }
+  // A fresh render initializes the actual composer hook from its keyed draft.
+  return renderToStaticMarkup(createElement(Mode));
+}
+
+describe("channel draft delivery mode", () => {
+  it("restores goal intent on remount and from persisted storage after restart", () => {
+    const store = memoryStorage();
+    Object.defineProperty(globalThis, "localStorage", { configurable: true, value: store });
+    const draftId = "group:goal:task-a";
+    setDraft(store, draftId, "Finish the release");
+    setDraftChannelMode(store, draftId, "goal");
+
+    expect(renderedChannelMode(draftId)).toBe("<span>goal</span>");
+    expect(renderedChannelMode("group:goal:task-b")).toBe("<span>chat</span>");
+    expect(renderedChannelMode(draftId)).toBe("<span>goal</span>");
+
+    const restarted = memoryStorage();
+    for (let index = 0; index < store.length; index += 1) {
+      const key = store.key(index)!;
+      restarted.setItem(key, store.getItem(key)!);
+    }
+    Object.defineProperty(globalThis, "localStorage", { configurable: true, value: restarted });
+    expect(renderedChannelMode(draftId)).toBe("<span>goal</span>");
+    expect(getDraft(restarted, draftId)).toBe("Finish the release");
+  });
+
+  it("keeps legacy drafts intact and defaults missing or invalid modes to chat", () => {
+    const store = memoryStorage();
+    const draftId = "group:legacy:task";
+    store.setItem("omb-drafts", JSON.stringify({ [draftId]: "/goal existing typed goal" }));
+    store.setItem("omb-draft-channel-modes", JSON.stringify({ "group:invalid:task": "unexpected" }));
+    expect(getDraftChannelMode(store, draftId)).toBe("chat");
+    expect(getDraftChannelMode(store, "group:invalid:task")).toBe("chat");
+    expect(getDraft(store, draftId)).toBe("/goal existing typed goal");
+  });
+
+  it("restores a failed goal send after its original composer unmounted", () => {
+    const store = memoryStorage();
+    Object.defineProperty(globalThis, "localStorage", { configurable: true, value: store });
+    const draftId = "group:failed-goal:task";
+    setDraft(store, draftId, "Finish the release");
+    setDraftChannelMode(store, draftId, "goal");
+    const sent = {
+      draftId,
+      revision: draftRevision(draftId),
+      sendId: "failed-goal-send",
+      threadId: "task",
+      text: "Finish the release",
+      requestText: "Finish the release",
+      attachments: [],
+      channelMode: "goal" as const,
+    };
+    // Send consumes the one-shot mode before its network result arrives.
+    setDraft(store, draftId, "");
+    setDraftChannelMode(store, draftId, "chat");
+    expect(renderedChannelMode(draftId)).toBe("<span>chat</span>");
+
+    expect(recoverFailedComposerSend(sent)).toBe("restored");
+    expect(renderedChannelMode(draftId)).toBe("<span>goal</span>");
+    expect(getDraft(store, draftId)).toBe(sent.text);
+    expect(restoredSendId(draftId)).toBe(sent.sendId);
+  });
+
+  it("keeps a newer chat draft when an older goal send fails", () => {
+    const store = memoryStorage();
+    Object.defineProperty(globalThis, "localStorage", { configurable: true, value: store });
+    const draftId = "group:older-goal:task";
+    const revision = draftRevision(draftId);
+    markDraftEdited(draftId);
+    setDraft(store, draftId, "Just discuss it first");
+    setDraftChannelMode(store, draftId, "chat");
+
+    expect(recoverFailedComposerSend({
+      draftId,
+      revision,
+      sendId: "older-goal-send",
+      threadId: "task",
+      text: "Finish the release",
+      requestText: "Finish the release",
+      attachments: [],
+      channelMode: "goal",
+    })).toBe("outbox");
+    expect(renderedChannelMode(draftId)).toBe("<span>chat</span>");
+    expect(getDraft(store, draftId)).toBe("Just discuss it first");
+    expect(failedComposerSends(draftId)).toEqual([
+      expect.objectContaining({ channelMode: "goal", sendId: "older-goal-send" }),
+    ]);
+  });
+
+  it("keeps mode in memory when storage rejects writes and clears it after send", () => {
+    const store: Storage = {
+      ...memoryStorage(),
+      setItem: () => { throw new DOMException("quota exceeded", "QuotaExceededError"); },
+    };
+    Object.defineProperty(globalThis, "localStorage", { configurable: true, value: store });
+    const draftId = "group:quota-mode:task";
+    setDraftChannelMode(store, draftId, "goal");
+    expect(renderedChannelMode(draftId)).toBe("<span>goal</span>");
+    setDraftChannelMode(store, draftId, "chat");
+    expect(renderedChannelMode(draftId)).toBe("<span>chat</span>");
+  });
+});
+
 describe("durable attachment completion", () => {
+  it("isolates persisted citation drafts and keeps an older failed citation send out of a newer draft", () => {
+    const store = memoryStorage();
+    Object.defineProperty(globalThis, "localStorage", { configurable: true, value: store });
+    const draftId = "bot:citations:thread-a";
+    const otherDraftId = "bot:citations:thread-b";
+    const citation = citationAttachment(
+      { ownerType: "bot", ownerId: "citations", threadId: "thread-a", messageId: "source-1" },
+      createCitationTextSelector("before selected after", 7, 15)!,
+      "old note",
+    );
+    setDraftAttachments(store, draftId, [citation]);
+    expect(getDraftAttachments(store, draftId)).toEqual([citation]);
+    expect(getDraftAttachments(store, otherDraftId)).toEqual([]);
+
+    const revision = draftRevision(draftId);
+    markDraftEdited(draftId);
+    setDraft(store, draftId, "newer words");
+    setDraftAttachments(store, draftId, []);
+    expect(recoverFailedComposerSend({
+      draftId,
+      revision,
+      sendId: "citation-send",
+      threadId: "thread-a",
+      text: "",
+      requestText: composeMessage("", [citation]),
+      attachments: [citation],
+    })).toBe("outbox");
+    expect(getDraft(store, draftId)).toBe("newer words");
+    expect(getDraftAttachments(store, draftId)).toEqual([]);
+    expect(failedComposerSends(draftId)).toEqual([expect.objectContaining({ sendId: "citation-send" })]);
+  });
+
+  it("keeps blob previews in memory but never writes them into durable storage", () => {
+    const store = memoryStorage();
+    Object.defineProperty(globalThis, "localStorage", { configurable: true, value: store });
+    const draftId = "bot:preview:thread-preview";
+    setDraftAttachments(store, draftId, [
+      {
+        kind: "image",
+        id: "uploading",
+        path: "",
+        name: "uploading.png",
+        size: 3,
+        mime: "image/png",
+        previewUrl: "blob:uploading",
+        uploading: true,
+      },
+      {
+        kind: "image",
+        id: "ready",
+        path: "/private/attachments/ready.png",
+        name: "ready.png",
+        size: 4,
+        mime: "image/png",
+        previewUrl: "blob:ready",
+      },
+    ]);
+
+    expect(getDraftAttachments(store, draftId)).toHaveLength(2);
+    expect(JSON.parse(store.getItem("omb-draft-attachments") ?? "{}")[draftId]).toEqual([
+      {
+        kind: "image",
+        id: "ready",
+        path: "/private/attachments/ready.png",
+        name: "ready.png",
+        size: 4,
+        mime: "image/png",
+      },
+    ]);
+  });
+
+  it("replaces a pending image after navigation without appending a duplicate", () => {
+    const store = memoryStorage();
+    Object.defineProperty(globalThis, "localStorage", { configurable: true, value: store });
+    const draftId = "bot:replace:thread-replace";
+    setDraftAttachments(store, draftId, [{
+      kind: "image",
+      id: "same-image",
+      path: "",
+      name: "photo.png",
+      size: 3,
+      mime: "image/png",
+      previewUrl: "blob:photo",
+      uploading: true,
+    }]);
+
+    expect(replaceDraftAttachment(draftId, "same-image", {
+      kind: "image",
+      id: "same-image",
+      path: "/private/attachments/photo.png",
+      name: "photo.png",
+      size: 3,
+      mime: "image/png",
+      previewUrl: "blob:photo",
+    })).toBe(true);
+    expect(getDraftAttachments(store, draftId)).toEqual([
+      expect.objectContaining({ id: "same-image", path: "/private/attachments/photo.png" }),
+    ]);
+    expect(replaceDraftAttachment(draftId, "missing", null)).toBe(false);
+  });
+
   it("appends to the keyed draft without a mounted React state updater", () => {
     const store = memoryStorage();
     Object.defineProperty(globalThis, "localStorage", { configurable: true, value: store });
@@ -92,5 +316,76 @@ describe("durable attachment completion", () => {
     expect(isDraftAttachmentPending("bot:pending:a")).toBe(true);
     changeDraftAttachmentPending("bot:pending:a", false);
     expect(isDraftAttachmentPending("bot:pending:a")).toBe(false);
+  });
+});
+
+describe("appendComposerDraft", () => {
+  const prompt = "Create a verification skill from the run below.\n\n✓ doctor — pnpm control:omb doctor\n\n";
+
+  it("puts the text into an empty draft exactly as given", () => {
+    const store = memoryStorage();
+    Object.defineProperty(globalThis, "localStorage", { configurable: true, value: store });
+    const draftId = "bot:save:thread-empty";
+    const revision = draftRevision(draftId);
+    appendComposerDraft(draftId, prompt);
+    expect(getDraft(store, draftId)).toBe(prompt);
+    expect(JSON.parse(store.getItem("omb-drafts") ?? "{}")[draftId]).toBe(prompt);
+    // an edited draft outranks a late failed send, exactly like typing does
+    expect(draftRevision(draftId)).toBe(revision + 1);
+  });
+
+  it("appends after a blank line and never replaces what the person typed", () => {
+    const store = memoryStorage();
+    Object.defineProperty(globalThis, "localStorage", { configurable: true, value: store });
+    const draftId = "bot:save:thread-typed";
+    setDraft(store, draftId, "Keep the doctor step first.");
+    appendComposerDraft(draftId, prompt);
+    expect(getDraft(store, draftId)).toBe(`Keep the doctor step first.\n\n${prompt}`);
+  });
+
+  it("leaves attachments and the channel mode as they were", () => {
+    const store = memoryStorage();
+    Object.defineProperty(globalThis, "localStorage", { configurable: true, value: store });
+    const draftId = "group:save:thread-attached";
+    const attachment = { kind: "file" as const, id: "file-1", path: "/private/attachments/log.txt", name: "log.txt", size: 12 };
+    setDraftAttachments(store, draftId, [attachment]);
+    setDraftChannelMode(store, draftId, "goal");
+    appendComposerDraft(draftId, prompt);
+    expect(getDraft(store, draftId)).toBe(prompt);
+    expect(getDraftAttachments(store, draftId)).toEqual([attachment]);
+    expect(getDraftChannelMode(store, draftId)).toBe("goal");
+  });
+});
+
+describe("prependComposerDraft", () => {
+  it("puts a queued message into an empty draft and marks it edited", () => {
+    const store = memoryStorage();
+    Object.defineProperty(globalThis, "localStorage", { configurable: true, value: store });
+    const draftId = "bot:edit-queued:empty";
+    const revision = draftRevision(draftId);
+    prependComposerDraft(draftId, "actually stop at 10");
+    expect(getDraft(store, draftId)).toBe("actually stop at 10");
+    expect(draftRevision(draftId)).toBe(revision + 1);
+  });
+
+  it("leads with the queued words and keeps what the person already typed below", () => {
+    const store = memoryStorage();
+    Object.defineProperty(globalThis, "localStorage", { configurable: true, value: store });
+    const draftId = "bot:edit-queued:typed";
+    setDraft(store, draftId, "and use the smaller model");
+    prependComposerDraft(draftId, "actually stop at 10");
+    expect(getDraft(store, draftId)).toBe("actually stop at 10\n\nand use the smaller model");
+  });
+
+  it("treats a whitespace-only draft as empty and leaves attachments alone", () => {
+    const store = memoryStorage();
+    Object.defineProperty(globalThis, "localStorage", { configurable: true, value: store });
+    const draftId = "group:edit-queued:attached";
+    const attachment = { kind: "file" as const, id: "file-1", path: "/private/attachments/log.txt", name: "log.txt", size: 12 };
+    setDraft(store, draftId, "  \n");
+    setDraftAttachments(store, draftId, [attachment]);
+    prependComposerDraft(draftId, "check the log");
+    expect(getDraft(store, draftId)).toBe("check the log");
+    expect(getDraftAttachments(store, draftId)).toEqual([attachment]);
   });
 });

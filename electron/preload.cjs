@@ -4,8 +4,7 @@ const { contextBridge, ipcRenderer, webUtils } = require("electron");
 
 // Sandboxed preloads receive Electron's restricted `require`, which cannot
 // load sibling CommonJS files. Keep this tiny predicate inline here; main's
-// privileged process uses the shared browser-platform helper.
-const browserSurfaceSupported = process.platform === "darwin" || process.platform === "linux";
+const desktopRemoteClient = process.argv.includes("--openmausbot-remote-client");
 
 let pendingPackageInstallUrl = null;
 const packageInstallListeners = new Set();
@@ -15,22 +14,82 @@ ipcRenderer.on("package:install", (_event, url) => {
   for (const listener of packageInstallListeners) listener(url);
 });
 
+// Main can finish loading the document before React subscribes. Retain only
+// the fixed actions (Organisation, the openmausbot://cloud link, and plain
+// Settings → OMB Cloud from the lending menu-bar item), never a destination
+// supplied by a renderer.
+const FIXED_SETTINGS_ACTIONS = new Set(["organization", "cloud", "cloud-settings"]);
+let pendingSettingsAction = null;
+const appSettingsListeners = new Set();
+ipcRenderer.on("app:open-settings", (_event, section) => {
+  const fixedSection = FIXED_SETTINGS_ACTIONS.has(section) ? section : undefined;
+  if (fixedSection && !appSettingsListeners.size) pendingSettingsAction = fixedSection;
+  if (!appSettingsListeners.size) return;
+  pendingSettingsAction = null;
+  for (const listener of appSettingsListeners) listener(fixedSection);
+});
+
 // The bridge is built once, then exposed in full only to the local server's
 // UI. A remote server's page (Server menu) gets the safe subset: nothing that
 // captures this screen, touches this computer's files or logins, or runs
 // helpers here. Main enforces the same rule on the sensitive channels.
 const localOrigin = process.argv.find((arg) => arg.startsWith("--omb-local-origin="))?.slice("--omb-local-origin=".length) ?? null;
 const isLocalPage = !localOrigin || location.origin === localOrigin;
-const REMOTE_SAFE = new Set(["platform", "getCapabilities", "onCapabilitiesChanged", "applySkin", "setUnreadCount", "openExternal", "getPathForFile", "permStatus", "environments"]);
+// cloudMove, cloudLending and cloudPlan: main answers them on a remote page
+// only when that page is the person's own verified Cloud in this window (Move
+// to Cloud's card, the Cloud's setup checklist, and its Settings' plan line).
+const REMOTE_SAFE = new Set(["platform", "getCapabilities", "onCapabilitiesChanged", "applySkin", "setUnreadCount", "permStatus", "workspaces", "cloudMove", "cloudLending", "cloudPlan"]);
+
+// Sandboxed preload cannot import TS or sibling modules. Keep this list in
+// parity with shared/workspace-backup-client.ts (covered by the preload test).
+// Only main can request a fresh snapshot; there is no renderer-callable method.
+const COMPANY_BACKUP_CLIENT_KEYS = [
+  "omb-drafts", "omb-draft-attachments", "omb-draft-send-ids", "omb-draft-channel-modes",
+  "omb-skin", "omb-show-threads", "omb-show-run-card", "openmausbot.sidebarDensity",
+  "openmausbot.sidebarCollapsedSections.v1", "openmausbot.sidebarSectionOrder.v1",
+  "omb-analytics-opt-out", "openmausbot.remote-voice.v1",
+];
+if (isLocalPage && !desktopRemoteClient && process.argv.includes("--omb-company-desktop=1")) {
+  ipcRenderer.on("company-backups:collect-client-state", (_event, request) => {
+    if (!request || typeof request.requestId !== "string" || !/^[a-f0-9-]{36}$/.test(request.requestId)) return;
+    try {
+      // Check the origin again; a later navigation must not export remote data.
+      if (!localOrigin || location.origin !== localOrigin) throw new Error("Not the local workspace");
+      const clientState = {};
+      for (const key of COMPANY_BACKUP_CLIENT_KEYS) {
+        const value = localStorage.getItem(key);
+        if (value !== null) clientState[key] = value;
+      }
+      if (new TextEncoder().encode(JSON.stringify(clientState)).byteLength > 2 * 1024 ** 2) throw new Error("Browser state too large");
+      ipcRenderer.send("company-backups:client-state", { requestId: request.requestId, clientState });
+    } catch {
+      ipcRenderer.send("company-backups:client-state", { requestId: request.requestId, unavailable: true });
+    }
+  });
+}
 
 const bridge = {
   /** Host platform ("darwin" | "win32" | "linux") — for platform-aware UI. */
   platform: process.platform,
+  // Safe even on a cloud page: the user chooses in a native menu owned by
+  // Electron. No direct switching, saved-list reads, host files or secrets.
+  workspaces: {
+    state: () => ipcRenderer.invoke("workspaces:state"),
+    menu: () => ipcRenderer.invoke("workspaces:menu"),
+  },
   getCapabilities: () => ipcRenderer.invoke("desktop:capabilities"),
   onCapabilitiesChanged: (cb) => {
     const handler = (_event, capabilities) => cb(capabilities);
     ipcRenderer.on("desktop:capabilities-changed", handler);
     return () => ipcRenderer.removeListener("desktop:capabilities-changed", handler);
+  },
+  /** Pair this desktop app to another OpenMausBot host. The bearer remains in
+   * the main process and is never returned over this bridge. */
+  remoteClient: {
+    active: desktopRemoteClient,
+    state: () => ipcRenderer.invoke("desktop-remote:state"),
+    pair: (endpoint, code) => ipcRenderer.invoke("desktop-remote:pair", endpoint, code),
+    disconnect: () => ipcRenderer.invoke("desktop-remote:disconnect"),
   },
   /** The companion sidecar: the one part of this app that listens off the
    * machine, so it runs as its own process and is off until switched on.
@@ -46,6 +105,12 @@ const bridge = {
     cloudDesktop: (deviceId, allowed) => ipcRenderer.invoke("companion:cloud-desktop", deviceId, allowed),
     revoke: (deviceId) => ipcRenderer.invoke("companion:revoke", deviceId),
   },
+  /** Keep this computer awake for scheduled routines. The hold itself lives
+   * in the main process; the page reads its state and flips the toggle. */
+  routines: {
+    wakeState: () => ipcRenderer.invoke("routines:wake-state"),
+    keepAwake: (enabled) => ipcRenderer.invoke("routines:keep-awake", enabled),
+  },
   /** Optional account-backed HTTPS access for Companion. Secrets stay in the
    * main process; the renderer sees only status and narrow user actions. */
   companionAccount: {
@@ -54,6 +119,12 @@ const bridge = {
     verifyCode: (email, code) => ipcRenderer.invoke("companion-account:verify-code", email, code),
     retry: () => ipcRenderer.invoke("companion-account:retry"),
     signOut: () => ipcRenderer.invoke("companion-account:sign-out"),
+  },
+  /** Full/Custom and transitions out of Custom are deliberately unavailable
+   * through the loopback API. The local renderer applies those changes over
+   * the embedded server's private utilityProcess port. */
+  approvals: {
+    setMode: (botId, mode, options) => ipcRenderer.invoke("approvals:set-trusted-mode", botId, mode, options),
   },
   localControl: {
     status: () => ipcRenderer.invoke("cua:linux-status"),
@@ -85,28 +156,17 @@ const bridge = {
     ipcRenderer.on("speech:end", handler);
     return () => ipcRenderer.removeListener("speech:end", handler);
   },
-  /** A local-first demonstration recorder. Global events stay in main; the
-   * renderer receives only the privacy-filtered event stream. */
-  skillRecorder: {
-    permissions: () => ipcRenderer.invoke("skill-recorder:permissions"),
-    start: () => ipcRenderer.invoke("skill-recorder:start"),
-    stop: () => ipcRenderer.invoke("skill-recorder:stop"),
-    save: (payload) => ipcRenderer.invoke("skill-recorder:save", payload),
-    onEvent: (cb) => {
-      const handler = (_event, value) => cb(value);
-      ipcRenderer.on("skill-recorder:event", handler);
-      return () => ipcRenderer.removeListener("skill-recorder:event", handler);
-    },
-    onEnd: (cb) => {
-      const handler = (_event, value) => cb(value);
-      ipcRenderer.on("skill-recorder:end", handler);
-      return () => ipcRenderer.removeListener("skill-recorder:end", handler);
-    },
-  },
-  transcription: {
-    status: () => ipcRenderer.invoke("assemblyai:status"),
-    setKey: (value) => ipcRenderer.invoke("assemblyai:set-key", value),
-    streamingToken: () => ipcRenderer.invoke("assemblyai:streaming-token"),
+  /** The app menu's Preferences… item; local shell only (the remote-safe
+   * subset never sees it). */
+  onOpenAppSettings: (cb) => {
+    appSettingsListeners.add(cb);
+    queueMicrotask(() => {
+      const section = pendingSettingsAction;
+      if (!section || !appSettingsListeners.size) return;
+      pendingSettingsAction = null;
+      for (const listener of appSettingsListeners) listener(section);
+    });
+    return () => appSettingsListeners.delete(cb);
   },
   /** Absolute path of a dropped File — Electron 32 removed File.path, and
    * only the preload can ask. "" when the drag carried no file on disk. */
@@ -125,6 +185,8 @@ const bridge = {
   permRequestMic: () => ipcRenderer.invoke("perm:request-mic"),
   /** Opens System Settings on the given privacy pane: mic|screen|speech. */
   permOpenSettings: (pane) => ipcRenderer.invoke("perm:open-settings", pane),
+  /** Relaunch the local macOS app after a permission grant. */
+  relaunch: () => ipcRenderer.invoke("desktop:relaunch"),
 
   /** Copies an engine install command and opens a blank terminal. Resolves
    * false if no terminal could be launched; the clipboard still has it. */
@@ -135,6 +197,19 @@ const bridge = {
   /** Tell the window which skin the page wears, so the native chrome the
    * renderer cannot paint (the Windows caption-button overlay) matches. */
   applySkin: (skin) => ipcRenderer.invoke("desktop:skin", skin),
+  /** The renderer-drawn Windows caption buttons: minimize / restore /
+   * maximize / close, plus live maximize state so the glyph can flip. */
+  windowControls: {
+    minimize: () => ipcRenderer.invoke("window:minimize"),
+    toggleMaximize: () => ipcRenderer.invoke("window:toggle-maximize"),
+    close: () => ipcRenderer.invoke("window:close"),
+    state: () => ipcRenderer.invoke("window:state"),
+    onMaximizedChanged: (cb) => {
+      const handler = (_event, maximized) => cb(maximized);
+      ipcRenderer.on("window:maximized-changed", handler);
+      return () => ipcRenderer.removeListener("window:maximized-changed", handler);
+    },
+  },
   /** A reviewed BotMRR package opened through openmausbot://install. */
   onPackageInstall: (cb) => {
     packageInstallListeners.add(cb);
@@ -166,33 +241,6 @@ const bridge = {
       return () => ipcRenderer.removeListener("desktop-workspace:state", handler);
     },
   },
-  /** The built-in browser: a native page view per bot that the Browser tab
-   * positions over its own rectangle. Bots drive it through their tools; the
-   * person drives it by clicking into the view. */
-  browser: browserSurfaceSupported ? {
-    available: () => ipcRenderer.invoke("browser:available"),
-    state: (botId) => ipcRenderer.invoke("browser:state", botId),
-    layout: (botId, bounds, profile, mode, layoutOwner) =>
-      ipcRenderer.invoke("browser:layout", botId, bounds, profile, mode, layoutOwner),
-    navigate: (botId, url, profile) => ipcRenderer.invoke("browser:navigate", botId, url, profile),
-    back: (botId, profile) => ipcRenderer.invoke("browser:back", botId, profile),
-    forward: (botId, profile) => ipcRenderer.invoke("browser:forward", botId, profile),
-    reload: (botId, profile) => ipcRenderer.invoke("browser:reload", botId, profile),
-    setHumanControl: (botId, held, profile) => ipcRenderer.invoke("browser:set-human-control", botId, held, profile),
-    /** Wipe a named profile's logins, storage and cache after it is deleted. */
-    forgetProfile: (partitionId) => ipcRenderer.invoke("browser:forget-profile", partitionId),
-    close: (botId) => ipcRenderer.invoke("browser:close", botId),
-    onState: (cb) => {
-      const handler = (_event, state) => cb(state);
-      ipcRenderer.on("browser:state", handler);
-      return () => ipcRenderer.removeListener("browser:state", handler);
-    },
-    onUserInteraction: (cb) => {
-      const handler = (_event, state) => cb(state);
-      ipcRenderer.on("browser:user-interaction", handler);
-      return () => ipcRenderer.removeListener("browser:user-interaction", handler);
-    },
-  } : undefined,
   /** Native folder picker for a bot's working folder; null when cancelled. */
   pickFolder: (current) => ipcRenderer.invoke("desktop:pick-folder", current),
   /** Writes the redacted diagnostics report to a user-chosen file; resolves
@@ -236,9 +284,107 @@ const bridge = {
   environments: {
     state: () => ipcRenderer.invoke("environments:state"),
     switch: (id) => ipcRenderer.invoke("environments:switch", id),
-    addFromLink: (link) => ipcRenderer.invoke("environments:add-from-link", link),
+    addFromLink: (link, name) => ipcRenderer.invoke("environments:add-from-link", link, name),
     forget: (id) => ipcRenderer.invoke("environments:forget", id),
+    onOpenSettings: (cb) => {
+      const handler = (_event, computerId) => cb(computerId);
+      ipcRenderer.on("workspaces:open-settings", handler);
+      return () => ipcRenderer.removeListener("workspaces:open-settings", handler);
+    },
   },
+  cloudAccount: process.argv.includes("--omb-company-desktop=1") ? {
+    state: () => ipcRenderer.invoke("cloud-account:state"),
+    begin: () => ipcRenderer.invoke("cloud-account:begin"),
+    signInAgain: () => ipcRenderer.invoke("cloud-account:signInAgain"),
+    reopen: () => ipcRenderer.invoke("cloud-account:reopen"),
+    cancel: () => ipcRenderer.invoke("cloud-account:cancel"),
+    refresh: () => ipcRenderer.invoke("cloud-account:refresh"),
+    signOut: () => ipcRenderer.invoke("cloud-account:signOut"),
+    openDashboard: () => ipcRenderer.invoke("cloud-account:openDashboard"),
+    connectHome: () => ipcRenderer.invoke("cloud-account:connectHome"),
+    connectHomeForPhone: () => ipcRenderer.invoke("cloud-account:connectHomeForPhone"),
+    onState: cb => {
+      const handler = (_event, state) => cb(state);
+      ipcRenderer.on("cloud-account:state-changed", handler);
+      return () => ipcRenderer.removeListener("cloud-account:state-changed", handler);
+    },
+    // "Let my Cloud use this Mac": main decides the Cloud; no argument names it.
+    lending: {
+      state: () => ipcRenderer.invoke("lending:state"),
+      chooseFolder: () => ipcRenderer.invoke("lending:folder"),
+      save: input => ipcRenderer.invoke("lending:save", input),
+      stop: () => ipcRenderer.invoke("lending:stop"),
+    },
+  } : undefined,
+  /** Move to Cloud: this computer's workspace to the person's Cloud home.
+   * No arguments reach main. A remote page may start a move only from the
+   * person's own click. */
+  cloudMove: process.argv.includes("--omb-company-desktop=1") ? {
+    state: () => ipcRenderer.invoke("cloud-move:state"),
+    start: () => isLocalPage || navigator.userActivation?.isActive === true
+      ? ipcRenderer.invoke("cloud-move:start") : Promise.reject(new Error("Choose Move to start moving.")),
+    cancel: () => ipcRenderer.invoke("cloud-move:cancel"),
+    restorePrevious: () => ipcRenderer.invoke("cloud-move:restore-previous"),
+    dismiss: () => ipcRenderer.invoke("cloud-move:dismiss"),
+    onState: cb => {
+      const handler = (_event, state) => cb(state);
+      ipcRenderer.on("cloud-move:state-changed", handler);
+      return () => ipcRenderer.removeListener("cloud-move:state-changed", handler);
+    },
+  } : undefined,
+  /** The Cloud's setup checklist: "Let your Cloud use this Mac" opens the
+   * lending switch in this app's own Settings → OMB Cloud. No arguments; it
+   * shows the switch and changes nothing. */
+  cloudLending: process.argv.includes("--omb-company-desktop=1") ? {
+    open: () => ipcRenderer.invoke("cloud-lending:open"),
+  } : undefined,
+  /** The plan, read only, in Settings on the person's own Cloud: its name and
+   * whether it is active, Manage (the Cloud dashboard in the browser) and
+   * back to this computer. No arguments; a remote page acts only on a click. */
+  cloudPlan: process.argv.includes("--omb-company-desktop=1") ? {
+    state: () => ipcRenderer.invoke("cloud-plan:state"),
+    manage: () => isLocalPage || navigator.userActivation?.isActive === true
+      ? ipcRenderer.invoke("cloud-plan:manage") : Promise.reject(new Error("Choose Manage to open your Cloud dashboard.")),
+    useThisComputer: () => isLocalPage || navigator.userActivation?.isActive === true
+      ? ipcRenderer.invoke("cloud-plan:local") : Promise.reject(new Error("Choose Use this computer to switch.")),
+  } : undefined,
+  organization: process.argv.includes("--omb-company-desktop=1") ? {
+    settingsOpened: () => ipcRenderer.invoke("organization:settings-opened"),
+    state: () => ipcRenderer.invoke("organization:state"),
+    begin: input => ipcRenderer.invoke("organization:begin", input),
+    reopen: () => ipcRenderer.invoke("organization:reopen"),
+    cancelEnrollment: () => ipcRenderer.invoke("organization:cancel"),
+    refresh: () => ipcRenderer.invoke("organization:refresh"),
+    disconnect: () => ipcRenderer.invoke("organization:disconnect"),
+    onState: cb => {
+      const handler = (_event, state) => cb(state);
+      ipcRenderer.on("organization:state-changed", handler);
+      return () => ipcRenderer.removeListener("organization:state-changed", handler);
+    },
+  } : undefined,
+  companyBackups: process.argv.includes("--omb-company-desktop=1") ? {
+    state: () => ipcRenderer.invoke("company-backups:state"),
+    list: () => ipcRenderer.invoke("company-backups:list"),
+    create: input => ipcRenderer.invoke("company-backups:create", input),
+    configureSchedule: input => ipcRenderer.invoke("company-backups:configure-schedule", input),
+    prepareRestore: input => ipcRenderer.invoke("company-backups:preview", input),
+    restore: input => ipcRenderer.invoke("company-backups:restore", input),
+    delete: input => ipcRenderer.invoke("company-backups:delete", input),
+    cancel: () => ipcRenderer.invoke("company-backups:cancel"),
+    onState: cb => {
+      const handler = (_event, state) => cb(state);
+      ipcRenderer.on("company-backups:state-changed", handler);
+      return () => ipcRenderer.removeListener("company-backups:state-changed", handler);
+    },
+  } : undefined,
+  computerSharing: {
+    state: id => ipcRenderer.invoke("sharing:state", id),
+    chooseFolder: () => ipcRenderer.invoke("sharing:folder"),
+    save: (id, grant) => ipcRenderer.invoke("sharing:save", id, grant),
+    revoke: id => ipcRenderer.invoke("sharing:revoke", id),
+    activity: id => ipcRenderer.invoke("sharing:activity", id),
+  },
+  confirm: message => ipcRenderer.invoke("dialog:confirm", message),
 };
 
 contextBridge.exposeInMainWorld(

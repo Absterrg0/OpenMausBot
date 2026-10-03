@@ -49,6 +49,7 @@ final class ShareViewModel: ObservableObject {
     }
 
     @Published private(set) var phase: Phase = .idle
+    @Published private(set) var queuedReceipt: SendReceipt?
     @Published private(set) var computers: [ShareComputer] = []
     @Published private(set) var destinations: [ShareDestination] = []
     @Published private(set) var preview = SharePreview()
@@ -376,10 +377,7 @@ final class ShareViewModel: ObservableObject {
     ) async {
         phase = .sending
         do {
-            // The share sheet is gone before a turn could settle, so the
-            // harness's receipt — sent, steered, or held — has nowhere to
-            // land here. The app shows it in the chat instead.
-            _ = try await withFailover(deadline: deadline) { client in
+            let receipt = try await withFailover(deadline: deadline) { client in
                 try await client.send(
                     text: delivery.text,
                     to: delivery.destination.messageDestination,
@@ -397,6 +395,10 @@ final class ShareViewModel: ObservableObject {
             items = nil
             pendingDelivery = nil
             phase = .sent
+            if receipt.queued == true {
+                queuedReceipt = receipt
+                return // Keep the queued result visible until the person taps Done.
+            }
             try? await Task.sleep(for: .milliseconds(450))
             onComplete?()
         } catch {
@@ -437,7 +439,10 @@ final class ShareViewModel: ObservableObject {
                 imageCapableInstances = try await withFailover { client in
                     try await client.imageCapableInstanceIDs()
                 }
-            } catch APIError.status(code: 404, message: _) {
+            } catch APIError.status(let code, _) where code == 404 || code == 403 {
+                // 404: a harness from before the capability existed. 403: a
+                // server session without the admin scope, which may not read
+                // the instance list at all. Neither can say where images go.
                 throw ShareExtensionError.imageSupportUnavailable
             }
         } else {

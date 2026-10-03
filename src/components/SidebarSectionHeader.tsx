@@ -1,7 +1,8 @@
-import { ChevronDown, ChevronRight, GripVertical } from "lucide-react";
-import type { DragEvent, KeyboardEvent } from "react";
+import { ChevronDown, ChevronRight, GripVertical, Trash2 } from "lucide-react";
+import type { DragEvent, KeyboardEvent, MouseEvent } from "react";
 
 import { cn } from "@/lib/cn";
+import { t } from "@/lib/i18n";
 import {
   sidebarAttentionLabel,
   type SidebarSectionAttention,
@@ -17,6 +18,8 @@ export function SidebarSectionHeader({
   onDragStart,
   onDragEnd,
   onMove,
+  onDelete,
+  onContextMenu,
 }: {
   name: string;
   collapsed: boolean;
@@ -27,6 +30,8 @@ export function SidebarSectionHeader({
   onDragStart?: (event: DragEvent<HTMLSpanElement>) => void;
   onDragEnd?: () => void;
   onMove?: (direction: -1 | 1) => void;
+  onDelete?: () => void;
+  onContextMenu?: (event: MouseEvent<HTMLDivElement>) => void;
 }) {
   const Chevron = collapsed ? ChevronRight : ChevronDown;
   const attentionLabel = attention ? sidebarAttentionLabel(attention) : "";
@@ -42,7 +47,7 @@ export function SidebarSectionHeader({
   };
 
   return (
-    <div className="flex items-center gap-1 px-2 pb-1" data-section={name}>
+    <div className="flex items-center gap-1 px-2 pb-1" data-section={name} tabIndex={onContextMenu ? -1 : undefined} onContextMenu={onContextMenu}>
       {onToggle ? (
         <button
           type="button"
@@ -52,15 +57,19 @@ export function SidebarSectionHeader({
           aria-keyshortcuts={reorderable ? "Alt+ArrowUp Alt+ArrowDown" : undefined}
           title={
             reorderable
-              ? `${collapsed ? "Expand" : "Collapse"} ${name}. Alt+Up/Down reorders it.`
-              : `${collapsed ? "Expand" : "Collapse"} ${name}`
+              ? collapsed
+                ? t("sidebar.section.expandReorder", { name })
+                : t("sidebar.section.collapseReorder", { name })
+              : collapsed
+                ? t("sidebar.section.expand", { name })
+                : t("sidebar.section.collapse", { name })
           }
           className="flex min-w-0 flex-1 items-center gap-1.5 rounded-md px-1 py-0.5 text-left hover:bg-raised/50"
         >
-          <Chevron size={12} className="shrink-0 text-ink-secondary" />
-          <span className="truncate text-[10px] font-medium uppercase tracking-[0.08em] text-ink-secondary">
+          <span className="truncate text-[12px] font-semibold text-ink-secondary">
             {name}
           </span>
+          <Chevron size={13} className="shrink-0 text-ink-secondary" aria-hidden="true" />
           {attention && attention.waiting > 0 && (
             <span
               aria-hidden="true"
@@ -85,22 +94,32 @@ export function SidebarSectionHeader({
               <span className="size-1.5 animate-pulse rounded-full bg-success" />
             </span>
           )}
-          <span className="h-px flex-1 bg-hairline/40" />
           {attentionLabel && <span className="sr-only">{attentionLabel}</span>}
         </button>
       ) : (
         <div className="flex min-w-0 flex-1 items-center gap-1.5 px-1 py-0.5">
-          <span className="truncate text-[10px] font-medium uppercase tracking-[0.08em] text-ink-secondary">
+          <span className="truncate text-[12px] font-semibold text-ink-secondary">
             {name}
           </span>
-          <span className="h-px flex-1 bg-hairline/40" />
+          {attentionLabel && <span className="sr-only">{attentionLabel}</span>}
         </div>
+      )}
+      {onDelete && (
+        <button
+          type="button"
+          onClick={onDelete}
+          aria-label={t("sidebar.section.deleteAria", { name })}
+          title={t("sidebar.section.deleteAria", { name })}
+          className="flex size-6 shrink-0 items-center justify-center rounded text-ink-secondary hover:bg-danger/10 hover:text-danger"
+        >
+          <Trash2 size={13} aria-hidden="true" />
+        </button>
       )}
       {reorderable && (
         <span
           aria-hidden="true"
           draggable
-          title="Drag to reorder"
+          title={t("sidebar.section.dragToReorder")}
           onDragStart={onDragStart}
           onDragEnd={onDragEnd}
           className={cn(

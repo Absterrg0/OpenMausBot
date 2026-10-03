@@ -7,6 +7,7 @@
 // backgrounds, it moves between wifi and cellular. So the stream is torn
 // down deliberately when the app leaves the screen, and on the way back the
 // server is asked what was missed rather than being asked for everything.
+import Combine
 import Foundation
 import OSLog
 import SwiftUI
@@ -27,6 +28,18 @@ private final class CachedAttachmentDownload: NSObject {
     }
 }
 
+/// An immutable, ciphertext-only credential write prepared on the main
+/// actor before any asynchronous work begins. HPKE uses fresh randomness for
+/// every seal, so retries must reuse this exact value rather than encrypting
+/// the same credential again after an ambiguous network failure.
+struct PreparedPhoneCredential: Equatable, Sendable {
+    fileprivate let requestIdentity: String
+    fileprivate let connectionID: String
+    fileprivate let botID: String
+    fileprivate let messageID: String
+    fileprivate let envelope: PhoneSecretEnvelope
+}
+
 @MainActor
 final class Session: ObservableObject {
     enum Status: Equatable {
@@ -41,6 +54,14 @@ final class Session: ObservableObject {
     @Published private(set) var state = CompanionState()
     @Published private(set) var connection: Connection?
     @Published private(set) var connections: [Connection] = []
+    let threadSelection = BotThreadSelection()
+    /// Whether the live pairing may administer the workspace — see
+    /// `Connection.canAdminister`. Views hide owner-only controls when this
+    /// is false rather than offer buttons the server would answer 403 to.
+    var canAdminister: Bool { connection?.canAdminister ?? false }
+    /// Paired with a server directly rather than through the companion
+    /// sidecar: see `Connection.pairedWithServer`.
+    var pairedWithServer: Bool { connection?.pairedWithServer ?? false }
     @Published private(set) var status: Status = .unpaired
     /// Transient, user-facing failures from an action they just took.
     @Published var actionError: String?
@@ -50,22 +71,35 @@ final class Session: ObservableObject {
     /// Distinguishes a real `.notDetermined` result from the in-memory value
     /// used while notification settings are still loading at launch.
     @Published private(set) var notificationAuthorizationResolved = false
-    /// Engines that can take a message INTO a turn that is already running.
-    /// Loaded once per hydrate and only ever used to word the composer: an
-    /// empty set means "we do not know", and the wording falls back to the
-    /// weaker promise, which is the one that is always true.
     @Published private(set) var steeringInstanceIds: Set<String> = []
     /// A short-lived desktop handoff waiting for PairingView to present it.
     @Published private(set) var pairingInvite: PairingInvite?
     /// Pairing can be opened while another computer remains connected. The
     /// working session is only replaced after the new credential commits.
     @Published private(set) var pairingRequested = false
+    /// Views with sensitive input observe this value so an explicit runtime
+    /// disconnect clears the field even when the selected connection itself
+    /// has not changed.
+    @Published private(set) var credentialEntryResetGeneration = 0
 
     /// A notification response that should be pushed by the roster's
     /// NavigationStack after the exact detached task has been activated.
     @Published private(set) var notificationChat: Chat?
 
+    /// A chat a deep link asked for, consumed by the roster's
+    /// NavigationStack the same way a notification response is.
+    @Published private(set) var pendingChat: Chat?
+
     private var client: CompanionClient?
+    /// Sent just before the phone stops talking to the active computer (a
+    /// new pairing, a switch, forgetting it), while `client` and `state`
+    /// still belong to it. A Live call hangs up here, so its end request
+    /// reaches the computer that holds the call.
+    let leavingComputer = PassthroughSubject<Void, Never>()
+    /// Ciphertext-only operations survive navigation and transient
+    /// disconnects so a retry cannot accidentally reseal the same value with
+    /// a different HPKE operation id. Nothing here is persisted to disk.
+    private var preparedPhoneCredentials: [String: PreparedPhoneCredential] = [:]
     /// The device token, kept in memory so the client can be rebuilt when the
     /// dial moves to another stored host. The keychain remains the only place
     /// it is persisted.
@@ -82,6 +116,7 @@ final class Session: ObservableObject {
     /// can finish after its replacement starts; its cleanup must not clear
     /// the replacement's handle.
     private var streamGeneration = 0
+    private var runtimeGeneration = 0
     private var reconnectDelay: UInt64 = 0
     /// How many computer panels are open. A count rather than a flag: the
     /// panel can be pushed twice in a navigation stack, and the last one to
@@ -101,6 +136,17 @@ final class Session: ObservableObject {
     /// for the same attachment path.
     private var avatarFetches: [String: (id: UUID, task: Task<Data?, Never>)] = [:]
     private var avatarCacheGeneration = 0
+    /// Voice-note bytes for the transcript bubbles. Clips are short but a
+    /// busy thread can carry several; a small cost-bounded window keeps
+    /// replay from refetching without pinning the whole transcript.
+    private let voiceNoteCache: NSCache<NSString, NSData> = {
+        let cache = NSCache<NSString, NSData>()
+        cache.countLimit = 32
+        cache.totalCostLimit = 32 * 1_024 * 1_024
+        return cache
+    }()
+    private var voiceNoteFetches: [String: (id: UUID, task: Task<Data?, Never>)] = [:]
+    private var voiceNoteCacheGeneration = 0
     /// Full image bytes are already fetched to draw a thumbnail. Keep a small,
     /// cost-bounded window so tapping that thumbnail opens immediately instead
     /// of downloading the same image twice.
@@ -123,6 +169,11 @@ final class Session: ObservableObject {
     /// paired client can be rebuilt after unlock.
     private var pendingNotification: NotificationTarget?
 
+    /// The exact route the current client will use for a credential write.
+    var phoneCredentialTransportIsProtected: Bool {
+        client?.connection.activeEndpoint?.protectsCredentials == true
+    }
+
     private struct AttachmentDraftKey: Hashable {
         let destination: MessageDestination
         let text: String
@@ -141,7 +192,10 @@ final class Session: ObservableObject {
 #if DEBUG
         let arguments = ProcessInfo.processInfo.arguments
         if (arguments.contains("-store-preview") || arguments.contains("-computer-switcher-preview")),
-           let url = Bundle.main.url(forResource: "StorePreview", withExtension: "json"),
+           let url = Bundle.main.url(
+               forResource: arguments.contains("-images-preview") ? "ImagePreview" : arguments.contains("-chat-update-preview") ? "ChatUpdatePreview" : arguments.contains("-chat-presentation-preview") ? "ChatPresentationPreview" : arguments.contains("-roster-preview") ? "RosterPreview" : arguments.contains("-threads-preview") ? "ThreadPreview" : "StorePreview",
+               withExtension: "json"
+           ),
            let data = try? Data(contentsOf: url),
            let fleet = try? JSONDecoder().decode(Fleet.self, from: data) {
             let preview = Connection(
@@ -166,7 +220,100 @@ final class Session: ObservableObject {
             } else {
                 connections = [preview]
             }
+            if arguments.contains("-images-preview") {
+                let config = URLSessionConfiguration.ephemeral
+                config.protocolClasses = [ImagePreviewProtocol.self]
+                client = CompanionClient(connection: preview, token: "image-fixture-token", session: URLSession(configuration: config))
+            }
+            if arguments.contains("-voice-preview") {
+                let config = URLSessionConfiguration.ephemeral
+                config.protocolClasses = [VoicePreviewProtocol.self]
+                client = CompanionClient(connection: preview, token: "voice-fixture-token", session: URLSession(configuration: config))
+            }
+            if arguments.contains("-live-call-preview") {
+                let config = URLSessionConfiguration.ephemeral
+                config.protocolClasses = [LiveCallPreviewProtocol.self]
+                client = CompanionClient(connection: preview, token: "live-call-fixture-token", session: URLSession(configuration: config))
+            }
+            var fleet = fleet
+            if arguments.contains("-live-call-long-name-preview"),
+               let pepper = fleet.bots.firstIndex(where: { $0.id == "preview-pepper" }) {
+                // Forty characters, too long for the call bar's line: the
+                // name gives way there, the clock does not.
+                fleet.bots[pepper].name = "Pepper, the Quarterly Planning Assistant"
+            }
             state.hydrate(fleet)
+            if arguments.contains("-live-call-room-preview"),
+               let room = try? JSONDecoder().decode(Room.self, from: Data(LiveCallPreviewProtocol.room.utf8)) {
+                // A room beside Pepper, to show the call banner in.
+                state.rooms.append(room)
+                state.messages[room.threadId] = []
+            }
+            if arguments.contains("-live-call-remote-preview") {
+                // The Mac on a call with Pepper's Gmail thread, a minute in:
+                // what the remote bar shows and counts up from.
+                state.liveCall = LiveCallPreviewProtocol.remoteCall(startedAt: Date().addingTimeInterval(-65))
+            }
+            if arguments.contains("-chat-focus-preview") {
+                // Put the requested reply several screens inside the fold.
+                var messages = state.messages["preview-gmail"] ?? []
+                if let index = messages.firstIndex(where: { $0.id == "progress2" }) {
+                    var parent = "progress"
+                    let narration = (1...12).map { number -> Message in
+                        var step = messages[index]
+                        step.id = "preview-long-\(number)"
+                        step.at = 1789088401000 + Double(number)
+                        step.text = String(repeating: "Inspecting the dependency graph for step \(number). ", count: 8)
+                        step.turnId = "preview-turn"
+                        step.parentId = parent
+                        parent = step.id
+                        return step
+                    }
+                    messages[index].parentId = parent
+                    messages.insert(contentsOf: narration, at: index)
+                    state.messages["preview-gmail"] = messages
+                }
+                focusedMessageId = "progress2"
+            }
+            if arguments.contains("-chat-compaction-preview"),
+               var receipt = state.messages["preview-gmail"]?.last {
+                receipt.id = "preview-compaction"
+                receipt.kind = .compaction
+                receipt.at = 1789088405000
+                receipt.turnId = nil
+                receipt.turnTerminal = nil
+                receipt.parentId = "answer"
+                receipt.compaction = Compaction(summary: "Earlier context preserved for the next turn.", tokensBefore: 12345)
+                state.apply(.message(threadId: "preview-gmail", message: receipt))
+                var digest = receipt
+                digest.id = "preview-digest"
+                digest.kind = .digest
+                digest.compaction = nil
+                digest.at = 1789088406000
+                digest.parentId = receipt.id
+                // The raw receipt never reaches the screen: it becomes a chip,
+                // and the reply part — this sentence — is dropped from its sheet.
+                digest.text = "[digest] · tools: shell ×2 · reply: Digest must stay hidden"
+                state.apply(.message(threadId: "preview-gmail", message: digest))
+            }
+            if arguments.contains("-chat-reasoning-preview"),
+               let frameURL = Bundle.main.url(forResource: "ChatReasoningPreview", withExtension: "json"),
+               let frameData = try? Data(contentsOf: frameURL),
+               let frame = try? JSONDecoder().decode(Frame.self, from: frameData) {
+                state.apply(frame)
+            }
+            if arguments.contains("-threads-preview"),
+               let pagesURL = Bundle.main.url(forResource: "ThreadPreviewPages", withExtension: "json"),
+               let pagesData = try? Data(contentsOf: pagesURL),
+               let pages = try? JSONDecoder().decode([String: ThreadPage].self, from: pagesData) {
+                for (threadID, page) in pages { state.merge(page, intoThread: threadID) }
+            }
+            if arguments.contains("-reset-list-density") {
+                // The fresh-install default is checked in UI tests; an
+                // earlier run on the same simulator may have saved a choice.
+                UserDefaults.standard.removeObject(forKey: PrefKey.rosterDensity)
+            }
+            if arguments.contains("-busy-fleet-preview") { startBusyFleetPreview() }
             status = .live
             return
         }
@@ -174,6 +321,67 @@ final class Session: ObservableObject {
         restore()
         Task { await refreshNotificationAuthorization() }
     }
+
+#if DEBUG
+    /// Ordinary chat under synthetic fleet traffic: no client, pairing,
+    /// microphone or provider. Uses the same delivery/fold as the live stream.
+    private func startBusyFleetPreview() {
+        guard let template = state.bots.first,
+              let messageTemplate = state.transcript(forThread: template.threadId).first,
+              let event = try? JSONDecoder().decode(RuntimeEvent.self, from: Data(
+                #"{"type":"content.delta","threadId":"fixture","delta":"busy ","streamKind":"assistant_text"}"#.utf8
+              )) else { return }
+        var fleet = state
+        fleet.resetCursor("busy-preview:0")
+        for number in 0..<20 {
+            var bot = template
+            bot.id = "busy-preview-\(number)"
+            bot.threadId = "busy-thread-\(number)"
+            bot.name = "Busy fixture \(number)"
+            bot.tasks = nil
+            bot.projects = nil
+            bot.unread = false
+            bot.messages = (0..<50).map { index in
+                var message = messageTemplate
+                message.id = "busy-\(number)-\(index)"
+                message.role = .bot
+                message.kind = .text
+                message.at = Double(index)
+                message.parentId = nil
+                message.attachments = nil
+                message.card = nil
+                message.text = "Synthetic completed message \(index)."
+                return message
+            }
+            bot.activeLeafId = bot.messages?.last?.id
+            fleet.apply(.bot(bot))
+        }
+        state = fleet
+        streamTask = Task { [weak self] in
+            let events = AsyncThrowingStream<StreamFrame, Error> { continuation in
+                let producer = Task.detached {
+                    for sequence in 1...36_000 {
+                        if Task.isCancelled { break }
+                        var next = event
+                        next.threadId = "busy-thread-\(sequence % 20)"
+                        continuation.yield(StreamFrame(frame: .runtime(next), seq: sequence))
+                        if sequence % 20 == 0 {
+                            do { try await Task.sleep(nanoseconds: 50_000_000) } catch { break }
+                        }
+                    }
+                    continuation.finish()
+                }
+                continuation.onTermination = { _ in producer.cancel() }
+            }
+            do {
+                for try await batch in eventBatches(events) {
+                    guard !Task.isCancelled, let self else { return }
+                    self.applyStreamBatch(batch)
+                }
+            } catch { /* offline fixture cancellation */ }
+        }
+    }
+#endif
 
     /// Rebuild the selected connection at launch, migrating the previous
     /// single-computer record the first time a multi-computer build runs.
@@ -252,6 +460,30 @@ final class Session: ObservableObject {
         if invited.allowedRouteKinds == nil {
             invited.establishRoutePolicyFromInvite()
         }
+        // A 12-character code pairs with a server directly (its own sessions,
+        // a bearer with the code's scopes); anything else is the companion's.
+        if let code = PairingInvite.normalizedServerCode(credential) {
+            // Reachability first, on the public descriptor: a wrong address
+            // then fails as an address problem rather than a code problem,
+            // and no attempt is spent against the server's lockout.
+            try await Self.confirmServer(at: invited)
+            let paired = try await CompanionClient.pairWithServer(
+                connection: invited,
+                code: code,
+                label: deviceName,
+                attemptId: pairRequestId
+            )
+            var stored = invited
+            if !paired.environment.label.isEmpty { stored.name = paired.environment.label }
+            stored.serverEnvironmentId = paired.environment.environmentId
+            stored.serverScopes = paired.session.scopes
+            stored.companionDeviceId = nil
+            if let existing = registry.matchingConnection(for: stored) {
+                stored.id = existing.id
+            }
+            try commitPairing(stored, token: paired.token)
+            return
+        }
         let outcome = try await CompanionClient.pairFirstReachable(
             connection: invited,
             credential: credential,
@@ -262,6 +494,7 @@ final class Session: ObservableObject {
         // prefer the name the computer calls itself over the Bonjour label
         var stored = outcome.connection
         if !paired.serverName.isEmpty { stored.name = paired.serverName }
+        stored.companionDeviceId = paired.device.id
         // The computer knows every address it answers on, but redemption may
         // not widen the explicit route consent carried by the invite.
         stored.applyPairingAdvertisement(hosts: paired.hosts, endpoints: paired.endpoints)
@@ -277,8 +510,15 @@ final class Session: ObservableObject {
         if let existing = registry.matchingConnection(for: stored) {
             stored.id = existing.id
         }
+        try commitPairing(stored, token: paired.token, winner: winner)
+    }
 
-        try Keychain.save(paired.token, for: stored.id)
+    /// The device token goes to the keychain and the connection to defaults —
+    /// deliberately apart, so the thing that gets backed up is never the
+    /// credential. Shared by companion and server pairing; `winner` is the
+    /// route that answered, which a server pairing (one route) has no use for.
+    private func commitPairing(_ stored: Connection, token: String, winner: CompanionEndpoint? = nil) throws {
+        try Keychain.save(token, for: stored.id)
         let firstPairing = registry.connections.isEmpty
         var updatedRegistry = registry
         updatedRegistry.upsert(stored)
@@ -308,14 +548,14 @@ final class Session: ObservableObject {
         registry = updatedRegistry
         connections = registry.connections
         self.connection = stored
-        self.token = paired.token
+        self.token = token
         let liveRoutes = winner.map { route in
             [route] + stored.orderedEndpoints.filter { $0.url != route.url }
         } ?? stored.orderedEndpoints
         self.rotation = CandidateRotation(endpoints: liveRoutes)
         self.client = CompanionClient(
             connection: winner.map(stored.dialing) ?? stored,
-            token: paired.token
+            token: token
         )
         self.state = CompanionState()
         // A fresh pairing settles any restore that was still waiting on the
@@ -324,16 +564,48 @@ final class Session: ObservableObject {
         connect()
     }
 
-    func receivePairingURL(_ url: URL) {
-        guard let invite = PairingInvite.parse(url) else {
+    /// `GET /.well-known/openmausbot/environment` on a server about to be
+    /// paired. Nothing there means this address is not a server; the message
+    /// names the address, since that is what the person can fix. Any other
+    /// answer — unreachable, a gateway error — is passed through as it is.
+    private static func confirmServer(at connection: Connection) async throws {
+        let probe = CompanionClient(connection: connection, token: nil, requestTimeout: 8)
+        do {
+            _ = try await probe.environment()
+        } catch APIError.status(404, _) {
+            throw APIError.transport(
+                "\(connection.displayAddress) isn't an OpenMausBot server. Check the address and try again."
+            )
+        }
+    }
+
+    func receiveURL(_ url: URL) {
+        guard let link = CompanionDeepLink.parse(url) else {
             actionError = "That pairing invitation is not valid. Start pairing again on your computer."
             return
         }
-        pairingInvite = CompanionPairingInvitePolicy.nextInvite(
-            current: pairingInvite,
-            after: .received(invite)
-        )
-        pairingRequested = true
+        switch link {
+        case let .pairing(invite):
+            pairingInvite = CompanionPairingInvitePolicy.nextInvite(
+                current: pairingInvite,
+                after: .received(invite)
+            )
+            pairingRequested = true
+        case let .chat(threadId):
+            openChat(threadId: threadId)
+        }
+    }
+
+    /// A deep link that names a chat. An id this phone does not know — a
+    /// stale widget row, a thread deleted since — lands on the roster
+    /// silently: it is not the person's mistake, so it is not worth a banner.
+    func openChat(threadId: String) {
+        guard let chat = state.chat(forThread: threadId) else { return }
+        pendingChat = chat
+    }
+
+    func consumePendingChat() {
+        pendingChat = nil
     }
 
     func beginPairing() {
@@ -383,9 +655,16 @@ final class Session: ObservableObject {
     }
 
     func forgetConnection(id: String) {
-        guard registry.connection(id: id) != nil else { return }
+        guard let forgotten = registry.connection(id: id) else { return }
         let wasActive = registry.activeConnectionID == id
+        // A server session is ended on the server too, best effort: the
+        // bearer is discarded locally either way.
+        if forgotten.pairedWithServer, let token = try? Keychain.token(for: id) {
+            let client = CompanionClient(connection: forgotten, token: token)
+            Task.detached { try? await client.logout() }
+        }
         if wasActive { stopActiveRuntime() }
+        preparedPhoneCredentials = preparedPhoneCredentials.filter { $0.value.connectionID != id }
         Keychain.remove(id)
         registry.remove(id: id)
         persistRegistry()
@@ -419,6 +698,7 @@ final class Session: ObservableObject {
     }
 
     private func clearActiveConnection() {
+        resetCredentialEntry()
         streamTask?.cancel()
         streamTask = nil
         endpointRefreshTask?.cancel()
@@ -455,6 +735,10 @@ final class Session: ObservableObject {
     }
 
     private func stopActiveRuntime() {
+        leavingComputer.send()
+        resetCredentialEntry()
+        runtimeGeneration += 1
+        steeringInstanceIds = []
         streamGeneration += 1
         streamTask?.cancel()
         streamTask = nil
@@ -561,11 +845,16 @@ final class Session: ObservableObject {
     /// anyway; dropping it deliberately means the cursor is written down at
     /// a known point instead of wherever the socket happened to die.
     func disconnect() {
+        resetCredentialEntry()
         streamTask?.cancel()
         streamTask = nil
         endpointRefreshTask?.cancel()
         endpointRefreshTask = nil
         endLinger()
+    }
+
+    private func resetCredentialEntry() {
+        credentialEntryResetGeneration &+= 1
     }
 
     private var lingerTask: UIBackgroundTaskIdentifier = .invalid
@@ -608,6 +897,23 @@ final class Session: ObservableObject {
         while !Task.isCancelled {
             guard let client else { return }
             status = .connecting
+            // A server connection first checks it is still the same server.
+            // The descriptor is public, so this spends no credential; a
+            // changed environment id (the address now belongs to another
+            // server, or its data directory was recreated) means "pair
+            // again", exactly like a revoked token — the bearer would be
+            // refused anyway, and a fresh install must not be shown the old
+            // one. Unreachable is not "different": the stream attempt below
+            // reports that the usual way.
+            if let expected = client.connection.serverEnvironmentId {
+                let live = try? await client.environment()
+                if Task.isCancelled { return }
+                if let live, live.environmentId != expected {
+                    log.error("server identity changed: \(expected, privacy: .public) is now \(live.environmentId, privacy: .public)")
+                    status = .unauthorized
+                    return
+                }
+            }
             log.info("opening stream, cursor=\(self.state.cursor ?? "none", privacy: .public)")
             do {
                 // The query is fixed when the connection opens, so changing
@@ -616,11 +922,12 @@ final class Session: ObservableObject {
                 // breaking out here instead would fall through to the "the
                 // harness went away" path and flash a lost-connection banner
                 // on what is actually a deliberate reconnect.
-                for try await frame in try client.events(since: state.cursor, screens: screenWatchers > 0) {
+                let events = try client.events(since: state.cursor, screens: screenWatchers > 0)
+                for try await batch in eventBatches(events) {
                     if Task.isCancelled { return }
                     reconnectDelay = 0
 
-                    if case let .hello(cursor, resumed) = frame.frame {
+                    if let first = batch.first, case let .hello(cursor, resumed) = first.frame {
                         log.info("stream live, resumed=\(resumed, privacy: .public)")
                         // false means the server could not replay the gap —
                         // the one case that costs a full hydrate. Commit the
@@ -628,7 +935,7 @@ final class Session: ObservableObject {
                         // the request dies halfway through replay/hydration,
                         // reconnecting must still ask for the missing gap.
                         if !resumed {
-                            try await hydrate()
+                            try await hydrate(using: client)
                             state.resetCursor(cursor)
                         }
                         status = .live
@@ -639,12 +946,7 @@ final class Session: ObservableObject {
                         refreshConnectionMetadata(using: client)
                         continue
                     }
-                    state.apply(frame)
-                    if case let .notify(notification) = frame.frame {
-                        NotificationCoordinator.shared.deliver(notification, sequence: frame.seq)
-                    }
-                    NotificationCoordinator.shared.setBadge(state.unreadCount)
-                    state.advance(to: frame.seq)
+                    applyStreamBatch(batch)
                 }
                 // the stream ended without an error — the harness went away
                 log.notice("stream ended without an error")
@@ -672,23 +974,44 @@ final class Session: ObservableObject {
         }
     }
 
-    private func hydrate() async throws {
-        guard let client else { return }
-        let fleet = try await client.fleet(messages: 50)
-        log.info("hydrated \(fleet.bots.count, privacy: .public) bots, \(fleet.groups.count, privacy: .public) rooms")
-        state.hydrate(fleet)
-        NotificationCoordinator.shared.setBadge(state.unreadCount)
-        // Deliberately off hydrate's critical path: this only words the
-        // composer, and the cursor commit — and with it the whole stream —
-        // must not wait on a request that says nothing about the transcript.
-        // An older harness omits the flag and every engine reads as
-        // non-steering, which is the conservative wording.
-        Task { [weak self] in
-            let engines = (try? await client.instances()) ?? []
-            self?.steeringInstanceIds = Set(
-                engines.filter { $0.capabilities?.queueing == true }.map(\.instanceId)
-            )
+    private func applyStreamBatch(_ batch: [StreamFrame]) {
+        var updated = state
+        updated.applyBatch(batch)
+        state = updated
+        for frame in batch {
+            if case let .notify(notification) = frame.frame {
+                NotificationCoordinator.shared.deliver(notification, sequence: frame.seq)
+            }
         }
+        NotificationCoordinator.shared.setBadge(state.unreadCount)
+    }
+
+    private func hydrate(using client: CompanionClient) async throws {
+        let generation = streamGeneration
+        // Notification navigation can refresh while run() continues folding
+        // live events. Retry once if that makes the fetched snapshot stale.
+        for _ in 0..<2 {
+            let expectedCursor = state.cursor
+            let snapshot = try await client.fleetForHydration(messages: 50)
+            try Task.checkCancellation()
+            guard streamGeneration == generation, self.client?.connection.id == client.connection.id else {
+                throw CancellationError()
+            }
+            guard state.hydrate(snapshot.fleet, waitingThreads: snapshot.waitingThreads,
+                                ifCursorMatches: expectedCursor) else { continue }
+            log.info("hydrated \(snapshot.fleet.bots.count, privacy: .public) bots, \(snapshot.fleet.groups.count, privacy: .public) rooms")
+            NotificationCoordinator.shared.setBadge(state.unreadCount)
+            // Wording must not delay hydration or the stream's cursor commit.
+            let runtime = runtimeGeneration
+            Task { [weak self] in
+                let engines = (try? await client.instances()) ?? []
+                guard let self, self.runtimeGeneration == runtime else { return }
+                self.steeringInstanceIds = Set(engines.filter { $0.capabilities?.queueing == true }.map(\.instanceId))
+            }
+            await refreshLiveCall(using: client)
+            return
+        }
+        throw APIError.status(code: 409, message: "Conversations changed while loading. Please try opening this notification again.")
     }
 
     // MARK: - Which address to dial
@@ -743,7 +1066,9 @@ final class Session: ObservableObject {
     /// sidecars return 404 and a transient refresh error must not tear down a
     /// perfectly healthy event stream.
     private func refreshConnectionMetadata(using sourceClient: CompanionClient) {
-        guard let connectionID = connection?.id else { return }
+        // A server has no companion routes to advertise (`/api/companion/*`
+        // is the sidecar's); its one address is the one that was paired.
+        guard connection?.pairedWithServer != true, let connectionID = connection?.id else { return }
         let workingEndpoint = rotation.currentEndpoint ?? sourceClient.connection.activeEndpoint
         endpointRefreshTask?.cancel()
         endpointRefreshTask = Task { [weak self] in
@@ -807,25 +1132,20 @@ final class Session: ObservableObject {
     // is a phone that disagrees with the laptop.
 
     func send(_ text: String, to chat: Chat) async {
-        await perform { client in
-            let receipt: SendReceipt
+        let runtime = runtimeGeneration
+        let connectionID = client?.connection.id
+        var receipt: SendReceipt?
+        await perform {
             switch chat {
-            case let .bot(bot): receipt = try await client.send(text: text, toBot: bot.id)
-            case let .room(room): receipt = try await client.send(text: text, toRoom: room.id)
+            case let .bot(bot): receipt = try await $0.send(text: text, toBot: bot.id, threadId: bot.threadId)
+            case let .room(room): receipt = try await $0.send(text: text, toRoom: room.id)
             }
-            self.record(receipt, text: text, fallbackThreadId: chat.threadId)
         }
-    }
-
-    /// A send the harness held rather than ran has to stay on screen, or the
-    /// words simply vanish from the phone until the turn settles. `text` is
-    /// what the person typed; the harness echoes back only an id.
-    private func record(_ receipt: SendReceipt, text: String, fallbackThreadId: String) {
-        guard case let .queued(queueId, threadId) = receipt else { return }
-        state.rememberQueued(
-            QueuedSend(queueId: queueId, text: text),
-            inThread: threadId.isEmpty ? fallbackThreadId : threadId
-        )
+        // The receipt describes a queue on the computer this request went
+        // to. A machine switched mid-flight has already reset state for the
+        // computer now on screen, and that row must not land in it.
+        guard runtimeGeneration == runtime, client?.connection.id == connectionID else { return }
+        rememberQueuedSend(from: receipt, text: text)
     }
 
     /// Send a composer draft with app-owned attachments. The destination
@@ -841,6 +1161,8 @@ final class Session: ObservableObject {
             actionError = "This computer is offline."
             return false
         }
+        let connectionID = client.connection.id
+        let runtime = runtimeGeneration
         actionError = nil
         do {
             try AttachmentPolicy.validate(attachments)
@@ -864,13 +1186,7 @@ final class Session: ObservableObject {
                 }
             }
 
-            let destination: MessageDestination
-            switch chat {
-            case let .bot(bot):
-                destination = .bot(id: bot.id, threadId: bot.threadId)
-            case let .room(room):
-                destination = .room(id: room.id, threadId: room.threadId)
-            }
+            let destination = chat.destination
             let draftKey = AttachmentDraftKey(
                 destination: destination,
                 text: text,
@@ -921,34 +1237,91 @@ final class Session: ObservableObject {
                 attachments: uploaded
             )
             let receipt = try await client.send(text: message, to: destination, sendId: sendID)
-            // The ghost shows what was typed, not what was sent: `message`
-            // carries the <attached-file …> tags the harness reads, and a
-            // held message is a person's own words waiting, not transport.
-            // An attachment-only send has no words, so it falls back.
-            record(
-                receipt,
-                text: trimmed.isEmpty ? message : trimmed,
-                fallbackThreadId: chat.threadId
-            )
-            attachmentSendIDs.removeValue(forKey: draftKey)
-            actionError = nil
+            // The send succeeded on the computer it was addressed to, so the
+            // draft clears either way. Its queue row belongs to that computer,
+            // and must not be drawn on one selected mid-upload.
+            if runtimeGeneration == runtime, self.client?.connection.id == connectionID {
+                rememberQueuedSend(from: receipt, text: trimmed.isEmpty ? message : trimmed)
+                attachmentSendIDs.removeValue(forKey: draftKey)
+                actionError = nil
+            }
             return true
         } catch is CancellationError {
             return false
         } catch let error as APIError where error.isUnauthorized {
+            guard runtimeGeneration == runtime else { return false }
             status = .unauthorized
             actionError = error.localizedDescription
             return false
         } catch {
+            guard runtimeGeneration == runtime else { return false }
             actionError = error.localizedDescription
             return false
+        }
+    }
+
+    /// The harness's answer to a send, when it held the message instead of
+    /// delivering it. This is wire state, not optimism: the row exists
+    /// because the computer said it does, identified by its queueId.
+    private func rememberQueuedSend(from receipt: SendReceipt?, text: String) {
+        guard let receipt, receipt.queued == true,
+              let queueId = receipt.queueId, let threadId = receipt.threadId
+        else { return }
+        state.rememberQueued(
+            QueuedSend(
+                queueId: queueId,
+                text: text,
+                reason: receipt.reason == "capacity" ? "capacity" : nil
+            ),
+            threadId: threadId
+        )
+    }
+
+    /// Take back a held message. The row only goes when the computer agrees;
+    /// an entry that already drained counts as agreement.
+    /// True only when the computer confirmed cancellation, so an
+    /// edit never hands back words that already joined a turn.
+    @discardableResult
+    func cancelQueued(_ send: QueuedSend, threadId: String, in chat: Chat) async -> Bool {
+        let runtime = runtimeGeneration
+        let connectionID = client?.connection.id
+        let destination: MessageDestination
+        switch chat {
+        case let .bot(bot): destination = .bot(id: bot.id, threadId: threadId)
+        case let .room(room): destination = .room(id: room.id, threadId: threadId)
+        }
+        var agreed = false
+        var cancelled = false
+        await perform {
+            cancelled = try await $0.cancelQueued(queueId: send.queueId, to: destination)
+            agreed = true
+        }
+        // The cancel landed on the computer that owned the row. One selected
+        // mid-request has already reset state; its rows are not this cancel's
+        // to retire.
+        guard agreed, runtimeGeneration == runtime, client?.connection.id == connectionID else { return false }
+        state.cancelQueued(queueId: send.queueId, threadId: threadId)
+        return cancelled
+    }
+
+    /// Run Claude Code's updater for one engine instance on the computer.
+    /// Returns the version it now reports. Throws with the harness's own
+    /// message (already written for people) so the card can show it; an
+    /// unpaired device is flagged the same way `perform` does.
+    func updateClaude(instanceId: String) async throws -> String {
+        guard let client else { throw APIError.transport("Not connected to a computer.") }
+        do {
+            return try await client.updateClaude(instanceId: instanceId)
+        } catch let error as APIError where error.isUnauthorized {
+            status = .unauthorized
+            throw error
         }
     }
 
     private func imageSupported(by chat: Chat, capableInstances: Set<String>) -> Bool {
         switch chat {
         case let .bot(bot):
-            return capableInstances.contains(bot.modelSelection.instanceId)
+            return capableInstances.contains(bot.currentTaskModelSelection.instanceId)
         case let .room(room):
             return !room.memberIds.isEmpty && room.memberIds.allSatisfy { id in
                 guard let bot = state.bot(id) else { return false }
@@ -1142,6 +1515,162 @@ final class Session: ObservableObject {
         )
     }
 
+    /// Synchronously seal a credential before the caller starts an async
+    /// request. The caller can then erase its input immediately and retain
+    /// only this ciphertext value for an exact, idempotent retry.
+    func prepareCredential(
+        _ value: String,
+        chat: Chat,
+        message: Message,
+        secret: SecretRequestCardData
+    ) throws -> PreparedPhoneCredential {
+        guard let client, let connection else {
+            throw APIError.transport("This computer is offline.")
+        }
+        guard let publicKey = connection.secretPublicKey,
+              let deviceId = connection.companionDeviceId,
+              let target = secret.target,
+              let requestKey = secret.requestKey
+        else { throw PhoneSecretError.unavailable }
+        guard client.connection.activeEndpoint?.protectsCredentials == true else {
+            throw PhoneSecretError.insecureTransport
+        }
+
+        let botId = try credentialBotID(chat: chat, message: message)
+        let context = PhoneSecretRequestContext(
+            deviceId: deviceId,
+            botId: botId,
+            threadId: chat.threadId,
+            messageId: message.id,
+            target: target,
+            requestKey: requestKey
+        )
+        let keyId = try PhoneSecretCrypto.publicKeyId(publicKey)
+        let requestIdentity = phoneCredentialRequestIdentity(
+            connectionID: connection.id,
+            botID: botId,
+            context: context,
+            keyID: keyId
+        )
+        if let prepared = preparedPhoneCredentials[requestIdentity] {
+            return prepared
+        }
+        guard #available(iOS 17.0, *) else {
+            // HPKE, which seals the credential end to end, is iOS 17 and up.
+            // There is no weaker path worth offering for a secret.
+            throw PhoneSecretError.requiresNewerOS
+        }
+        let envelope = try PhoneSecretCrypto.encrypt(
+            value,
+            publicKey: publicKey,
+            context: context
+        )
+
+        let prepared = PreparedPhoneCredential(
+            requestIdentity: requestIdentity,
+            connectionID: connection.id,
+            botID: botId,
+            messageID: message.id,
+            envelope: envelope
+        )
+        preparedPhoneCredentials[requestIdentity] = prepared
+        return prepared
+    }
+
+    /// Recover an ambiguous ciphertext-only operation when a card view is
+    /// recreated. This is deliberately in-memory: a force-quit forgets it,
+    /// while ordinary navigation, AutoFill, and reconnects do not.
+    func preparedCredential(
+        chat: Chat,
+        message: Message,
+        secret: SecretRequestCardData
+    ) -> PreparedPhoneCredential? {
+        guard let connection,
+              let publicKey = connection.secretPublicKey,
+              let deviceId = connection.companionDeviceId,
+              let target = secret.target,
+              let requestKey = secret.requestKey,
+              let botId = try? credentialBotID(chat: chat, message: message),
+              let keyId = try? PhoneSecretCrypto.publicKeyId(publicKey)
+        else { return nil }
+        let context = PhoneSecretRequestContext(
+            deviceId: deviceId,
+            botId: botId,
+            threadId: chat.threadId,
+            messageId: message.id,
+            target: target,
+            requestKey: requestKey
+        )
+        return preparedPhoneCredentials[phoneCredentialRequestIdentity(
+            connectionID: connection.id,
+            botID: botId,
+            context: context,
+            keyID: keyId
+        )]
+    }
+
+    func discardPreparedCredential(_ prepared: PreparedPhoneCredential) {
+        if preparedPhoneCredentials[prepared.requestIdentity] == prepared {
+            preparedPhoneCredentials.removeValue(forKey: prepared.requestIdentity)
+        }
+    }
+
+    private func credentialBotID(chat: Chat, message: Message) throws -> String {
+        switch chat {
+        case let .bot(bot): return bot.id
+        case .room:
+            guard let sender = message.from?.botId else {
+                throw PhoneSecretError.invalidRequest
+            }
+            return sender
+        }
+    }
+
+    private func phoneCredentialRequestIdentity(
+        connectionID: String,
+        botID: String,
+        context: PhoneSecretRequestContext,
+        keyID: String
+    ) -> String {
+        [
+            connectionID,
+            keyID,
+            botID,
+            context.threadId,
+            context.messageId,
+            context.target,
+            context.requestKey,
+        ].joined(separator: "\u{0}")
+    }
+
+    /// Send one already-sealed operation. A retry deliberately reuses the
+    /// same HPKE envelope; the desktop derives its idempotency key from these
+    /// bytes, so a lost response cannot cause a second provider save.
+    func provideCredential(_ prepared: PreparedPhoneCredential) async throws {
+        guard let client, let connection else {
+            throw APIError.transport("This computer is offline.")
+        }
+        guard connection.id == prepared.connectionID,
+              connection.companionDeviceId == prepared.envelope.deviceId,
+              let publicKey = connection.secretPublicKey,
+              (try? PhoneSecretCrypto.publicKeyId(publicKey)) == prepared.envelope.keyId
+        else { throw PhoneSecretError.unavailable }
+        guard client.connection.activeEndpoint?.protectsCredentials == true else {
+            throw PhoneSecretError.insecureTransport
+        }
+
+        do {
+            try await client.provideCredential(
+                botId: prepared.botID,
+                messageId: prepared.messageID,
+                envelope: prepared.envelope
+            )
+        } catch let error as APIError where error.isUnauthorized {
+            status = .unauthorized
+            throw error
+        }
+    }
+
     /// The same answer, from something that only has the ids — the Live
     /// Activity's buttons.
     func answer(
@@ -1173,7 +1702,7 @@ final class Session: ObservableObject {
     /// about what was just permitted.
     func alwaysAllow(bot: Bot, card: OptionCard) async {
         guard let key = card.allowKey else { return }
-        await perform { try await $0.alwaysAllow(botId: bot.id, key: key) }
+        await perform { try await $0.alwaysAllow(botId: bot.id, key: key, threadId: bot.threadId) }
     }
 
     /// Make a new bot. The harness chooses its name, colour and greeting, so
@@ -1228,28 +1757,7 @@ final class Session: ObservableObject {
     }
 
     func interrupt(bot: Bot) async {
-        await perform { try await $0.interrupt(botId: bot.id) }
-    }
-
-    /// Take back a held message before its turn settles. The ghost goes only
-    /// once the harness confirms, so a failed cancel leaves the words on
-    /// screen still waiting — which is what is actually true.
-    func cancelQueued(_ send: QueuedSend, in chat: Chat) async {
-        guard let client else { return }
-        let threadId = chat.threadId
-        let destination: MessageDestination
-        switch chat {
-        case let .bot(bot): destination = .bot(id: bot.id, threadId: threadId)
-        case let .room(room): destination = .room(id: room.id, threadId: threadId)
-        }
-        do {
-            try await client.cancelQueued(send.queueId, to: destination)
-            state.forgetQueued(send.queueId, inThread: threadId)
-        } catch let error as APIError where error.isUnauthorized {
-            status = .unauthorized
-        } catch {
-            actionError = error.localizedDescription
-        }
+        await perform { try await $0.interrupt(botId: bot.id, threadId: bot.threadId) }
     }
 
     /// Ask for one fresh cloud viewer URL. Unlike ordinary actions this
@@ -1264,10 +1772,112 @@ final class Session: ObservableObject {
         }
     }
 
+    /// Run one call against the active computer, marking the pairing
+    /// unauthorized when the computer says so.
+    private func withClient<T>(_ call: (CompanionClient) async throws -> T) async throws -> T {
+        guard let client else { throw APIError.transport("This computer is offline.") }
+        return try await withClient(client, call: call)
+    }
+
+    /// Run one call against a particular computer. Local VM control holds on
+    /// to the client that granted its lease, so joining the desktop and
+    /// handing back reach that computer even after the phone has switched
+    /// to another one in Settings. While that computer is still the active
+    /// one, the call goes down its current route: a lease must not be
+    /// released through an address the session has since moved away from.
+    private func withClient<T>(_ client: CompanionClient, call: (CompanionClient) async throws -> T) async throws -> T {
+        let client = self.client?.connection.id == client.connection.id ? self.client ?? client : client
+        do {
+            return try await call(client)
+        } catch let error as APIError where error.isUnauthorized {
+            // As for screenshots: a call answered by the computer the phone
+            // has since switched away from must not evict the new session.
+            guard !Task.isCancelled, self.client?.connection.id == client.connection.id else {
+                throw CancellationError()
+            }
+            status = .unauthorized
+            throw error
+        }
+    }
+
+    /// The control lease this phone uses for one bot on one computer. Kept
+    /// across launches, so a session the app never got to hand back (it was
+    /// killed while driving) can be taken again and released, rather than
+    /// leaving the bot locked behind a lease nobody remembers.
+    private func localVmLease(for bot: Bot, on client: CompanionClient) -> String {
+        let key = "localVmControlLease.\(client.connection.id).\(bot.id)"
+        if let saved = UserDefaults.standard.string(forKey: key) { return saved }
+        let lease = "phone-" + UUID().uuidString
+        UserDefaults.standard.set(lease, forKey: key)
+        return lease
+    }
+
+    /// Take the bot's computer under this phone's lease and open its Local
+    /// VM's relayed desktop. Any failure after asking hands the computer
+    /// straight back, so a failed attempt never leaves the bot locked out —
+    /// except when someone else holds it: then there is nothing of ours to
+    /// release, and closing viewers could disturb theirs.
+    ///
+    /// The client that answered the take comes back with the lease: the
+    /// caller hands back through it, so a computer switched away from in
+    /// Settings is still released rather than left paused under our lease.
+    func takeLocalVm(for bot: Bot) async throws -> (request: URLRequest, password: String?, leaseId: String, client: CompanionClient) {
+        guard let client else { throw APIError.transport("This computer is offline.") }
+        let leaseId = localVmLease(for: bot, on: client)
+        var handBackOnFailure = true
+        do {
+            let state = try await withClient(client) { try await $0.computerControl(botId: bot.id, take: true, leaseId: leaseId) }
+            if state.held, state.owned == false {
+                handBackOnFailure = false
+                throw APIError.transport("Someone else is already controlling this computer.")
+            }
+            guard state.held else { throw APIError.transport("The computer could not be taken. Try again.") }
+            return try await withClient(client) { client in
+                let viewer = try await client.localVmViewer(botId: bot.id, threadId: bot.threadId, leaseId: leaseId)
+                return (try client.viewerSocketRequest(viewer), viewer.password, leaseId, client)
+            }
+        } catch {
+            if handBackOnFailure { await handBackDetached(bot: bot, leaseId: leaseId, client: client) }
+            throw error
+        }
+    }
+
+    /// Hand back from a task of its own, so cancelling whatever asked (the
+    /// person left mid-take) cannot cancel the release with it.
+    func handBackDetached(bot: Bot, leaseId: String, client: CompanionClient) async {
+        await Task { await self.handBackLocalVm(for: bot, leaseId: leaseId, client: client) }.value
+    }
+
+    /// Close this device's viewer and release the lease on the computer that
+    /// granted it, finishing even if the app is on its way to the background.
+    /// Best effort: releasing a lease that no longer holds anything is a
+    /// no-op on the harness.
+    func handBackLocalVm(for bot: Bot, leaseId: String, client: CompanionClient) async {
+        let task = UIApplication.shared.beginBackgroundTask(withName: "Hand back the Local VM")
+        defer { if task != .invalid { UIApplication.shared.endBackgroundTask(task) } }
+        _ = try? await withClient(client) { try await $0.closeViewer(botId: bot.id) }
+        _ = try? await withClient(client) { try await $0.computerControl(botId: bot.id, take: false, leaseId: leaseId) }
+    }
+
+    func localVmScreenshot(for bot: Bot) async throws -> LocalVmScreenshot {
+        guard let client else { throw APIError.transport("This computer is offline.") }
+        do {
+            return try await client.localVmScreenshot(botId: bot.id, threadId: bot.threadId)
+        } catch let error as APIError where error.isUnauthorized {
+            // A poll still in flight when the phone switched computers must
+            // not evict the new session with the old token's 401.
+            guard !Task.isCancelled, self.client?.connection.id == client.connection.id else {
+                throw CancellationError()
+            }
+            status = .unauthorized
+            throw error
+        }
+    }
+
     func markRead(_ chat: Chat) async {
         await perform(quietly: true) {
             switch chat {
-            case let .bot(bot): try await $0.markRead(botId: bot.id)
+            case let .bot(bot): try await $0.markRead(botId: bot.id, threadId: bot.threadId)
             case let .room(room): try await $0.markRead(roomId: room.id)
             }
         }
@@ -1281,6 +1891,15 @@ final class Session: ObservableObject {
         } catch {
             actionError = error.localizedDescription
         }
+    }
+
+    /// A pinned background thread may not be in a fresh fleet snapshot.
+    func loadThreadIfNeeded(_ threadId: String) async {
+        guard let client, !state.hasLoadedPage(forThread: threadId) else { return }
+        do {
+            let page = try await client.messages(threadId: threadId)
+            state.merge(page, intoThread: threadId)
+        } catch { if !Task.isCancelled { actionError = error.localizedDescription } }
     }
 
     func image(threadId: String, messageId: String) async -> Data? {
@@ -1308,13 +1927,13 @@ final class Session: ObservableObject {
                     state.apply(.bot(bot))
                 }
                 if !hit.onActivePath {
-                    let leaf = try await client.setActiveBranch(botId: bot.id, messageId: hit.messageId)
+                    let leaf = try await client.setActiveBranch(botId: bot.id, messageId: hit.messageId, threadId: hit.threadId)
                     state.apply(.thread(threadId: hit.threadId, activeLeafId: leaf))
                 }
                 let page = try await client.messages(threadId: hit.threadId, around: hit.messageId)
                 state.merge(page, intoThread: hit.threadId)
                 focusedMessageId = hit.messageId
-                return state.bot(bot.id).map(Chat.bot)
+                return state.bot(forThread: hit.threadId).map(Chat.bot)
             }
             if let groupId = hit.groupId,
                var room = state.rooms.first(where: { $0.id == groupId }) {
@@ -1335,56 +1954,155 @@ final class Session: ObservableObject {
         if focusedMessageId == messageId { focusedMessageId = nil }
     }
 
-    func createTask(for bot: Bot, title: String?) async {
-        guard let client else { return }
-        do { state.apply(.bot(try await client.createTask(botId: bot.id, title: title))) }
-        catch { actionError = error.localizedDescription }
+    @discardableResult
+    func createTask(for bot: Bot, title: String?) async -> Bot? {
+        guard let client else { return nil }
+        do {
+            let updated = try await client.createTask(botId: bot.id, title: title)
+            state.apply(.bot(updated))
+            return updated
+        } catch { actionError = error.localizedDescription; return nil }
     }
 
-    func switchTask(_ task: BotTask, for bot: Bot) async {
-        guard let client, task.threadId != bot.threadId else { return }
-        do { state.apply(.bot(try await client.switchTask(botId: bot.id, threadId: task.threadId))) }
-        catch { actionError = error.localizedDescription }
+    @discardableResult
+    func switchTask(_ task: BotTask, for bot: Bot) async -> Bot? {
+        guard let client else { return nil }
+        do {
+            let updated = try await client.switchTask(botId: bot.id, threadId: task.threadId)
+            state.apply(.bot(updated))
+            return updated
+        } catch { actionError = error.localizedDescription; return nil }
     }
 
-    func renameTask(_ task: BotTask, for bot: Bot, title: String) async {
-        guard let client else { return }
+    @discardableResult
+    func renameTask(_ task: BotTask, for bot: Bot, title: String) async -> Bool {
+        guard let client else { return false }
         do {
             try await client.renameTask(botId: bot.id, threadId: task.threadId, title: title)
             await refresh()
-        } catch { actionError = error.localizedDescription }
+            return true
+        } catch { actionError = error.localizedDescription; return false }
     }
 
-    func deleteTask(_ task: BotTask, for bot: Bot) async {
-        guard let client else { return }
-        do { state.apply(.bot(try await client.deleteTask(botId: bot.id, threadId: task.threadId))) }
-        catch { actionError = error.localizedDescription }
+    /// Snooze or wake a bot thread. Desktop parity: bots only — group
+    /// threads have no snooze on the wire either.
+    func snoozeTask(_ task: BotTask, for bot: Bot, snoozedUntil: Double?) async -> Bool {
+        guard let client else { return false }
+        do {
+            try await client.snoozeTask(botId: bot.id, threadId: task.threadId, snoozedUntil: snoozedUntil)
+            await refresh()
+            return true
+        } catch { actionError = error.localizedDescription; return false }
     }
 
-    func createTask(for room: Room, title: String?) async {
-        guard let client else { return }
-        do { state.apply(.room(try await client.createTask(groupId: room.id, title: title))) }
-        catch { actionError = error.localizedDescription }
+    @discardableResult
+    func setTaskPinned(_ task: BotTask, pinned: Bool, in chat: Chat) async -> Bool {
+        guard let client else { return false }
+        setPinnedLocally(task, pinned: pinned, in: chat)
+        do {
+            switch chat {
+            case let .bot(bot):
+                try await client.setTaskPinned(botId: bot.id, threadId: task.threadId, pinned: pinned)
+            case let .room(room):
+                try await client.setRoomTaskPinned(groupId: room.id, threadId: task.threadId, pinned: pinned, title: task.title)
+            }
+            await refresh()
+            return true
+        } catch {
+            setPinnedLocally(task, pinned: task.pinned == true, in: chat)
+            actionError = error.localizedDescription
+            return false
+        }
     }
 
-    func switchTask(_ task: BotTask, for room: Room) async {
-        guard let client, task.threadId != room.threadId else { return }
-        do { state.apply(.room(try await client.switchTask(groupId: room.id, threadId: task.threadId))) }
-        catch { actionError = error.localizedDescription }
+    /// Move the row before the server answers, and put it back if the write fails.
+    private func setPinnedLocally(_ task: BotTask, pinned: Bool, in chat: Chat) {
+        let value: Bool? = pinned ? true : nil
+        switch chat {
+        case let .bot(bot):
+            guard let botIndex = state.bots.firstIndex(where: { $0.id == bot.id }),
+                  var tasks = state.bots[botIndex].tasks,
+                  let taskIndex = tasks.firstIndex(where: { $0.threadId == task.threadId }) else { return }
+            tasks[taskIndex].pinned = value
+            state.bots[botIndex].tasks = tasks
+        case let .room(room):
+            guard let roomIndex = state.rooms.firstIndex(where: { $0.id == room.id }),
+                  var tasks = state.rooms[roomIndex].tasks,
+                  let taskIndex = tasks.firstIndex(where: { $0.threadId == task.threadId }) else { return }
+            tasks[taskIndex].pinned = value
+            state.rooms[roomIndex].tasks = tasks
+        }
     }
 
-    func renameTask(_ task: BotTask, for room: Room, title: String) async {
-        guard let client else { return }
+    @discardableResult
+    func setTaskArchived(_ task: BotTask, for bot: Bot, archivedAt: Double?) async -> Bool {
+        guard let client else { return false }
+        do {
+            try await client.archiveTask(botId: bot.id, threadId: task.threadId, archivedAt: archivedAt)
+            await refresh()
+            return true
+        } catch { actionError = error.localizedDescription; return false }
+    }
+
+    @discardableResult
+    func deleteTask(_ task: BotTask, for bot: Bot) async -> Bot? {
+#if DEBUG
+        // The native UI fixture has no paired client. This explicit launch
+        // mode exercises list updates and a partial batch failure entirely
+        // offline, without touching a person's conversations.
+        let arguments = ProcessInfo.processInfo.arguments
+        if arguments.contains("-threads-preview-deletion"),
+           var updated = state.bot(bot.id),
+           task.threadId != bot.threadId,
+           updated.visibleTasks.contains(where: { $0.threadId == task.threadId && !$0.isWorking }) {
+            if arguments.contains("-threads-preview-deletion-fails-weekend")
+                && task.threadId == "preview-weekend" {
+                actionError = "Synthetic deletion failure"
+                return nil
+            }
+            updated.tasks?.removeAll { $0.threadId == task.threadId }
+            state.apply(.bot(updated))
+            return updated
+        }
+#endif
+        guard let client else { return nil }
+        do {
+            let updated = try await client.deleteTask(botId: bot.id, threadId: task.threadId)
+            state.apply(.bot(updated))
+            return updated
+        } catch { actionError = error.localizedDescription; return nil }
+    }
+
+    @discardableResult
+    func createTask(for room: Room, title: String?) async -> Bool {
+        guard let client else { return false }
+        do { state.apply(.room(try await client.createTask(groupId: room.id, title: title))); return true }
+        catch { actionError = error.localizedDescription; return false }
+    }
+
+    @discardableResult
+    func switchTask(_ task: BotTask, for room: Room) async -> Bool {
+        guard task.threadId != room.threadId else { return true }
+        guard let client else { return false }
+        do { state.apply(.room(try await client.switchTask(groupId: room.id, threadId: task.threadId))); return true }
+        catch { actionError = error.localizedDescription; return false }
+    }
+
+    @discardableResult
+    func renameTask(_ task: BotTask, for room: Room, title: String) async -> Bool {
+        guard let client else { return false }
         do {
             try await client.renameTask(groupId: room.id, threadId: task.threadId, title: title)
             await refresh()
-        } catch { actionError = error.localizedDescription }
+            return true
+        } catch { actionError = error.localizedDescription; return false }
     }
 
-    func deleteTask(_ task: BotTask, for room: Room) async {
-        guard let client else { return }
-        do { state.apply(.room(try await client.deleteTask(groupId: room.id, threadId: task.threadId))) }
-        catch { actionError = error.localizedDescription }
+    @discardableResult
+    func deleteTask(_ task: BotTask, for room: Room) async -> Bool {
+        guard let client else { return false }
+        do { state.apply(.room(try await client.deleteTask(groupId: room.id, threadId: task.threadId))); return true }
+        catch { actionError = error.localizedDescription; return false }
     }
 
     // MARK: - Agent profile
@@ -1404,7 +2122,7 @@ final class Session: ObservableObject {
     func updateModel(_ selection: ModelSelection, for bot: Bot) async -> Bot? {
         guard let client else { return nil }
         do {
-            let updated = try await client.updateModel(botId: bot.id, selection: selection)
+            let updated = try await client.updateModel(botId: bot.id, selection: selection, threadId: bot.threadId)
             guard !Task.isCancelled else { return nil }
             state.apply(.bot(updated))
             return updated
@@ -1484,12 +2202,62 @@ final class Session: ObservableObject {
         for fetch in avatarFetches.values { fetch.task.cancel() }
         avatarFetches.removeAll()
         avatarCache.removeAllObjects()
+        voiceNoteCacheGeneration += 1
+        for fetch in voiceNoteFetches.values { fetch.task.cancel() }
+        voiceNoteFetches.removeAll()
+        voiceNoteCache.removeAllObjects()
     }
 
     func voiceOptions() async -> [Voice] {
         guard let client else { return [] }
         do { return try await client.voices() }
         catch { actionError = error.localizedDescription; return [] }
+    }
+
+    /// Cached voice-note bytes for the transcript bubble, shaped like
+    /// avatarData so replay and scroll-back never refetch the same clip.
+    func voiceNoteData(for note: MessageVoiceNote) async -> Data? {
+        guard let client else { return nil }
+        let key = note.path as NSString
+        if let cached = voiceNoteCache.object(forKey: key) { return cached as Data }
+        let generation = voiceNoteCacheGeneration
+        let fetch: (id: UUID, task: Task<Data?, Never>)
+        if let pending = voiceNoteFetches[note.path] {
+            fetch = pending
+        } else {
+            let pending = (
+                id: UUID(),
+                task: Task<Data?, Never> { try? await client.voiceNote(path: note.path) }
+            )
+            voiceNoteFetches[note.path] = pending
+            fetch = pending
+        }
+        let data = await fetch.task.value
+        if voiceNoteFetches[note.path]?.id == fetch.id { voiceNoteFetches.removeValue(forKey: note.path) }
+        guard !Task.isCancelled, generation == voiceNoteCacheGeneration, let data else { return nil }
+        voiceNoteCache.setObject(data as NSData, forKey: key, cost: data.count)
+        return data
+    }
+
+    /// Switch the workspace's voice engine. The fresh status comes back so
+    /// the caller can re-derive every provider-dependent row in place.
+    func setVoiceProvider(_ provider: VoiceProvider) async -> ConfigStatus? {
+        guard let client else { return nil }
+        do { return try await client.setVoiceProvider(provider) }
+        catch { actionError = error.localizedDescription; return nil }
+    }
+
+    func saveChatterboxServer(baseURL: String, model: String) async -> ConfigStatus? {
+        guard let client else { return nil }
+        do { return try await client.saveChatterboxServer(baseURL: baseURL, model: model) }
+        catch { actionError = error.localizedDescription; return nil }
+    }
+
+    /// The host's platform, which decides whether its built-in voices are a
+    /// real engine choice there or a row that must stay disabled.
+    func serverEnvironment() async -> ServerEnvironment? {
+        guard let client else { return nil }
+        return try? await client.environment()
     }
 
     func previewVoice(_ voiceId: String, for bot: Bot) async -> Data? {
@@ -1501,6 +2269,153 @@ final class Session: ObservableObject {
     func configStatus() async -> ConfigStatus? {
         guard let client else { return nil }
         return try? await client.config()
+    }
+
+    // MARK: - Live calls
+
+    /// Start a Live call on the Mac with this phone's SDP offer. Throws so
+    /// LiveCallController can tell a missing key from a busy line from a
+    /// dead network; it turns each into words. A revoked token still goes
+    /// back to pairing first, as it does from every other action.
+    func startLiveCall(botId: String, threadId: String, sdp: String) async throws -> (
+        start: LiveCallStart, end: @MainActor () -> Task<LiveCallState?, Never>
+    ) {
+        guard let client else { throw APIError.transport("This computer is offline.") }
+        do {
+            let answer = try await client.startLiveCall(botId: botId, threadId: threadId, sdp: sdp)
+            guard self.client?.connection.id == client.connection.id else {
+                _ = try? await Task { try await client.endLiveCall(callId: answer.call.callId) }.value
+                throw APIError.transport("The computer changed while the call was starting.")
+            }
+            // The controller may be suspended applying the answer when the
+            // computer changes. Its abandoned-start cleanup still belongs here.
+            return (answer, { self.endLiveCall(callId: answer.call.callId, using: client) })
+        } catch let error as APIError where error.isUnauthorized {
+            // A computer this phone just left does not speak for the next one.
+            if self.client?.connection.id == client.connection.id { status = .unauthorized }
+            throw error
+        }
+    }
+
+    /// Hang up on the Mac. Nothing to show on failure: the bar is already
+    /// closing, and the Mac's idle timer ends a call a dead network kept.
+    /// This is the controller's end, for this phone's own call; the remote
+    /// bar's hang-up is `hangUpRemoteLiveCall`, which does show.
+    ///
+    /// The request goes to the computer connected when this is called, not
+    /// when it is sent: changing computers hangs up first
+    /// (`leavingComputer`), then replaces `client` before the task runs.
+    @discardableResult
+    func endLiveCall(callId: String) -> Task<LiveCallState?, Never> {
+        endLiveCall(callId: callId, using: client)
+    }
+
+    private func endLiveCall(callId: String, using client: CompanionClient?) -> Task<LiveCallState?, Never> {
+        return Task {
+            guard let client else { return nil }
+            let current = { self.client?.connection.id == client.connection.id }
+            do {
+                let answer = try await client.endLiveCall(callId: callId)
+                // The answer is the Mac's word that the call ended: apply it
+                // now, as the remote bar's hang-up does, rather than leave the
+                // line reading as this call until the frame that follows it.
+                guard current() else { return answer }
+                if state.applyLiveCallEnd(callId: callId, answer: answer) {
+                    await refreshLiveCall(using: client)
+                }
+                return answer
+            } catch let error as APIError where error.isUnauthorized {
+                // A computer this phone just left does not speak for the next one.
+                if current() { status = .unauthorized }
+                return nil
+            } catch {
+                log.error("live call end failed: \(error.localizedDescription, privacy: .public)")
+                return nil
+            }
+        }
+    }
+
+    /// Hang up a call another device holds, from this chat's remote bar.
+    /// Unlike the controller's end, nothing else is closing here: the bar
+    /// stays until the Mac says so. A failure shows the Mac's (or the
+    /// sidecar's) own words in the usual alert, and the Mac's answer takes
+    /// the bar down now instead of on the frame that follows it.
+    func hangUpRemoteLiveCall(callId: String) async {
+        guard let client else {
+            actionError = String(localized: "This computer is offline.")
+            return
+        }
+        let current = { self.client?.connection.id == client.connection.id }
+        do {
+            let answer = try await client.endLiveCall(callId: callId)
+            guard current() else { return }
+            if state.applyLiveCallEnd(callId: callId, answer: answer) {
+                await refreshLiveCall(using: client)
+            }
+        } catch let error as APIError where error.isUnauthorized {
+            // A computer this phone just left does not speak for the next one.
+            if current() { status = .unauthorized }
+        } catch {
+            if current() { actionError = error.localizedDescription }
+        }
+    }
+
+    /// Nil when the change did not reach the Mac; `actionError` then says
+    /// why, so the settings sheet never shows an unsaved change as saved.
+    func updateLiveSettings(_ patch: LiveSettingsPatch) async -> LiveSettings? {
+        guard let client else {
+            actionError = String(localized: "This computer is offline.")
+            return nil
+        }
+        let current = { self.client?.connection.id == client.connection.id }
+        do {
+            return try await client.updateLiveSettings(patch)
+        } catch let error as APIError where error.isUnauthorized {
+            // A computer this phone just left does not speak for the next one.
+            if current() { status = .unauthorized }
+            return nil
+        } catch {
+            if current() { actionError = error.localizedDescription }
+            return nil
+        }
+    }
+
+    /// A phone that connects mid-call must learn about it: hydrate carries
+    /// the fleet, not the line. Resumed streams replay the frame instead.
+    /// An older computer has no such route; the stream will say if a call
+    /// starts, so that failure is only logged.
+    ///
+    /// The stream keeps running while the lookup is out. A `live.call` frame
+    /// (or a hang-up's answer) that lands meanwhile is newer than the
+    /// lookup, so the answer is applied only if the line and the cursor
+    /// are still where they were — the same guard `hydrate` uses.
+    private func refreshLiveCall(using client: CompanionClient) async {
+        let expectedCursor = state.cursor
+        let expectedLine = state.liveCall
+        do {
+            let call = try await client.liveCall()
+            guard self.client?.connection.id == client.connection.id else { return }
+            if !state.applyLiveCallLookup(call, ifCursorMatches: expectedCursor, lineWas: expectedLine) {
+                log.info("live call lookup dropped: the stream moved on while it was out")
+            }
+        } catch {
+            log.info("live call lookup skipped: \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
+    func botOverview(for bot: Bot) async -> BotOverview? {
+        guard let client else { return nil }
+        let connectionID = connection?.id
+        do {
+            let overview = try await client.overview(botId: bot.id)
+            guard !Task.isCancelled, connection?.id == connectionID else { return nil }
+            return overview
+        } catch {
+            guard !Task.isCancelled, connection?.id == connectionID else { return nil }
+            guard !(error is CancellationError), (error as? URLError)?.code != .cancelled else { return nil }
+            actionError = error.localizedDescription
+            return nil
+        }
     }
 
     // MARK: - Routines
@@ -1568,8 +2483,7 @@ final class Session: ObservableObject {
         do {
             var bot = state.bot(target.botId)
             if bot == nil {
-                let fleet = try await client.fleet(messages: 50)
-                state.hydrate(fleet)
+                try await hydrate(using: client)
                 bot = state.bot(target.botId)
             }
             // A room's approval/question notification carries the asker bot
@@ -1602,10 +2516,68 @@ final class Session: ObservableObject {
                 }
             }
             notificationChat = .bot(selected)
+        } catch is CancellationError {
+            // A refresh from the previous computer must not alert on the
+            // newly selected connection after its generation guard rejects it.
         } catch { actionError = error.localizedDescription }
     }
 
     func consumeNotificationChat() { notificationChat = nil }
+
+    // MARK: - Thread chips
+
+    /// A tapped "Opened thread #Title on Scout" chip. Lands on that thread by
+    /// the route a thread row uses, which only changes what this phone is
+    /// looking at — a bot mid-turn keeps working where it was. A thread the
+    /// computer no longer has still lands on the bot, with a notice, rather
+    /// than nowhere.
+    ///
+    /// Returns the thread to select in place when the chip's bot is the one
+    /// already on screen. Any other bot is pushed the way a notification is,
+    /// and nil comes back.
+    func openThread(_ ref: ThreadRef, shownBotId: String?) async -> String? {
+        guard !Task.isCancelled else { return nil }
+        guard let client else {
+            actionError = "Pair this device with your computer to open that thread."
+            return nil
+        }
+        let generation = streamGeneration
+        let connectionID = client.connection.id
+        let requestIsCurrent = {
+            !Task.isCancelled && self.streamGeneration == generation && self.client?.connection.id == connectionID
+        }
+        actionError = nil
+        do {
+            var bot = state.bot(ref.botId)
+            if bot == nil {
+                try await hydrate(using: client)
+                guard requestIsCurrent() else { return nil }
+                bot = state.bot(ref.botId)
+            }
+            guard var selected = bot else { throw APIError.status(code: 404, message: "That agent no longer exists.") }
+            if selected.threadId != ref.threadId {
+                do {
+                    selected = try await client.switchTask(botId: selected.id, threadId: ref.threadId)
+                    guard requestIsCurrent() else { return nil }
+                    state.apply(.bot(selected))
+                } catch APIError.status(code: 404, message: _) {
+                    guard requestIsCurrent() else { return nil }
+                    // The thread may be gone (deleted since the chip was
+                    // written). The bot's current thread, and a word about
+                    // it, beats a dead tap.
+                    actionError = "That thread is no longer on your computer."
+                }
+            }
+            guard requestIsCurrent() else { return nil }
+            if selected.id == shownBotId { return selected.threadId }
+            notificationChat = .bot(selected)
+        } catch is CancellationError {
+        } catch {
+            guard requestIsCurrent() else { return nil }
+            actionError = error.localizedDescription
+        }
+        return nil
+    }
 
     func react(to message: Message, in threadId: String, emoji: String) async {
         guard let client else { return }
@@ -1615,14 +2587,37 @@ final class Session: ObservableObject {
         } catch { actionError = error.localizedDescription }
     }
 
+    /// Edit and retry. The edited text replaces the old message on screen
+    /// the moment it is sent, hiding the old answer, and the computer's fork
+    /// takes over as soon as either its response or its stream frames land.
+    /// A failed edit simply drops the stand-in, so the old branch returns.
     func edit(_ message: Message, for bot: Bot, text: String) async {
-        await perform { try await $0.edit(botId: bot.id, messageId: message.id, text: text) }
+        guard client != nil else { return }
+        let threadId = bot.threadId
+        let connectionId = connection?.id
+        let pending = PendingEdit(sourceId: message.id, text: text, baseLeafId: state.bot(forThread: threadId)?.activeLeafId)
+        state.pendingEdits[threadId] = pending
+        defer {
+            if state.pendingEdits[threadId] == pending { state.pendingEdits[threadId] = nil }
+        }
+        await perform {
+            let fork = try await $0.edit(
+                botId: bot.id,
+                messageId: message.id,
+                text: text,
+                threadId: threadId,
+                sendId: pending.requestId
+            )
+            if let fork, self.connection?.id == connectionId {
+                self.state.adoptEdit(fork, inThread: threadId, expectedPending: pending)
+            }
+        }
     }
 
     func switchVersion(to message: Message, for bot: Bot) async {
         guard let client else { return }
         do {
-            let leaf = try await client.setActiveBranch(botId: bot.id, messageId: message.id)
+            let leaf = try await client.setActiveBranch(botId: bot.id, messageId: message.id, threadId: bot.threadId)
             state.apply(.thread(threadId: bot.threadId, activeLeafId: leaf))
         } catch { actionError = error.localizedDescription }
     }
@@ -1691,101 +2686,15 @@ final class Session: ObservableObject {
 
     private func perform(quietly: Bool = false, _ body: (CompanionClient) async throws -> Void) async {
         guard let client else { return }
+        let runtime = runtimeGeneration
         do {
             try await body(client)
         } catch let error as APIError where error.isUnauthorized {
+            guard runtimeGeneration == runtime else { return }
             status = .unauthorized
         } catch {
+            guard runtimeGeneration == runtime else { return }
             if !quietly { actionError = error.localizedDescription }
-        }
-    }
-}
-
-/// A chat is a bot or a room. They share a thread, which is what every
-/// message, approval and page is keyed by.
-enum Chat: Identifiable, Hashable {
-    case bot(Bot)
-    case room(Room)
-
-    var id: String {
-        switch self {
-        case let .bot(bot): return bot.id
-        case let .room(room): return room.id
-        }
-    }
-
-    static func == (left: Chat, right: Chat) -> Bool {
-        switch (left, right) {
-        case let (.bot(a), .bot(b)): return a.id == b.id
-        case let (.room(a), .room(b)): return a.id == b.id
-        default: return false
-        }
-    }
-
-    func hash(into hasher: inout Hasher) {
-        switch self {
-        case let .bot(bot):
-            hasher.combine(0)
-            hasher.combine(bot.id)
-        case let .room(room):
-            hasher.combine(1)
-            hasher.combine(room.id)
-        }
-    }
-
-    var threadId: String {
-        switch self {
-        case let .bot(bot): return bot.threadId
-        case let .room(room): return room.threadId
-        }
-    }
-
-    var name: String {
-        switch self {
-        case let .bot(bot): return bot.name
-        case let .room(room): return room.name
-        }
-    }
-
-    var isBot: Bool {
-        if case .bot = self { return true }
-        return false
-    }
-
-    var supportsTasks: Bool {
-        switch self {
-        case .bot: return true
-        // `tasks == nil` means an older paired desktop. Hide the affordance
-        // instead of sending it a route it does not know yet.
-        case let .room(room): return room.dm != true && room.tasks != nil
-        }
-    }
-
-    var subtitle: String {
-        switch self {
-        case let .bot(bot): return bot.title
-        case let .room(room): return "\(room.memberIds.count) bots"
-        }
-    }
-
-    var unread: Bool {
-        switch self {
-        case let .bot(bot): return bot.unread
-        case let .room(room): return room.unread
-        }
-    }
-
-    var busy: Bool {
-        switch self {
-        case let .bot(bot): return bot.busy ?? false
-        case let .room(room): return room.busyBotId != nil
-        }
-    }
-
-    var color: String {
-        switch self {
-        case let .bot(bot): return bot.color
-        case .room: return "blue"
         }
     }
 }

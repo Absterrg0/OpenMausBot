@@ -3,8 +3,8 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 
 import { ApprovalCard } from "./ApprovalCard";
-import { spokenApprovalPrompt, type Pending } from "./PendingApproval";
-import type { Message } from "@/state/store";
+import { pendingApprovals, PendingApprovalPanel, spokenApprovalPrompt, type Pending } from "./PendingApproval";
+import type { Bot, Message } from "@/state/store";
 import { skillRequestBehavior } from "../../shared/skill-request";
 
 const routineRequest = {
@@ -25,6 +25,33 @@ const createRoutineOperation = {
     durationMinutes: 30,
   },
 };
+
+describe("ApprovalCard decided by voice", () => {
+  const bash = (answered: string, via?: "call"): Message => ({
+    id: "bash-card",
+    role: "bot",
+    kind: "options",
+    at: 1,
+    card: {
+      title: "Approval needed",
+      subtitle: "rm -rf build",
+      options: ["Allow", "Deny"],
+      requestId: "r1",
+      tool: "Bash",
+      answered,
+      answeredBy: { kind: "loopback", ...(via ? { via } : {}) },
+    },
+  });
+
+  it("says a card was decided by voice on a Live call", () => {
+    expect(renderToStaticMarkup(createElement(ApprovalCard, { message: bash("allow", "call") }))).toMatch(/Allowed.*by voice/);
+    expect(renderToStaticMarkup(createElement(ApprovalCard, { message: bash("deny", "call") }))).toMatch(/Denied.*by voice/);
+  });
+
+  it("says nothing extra for a tap", () => {
+    expect(renderToStaticMarkup(createElement(ApprovalCard, { message: bash("allow") }))).not.toContain("by voice");
+  });
+});
 
 describe("ApprovalCard routine proposals", () => {
   it("describes a chat-created routine as scheduling rather than a raw tool call", () => {
@@ -126,6 +153,96 @@ describe("ApprovalCard routine proposals", () => {
     expect(spoken).toContain("Review the schedule and instructions on screen");
     expect(spoken).not.toContain("Review every item in the backlog");
     expect(spoken.length).toBeLessThan(200);
+  });
+});
+
+describe("ApprovalCard profile proposals", () => {
+  const card = (answered?: string) => ({
+    title: "Set up Scout?",
+    subtitle: 'Why: you asked\nName: "Scout" → "Kiwi"\nSOUL.md (0 → 9 bytes):\n+Be brief.\nChanges what Scout is told on every turn. Nothing runs.',
+    options: ["Confirm", "Cancel"],
+    requestId: "req-p1",
+    tool: "update_profile",
+    answered,
+    profileRequest: {
+      version: 1 as const, requestId: "req-p1", botId: "bot-1", threadId: "thread-1", targetBotId: "bot-1", targetName: "Scout",
+      createdAt: 1, reason: "you asked", changes: { name: "Kiwi", soul: "Be brief." }, before: { name: "Scout", soul: "" }, expectedRevision: "r",
+    },
+  });
+
+  const bot = { id: "bot-1", name: "Scout" } as never as Bot;
+
+  it("describes a profile proposal as a profile update and shows the diff", () => {
+    const message: Message = {
+      id: "profile-card",
+      role: "bot",
+      kind: "options",
+      at: 1,
+      card: card(),
+    };
+
+    const html = renderToStaticMarkup(createElement(ApprovalCard, { bot, message }));
+    expect(html).toContain("wants to update its profile");
+    expect(html).toContain("update_profile");
+    expect(html).toContain("+Be brief.");
+    expect(html).toContain("Nothing runs.");
+  });
+
+  it("records Profile updated after confirmation", () => {
+    const message: Message = {
+      id: "profile-card-answered",
+      role: "bot",
+      kind: "options",
+      at: 1,
+      card: card("allow"),
+    };
+
+    expect(renderToStaticMarkup(createElement(ApprovalCard, { bot, message }))).toContain("Profile updated");
+  });
+
+  it("names the actual target in the header when a Chief proposes for a peer", () => {
+    const crossCard = card();
+    crossCard.profileRequest = {
+      ...crossCard.profileRequest,
+      targetBotId: "bot-2",
+      targetName: "Peer",
+    };
+    const message: Message = {
+      id: "profile-card-cross",
+      role: "bot",
+      kind: "options",
+      at: 1,
+      card: crossCard,
+    };
+
+    const html = renderToStaticMarkup(createElement(ApprovalCard, { bot, message }));
+    expect(html).toContain("Scout wants to update @Peer");
+    expect(html).toContain("profile</div>");
+    expect(html).not.toContain("wants to update its profile");
+  });
+
+  it("speaks the card's concise title, not the full diff, and shows an imperative strip label", () => {
+    const message: Message = {
+      id: "profile-voice-card",
+      role: "bot",
+      kind: "options",
+      at: 1,
+      card: card(),
+    };
+    const pending: Pending = {
+      message,
+      requestId: "req-p1",
+      tool: "update_profile",
+      detail: message.card!.subtitle,
+    };
+
+    const spoken = spokenApprovalPrompt(pending, "Mochi");
+    expect(spoken).toBe('Mochi wants to update its profile: Set up Scout?. Review the change on screen. Should I confirm it?');
+    expect(spoken).not.toContain("SOUL.md");
+    expect(spoken).not.toContain("+Be brief.");
+
+    const strip = renderToStaticMarkup(createElement(PendingApprovalPanel, { pending, count: 1, index: 0 }));
+    expect(strip).toContain("Confirm this profile change");
   });
 });
 
@@ -262,5 +379,98 @@ describe("ApprovalCard learned skills", () => {
     message.card!.skillRequest!.action = "update";
     expect(renderToStaticMarkup(createElement(ApprovalCard, { message })))
       .toContain("propose the update again");
+  });
+});
+
+describe("ApprovalCard tool-call kinds", () => {
+  const kindMessage = (tool?: string): Message => ({
+    id: "kind-card",
+    role: "bot",
+    kind: "options",
+    at: 1,
+    card: {
+      title: "Approval needed",
+      subtitle: "rg \"wants to\" src/components",
+      options: ["Allow", "Deny"],
+      requestId: "req-kind",
+      tool,
+    },
+  });
+
+  const bot = { id: "bot-1", name: "Scout" } as never as Bot;
+
+  it("speaks a verb phrase when the driver only knows the ACP kind", () => {
+    const html = renderToStaticMarkup(createElement(ApprovalCard, { bot, message: kindMessage("other") }));
+    expect(html).toContain("Scout wants to take an action");
+    expect(html).not.toContain("wants to other");
+  });
+
+  it("maps every kind an ACP driver can send, and still humanizes tool names", () => {
+    const cases: Array<[string, string]> = [
+      ["shell", "run a command"],
+      ["edit", "edit a file"],
+      ["read", "read a file"],
+      ["fetch", "fetch a web page"],
+      ["delete", "delete a file"],
+      ["think", "think"],
+      ["other", "take an action"],
+      ["tool", "use a tool"],
+      ["mcp__ogb__computer_batch", "computer batch"],
+    ];
+    for (const [tool, phrase] of cases) {
+      const html = renderToStaticMarkup(createElement(ApprovalCard, { bot, message: kindMessage(tool) }));
+      expect(html).toContain(`Scout wants to ${phrase}`);
+    }
+  });
+
+  it("reads grammatically when no tool is known", () => {
+    const html = renderToStaticMarkup(createElement(ApprovalCard, { message: kindMessage(undefined) }));
+    expect(html).toContain("Wants to take an action");
+    expect(html).not.toContain("Wants to an action");
+  });
+
+  it("speaks a verb phrase in the voice prompt too", () => {
+    const message = kindMessage("other");
+    const spoken = spokenApprovalPrompt(
+      { message, requestId: "req-kind", tool: "other", detail: message.card!.subtitle },
+      "Mochi",
+    );
+    expect(spoken).toContain("Mochi wants to take an action");
+    expect(spoken).not.toContain("wants to other");
+  });
+});
+
+describe("ApprovalCard expired proposals", () => {
+  const expiredMessage = (): Message => ({
+    id: "profile-expired-card",
+    role: "bot",
+    kind: "options",
+    at: 1,
+    card: {
+      title: "Set up Scout?",
+      subtitle: 'Name: "Scout" → "Kiwi"',
+      options: ["Confirm", "Cancel"],
+      requestId: "req-expired",
+      tool: "update_profile",
+      expired: true,
+      profileRequest: {
+        version: 1, requestId: "req-expired", botId: "bot-1", threadId: "thread-1", targetBotId: "bot-1", targetName: "Scout",
+        createdAt: 1, reason: "you asked", changes: { name: "Kiwi" }, before: { name: "Scout" }, expectedRevision: "r",
+      },
+    },
+  });
+  const bot = { id: "bot-1", name: "Scout" } as never as Bot;
+
+  it("marks a dead proposal as expired instead of waiting for an answer", () => {
+    const html = renderToStaticMarkup(createElement(ApprovalCard, { bot, message: expiredMessage() }));
+    expect(html).toContain("Expired — ask for a fresh proposal");
+    expect(html).not.toContain("Waiting for your confirmation below");
+    expect(html).not.toContain("data-tour=\"approval\"");
+  });
+
+  it("keeps an expired proposal out of the composer's decision queue", () => {
+    const live = expiredMessage();
+    live.card!.expired = undefined;
+    expect(pendingApprovals([live, expiredMessage()]).map((pending) => pending.requestId)).toEqual(["req-expired"]);
   });
 });

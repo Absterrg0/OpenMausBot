@@ -15,6 +15,23 @@ account. A user may separately sign in on the desktop to enable the optional
 - The computer remains the source of bots, transcripts, approvals, credentials,
   SQLite data, and screen images. OpenMausBot's hosted control plane does not
   store a copy of that content.
+- When a user completes a supported credential request on the phone, the value
+  exists only in the native secure field long enough to encrypt it with the
+  public key pinned by that computer's QR code. The app clears that field
+  immediately after encryption. It may keep the resulting ciphertext in memory
+  long enough to retry the exact same operation after an interrupted response;
+  that ciphertext is never persisted and is discarded when the app exits.
+  Submission is available only
+  through hosted HTTPS or Tailscale, not cleartext LAN or Bonjour HTTP. The
+  sidecar and optional hosted relay receive an HPKE ciphertext, not the value.
+  Only the paired packaged
+  desktop processes receive the private key: the embedded server decrypts and
+  passes the value over Electron's private process channel to commit through
+  the same operating-system-encrypted store used by Settings. The value is not
+  written to
+  iOS preferences or Keychain by OpenMausMobile, chat, SQLite, logs, or the
+  hosted control-plane database. The user's chosen Password AutoFill provider
+  may separately store it under that provider's own settings and privacy terms.
 - On a local Wi-Fi or Tailscale connection, phone traffic goes directly to the
   user's computer. Tailscale is a separate service with its own privacy terms.
 - If the desktop user enables optional hosted access, OpenMausBot stores the
@@ -41,6 +58,9 @@ account. A user may separately sign in on the desktop to enable the optional
   limited to 10 MiB, documents to 25 MiB, and one message to four items and
   50 MiB total. The computer refuses new uploads after 512 MiB of attachments
   rather than silently deleting files referenced by older conversations.
+  Voice notes an agent sends are mp3 files in that same attachments directory
+  with generated names and the same owner-only permissions, and they count
+  against the same 512 MiB quota.
   In-chat selections remain in memory until the message succeeds or the draft
   is discarded. Temporary Share-extension copies are removed after a completed
   send or cancellation. If iOS terminates the extension mid-transfer, the next

@@ -32,6 +32,18 @@ final class DecodingTests: XCTestCase {
 
     // MARK: - Hydration
 
+    func testRoutineExecutionMarkerIsOptionalAndPreserved() throws {
+        let legacy = try JSONDecoder().decode(
+            BotTask.self, from: Data(#"{"threadId":"legacy","title":"Legacy","createdAt":1}"#.utf8)
+        )
+        let execution = try JSONDecoder().decode(
+            BotTask.self, from: Data(#"{"threadId":"run-thread","title":"Brief","createdAt":2,"routineRunId":"run-1"}"#.utf8)
+        )
+        XCTAssertNil(legacy.routineRunId)
+        XCTAssertEqual(execution.routineRunId, "run-1")
+        XCTAssertEqual(try JSONDecoder().decode(BotTask.self, from: JSONEncoder().encode(execution)), execution)
+    }
+
     func testDecodesThePagedFleet() throws {
         let fleet = try decode(Fleet.self, "bots-paged")
         XCTAssertFalse(fleet.bots.isEmpty)
@@ -54,6 +66,69 @@ final class DecodingTests: XCTestCase {
         let fleet = try decode(Fleet.self, "bots-full")
         XCTAssertFalse(fleet.bots.isEmpty)
         XCTAssertNil(fleet.bots.first?.hasMore)
+    }
+
+    func testDecodesABotOverview() throws {
+        let overview = try decode(BotOverview.self, "bot-overview")
+        XCTAssertEqual(overview.who.name, "Kiwi")
+        XCTAssertEqual(overview.who.soulLead, "File bugs.")
+        XCTAssertFalse(overview.does.isEmpty)
+        XCTAssertFalse(overview.wont.isEmpty)
+        XCTAssertFalse(overview.recent.isEmpty)
+        // The captured bot predates connector grants: a computer that never
+        // assigns them must keep decoding on a phone that knows about them.
+        XCTAssertNil(overview.grants)
+    }
+
+    func testDecodesConnectorGrantsInABotOverview() throws {
+        let json = """
+        {"who":{"name":"Kiwi","title":"","blurb":"","soulLead":""},
+         "does":[],"reaches":[],"wont":[],"recent":[],
+         "grants":[
+           {"slug":"gmail","level":"all","toolCount":0},
+           {"slug":"slack","level":"partial","toolCount":2},
+           {"slug":"notion","level":"none","toolCount":0}
+         ]}
+        """
+        let overview = try JSONDecoder().decode(BotOverview.self, from: Data(json.utf8))
+        let grants = try XCTUnwrap(overview.grants)
+        XCTAssertEqual(grants.count, 3)
+        XCTAssertEqual(grants[0], BotOverviewGrant(slug: "gmail", level: .all, toolCount: 0))
+        XCTAssertEqual(grants[1].slug, "slack")
+        XCTAssertEqual(grants[1].level, .partial)
+        XCTAssertEqual(grants[1].toolCount, 2)
+        XCTAssertEqual(grants[2], BotOverviewGrant(slug: "notion", level: .none, toolCount: 0))
+        XCTAssertEqual(try JSONDecoder().decode(BotOverview.self, from: JSONEncoder().encode(overview)).grants, grants)
+    }
+
+    func testAnExplicitNoToolsRecordIsAnEmptyGrantList() throws {
+        let json = #"{"who":{"name":"Kiwi","title":"","blurb":"","soulLead":""},"does":[],"reaches":[],"wont":[],"recent":[],"grants":[]}"#
+        let overview = try JSONDecoder().decode(BotOverview.self, from: Data(json.utf8))
+        XCTAssertEqual(overview.grants, [])
+    }
+
+    func testAnEntirelyUnreadableGrantsRecordDecodesAsAbsent() throws {
+        let json = #"{"who":{"name":"Kiwi","title":"","blurb":"","soulLead":""},"does":[],"reaches":[],"wont":[],"recent":[],"grants":[{"level":"all","toolCount":0},{"slug":"gmail","toolCount":0}]}"#
+        let overview = try JSONDecoder().decode(BotOverview.self, from: Data(json.utf8))
+        XCTAssertNil(overview.grants)
+    }
+
+    func testUnknownGrantShapesDoNotCostTheOverview() throws {
+        // A level this build does not know still renders (as "some tools"),
+        // and one entry the decoder cannot read is dropped rather than
+        // taking the whole overview with it.
+        let unknownLevel = #"{"who":{"name":"Kiwi","title":"","blurb":"","soulLead":""},"does":[],"reaches":[],"wont":[],"recent":[],"grants":[{"slug":"gmail","level":"scoped","toolCount":7}]}"#
+        let overview = try JSONDecoder().decode(BotOverview.self, from: Data(unknownLevel.utf8))
+        XCTAssertEqual(overview.who.name, "Kiwi")
+        XCTAssertEqual(overview.grants, [BotOverviewGrant(slug: "gmail", level: .partial, toolCount: 7)])
+
+        let malformedEntry = #"{"who":{"name":"Kiwi","title":"","blurb":"","soulLead":""},"does":[],"reaches":[],"wont":[],"recent":[],"grants":[{"slug":"gmail","level":3},{"slug":"slack","level":"all","toolCount":0}]}"#
+        let surviving = try JSONDecoder().decode(BotOverview.self, from: Data(malformedEntry.utf8))
+        XCTAssertEqual(surviving.grants?.map(\.slug), ["slack"])
+
+        let malformedField = #"{"who":{"name":"Kiwi","title":"","blurb":"","soulLead":""},"does":[],"reaches":[],"wont":[],"recent":[],"grants":5}"#
+        let tolerated = try JSONDecoder().decode(BotOverview.self, from: Data(malformedField.utf8))
+        XCTAssertNil(tolerated.grants)
     }
 
     func testStorePreviewRemainsADecodableFleet() throws {
@@ -480,6 +555,98 @@ final class DecodingTests: XCTestCase {
         XCTAssertEqual(message.text, "hi")
     }
 
+    func testDecodesAThreadOpenedByABotAndOneOpenedByThePerson() throws {
+        // Newer computers say which bot opened a thread on itself or a
+        // teammate. The captured fixtures predate that, so every thread in
+        // them was opened by the person — and must still decode as such.
+        let json = """
+        {"threadId":"t2","title":"Ship it","createdAt":1,
+         "openedBy":{"botId":"scout","name":"Scout","delegationId":"d1","at":2}}
+        """
+        let opened = try JSONDecoder().decode(BotTask.self, from: Data(json.utf8))
+        XCTAssertEqual(opened.openedBy?.botId, "scout")
+        XCTAssertEqual(opened.openedBy?.name, "Scout")
+        XCTAssertEqual(opened.openedBy?.delegationId, "d1")
+        XCTAssertEqual(opened.openedBy?.at, 2)
+
+        let minimal = try JSONDecoder().decode(
+            BotTask.self,
+            from: Data(#"{"threadId":"t1","title":"","createdAt":1,"openedBy":{"botId":"scout","name":"Scout","at":2}}"#.utf8)
+        )
+        XCTAssertNil(minimal.openedBy?.delegationId)
+
+        let byThePerson = try JSONDecoder().decode(
+            BotTask.self, from: Data(#"{"threadId":"t1","title":"","createdAt":1}"#.utf8)
+        )
+        XCTAssertNil(byThePerson.openedBy)
+        for task in try decode(Fleet.self, "bots-paged").bots.flatMap({ $0.tasks ?? [] }) {
+            XCTAssertNil(task.openedBy, task.threadId)
+        }
+    }
+
+    func testDecodesAThreadABotClosedAndOneStillOpen() throws {
+        // close_thread stamps who closed a thread; an open thread — and every
+        // thread from an older computer — has no stamp and decodes as open.
+        let closed = try JSONDecoder().decode(BotTask.self, from: Data("""
+        {"threadId":"t2","title":"Ship it","createdAt":1,
+         "openedBy":{"botId":"pm","name":"Parker","at":2},
+         "closedBy":{"botId":"pm","name":"Parker","at":9}}
+        """.utf8))
+        XCTAssertEqual(closed.closedBy?.botId, "pm")
+        XCTAssertEqual(closed.closedBy?.name, "Parker")
+        XCTAssertEqual(closed.closedBy?.at, 9)
+        XCTAssertTrue(closed.isClosed)
+        XCTAssertEqual(closed.bylineLabel, "closed by Parker", "closed outranks opened on the one byline")
+
+        let open = try JSONDecoder().decode(
+            BotTask.self,
+            from: Data(#"{"threadId":"t1","title":"","createdAt":1,"openedBy":{"botId":"pm","name":"Parker","at":2}}"#.utf8)
+        )
+        XCTAssertNil(open.closedBy)
+        XCTAssertFalse(open.isClosed)
+        XCTAssertEqual(open.bylineLabel, "opened by Parker")
+        XCTAssertNil(try JSONDecoder().decode(BotTask.self, from: Data(#"{"threadId":"t1","title":"","createdAt":1}"#.utf8)).bylineLabel)
+        for task in try decode(Fleet.self, "bots-paged").bots.flatMap({ $0.tasks ?? [] }) {
+            XCTAssertFalse(task.isClosed, task.threadId)
+        }
+    }
+
+    func testAThreadOpenedByABotSaysSoInTheList() throws {
+        // Same words as the desktop's thread list, so a person reading both
+        // screens reads one sentence.
+        let opened = try JSONDecoder().decode(
+            BotTask.self,
+            from: Data(#"{"threadId":"t2","title":"Ship it","createdAt":1,"openedBy":{"botId":"scout","name":"Scout","at":2}}"#.utf8)
+        )
+        XCTAssertEqual(opened.openedByLabel, "opened by Scout")
+
+        let byThePerson = try JSONDecoder().decode(
+            BotTask.self, from: Data(#"{"threadId":"t1","title":"","createdAt":1}"#.utf8)
+        )
+        XCTAssertNil(byThePerson.openedByLabel)
+    }
+
+    func testDecodesAThreadRefOnAnActivityChipAndItsAbsence() throws {
+        let json = """
+        {"id":"m3","role":"bot","kind":"activity","at":1,
+         "tool":{"name":"Opened thread #Ship it on Scout","ok":true},
+         "threadRef":{"botId":"scout","threadId":"t2","title":"Ship it"}}
+        """
+        let chip = try JSONDecoder().decode(Message.self, from: Data(json.utf8))
+        XCTAssertEqual(chip.kind, .activity)
+        XCTAssertEqual(chip.tool?.name, "Opened thread #Ship it on Scout")
+        XCTAssertEqual(chip.threadRef, ThreadRef(botId: "scout", threadId: "t2", title: "Ship it"))
+
+        let receipt = try JSONDecoder().decode(
+            Message.self,
+            from: Data(#"{"id":"m4","role":"bot","kind":"activity","at":1,"tool":{"name":"Read","ok":true}}"#.utf8)
+        )
+        XCTAssertNil(receipt.threadRef)
+        for message in try decode(ThreadPage.self, "thread-page").messages {
+            XCTAssertNil(message.threadRef, message.id)
+        }
+    }
+
     // MARK: - Pairing and errors
 
     func testDecodesThePairResponse() throws {
@@ -627,6 +794,28 @@ final class DecodingTests: XCTestCase {
         XCTAssertEqual(message.text, "Stripe fired")
     }
 
+    // A digest is known, not new: it must not take the unknown-kind path,
+    // which draws any text it carries as a message bubble.
+    func testADigestIsNotAnUnknownKind() throws {
+        let json = """
+        {"id":"m1","role":"bot","kind":"digest","at":1,"text":"[digest] · tools: shell ×1"}
+        """
+        let message = try JSONDecoder().decode(Message.self, from: Data(json.utf8))
+        XCTAssertNotEqual(message.kind, .unknown)
+    }
+
+    func testACompactionMessageDecodesItsRecord() throws {
+        let json = """
+        {"id":"c1","role":"bot","kind":"compaction","at":1,"text":"[compaction] Earlier: …",
+         "compaction":{"summary":"Earlier: the user asked for X.","firstKeptId":"c1","tokensBefore":12345,"by":"person"}}
+        """
+        let message = try JSONDecoder().decode(Message.self, from: Data(json.utf8))
+        XCTAssertEqual(message.kind, .compaction)
+        XCTAssertEqual(message.compaction?.summary, "Earlier: the user asked for X.")
+        XCTAssertTrue(message.compaction?.chipText.hasPrefix("Context compacted · ") == true)
+        XCTAssertTrue(message.compaction?.chipText.hasSuffix("345 tokens summarised") == true)
+    }
+
     func testAnUnknownRoleIsNotAttributedToYou() throws {
         let json = """
         {"id":"m1","role":"system","kind":"text","at":1,"text":"hello"}
@@ -656,7 +845,7 @@ final class DecodingTests: XCTestCase {
     func testAnUnknownMessageArrivesOverTheStream() throws {
         let json = """
         {"kind":"message","seq":3,"threadId":"t1",
-         "message":{"id":"m9","role":"bot","kind":"routine.run","at":9,"text":"ran"}}
+         "message":{"id":"m9","role":"bot","kind":"calendar.invite","at":9,"text":"ran"}}
         """
         let frame = try JSONDecoder().decode(StreamFrame.self, from: Data(json.utf8))
         guard case let .message(threadId, message) = frame.frame else {
@@ -665,5 +854,135 @@ final class DecodingTests: XCTestCase {
         XCTAssertEqual(threadId, "t1")
         XCTAssertEqual(message.kind, .unknown)
         XCTAssertEqual(message.text, "ran")
+    }
+
+    // MARK: - Live calls
+
+    func testAMessageSpokenOnACallSaysSo() throws {
+        let spoken = try JSONDecoder().decode(Message.self, from: Data(#"{"id":"m1","role":"user","kind":"text","at":1,"text":"hi","via":"call"}"#.utf8))
+        XCTAssertEqual(spoken.via, "call")
+        XCTAssertTrue(spoken.isViaCall)
+        let api = try JSONDecoder().decode(Message.self, from: Data(#"{"id":"m2","role":"user","kind":"text","at":1,"text":"hi","via":"api"}"#.utf8))
+        XCTAssertFalse(api.isViaCall)
+        let bot = try JSONDecoder().decode(Message.self, from: Data(#"{"id":"m3","role":"bot","kind":"text","at":1,"text":"hi","via":"call"}"#.utf8))
+        XCTAssertFalse(bot.isViaCall, "only what the person said gets the label")
+        let plain = try JSONDecoder().decode(Message.self, from: Data(#"{"id":"m4","role":"user","kind":"text","at":1,"text":"hi"}"#.utf8))
+        XCTAssertNil(plain.via)
+        XCTAssertFalse(plain.isViaCall)
+    }
+
+    func testALiveCallStateDecodesAndAnUnknownStatusStaysRunning() throws {
+        let json = #"{"callId":"c1","botId":"b1","threadId":"t1","client":"desktop","voice":"marin","startedAt":1700000000000,"status":"live","endReason":null}"#
+        let call = try JSONDecoder().decode(LiveCallState.self, from: Data(json.utf8))
+        XCTAssertEqual(call.callId, "c1")
+        XCTAssertEqual(call.status, .live)
+        XCTAssertEqual(call.startedAt, 1_700_000_000_000)
+        XCTAssertNil(call.endReason)
+        XCTAssertTrue(call.isRunning)
+
+        let over = try JSONDecoder().decode(LiveCallState.self, from: Data(#"{"callId":"c1","botId":"b1","threadId":"t1","client":"ios","voice":"marin","startedAt":1,"status":"ended","endReason":"hung-up"}"#.utf8))
+        XCTAssertFalse(over.isRunning)
+        XCTAssertEqual(over.endReason, "hung-up")
+
+        // the harness will add statuses; "paused" must not read as "over"
+        let odd = try JSONDecoder().decode(LiveCallState.self, from: Data(#"{"callId":"c1","botId":"b1","threadId":"t1","client":"ios","voice":"marin","startedAt":1,"status":"paused"}"#.utf8))
+        XCTAssertEqual(odd.status, .unknown)
+        XCTAssertTrue(odd.isRunning)
+    }
+
+    func testConfigCarriesLiveSettingsAndTolerateAnOlderComputer() throws {
+        let full = try JSONDecoder().decode(ConfigStatus.self, from: Data(#"{"live":{"configured":false,"voice":"cedar","readTypedReplies":false,"idleMinutes":9}}"#.utf8))
+        XCTAssertEqual(full.live, LiveSettings(configured: false, voice: "cedar", readTypedReplies: false, idleMinutes: 9))
+
+        // today's harness sends only { configured, voice }: the rest default
+        let older = try JSONDecoder().decode(ConfigStatus.self, from: Data(#"{"live":{"configured":true,"voice":"marin"}}"#.utf8))
+        XCTAssertEqual(older.live, LiveSettings(configured: true, voice: "marin", readTypedReplies: true, idleMinutes: 5))
+
+        // no voice chosen on the Mac arrives as "" — the desktop reads that
+        // as marin, and so must the phone, or the picker grows an empty row
+        let unset = try JSONDecoder().decode(ConfigStatus.self, from: Data(#"{"live":{"configured":true,"voice":""}}"#.utf8))
+        XCTAssertEqual(unset.live?.voice, "marin")
+        let blank = try JSONDecoder().decode(ConfigStatus.self, from: Data(#"{"live":{"configured":true,"voice":"  "}}"#.utf8))
+        XCTAssertEqual(blank.live?.voice, "marin")
+
+        // the captured fixture predates Live calls altogether
+        XCTAssertNil(try decode(ConfigStatus.self, "config").live)
+    }
+
+    func testASettingsPatchOmitsWhatItDoesNotChange() throws {
+        let data = try JSONEncoder().encode(LiveSettingsPatch(idleMinutes: 10))
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        XCTAssertEqual(object.keys.sorted(), ["idleMinutes"])
+        XCTAssertEqual(object["idleMinutes"] as? Int, 10)
+
+        let both = try JSONEncoder().encode(LiveSettingsPatch(voice: "sage", readTypedReplies: false))
+        let bothObject = try XCTUnwrap(JSONSerialization.jsonObject(with: both) as? [String: Any])
+        XCTAssertEqual(bothObject.keys.sorted(), ["readTypedReplies", "voice"])
+        XCTAssertEqual(bothObject["readTypedReplies"] as? Bool, false)
+    }
+
+    func testTheVoiceListMatchesTheDesktop() {
+        XCTAssertEqual(LiveVoices.options.first?.id, "marin")
+        XCTAssertEqual(LiveVoices.options.map(\.id), [
+            "marin", "cedar", "alloy", "ash", "ballad", "coral", "echo", "sage", "shimmer", "verse",
+            "gleam", "meridian", "quartz", "ripple", "vesper", "willow", "stone", "delta", "cinder",
+            "beacon", "bossa", "tempo",
+        ])
+        XCTAssertEqual(LiveVoices.options.first?.label, "Marin (default)")
+        XCTAssertEqual(LiveVoices.options.last?.label, "Tempo — Brazilian Portuguese, masculine")
+        XCTAssertEqual(LiveVoices.defaultVoice, "marin")
+        XCTAssertEqual(LiveVoices.idleMinutesRange, 1...60)
+        XCTAssertEqual(LiveVoices.defaultIdleMinutes, 5)
+    }
+
+    func testTheIdleHangUpChoicesMatchEveryClient() {
+        // The desktop's IDLE_CHOICES (src/components/LiveCallSettings.tsx),
+        // a choice each rather than a stepper that sent one PATCH per step.
+        XCTAssertEqual(LiveVoices.idleMinuteChoices, [1, 2, 3, 5, 10, 15, 30, 60])
+        XCTAssertEqual(LiveVoices.idleChoices(current: 5), [1, 2, 3, 5, 10, 15, 30, 60])
+        // A value set before (the stepper allowed any minute) is shown in
+        // its place and stays selected, as on the desktop.
+        XCTAssertEqual(LiveVoices.idleChoices(current: 7), [1, 2, 3, 5, 7, 10, 15, 30, 60])
+        XCTAssertEqual(LiveVoices.idleChoices(current: 90), [1, 2, 3, 5, 10, 15, 30, 60, 90], "a newer computer's limit")
+    }
+
+    func testDecodesALiveCallFrame() throws {
+        let json = #"{"kind":"live.call","seq":30,"botId":"b1","threadId":"t1","call":{"callId":"c1","botId":"b1","threadId":"t1","client":"desktop","voice":"marin","startedAt":1700000000000,"status":"live"}}"#
+        let frame = try JSONDecoder().decode(StreamFrame.self, from: Data(json.utf8))
+        guard case let .liveCall(botId, threadId, call) = frame.frame else {
+            return XCTFail("expected .liveCall, got \(frame.frame)")
+        }
+        XCTAssertEqual(botId, "b1")
+        XCTAssertEqual(threadId, "t1")
+        XCTAssertEqual(call?.callId, "c1")
+        XCTAssertEqual(call?.status, .live)
+        XCTAssertEqual(frame.frame.threadId, "t1")
+        XCTAssertEqual(frame.seq, 30)
+    }
+
+    func testALiveCallFrameWithNullMeansTheLineIsFree() throws {
+        let frame = try JSONDecoder().decode(StreamFrame.self, from: Data(#"{"kind":"live.call","seq":31,"botId":"b1","threadId":"t1","call":null}"#.utf8))
+        guard case let .liveCall(_, _, call) = frame.frame else { return XCTFail("expected .liveCall") }
+        XCTAssertNil(call)
+    }
+
+    func testALiveCallFrameWithAStatusWeDoNotKnowStillDecodes() throws {
+        let json = #"{"kind":"live.call","seq":32,"botId":"b1","threadId":"t1","call":{"callId":"c1","botId":"b1","threadId":"t1","client":"android","voice":"marin","startedAt":1,"status":"paused"}}"#
+        let frame = try JSONDecoder().decode(StreamFrame.self, from: Data(json.utf8))
+        guard case let .liveCall(_, _, call) = frame.frame else { return XCTFail("expected .liveCall") }
+        XCTAssertEqual(call?.status, .unknown)
+        XCTAssertEqual(call?.isRunning, true)
+    }
+
+    func testAnUnreadableLiveCallIsIgnoredNotReadAsNoCall() throws {
+        // a call object this build cannot read is a broken frame, not the
+        // harness saying the line is free — reading it as free would drop a
+        // remote bar on a glitch
+        let broken = try JSONDecoder().decode(StreamFrame.self, from: Data(#"{"kind":"live.call","seq":33,"botId":"b1","threadId":"t1","call":{"callId":1}}"#.utf8))
+        guard case let .unknown(kind) = broken.frame else { return XCTFail("expected .unknown, got \(broken.frame)") }
+        XCTAssertEqual(kind, "live.call")
+
+        let missing = try JSONDecoder().decode(StreamFrame.self, from: Data(#"{"kind":"live.call","seq":34,"botId":"b1","threadId":"t1"}"#.utf8))
+        guard case .unknown = missing.frame else { return XCTFail("expected .unknown, got \(missing.frame)") }
     }
 }

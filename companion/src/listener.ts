@@ -11,7 +11,7 @@
 // nobody runs is a thing that rots. index.ts owns the listeners now.
 import { execFile } from "node:child_process";
 import { homedir, networkInterfaces } from "node:os";
-import { join } from "node:path";
+import { delimiter, join } from "node:path";
 
 /** Interfaces that exist to tunnel, bridge or mesh traffic — utun (Tailscale
  * and every other VPN), vmnet/bridge (VMs, containers, internet sharing),
@@ -100,6 +100,8 @@ export function tailscaleCandidates(home = homedir()): string[] {
     "/usr/local/bin/tailscale",
     "/usr/bin/tailscale",
     "/run/current-system/sw/bin/tailscale",
+    "C:\\Program Files\\Tailscale\\tailscale.exe",
+    "C:\\Program Files (x86)\\Tailscale\\tailscale.exe",
     "tailscale",
   ];
 }
@@ -109,10 +111,19 @@ const TAILSCALE_BUDGET_MS = 5000;
 
 /** PATH with the usual package-manager locations added back, for the bare
  * `tailscale` attempt. Costs nothing when PATH was already complete. */
-const searchPath = (): string =>
+export const searchPath = (): string =>
   [process.env.PATH ?? "", "/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin"]
     .filter(Boolean)
-    .join(":");
+    .join(delimiter);
+
+/** The macOS app executable chooses GUI or CLI mode from its environment.
+ * Finder-launched sidecars have no shell hints, so explicitly request the CLI.
+ * https://tailscale.com/docs/reference/tailscale-cli?tab=macos */
+export const tailscaleEnvironment = (): NodeJS.ProcessEnv => ({
+  ...process.env,
+  PATH: searchPath(),
+  TAILSCALE_BE_CLI: "1",
+});
 
 /** Ask the Tailscale CLI where it thinks we are.
  *
@@ -155,7 +166,7 @@ async function refreshTailnetNameOnce(
           // Generous, and still a bound: the alternative is a subprocess
           // deciding how much memory this process uses.
           maxBuffer: 16 * 1024 * 1024,
-          env: { ...process.env, PATH: searchPath() },
+          env: tailscaleEnvironment(),
         },
         (error, stdout) => {
           if (error) {
@@ -169,7 +180,9 @@ async function refreshTailnetNameOnce(
             onAttempt?.(cli, trimmed ? `ok: ${trimmed}` : "ran, but no MagicDNS name in status");
             resolve(trimmed);
           } catch {
-            onAttempt?.(cli, "ran, but its output was not JSON");
+            onAttempt?.(cli, /Tailscale GUI failed to start/i.test(stdout)
+              ? "exited successfully in GUI mode instead of CLI mode"
+              : "exited successfully, but status output was not JSON");
             resolve(null);
           }
         },

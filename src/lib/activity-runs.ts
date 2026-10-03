@@ -7,6 +7,7 @@
 // separate one run from the next.
 import type { Message } from "@/state/store";
 import { formatElapsed } from "@/lib/working-time";
+import { t } from "@/lib/i18n";
 
 export type ActivityTranscriptItem =
   | { kind: "message"; message: Message }
@@ -16,14 +17,33 @@ export type TranscriptItem =
   | ActivityTranscriptItem
   | { kind: "turn"; id: string; turnId: string; label: string; messages: Message[] };
 
+/** A status row rather than a tool step: `recovery:` when automatic recovery
+ * changes this conversation's engine, `notice:` when the engine runs another
+ * model than the saved one. Both must remain visible and are never folded. */
+export function statusActivity(message: Message): { kind: "recovery" | "notice"; text: string } | null {
+  const name = message.kind === "activity" ? message.tool?.name : undefined;
+  if (name?.startsWith("recovery:")) return { kind: "recovery", text: name.slice("recovery:".length).trim() };
+  if (name?.startsWith("notice:")) return { kind: "notice", text: name.slice("notice:".length).trim() };
+  return null;
+}
+
+/** Recovery changes this conversation's engine and must remain visible. */
+export function isRecoveryActivity(message: Message): boolean {
+  return statusActivity(message)?.kind === "recovery";
+}
+
+export function isStatusActivity(message: Message): boolean {
+  return statusActivity(message) !== null;
+}
+
 /** A step that may be folded away: finished, a real tool, and not a
- * bot⇄bot chip (those are navigation, not work) or a failed turn (that
- * renders as an error). A step still running stays out, so live progress
- * is never hidden behind a fold. */
+ * bot⇄bot or opened-thread chip (those are navigation, not work) or a
+ * failed turn (that renders as an error). A step still running stays out,
+ * so live progress is never hidden behind a fold. */
 function foldable(message: Message): boolean {
   const tool = message.tool;
   if (message.kind !== "activity" || !tool) return false;
-  if (message.comm) return false;
+  if (message.comm || message.threadRef || isStatusActivity(message)) return false;
   if (tool.ok !== true) return false;
   return !tool.name.startsWith("error:");
 }
@@ -66,7 +86,10 @@ function assistantTurnFolds(messages: Message[]): {
       }
     }
     const elapsed = Math.max(0, terminal.at - startedAt);
-    const label = elapsed >= 1_000 ? `Worked for ${formatElapsed(elapsed)}` : "Worked";
+    const label =
+      elapsed >= 1_000
+        ? t("chat.run.workedFor", { elapsed: formatElapsed(elapsed) })
+        : t("chat.run.worked");
     const fold: TurnFold = {
       kind: "turn",
       id: `turn:${terminal.turnId}`,
@@ -141,6 +164,6 @@ export function describeRun(messages: Message[]): string {
   }
   const names = [...counts].map(([name, count]) => (count > 1 ? `${name} ×${count}` : name));
   const shown = names.slice(0, MAX_NAMES).join(", ");
-  const rest = names.length > MAX_NAMES ? ` +${names.length - MAX_NAMES} more` : "";
-  return `${messages.length} steps · ${shown}${rest}`;
+  const rest = names.length > MAX_NAMES ? ` ${t("chat.run.more", { count: names.length - MAX_NAMES })}` : "";
+  return t("chat.run.steps", { count: messages.length, tools: `${shown}${rest}` });
 }
