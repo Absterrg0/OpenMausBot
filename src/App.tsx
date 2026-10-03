@@ -1,43 +1,56 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useAdvancedMode } from "@/lib/interface-mode";
 import { Loader2, Menu } from "lucide-react";
-import { StoreProvider, useStore } from "@/state/store";
-import { WelcomeFlow } from "@/components/onboarding/WelcomeFlow";
+import { CLOUD_LINK_SETTINGS, StoreProvider, useStore } from "@/state/store";
+import { useWelcomeViewer, WelcomeGate } from "@/components/onboarding/WelcomeGate";
+import { cloudSignInDue, spotlightsQuiet, type WelcomeViewer } from "@/lib/onboarding";
 import { FirstConversationTour } from "@/components/onboarding/FirstConversationTour";
 import { GuidedTour } from "@/components/onboarding/GuidedTour";
-import { welcomeDue } from "@/lib/onboarding";
+import { LiveCallHost } from "@/components/LiveCallHost";
 import { ThreadRefsProvider } from "@/components/ThreadRefs";
-import { emailGateDone, initAnalytics } from "@/lib/analytics";
+import { initAnalytics } from "@/lib/analytics";
 import { Sidebar } from "@/components/Sidebar";
 import { ChatView } from "@/components/ChatView";
 import { GroupView } from "@/components/GroupView";
 import { BotSettingsDialog } from "@/components/BotSettingsDialog";
+import { SIDEBAR_AND_PANEL_FIT, TWO_SIDE_PANELS_FIT, useMediaQuery } from "@/lib/use-media-query";
 import { RemoteAgentSettingsPanel } from "@/components/RemoteAgentSettingsPanel";
 import { NewBotDialog } from "@/components/NewBotDialog";
 import { PluginsPanel, preloadConnectedApps } from "@/components/PluginsPanel";
+import { TriggersPanel } from "@/components/TriggersPanel";
 import { ComputerPanel } from "@/components/ComputerPanel";
 import { RemoteDesktopPanel } from "@/components/remote-desktop-panel";
 import { InspectorPanel } from "@/components/InspectorPanel";
 import { SettingsModal } from "@/components/SettingsModal";
 import { WorkspaceBackupRecovery } from "@/components/WorkspaceBackupSettings";
 import { UpdateBanner } from "@/components/UpdateBanner";
+import { ProIntroduction } from "@/components/ProIntroduction";
 import { DesktopCapabilitiesProvider, useDesktopCapabilities } from "@/components/DesktopCapabilities";
 import { WindowCaptionButtons } from "@/components/WindowCaptionButtons";
 import { RoutinesPage } from "@/components/RoutinesPage";
 import { NoEngines } from "@/components/NoEngines";
+import { CloudEngineSignIn } from "@/components/CloudEngineSignIn";
+import { CloudSetup } from "@/components/CloudSetup";
+import { engineReady } from "@/components/EngineLibrary";
 import { CommandPalette } from "@/components/CommandPalette";
 import { KeyboardShortcutsModal } from "@/components/KeyboardShortcutsModal";
 import { LocalVmWorkspace } from "@/components/LocalVmWorkspace";
 import { TeamMapPage } from "@/components/TeamMapPage";
 import { setLocale } from "@/lib/i18n";
 import { shouldOpenKeyboardShortcuts } from "@/lib/keyboard-shortcuts";
+import { effectiveLanguage, useLanguageChoice } from "@/lib/language-preference";
+import { botShowsUnread } from "@/lib/bot-unread";
+import { phonePairingSettingsAction, takePhonePairingRequest } from "@/lib/phone-pairing";
 
-function Shell() {
+function Shell({ viewer }: { viewer: WelcomeViewer | null }) {
   const { state, dispatch } = useStore();
   const { capabilities } = useDesktopCapabilities();
   const unreadCount =
-    state.bots.filter((bot) => !bot.hidden && bot.unread).length +
+    state.bots.filter((bot) => !bot.hidden && botShowsUnread(bot)).length +
     state.groups.filter((group) => group.unread).length;
   const remoteClient = window.ogb?.remoteClient?.active === true;
+  const twoSidePanelsFit = useMediaQuery(TWO_SIDE_PANELS_FIT, true);
+  const sidebarAndPanelFit = useMediaQuery(SIDEBAR_AND_PANEL_FIT, true);
   useEffect(() => {
     if (!window.ogb?.environments) return;
     const open = (computerId?: string | null) => {
@@ -50,13 +63,26 @@ function Shell() {
     };
     const url = new URL(window.location.href);
     const requestedSettings = url.searchParams.get("desktop-settings");
-    if (requestedSettings === "workspaces" || (requestedSettings === "organization" && window.ogb.organization && !remoteClient)) {
+    if (requestedSettings === "workspaces" || (requestedSettings === "organization" && window.ogb.organization && !remoteClient) ||
+      ((requestedSettings === "cloud" || requestedSettings === "cloud-settings") && window.ogb.cloudAccount && !remoteClient)) {
       url.searchParams.delete("desktop-settings");
       window.history.replaceState(null, "", `${url.pathname}${url.search}${url.hash}`);
       if (requestedSettings === "organization") dispatch({ type: "toggleAppSettings", open: true, section: "organization" });
+      else if (requestedSettings === "cloud") dispatch(CLOUD_LINK_SETTINGS);
+      // The lending menu-bar item: Settings → OMB Cloud, with no automatic action.
+      else if (requestedSettings === "cloud-settings") dispatch({ type: "toggleAppSettings", open: true, section: "cloudAccount" });
       else open();
     }
     return window.ogb.environments.onOpenSettings?.(open);
+  }, [dispatch]);
+  // "Use your Cloud on your phone" opens the Cloud in this window at
+  // /?desktop-settings=phone: its own phone pairing, in any window, on any
+  // server. It only opens Settings there; no code is made until a click.
+  useEffect(() => {
+    const rest = takePhonePairingRequest(window.location.href);
+    if (rest === null) return;
+    window.history.replaceState(null, "", rest);
+    dispatch(phonePairingSettingsAction());
   }, [dispatch]);
   // Mobile-only drawer state. Above md, none of these properties are emitted
   // at all — Sidebar scopes every mobile class with max-md: rather than
@@ -64,10 +90,10 @@ function Shell() {
   // turn the aside into a containing block for its fixed descendants (see
   // Sidebar.tsx's className comment).
   const [drawerOpen, setDrawerOpen] = useState(false);
-  // Apply the configured UI language the moment config arrives or changes;
-  // "" follows the system. The epoch bump re-renders extracted strings —
-  // t() reads a module variable, so React needs this nudge.
-  const language = state.config?.language ?? "";
+  // Apply this device's language, else the server's default, the moment
+  // either changes; "" follows the system. The epoch bump re-renders
+  // extracted strings — t() reads a module variable, so React needs this nudge.
+  const language = effectiveLanguage(useLanguageChoice(), state.config?.language);
   const [, setLocaleEpoch] = useState(0);
   useEffect(() => {
     setLocale(language || globalThis.navigator?.language);
@@ -82,7 +108,17 @@ function Shell() {
   const calendarOriginRef = useRef<"chat" | "team-map">("chat");
   const group = state.groups.find((g) => g.id === state.selectedId);
   const bot = group ? undefined : (state.bots.find((b) => b.id === state.selectedId) ?? state.bots[0]);
+  // A side panel beside the full sidebar leaves the default 1100px window a
+  // ~330px chat. Fold the sidebar to its avatar rail for as long as a panel
+  // is open and the window is not wide enough for all three.
+  const sidePanelOpen = Boolean(bot) && (state.settingsOpen || state.computerOpen || state.inspectorOpen);
+  const collapseSidebar = sidePanelOpen && !sidebarAndPanelFit;
   const calendarFocus = state.activeView === "routines";
+  // Turning Advanced mode off closes the inspector it no longer offers.
+  const advanced = useAdvancedMode();
+  useEffect(() => {
+    if (!advanced && state.inspectorOpen) dispatch({ type: "toggleInspector", open: false });
+  }, [advanced, state.inspectorOpen, dispatch]);
 
   // Nothing on this machine can run a bot. A missing cloud login does not
   // count — that CLI can still host a local model. Wait for the first
@@ -92,6 +128,9 @@ function Shell() {
     state.connected &&
     state.instances.length > 0 &&
     !state.instances.some((i) => i.snapshot.state === "available");
+  // An OMB Cloud home with none of the person's own engines signed in yet:
+  // its first run, and every bot until then, is the engine sign-in.
+  const cloudSignIn = cloudSignInDue(viewer, state, engineReady);
 
   // App-wide shortcuts: ⌘N new bot · ⌘1–9 jump to bot · ⌘⇧[ / ⌘⇧] prev/next · ⌘/ or ? shortcuts cheat sheet.
   // Kept deliberately small; every panel already closes on Esc.
@@ -196,15 +235,21 @@ function Shell() {
     state.computerOpen ||
     state.inspectorOpen ||
     state.appSettingsOpen ||
-    state.pluginsOpen;
+    state.pluginsOpen ||
+    state.triggersOpen;
 
   // The macOS app menu's Preferences… item lives in the desktop shell, so the
   // shell signals the request over the bridge (Cmd+, accelerates the item).
   // Local-shell only: remote server pages never receive the channel, and ogb
   // is absent in the browser.
+  // "cloud" is openmausbot://cloud (the Cloud page's "Open in the app"):
+  // OMB Cloud, marked as opened by the link so that view signs in or connects.
   useEffect(() => {
-    return window.ogb?.onOpenAppSettings?.(section => dispatch({ type: "toggleAppSettings", open: true,
-      ...(section === "organization" && window.ogb?.organization && !remoteClient ? { section } : {}) }));
+    return window.ogb?.onOpenAppSettings?.(section => dispatch(section === "cloud" && window.ogb?.cloudAccount && !remoteClient
+      ? CLOUD_LINK_SETTINGS
+      : section === "cloud-settings" && window.ogb?.cloudAccount && !remoteClient
+        ? { type: "toggleAppSettings", open: true, section: "cloudAccount" }
+        : { type: "toggleAppSettings", open: true, ...(section === "organization" && window.ogb?.organization && !remoteClient ? { section } : {}) }));
   }, [dispatch]);
 
   // The viewer outlives ComputerPanel and can target any bot, so release control
@@ -235,6 +280,7 @@ function Shell() {
     <div className="flex h-full flex-col">
       {/* fixed-position popup, bottom-left — outside the layout flow */}
       <UpdateBanner />
+      <ProIntroduction quiet={paletteOpen || drawerOpen || Boolean(localVmWorkspaceBotId)} />
       <div className="relative flex min-h-0 flex-1">
       {!calendarFocus && <button
         type="button"
@@ -254,6 +300,7 @@ function Shell() {
         />
       )}
       {!calendarFocus && <Sidebar
+        collapseToIcons={collapseSidebar}
         open={drawerOpen}
         onClose={() => {
           setDrawerOpen(false);
@@ -271,6 +318,8 @@ function Shell() {
           onClose={() => setLocalVmWorkspaceBotId(null)}
           onOpenComputer={openComputerFromWorkspace}
         />
+      ) : cloudSignIn ? (
+        <CloudEngineSignIn />
       ) : noEngines ? (
         <NoEngines />
       ) : group ? (
@@ -296,10 +345,15 @@ function Shell() {
           (Computer panel, then the usage chip): every re-render mounts a
           fresh settings panel and never removes the previous one, so the
           panels pile up and Close stops working. */}
+      {/* Bot settings keep the inspector or computer panel open on purpose
+          (their own controls open settings). Two static panels beside the
+          sidebar leave the default 1100px window a sliver of chat, so until
+          the window is wide enough to seat both, settings floats over the
+          chat instead and the other panel is still there when it closes. */}
       {state.settingsOpen && bot && (
         remoteClient
-          ? <RemoteAgentSettingsPanel bot={bot} />
-          : <BotSettingsDialog key={`settings:${bot.id}`} bot={bot} />
+          ? <RemoteAgentSettingsPanel bot={bot} overlay={state.computerOpen && !twoSidePanelsFit} />
+          : <BotSettingsDialog key={`settings:${bot.id}`} bot={bot} overlay={(state.inspectorOpen || state.computerOpen) && !twoSidePanelsFit} />
       )}
       {state.computerOpen && bot && (
         remoteClient ? (
@@ -314,7 +368,11 @@ function Shell() {
       )}
       {!remoteClient && state.inspectorOpen && bot && <InspectorPanel key={bot.threadId} bot={bot} />}
       {state.appSettingsOpen && <SettingsModal />}
+      {/* On the person's Cloud: its setup checklist, and after it Move to
+          Cloud's one-time card on an empty Cloud (desktop app only). */}
+      <CloudSetup viewer={viewer} />
       {state.pluginsOpen && <PluginsPanel />}
+      {state.triggersOpen && <TriggersPanel />}
       {state.newBotOpen && <NewBotDialog />}
       {state.shortcutsOpen && (
         <KeyboardShortcutsModal
@@ -340,51 +398,21 @@ function Shell() {
   );
 }
 
-/** Opens the welcome flow on a fresh workspace (the server's onboarding
- * record says so) or on request from Settings. The decision waits for the
- * config to arrive, so a returning user never sees the tour flash. */
-function WelcomeGate() {
-  const { state, dispatch } = useStore();
-  const [dismissed, setDismissed] = useState(false);
-  const due =
-    !dismissed &&
-    welcomeDue(state.config, {
-      remoteClient: window.ogb?.remoteClient?.active === true,
-      legacyDone: emailGateDone(),
-    });
-  // Explicit desktop connection Settings need no local provider onboarding.
-  // Organisation remains optional; closing Settings resumes the normal tour.
-  if (state.appSettingsOpen && ["desktopWorkspaces", "organization"].includes(state.appSettingsSection)) return null;
-  if (!state.welcomeOpen && !due) return null;
-  const bot = state.bots.find((b) => !b.hidden) ?? null;
-  const replay = state.welcomeOpen && !due;
-  return (
-    <WelcomeFlow
-      bot={bot}
-      replay={replay}
-      onDone={() => {
-        setDismissed(true);
-        dispatch({ type: "toggleWelcome", open: false });
-        // the first real finish hands over to the guided tour; a replay does not
-        if (!replay) dispatch({ type: "toggleTour", open: true });
-      }}
-    />
-  );
-}
-
 function Application() {
   useEffect(() => {
     initAnalytics();
   }, []);
+  const viewer = useWelcomeViewer();
   return (
     <DesktopCapabilitiesProvider>
       <StoreProvider>
         <ThreadRefsProvider>
-          <Shell />
+          <Shell viewer={viewer} />
         </ThreadRefsProvider>
-        <WelcomeGate />
+        <WelcomeGate viewer={viewer} />
         <GuidedTour />
-        <FirstConversationTour />
+        <LiveCallHost />
+        <FirstConversationTour quiet={spotlightsQuiet(viewer)} />
       </StoreProvider>
     </DesktopCapabilitiesProvider>
   );

@@ -55,20 +55,29 @@ function profiles(): Record<string, Profile> {
     for (const ownThread of room ? [false, true] : [false]) {
       for (const skills of [false, true]) {
         for (const shared of [false, true]) {
-          const name = [room ? "room" : "direct", ownThread && "own-thread", skills && "skills", shared && "shared"]
-            .filter(Boolean).join("+");
-          all[name] = {
-            family: room ? "room" : "direct",
-            env: {
-              OMB_ROOM_TURN: flag(room),
-              OMB_OWN_THREAD_CREATION: flag(ownThread),
-              OMB_SKILL_AUTHORING_ENABLED: flag(skills),
-              OMB_SHARED_COMPUTERS_ENABLED: flag(shared),
-            },
-          };
+          for (const voice of [false, true]) {
+            const name = [room ? "room" : "direct", ownThread && "own-thread", skills && "skills", shared && "shared", voice && "voice"]
+              .filter(Boolean).join("+");
+            all[name] = {
+              family: room ? "room" : "direct",
+              env: {
+                OMB_ROOM_TURN: flag(room),
+                OMB_OWN_THREAD_CREATION: flag(ownThread),
+                OMB_SKILL_AUTHORING_ENABLED: flag(skills),
+                OMB_SHARED_COMPUTERS_ENABLED: flag(shared),
+                OMB_VOICE_NOTES: flag(voice),
+              },
+            };
+          }
         }
       }
     }
+  }
+  // A Cloud home is one more switch on top of any of these; its fullest
+  // profiles are pinned, and differ from their family only where the test
+  // below says they may.
+  for (const name of ["direct+skills+shared+voice", "room+own-thread+skills+shared+voice"]) {
+    all[`${name}+cloud-home`] = { family: all[name]!.family, env: { ...all[name]!.env, OMB_CLOUD_HOME: "1" } };
   }
   all.external = { family: "external", env: { OMB_EXTERNAL_RUNTIME: "1" } };
   // The external switch wins over every other one; pin that it still does.
@@ -80,6 +89,8 @@ function profiles(): Record<string, Profile> {
       OMB_OWN_THREAD_CREATION: "1",
       OMB_SKILL_AUTHORING_ENABLED: "1",
       OMB_SHARED_COMPUTERS_ENABLED: "1",
+      OMB_VOICE_NOTES: "1",
+      OMB_CLOUD_HOME: "1",
     },
   };
   return all;
@@ -89,26 +100,40 @@ const PROFILES = profiles();
 /** The profile of each family that mounts the most: checked in whole, as
  * readable JSON. Every other profile is a by-name subset of one of these and
  * is pinned by tool names, byte count and sha256 in profiles.json. */
-const FULL = { direct: "direct+skills+shared", room: "room+own-thread+skills+shared", external: "external" } as const;
+const FULL = { direct: "direct+skills+shared+voice", room: "room+own-thread+skills+shared+voice", external: "external" } as const;
 
 /** Bytes measured when the budget was last set. A profile may not exceed this
  * by more than 2%, and may not undercut it by more than 2% either: a smaller
  * catalog is the goal, so lock the win in by lowering the number. */
 const BUDGET_BASELINE: Record<string, number> = {
-  "direct": 38_270,
-  "direct+shared": 40_015,
-  "direct+skills": 40_196,
-  "direct+skills+shared": 41_941,
-  "room": 36_288,
-  "room+shared": 38_033,
-  "room+skills": 38_214,
-  "room+skills+shared": 39_959,
-  "room+own-thread": 37_575,
-  "room+own-thread+shared": 39_320,
-  "room+own-thread+skills": 39_501,
-  "room+own-thread+skills+shared": 41_246,
-  "external": 3_030,
-  "external+everything": 3_030,
+  "direct": 44032,
+  "direct+voice": 44773,
+  "direct+shared": 45777,
+  "direct+shared+voice": 46518,
+  "direct+skills": 45958,
+  "direct+skills+voice": 46699,
+  "direct+skills+shared": 47703,
+  "direct+skills+shared+voice": 48444,
+  "room": 42050,
+  "room+voice": 42791,
+  "room+shared": 43795,
+  "room+shared+voice": 44536,
+  "room+skills": 43976,
+  "room+skills+voice": 44717,
+  "room+skills+shared": 45721,
+  "room+skills+shared+voice": 46462,
+  "room+own-thread": 43337,
+  "room+own-thread+voice": 44078,
+  "room+own-thread+shared": 45082,
+  "room+own-thread+shared+voice": 45823,
+  "room+own-thread+skills": 45263,
+  "room+own-thread+skills+voice": 46004,
+  "room+own-thread+skills+shared": 47008,
+  "room+own-thread+skills+shared+voice": 47749,
+  "direct+skills+shared+voice+cloud-home": 47778,
+  "room+own-thread+skills+shared+voice+cloud-home": 47083,
+  "external": 3030,
+  "external+everything": 3030,
 };
 
 const RPC_PREFIX = '{"jsonrpc":"2.0","id":1,"result":';
@@ -204,8 +229,27 @@ describe("agents proxy tools/list golden", () => {
     for (const [name, profile] of Object.entries(PROFILES)) {
       const full = new Map(toolsOf(wires[FULL[profile.family]]!).map((tool) => [tool.name, JSON.stringify(tool)]));
       for (const tool of toolsOf(wires[name]!)) {
+        // A Cloud home's own select_computer is pinned by the next test.
+        if (profile.env.OMB_CLOUD_HOME === "1" && tool.name === "select_computer") continue;
         expect(JSON.stringify(tool), `${name}: ${tool.name}`).toBe(full.get(tool.name));
       }
+    }
+  });
+
+  it("shows a Cloud home's bots no Local VM and no this computer, and every other server both", () => {
+    type SelectTool = Tool & { inputSchema: { properties: { surface: { enum: string[]; description: string } } } };
+    const select = (wire: string) => toolsOf(wire).find((tool) => tool.name === "select_computer") as SelectTool;
+    const cloudHome = Object.keys(PROFILES).filter((name) => name.endsWith("+cloud-home"));
+    expect(cloudHome).toHaveLength(2);
+    for (const name of cloudHome) {
+      const desktop = wires[name.slice(0, -"+cloud-home".length)]!;
+      const names = toolsOf(wires[name]!).map((tool) => tool.name);
+      expect(names).toEqual(toolsOf(desktop).map((tool) => tool.name).filter((tool) => tool !== "vm_exec"));
+      expect(select(desktop).inputSchema.properties.surface.enum).toEqual(["auto", "cloud", "vm", "local", "browser"]);
+      expect(toolsOf(desktop).map((tool) => tool.name)).toContain("vm_exec");
+      const surface = select(wires[name]!).inputSchema.properties.surface;
+      expect(surface.enum).toEqual(["auto", "cloud", "browser"]);
+      expect(surface.description).not.toMatch(/\b(?:vm|local) =/);
     }
   });
 

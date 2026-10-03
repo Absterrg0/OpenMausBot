@@ -15,6 +15,22 @@ data class SidebarSection(
     val id: String get() = name
 }
 
+/**
+ * An edit the person just submitted, shown in place of the message it
+ * replaces until the computer answers. Presentation only, never folded into
+ * [CompanionState.messages]: the computer's fork is the only real version.
+ */
+data class PendingEdit(
+    val sourceId: String,
+    val text: String,
+    val at: Double = System.currentTimeMillis().toDouble(),
+    val baseLeafId: String? = null,
+    val requestId: String = java.util.UUID.randomUUID().toString(),
+) {
+    /** The id the stand-in row renders under while the edit is in flight. */
+    val placeholderId: String get() = "pending-edit-$sourceId"
+}
+
 data class CompanionState(
     val bots: List<Bot> = emptyList(),
     val rooms: List<Room> = emptyList(),
@@ -41,6 +57,20 @@ data class CompanionState(
      * message that is already in the transcript.
      */
     val drainedQueueIds: List<String> = emptyList(),
+    /** Edits in flight, by thread. A hydrate keeps them: the request is still running. */
+    val pendingEdits: Map<String, PendingEdit> = emptyMap(),
+    /**
+     * The computer's Live call as its `live.call` frames and `GET /api/live/call`
+     * report it — a call another device holds included. This phone's own media
+     * lives in `:app`; this is only what the computer says.
+     */
+    val liveCall: LiveCallState? = null,
+    /**
+     * Bumped by every `live.call` frame and every applied hang-up answer: the
+     * news a `GET /api/live/call` that was out meanwhile is older than
+     * ([applyLiveCallLookup]).
+     */
+    val liveCallRevision: Long = 0,
 ) {
     /** Threads holding at least one queued send. The row label, the Updates
      * pill, and the closed-thread fold all read this, never task activity. */
@@ -49,10 +79,77 @@ data class CompanionState(
 
     fun transcript(threadId: String): List<Message> = messages[threadId].orEmpty()
 
+    /** The call while it is on the line; an ended call is kept until the computer clears it, but is not "running". */
+    fun runningLiveCall(): LiveCallState? = liveCall?.takeIf { it.isRunning }
+
+    /** Whether the line reads as [callId] still running. */
+    fun showsRunningLiveCall(callId: String): Boolean = liveCall?.let { it.callId == callId && it.isRunning } == true
+
+    /**
+     * The answer to a `GET /api/live/call` sent when the line was at
+     * [readAt] (its [liveCallRevision]). Dropped when a frame or a hang-up
+     * answer reached the line while it was out: those are newer, and a
+     * lookup that straddles a start would otherwise put back a `null` from
+     * before it and end the call that just began (the iPhone's rule).
+     */
+    fun applyLiveCallLookup(call: LiveCallState?, readAt: Long): CompanionState =
+        if (liveCallRevision == readAt) copy(liveCall = call) else this
+
+    /**
+     * The computer's answer to a hang-up of [callId], applied only while
+     * that call still reads as running here: a frame that already said
+     * `ended`, cleared the line or brought a newer call is later news.
+     */
+    fun applyLiveCallEnd(callId: String, answer: LiveCallState): CompanionState =
+        if (answer.callId == callId && showsRunningLiveCall(callId)) {
+            copy(liveCall = answer, liveCallRevision = liveCallRevision + 1)
+        } else {
+            this
+        }
+
     /** An SSE tail is partial history; only a fetched page establishes its boundary. */
     fun hasLoadedPage(threadId: String): Boolean = hasMore.containsKey(threadId)
 
+    /**
+     * The active branch. An edit in flight shows in place of the message it
+     * replaces and hides everything after it, so the old question and its old
+     * answer leave the screen the moment the edit is sent.
+     */
     fun visibleTranscript(threadId: String): List<Message> {
+        val branch = activeBranch(threadId)
+        val pending = pendingEdits[threadId] ?: return branch
+        // No match means the computer's fork is already the visible branch.
+        val index = branch.indexOfFirst { it.id == pending.sourceId }
+        if (index < 0) return branch
+        val standIn = Message(
+            id = pending.placeholderId,
+            role = Message.Role.USER,
+            kind = Message.Kind.TEXT,
+            at = pending.at,
+            text = pending.text,
+            parentId = branch[index].parentId,
+        )
+        return branch.subList(0, index) + standIn
+    }
+
+    /**
+     * Fold the fork an edit request returned. The stream normally delivers the
+     * same fork and its leaf move first; when the response wins that race the
+     * fork still becomes visible now. A leaf already on or below the fork stays
+     * put, so a reply that arrived is never hidden.
+     */
+    fun adoptEdit(message: Message, threadId: String, expectedPending: PendingEdit? = null): CompanionState {
+        val currentLeaf = botForThread(threadId)?.activeLeafId
+        val appended = copy(messages = append(messages, threadId, message))
+        if (expectedPending != null && (pendingEdits[threadId] != expectedPending || currentLeaf != expectedPending.baseLeafId)) return appended
+        if (appended.activeBranch(threadId).any { it.id == message.id }) return appended
+        return appended.copy(
+            activeLeafIds = appended.activeLeafIds + (threadId to message.id),
+            bots = appended.bots.map { if (it.threadId == threadId) it.copy(activeLeafId = message.id) else it },
+        )
+    }
+
+    private fun activeBranch(threadId: String): List<Message> {
         val all = transcript(threadId)
         val leafId = if (activeLeafIds.containsKey(threadId)) activeLeafIds[threadId]
             else botForThread(threadId)?.activeLeafId
@@ -262,6 +359,8 @@ data class CompanionState(
         is Frame.Notify -> copy(notifications = (notifications + frame.notification).takeLast(100))
         is Frame.Runtime -> applyRuntime(frame.event)
         is Frame.Screen -> copy(screens = screens + (frame.botId to ScreenFrame(frame.png, frame.mime)))
+
+        is Frame.LiveCall -> copy(liveCall = frame.call, liveCallRevision = liveCallRevision + 1)
 
         is Frame.Computer, Frame.Config, is Frame.Unknown -> this
     }

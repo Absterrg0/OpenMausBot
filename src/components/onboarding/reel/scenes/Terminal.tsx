@@ -7,7 +7,7 @@ import { useEffect, useState } from "react";
 import { MausAvatar } from "@/components/Avatar";
 import { cn } from "@/lib/cn";
 import { reducedMotion } from "@/lib/onboarding";
-import type { SceneProps } from "./OrbitingApps";
+import type { SceneProps } from "./types";
 
 const TERMINAL_MS = 6400;
 
@@ -24,7 +24,7 @@ const SCRIPT: Array<{ at: number; line: Line }> = [
   { at: 1800, line: { kind: "pick", label: "Choose your AI connection", options: ["Claude Code", "ChatGPT / Codex", "API key"], chosen: 0 } },
   { at: 2900, line: { kind: "done", label: "Choose your AI connection", value: "Claude Code" } },
   { at: 3150, line: { kind: "done", label: "Choose your model", value: "claude-sonnet" } },
-  { at: 3700, line: { kind: "out", text: "Workspace ready → http://127.0.0.1:8799", tone: "success" } },
+  { at: 3700, line: { kind: "out", text: "OpenMausBot ready → http://127.0.0.1:8799", tone: "success" } },
 ];
 
 const RISE_AT = 4200;
@@ -168,7 +168,7 @@ export function Terminal({ playing, onCue, onEnded, label }: SceneProps) {
         <div className="relative flex min-h-0 flex-1 bg-app">
           <div className="flex w-[104px] shrink-0 flex-col border-r border-hairline/40 bg-panel/70 p-2">
             <div className="h-5 rounded-md bg-inset" />
-            <div className="mt-2 text-[7.5px] font-semibold uppercase tracking-[0.12em] text-ink-secondary/70">Bots</div>
+            <div className="mt-2 text-[7.5px] font-semibold uppercase tracking-[0.12em] text-ink-tertiary">Bots</div>
             <div className="mt-1 flex items-center gap-1.5 rounded-md bg-raised/70 px-1.5 py-1">
               <MausAvatar color="green" state="happy" size={14} animated={false} trackPointer={false} />
               <div className="min-w-0">

@@ -11,6 +11,11 @@ import Combine
 import Foundation
 import CompanionCore
 
+/// ActivityKit's content/alert API is iOS 16.2, so the whole coordinator is
+/// gated and simply never built on anything older. Those phones keep the app;
+/// they just have no Dynamic Island, which they do not have hardware for
+/// either.
+@available(iOS 16.2, *)
 @MainActor
 final class LiveActivityCoordinator {
     private var cancellable: AnyCancellable?
@@ -23,8 +28,11 @@ final class LiveActivityCoordinator {
         AnswerApprovalIntent.handler = { [weak self, weak session] threadId, requestId, choice, isPermission in
             await self?.answer(session: session, threadId: threadId, requestId: requestId, choice: choice, isPermission: isPermission)
         }
+        // Do not debounce indefinitely while another bot is streaming.
+        // The first window also lets cold-launch hydration settle.
         cancellable = session.$state
-            .debounce(for: .milliseconds(400), scheduler: DispatchQueue.main)
+            .collect(.byTime(DispatchQueue.main, .milliseconds(400)))
+            .compactMap(\.last)
             .sink { [weak self] state in self?.sync(state) }
     }
 
@@ -40,7 +48,7 @@ final class LiveActivityCoordinator {
 
     private func sync(_ state: CompanionState) {
         guard ActivityAuthorizationInfo().areActivitiesEnabled else { return }
-        let wanted = state.updates.filter { $0.kind != .toReview }
+        let wanted = state.liveActivityUpdates
         var wantedIds = Set<String>()
 
         for update in wanted {
@@ -91,5 +99,22 @@ final class LiveActivityCoordinator {
             since.removeValue(forKey: activity.attributes.botId)
             Task { await activity.end(nil, dismissalPolicy: .immediate) }
         }
+    }
+}
+
+/// What the app actually holds.
+///
+/// `LiveActivityCoordinator` cannot exist below iOS 16.2, but the app's scene
+/// does not want an `#available` around a stored property. The bridge owns the
+/// coordinator where it is available and does nothing where it is not.
+@MainActor
+final class LiveActivityBridge {
+    private var coordinator: AnyObject?
+
+    func attach(to session: Session) {
+        guard #available(iOS 16.2, *) else { return }
+        let coordinator = LiveActivityCoordinator()
+        coordinator.attach(to: session)
+        self.coordinator = coordinator
     }
 }

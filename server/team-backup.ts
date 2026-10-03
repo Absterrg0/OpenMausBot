@@ -2,6 +2,7 @@ import { newId, type ModelSelection } from "./contracts.ts";
 import { botMascotBody } from "../shared/mascot-bodies.ts";
 import { takeImportName } from "../shared/import-name.ts";
 import { MAX_TEAM_BACKUP_BYTES, parseTeamBackup, type BackupTask, type TeamBackup } from "../shared/team-backup.ts";
+import type { BotVisibility } from "../shared/wire.ts";
 import type { BotRecord, GroupRecord, Message, Store, TaskRecord } from "./store.ts";
 import type { Routine, RoutineManager } from "./routines.ts";
 import { redactSecretsInText } from "./redact.ts";
@@ -91,7 +92,9 @@ export function createTeamBackup(store: Store, routines: Routine[], name: string
       key: group.id, name: group.name, section: group.section, dm: Boolean(group.dm) && memberIds.length === 2,
       bulletin: group.bulletin, memberIds,
       defaultResponder: group.defaultResponder.kind === "member" && !memberIds.includes(group.defaultResponder.botId)
-        ? { kind: "mentions" as const } : group.defaultResponder,
+        ? { kind: "mentions" as const }
+        : group.defaultResponder.kind === "auto" && group.defaultResponder.fallbackBotId && !memberIds.includes(group.defaultResponder.fallbackBotId)
+          ? { kind: "auto" as const } : group.defaultResponder,
       activeTask: group.threadId, tasks: history(group),
     };
   });
@@ -109,6 +112,11 @@ export function createTeamBackup(store: Store, routines: Routine[], name: string
       section: bot.section, color: bot.color,
       mascotExpression: bot.mascotExpression ?? undefined, mascotBody: bot.mascotBody ?? undefined,
       chiefOfStaff: Boolean(bot.chiefOfStaff), hidden: Boolean(bot.hidden), playbooks: bot.playbooks ?? [],
+      // Grants are workspace-private authority: they travel in this backup
+      // so the team's shape is not lost, but the import below still lands
+      // every bot grant-less — restoring them is a deliberate later choice.
+      ...(bot.connectorTools ? { connectorTools: structuredClone(bot.connectorTools) } : {}),
+      ...(bot.toolScope !== undefined ? { toolScope: structuredClone(bot.toolScope) } : {}),
       memory: memoryFor(bot.id),
       activeTask: bot.threadId, tasks: history(bot),
     })),
@@ -128,7 +136,7 @@ export function createTeamBackup(store: Store, routines: Routine[], name: string
 
 /** Import is always additive, including sections and Chiefs. Rollback owns
  * only the fresh records below and cannot touch any pre-existing bot/chat. */
-export function importTeamBackup(store: Store, routines: RoutineManager, input: unknown, selection: ModelSelection) {
+export function importTeamBackup(store: Store, routines: RoutineManager, input: unknown, selection: ModelSelection, options: { visibility?: BotVisibility } = {}) {
   const backup = parseTeamBackup(input);
   const bots: BotRecord[] = [];
   const groups: GroupRecord[] = [];
@@ -172,11 +180,13 @@ export function importTeamBackup(store: Store, routines: RoutineManager, input: 
         color: source.color, mascotExpression: source.mascotExpression,
         mascotBody: botMascotBody(source.mascotBody),
         modelSelection: selection, section: sectionFor(source.section),
+        // who may see the imported team is the importing admin's choice
+        ...(options.visibility ? { visibility: options.visibility } : {}),
       }, { seedMessages: false });
       bots.push(bot);
       botIds.set(source.key, bot.id);
       store.patchBot(bot.id, { composio: false, computer: "off", browser: false, approvalMode: "ask", autoApprove: false,
-        hidden: source.hidden, chiefOfStaff: source.chiefOfStaff, playbooks: source.playbooks });
+        connectorTools: {}, toolScope: source.toolScope, hidden: source.hidden, chiefOfStaff: source.chiefOfStaff, playbooks: source.playbooks });
       if (source.memory) restoreMemory(bot.id, source.memory);
     }
     for (const source of backup.bots) {
@@ -184,7 +194,7 @@ export function importTeamBackup(store: Store, routines: RoutineManager, input: 
       const tasks = source.tasks.map((task, i): TaskRecord => {
         const record: TaskRecord = {
           threadId: i === 0 ? bot.threadId : newId(), title: task.title, createdAt: task.createdAt, resumeCursors: {},
-          modelSelection: structuredClone(selection), activity: "idle" as const, busy: false, unread: false,
+          modelSelection: structuredClone(bot.modelSelection), activity: "idle" as const, busy: false, unread: false,
           ...(task.titleFromFirstMessage ? { titleFromFirstMessage: true } : {}),
         };
         // Same rule as a message's `from`: the opener is remapped to its
@@ -213,7 +223,9 @@ export function importTeamBackup(store: Store, routines: RoutineManager, input: 
       groupIds.set(source.key, group.id);
       const responder = source.defaultResponder;
       store.patchGroup(group.id, { bulletin: source.bulletin, setupCompletedAt: Date.now(), defaultResponder:
-        responder.kind === "member" ? { kind: "member", botId: botIds.get(responder.botId)! } : responder });
+        responder.kind === "member" ? { kind: "member", botId: botIds.get(responder.botId)! }
+          : responder.kind === "auto" ? { kind: "auto", ...(responder.fallbackBotId ? { fallbackBotId: botIds.get(responder.fallbackBotId)! } : {}) }
+            : responder });
       // Use the existing task APIs for rooms; direct-message rooms have one.
       const threads = source.tasks.map((task, i) => {
         if (i === 0) {

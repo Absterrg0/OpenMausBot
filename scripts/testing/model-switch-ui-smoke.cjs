@@ -54,8 +54,37 @@ module.exports = async function verifyModelSwitch({ root, url, api, until, grant
     assert.equal(await evaluate("[...document.querySelectorAll('[aria-label=\"Apply model changes to\"] button')].find(b => b.textContent === 'Only this thread').getAttribute('aria-pressed')"), "true");
     await click("Claude");
     await until(() => evaluate("!!document.querySelector('[data-model-picker-content] select option[value=claude]')"));
-    assert.equal(await evaluate("[...document.querySelectorAll('[data-model-picker-content] select option')].some(option => option.value === 'claude-signed-out')"), false);
+    // A signed-out account stays in the picker and offers its sign-in card,
+    // never its cloud models; the missing, unused engine stays in Settings.
+    assert.equal(await evaluate("[...document.querySelectorAll('[data-model-picker-content] select option')].some(option => option.value === 'claude-signed-out')"), true);
+    const chooseAccount = id => evaluate(`(() => { const select = document.querySelector('[data-model-picker-content] select'); select.value = ${JSON.stringify(id)}; select.dispatchEvent(new Event('change', { bubbles: true })); return true; })()`);
+    const claudeRows = "[...document.querySelectorAll('[data-model-picker-content] button')].some(b => b.textContent.startsWith('Claude Sonnet 5'))";
+    await chooseAccount("claude-signed-out");
+    await until(async () => (await text()).includes("Sign in to Signed-out fixture"));
+    assert.equal(await evaluate(claudeRows), false);
+    assert.equal(await evaluate("!!document.querySelector('[data-model-picker-content] [data-model-local-entry]')"), true);
+    writeFileSync(join(evidence, "signed-out-account.png"), (await window.webContents.capturePage()).toPNG());
+    await chooseAccount("claude");
+    await until(() => evaluate(claudeRows));
     writeFileSync(join(evidence, "configured-providers.png"), (await window.webContents.capturePage()).toPNG());
+    for (const [width, height] of [[1280, 800], [1000, 600], [800, 480], [390, 844]]) {
+      window.setSize(width, height);
+      await until(() => evaluate(`innerWidth === ${width}`));
+      await evaluate("new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))");
+      const geometry = await evaluate(`(() => {
+        const panel = document.querySelector('[data-model-picker-content]');
+        const list = panel.querySelector('[data-model-list]');
+        const rect = panel.getBoundingClientRect();
+        return { left: rect.left, right: rect.right, bottom: rect.bottom, width: innerWidth, height: innerHeight,
+          listHeight: list.clientHeight, effortHeight: panel.querySelector('select[aria-label="Reasoning effort"]').parentElement.getBoundingClientRect().height };
+      })()`);
+      assert.ok(geometry.left >= 0 && geometry.right <= geometry.width, JSON.stringify(geometry));
+      assert.ok(geometry.bottom <= geometry.height, JSON.stringify(geometry));
+      assert.ok(geometry.listHeight >= Math.min(180, geometry.height * 0.3) - 2, JSON.stringify(geometry));
+      assert.ok(geometry.effortHeight <= 52, JSON.stringify(geometry));
+      writeFileSync(join(evidence, `model-picker-${width}x${height}.png`), (await window.webContents.capturePage()).toPNG());
+    }
+    window.setSize(1100, 850);
     await selectClaude();
     assert.equal(await evaluate("document.activeElement.textContent.trim()"), "Cancel");
     await click("Cancel");
@@ -116,7 +145,7 @@ module.exports = async function verifyModelSwitch({ root, url, api, until, grant
     await evaluate("new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))");
     await until(() => evaluate(`[...document.querySelectorAll('[data-model-picker-content] button')].some(button => button.textContent.includes(${JSON.stringify(localModel.label)}))`));
     writeFileSync(join(evidence, "reopened-local-model.png"), (await window.webContents.capturePage()).toPNG());
-    console.log(JSON.stringify({ modelSwitch: true, configuredProvidersOnly: true, unconfiguredRetainedInCatalog: true, customHttpRefused: true, cancelPreservedSettings: true,
+    console.log(JSON.stringify({ modelSwitch: true, missingProviderHidden: true, signedOutAccountShowsSignIn: true, unconfiguredRetainedInCatalog: true, customHttpRefused: true, cancelPreservedSettings: true,
       scopedCustomSwitch: true, defaultMismatchHandled: true, siblingUnchanged: true, newThreadUsesDefault: true,
       sentAfterSwitch: true, narrowLayout: true, selectedLocalModelOnReopen: true, providerReplies: "offline fake CLI", evidence }));
   } finally {

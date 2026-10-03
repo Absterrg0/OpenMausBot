@@ -71,6 +71,21 @@ export const BROWSER_ACTION_ROUTE = {
   path: /^\/api\/bots\/[\w-]+\/browser\/action$/,
 } as const;
 
+/** The Local VM's live desktop, relayed by the sidecar like a VPS viewer.
+ * The harness grants it only while a person holds that bot's computer. */
+export const LOCAL_VM_JOIN_ROUTE = {
+  method: "POST",
+  path: /^\/api\/bots\/[\w-]+\/local-computer\/join$/,
+} as const;
+
+/** A still of a bot's Local VM, on demand. The VM's lifecycle stays on the
+ * host; this only reads a picture of it, behind the same per-device
+ * computer-access capability as the cloud desktop. */
+export const LOCAL_VM_SCREENSHOT_ROUTE = {
+  method: "POST",
+  path: /^\/api\/bots\/[\w-]+\/local-computer\/screenshot$/,
+} as const;
+
 export function isCloudDesktopJoin(method: string, path: string): boolean {
   return method === CLOUD_DESKTOP_JOIN_ROUTE.method && CLOUD_DESKTOP_JOIN_ROUTE.path.test(path);
 }
@@ -79,9 +94,13 @@ export function isMessageFileDownload(method: string, path: string): boolean {
   return method === MESSAGE_FILE_ROUTE.method && MESSAGE_FILE_ROUTE.path.test(path);
 }
 
+/** Every route that shows or drives a bot's computer — cloud or Local VM —
+ * and so needs the device's computer-access capability, not just a token. */
 export function isCloudDesktopAccess(method: string, path: string): boolean {
   return isCloudDesktopJoin(method, path)
-    || (method === CLOUD_DESKTOP_CONTROL_ROUTE.method && CLOUD_DESKTOP_CONTROL_ROUTE.path.test(path));
+    || (method === CLOUD_DESKTOP_CONTROL_ROUTE.method && CLOUD_DESKTOP_CONTROL_ROUTE.path.test(path))
+    || (method === LOCAL_VM_SCREENSHOT_ROUTE.method && LOCAL_VM_SCREENSHOT_ROUTE.path.test(path))
+    || (method === LOCAL_VM_JOIN_ROUTE.method && LOCAL_VM_JOIN_ROUTE.path.test(path));
 }
 
 /** Both halves of browser control, behind one capability. Watching the frames
@@ -104,6 +123,11 @@ const ALLOWED: ReadonlyArray<{ method: string; path: RegExp }> = [
   { method: "GET", path: /^\/api\/config$/ },
   { method: "GET", path: /^\/api\/events$/ },
   { method: "GET", path: /^\/api\/instances$/ },
+  // Run Claude Code's own `claude update` on the host when a turn failed
+  // because it is too old for the model. A fixed command against the host's
+  // configured CLI; the harness refuses it while any Claude turn is running.
+  // Instance ids may carry dots, so a dots-only segment is refused outright.
+  { method: "POST", path: /^\/api\/instances\/(?!\.+\/)[\w.-]+\/claude-update$/ },
   { method: "GET", path: /^\/api\/team-map$/ },
   // Sidecar-owned, authenticated endpoint metadata. The proxy terminates it
   // locally; it never becomes a newly exposed harness route.
@@ -155,6 +179,12 @@ const ALLOWED: ReadonlyArray<{ method: string; path: RegExp }> = [
   // before either of these reaches the harness.
   BROWSER_LIVE_ROUTE,
   BROWSER_ACTION_ROUTE,
+  // A picture of the Local VM — not its lifecycle, which stays on the host.
+  // Gated per device by the proxy like the cloud desktop above.
+  LOCAL_VM_SCREENSHOT_ROUTE,
+  // Its live desktop while a person holds the computer, relayed like the
+  // VPS viewer and behind the same per-device capability.
+  LOCAL_VM_JOIN_ROUTE,
   // rooms — making one, and talking in one
   { method: "POST", path: /^\/api\/groups$/ },
   { method: "POST", path: /^\/api\/groups\/[\w-]+\/messages$/ },
@@ -178,7 +208,9 @@ const ALLOWED: ReadonlyArray<{ method: string; path: RegExp }> = [
   // App-owned profile images. Upload is image-only and capped at 10 MB by
   // the harness; GET is a single bare generated filename, never a path.
   { method: "POST", path: /^\/api\/attachments$/ },
-  { method: "GET", path: /^\/api\/attachments\/[\w-]+\.(?:png|jpe?g|gif|webp)$/i },
+  // Voice notes are served from the same dir as .mp3; the harness honors
+  // Range on them so a phone player can seek without the whole clip.
+  { method: "GET", path: /^\/api\/attachments\/[\w-]+\.(?:png|jpe?g|gif|webp|mp3)$/i },
   // Share-sheet documents are raw, capped at 25 MiB, and stored under a
   // generated filename by the harness. The display name stays in the query;
   // only this exact upload route crosses the companion boundary.
@@ -189,6 +221,13 @@ const ALLOWED: ReadonlyArray<{ method: string; path: RegExp }> = [
   { method: "GET", path: /^\/api\/tts\/voices$/ },
   { method: "POST", path: /^\/api\/tts\/prepare$/ },
   { method: "POST", path: /^\/api\/tts\/speak$/ },
+
+  // Live calls: the phone holds its own WebRTC audio to OpenAI; the Mac
+  // creates the session (the key never leaves it) and runs the call.
+  { method: "POST", path: /^\/api\/live\/session$/ },
+  { method: "POST", path: /^\/api\/live\/call\/end$/ },
+  { method: "GET", path: /^\/api\/live\/call$/ },
+  { method: "PATCH", path: /^\/api\/live\/settings$/ },
 
   // Routines create ordinary tasks using an existing agent configuration.
   // Webhook management remains explicitly denied below.
@@ -220,6 +259,23 @@ const ALLOWED: ReadonlyArray<{ method: string; path: RegExp }> = [
   // to the host's OS-backed credential store.
   { method: "POST", path: /^\/api\/bots\/[\w-]+\/secret-cards\/[\w-]+\/(?:resume|dismiss)$/ },
 ];
+
+/** Notices the companion itself sends the harness, never a device: they are
+ * not in ALLOWED, so the proxy refuses them from a phone, and the harness
+ * accepts them only with the companion's private relay token
+ * (server/request-auth.ts) or, for a standalone harness, from loopback.
+ *
+ * `POST /api/live/device-revoked`: a phone was just unpaired (the device id
+ * rides in `x-openmausbot-companion-device`), so the harness ends the Live
+ * call that phone holds. A phone's requests reach the harness as this
+ * computer's own, so nothing else would tell it the phone lost its access. */
+const COMPANION_NOTICES: ReadonlyArray<{ method: string; path: RegExp }> = [
+  { method: "POST", path: /^\/api\/live\/device-revoked$/ },
+];
+
+export function isCompanionNotice(method: string, path: string): boolean {
+  return COMPANION_NOTICES.some((route) => route.method === method && route.path.test(path));
+}
 
 /** Route families worth naming in the refusal.
  *

@@ -121,7 +121,47 @@ describe("control-omb ui drives the real renderer", () => {
     if (ownsEvidenceDir) await removeTempDir(evidenceDir);
   });
 
-  run("tests saved keys only from an untouched field and blocks erased drafts", async () => {
+  run("shows the matched text inside a searched message", async () => {
+    launched = await launch([]);
+    const { info } = launched;
+    await ui("type", info.ui, "--name", "Message Pepper", "--text", "Find the striped zebra");
+    await ui("press", info.ui, "--keys", "Enter");
+    await ui("wait-settle", info.ui, "--timeout", "60");
+    await ui("click", info.ui, "--name", "More");
+    await ui("click", info.ui, "--name", "Find in conversation");
+    await ui("type", info.ui, "--name", "Find in this conversation", "--text", "zebra");
+    const highlighted = async () => (await ui("eval", info.ui, "--js", "[...CSS.highlights.get('search-result-text') ?? []][0]?.toString() ?? null")).result;
+    await expect.poll(async () => (await ui("snapshot", info.ui)).snapshot, { timeout: 10_000 }).toContain("1 of 1");
+    expect((await ui("snapshot", info.ui)).snapshot).not.toContain("Show less");
+    mkdirSync(evidenceDir, { recursive: true });
+    await ui("screenshot", info.ui, "--out", join(evidenceDir, "search-result.png"));
+    await expect.poll(async () => (await ui("eval", info.ui, "--js", "(() => { const row = [...document.querySelectorAll('[data-mid]')].find(el => el.textContent.includes('Find the striped zebra')); const bubble = row?.querySelector('[data-chat-bubble]'); return !!bubble && row.querySelector('.ring-2') === bubble && bubble.getBoundingClientRect().width < row.lastElementChild.getBoundingClientRect().width; })()")).result, { timeout: 10_000 }).toBe(true);
+    await expect.poll(highlighted, { timeout: 10_000 }).toBe("zebra");
+    await ui("type", info.ui, "--name", "Message Pepper", "--text", `${"hay ".repeat(160)}saffron`);
+    await ui("press", info.ui, "--keys", "Enter");
+    await ui("wait-settle", info.ui, "--timeout", "60");
+    await ui("click", info.ui, "--name", "Find in this conversation");
+    await ui("eval", info.ui, "--js", "document.querySelector('input[aria-label=\"Find in this conversation\"]').select(); true");
+    await ui("press", info.ui, "--keys", "Backspace");
+    await ui("type", info.ui, "--name", "Find in this conversation", "--text", "saffron");
+    await expect.poll(highlighted, { timeout: 10_000 }).toBe("saffron");
+    expect((await ui("eval", info.ui, "--js", "[...document.querySelectorAll('.chat-text')].find(el => el.textContent.includes('saffron'))?.classList.contains('max-h-40')")).result).toBe(false);
+    await expect.poll(async () => (await ui("eval", info.ui, "--js", "(() => { const range = [...CSS.highlights.get('search-result-text')][0]; const bounds = range.startContainer.parentElement.closest('.overflow-y-auto').getBoundingClientRect(); const match = range.getBoundingClientRect(); return match.top >= bounds.top && match.bottom <= bounds.bottom; })()")).result).toBe(true);
+    await ui("click", info.ui, "--name", "Find in this conversation");
+    await ui("eval", info.ui, "--js", "document.querySelector('input[aria-label=\"Find in this conversation\"]').select(); true");
+    await ui("press", info.ui, "--keys", "Backspace");
+    await ui("type", info.ui, "--name", "Find in this conversation", "--text", "fake claude");
+    await expect.poll(highlighted, { timeout: 10_000 }).toBe("fake claude");
+    await ui("press", info.ui, "--keys", "Escape");
+    await ui("type", info.ui, "--name", "Search bots and messages", "--text", "zebra");
+    await expect.poll(async () => (await ui("eval", info.ui, "--js", "[...document.querySelectorAll('mark')].some(mark => mark.textContent === 'zebra')")).result, { timeout: 10_000 }).toBe(true);
+    await ui("eval", info.ui, "--js", "[...document.querySelectorAll('mark')].find(mark => mark.textContent === 'zebra').closest('button').click(); true");
+    await expect.poll(highlighted, { timeout: 10_000 }).toBe("zebra");
+    await waitForExit(launched.child, { signal: "SIGINT", graceMs: 30_000 });
+    expect(launched.child.exitCode).toBe(0);
+  }, LAUNCH_TIMEOUT_MS + 90_000);
+
+  run("saves a key on Enter, checks it once saved, and keeps a refused or failed draft", async () => {
     launched = await launch([]);
     const { info } = launched;
     await fixtureApi(info.url)("PUT", "/api/config", {
@@ -130,26 +170,29 @@ describe("control-omb ui drives the real renderer", () => {
     const evaluate = async (js: string) => (await ui("eval", info.ui, "--js", js)).result;
     const click = (name: string) => ui("click", info.ui, "--name", name);
     const input = `document.querySelector('input[aria-label="OpenAI-compatible API key"]')`;
-    const testButton = `[...${input}.parentElement.querySelectorAll('button')].find(b => b.textContent === 'Test')`;
-    const verdict = () => evaluate(`${input}.parentElement.parentElement.querySelector('[role="status"]')?.textContent`);
-    const save = () => evaluate(`[...${input}.parentElement.querySelectorAll('button')].find(b => b.textContent === 'Save').click(); true`);
+    const testButton = `[...${input}.closest('[data-api-key-row]').querySelectorAll('button')].find(b => b.textContent === 'Test')`;
+    const verdict = () => evaluate(`${input}.closest('[data-api-key-row]').querySelector('[role="status"]')?.textContent`);
+    const rowText = () => evaluate(`${input}.closest('[data-api-key-row]').textContent`);
     const type = async (text: string) => {
       await click("OpenAI-compatible API key");
       await evaluate(`${input}.select(); true`);
       await ui("press", info.ui, "--keys", "Backspace");
       if (text) await ui("type", info.ui, "--name", "OpenAI-compatible API key", "--text", text);
     };
+    const enter = () => ui("press", info.ui, "--keys", "Enter");
     await evaluate(`(() => {
       const original = window.fetch.bind(window);
       window.keyTests = [];
+      window.keySaves = 0;
       window.rejectKeySave = false;
       window.fetch = (url, init = {}) => {
         if (String(url) === '/api/keys/test') {
           window.keyTests.push(JSON.parse(init.body));
           return Promise.resolve(Response.json({ ok: true, check: 'models', models: ['fixture-model'] }));
         }
-        if (String(url) === '/api/config' && init.method === 'PUT' && window.rejectKeySave) {
-          return Promise.resolve(Response.json({ error: 'Fixture save rejected' }, { status: 503 }));
+        if (String(url) === '/api/config' && init.method === 'PUT' && String(init.body).includes('"openaiCompat"')) {
+          window.keySaves++;
+          if (window.rejectKeySave) return Promise.resolve(Response.json({ error: 'Fixture save rejected' }, { status: 503 }));
         }
         return original(url, init);
       };
@@ -157,50 +200,43 @@ describe("control-omb ui drives the real renderer", () => {
     })()`);
     await click("You");
     await click("Settings");
-    await click("Connections");
-    await type("fixture-saved-key");
-    await save();
-    await expect.poll(() => evaluate(`${input}.value`)).toBe("");
-    await click("Appearance");
-    await click("Connections");
-    await expect.poll(() => evaluate(`${testButton}?.disabled`)).toBe(false);
+    await evaluate(`[...document.querySelectorAll('button')].find(b => b.textContent.trim() === 'API keys').click(); true`);
+    // The shared OpenAI-compatible key lives under "Other", open once a key is saved.
+    await expect.poll(() => evaluate(`document.querySelector('[data-api-key-row="openaiCompat"]') !== null`), { timeout: 10_000 }).toBe(true);
+    await evaluate(`document.querySelector('[data-api-keys-other]').open = true; true`);
+
+    // A saved key with an untouched field can be checked again.
+    await expect.poll(() => evaluate(`${testButton}?.disabled ?? null`), { timeout: 10_000 }).toBe(false);
     await click("Test");
     await expect.poll(() => evaluate("window.keyTests")).toEqual([{ provider: "openaiCompat" }]);
     await expect.poll(verdict).toBe("Saved key: Model catalog reachable: fixture-model. Authentication and chat not verified.");
-    await type("  fixture-draft-key  ");
-    await click("Test");
-    await expect.poll(() => evaluate("window.keyTests")).toEqual([
-      { provider: "openaiCompat" }, { provider: "openaiCompat", key: "fixture-draft-key" },
-    ]);
-    await expect.poll(verdict).toBe("Unsaved key — save it to use it. Model catalog reachable: fixture-model. Authentication and chat not verified.");
-    for (const erased of ["", "   "]) {
-      await type(erased);
-      expect(await evaluate(`${input}.value`)).toBe(erased);
-      expect(await evaluate(`${testButton}.disabled`)).toBe(true);
-      await evaluate(`${testButton}.click(); true`);
-      expect(await evaluate("window.keyTests.length")).toBe(2);
-    }
-    mkdirSync(evidenceDir, { recursive: true });
-    await ui("screenshot", info.ui, "--out", join(evidenceDir, "provider-key-erased-draft.png"));
 
-    // A failed save must retain draft state; only success returns to testing
-    // the saved credential from the now-empty, untouched field.
+    // Enter saves the trimmed draft, clears the field and checks the saved key.
+    await type("  fixture-draft-key  ");
+    await enter();
+    await expect.poll(() => evaluate(`${input}?.value ?? null`), { timeout: 10_000 }).toBe("");
+    await expect.poll(() => evaluate("window.keyTests")).toEqual([{ provider: "openaiCompat" }, { provider: "openaiCompat" }]);
+    expect(await evaluate("window.keySaves")).toBe(1);
+
+    // Pasted prose is refused before anything is saved.
+    await type("not a key at all");
+    await enter();
+    await expect.poll(rowText, { timeout: 10_000 }).toContain("That doesn't look like an API key");
+    expect(await evaluate("window.keySaves")).toBe(1);
+    mkdirSync(evidenceDir, { recursive: true });
+    await ui("screenshot", info.ui, "--out", join(evidenceDir, "provider-key-refused.png"));
+
+    // A failed save keeps the draft; a later success clears it and checks again.
     await type("fixture-replacement-key");
     await evaluate("window.rejectKeySave = true");
-    await save();
-    await expect.poll(async () => (await ui("snapshot", info.ui)).snapshot).toContain("Fixture save rejected");
-    expect(await evaluate(`${input}.value`)).toBe("fixture-replacement-key");
-    await type("");
-    expect(await evaluate(`${testButton}.disabled`)).toBe(true);
-    await type("fixture-replacement-key");
+    await enter();
+    await expect.poll(rowText, { timeout: 10_000 }).toContain("Fixture save rejected");
+    await expect.poll(() => evaluate(`${input}?.value ?? null`), { timeout: 10_000 }).toBe("fixture-replacement-key");
     await evaluate("window.rejectKeySave = false");
-    await save();
-    await expect.poll(() => evaluate(`${input}.value`)).toBe("");
-    await expect.poll(() => evaluate(`${testButton}.disabled`)).toBe(false);
-    await click("Test");
-    await expect.poll(() => evaluate("window.keyTests")).toEqual([
-      { provider: "openaiCompat" }, { provider: "openaiCompat", key: "fixture-draft-key" }, { provider: "openaiCompat" },
-    ]);
+    await click("OpenAI-compatible API key");
+    await enter();
+    await expect.poll(() => evaluate(`${input}?.value ?? null`), { timeout: 10_000 }).toBe("");
+    await expect.poll(() => evaluate("window.keyTests.length")).toBe(3);
     await expect.poll(verdict).toBe("Saved key: Model catalog reachable: fixture-model. Authentication and chat not verified.");
     await waitForExit(launched.child, { signal: "SIGINT", graceMs: 30_000 });
     expect(launched.child.exitCode).toBe(0);
@@ -291,6 +327,26 @@ describe("control-omb ui drives the real renderer", () => {
     // CLI, so all three are verified; one failed and one was a dry run.
     expect(tree).toContain("3 steps · 3 verified · 1 failed · 1 dry run");
 
+    // Hit-test the actual layout, not just the Tailwind class strings: the
+    // blank band beside the floating card must reach the transcript while
+    // the card and composer remain interactive.
+    const hitTest = await ui("eval", info.ui, "--js", `(() => {
+      const card = document.querySelector('section[aria-label="This run"]');
+      const dock = card.parentElement.parentElement;
+      const rect = card.getBoundingClientRect();
+      const blank = document.elementFromPoint(dock.getBoundingClientRect().left + 8, rect.top + rect.height / 2);
+      const onCard = document.elementFromPoint(rect.left + 20, rect.top + 20);
+      const scroll = document.querySelector('[role="log"]').parentElement;
+      const composer = ${COMPOSER};
+      const input = composer.getBoundingClientRect();
+      return {
+        blankReachesTranscript: scroll.contains(blank) && !dock.contains(blank) && getComputedStyle(scroll).overflowY === 'auto',
+        cardInteractive: card.contains(onCard),
+        composerInteractive: document.elementFromPoint(input.left + input.width / 2, input.top + input.height / 2) === composer,
+      };
+    })()`);
+    expect(hitTest).toMatchObject({ result: { blankReachesTranscript: true, cardInteractive: true, composerInteractive: true } });
+
     // These are real control operations: the fixture health check succeeds
     // and a deliberately missing UI target rejects instead of reporting green.
     expect(await runControlOmb(["doctor", "--url", info.url])).toMatchObject({ ok: true });
@@ -305,10 +361,15 @@ describe("control-omb ui drives the real renderer", () => {
       const late = document.createElement("button");
       late.textContent = "Late QA control";
       late.setAttribute("aria-label", "Late QA control");
+      // Keep this synthetic target inside the viewport: appending a normal
+      // flow sibling below the full-height app makes click scroll the app
+      // out of view, interfering with the real controls exercised next.
+      late.style.cssText = 'position:fixed;top:0;left:0;z-index:2147483647';
       setTimeout(() => document.body.appendChild(late), 1500);
       return "planted";
     })()`);
     expect(await ui("click", info.ui, "--name", "Late QA control")).toMatchObject({ ok: true });
+    await ui("eval", info.ui, "--js", `document.querySelector('[aria-label="Late QA control"]').remove()`);
 
     mkdirSync(evidenceDir, { recursive: true });
     const shotPath = join(evidenceDir, "chat-ui.png");
@@ -346,6 +407,7 @@ describe("control-omb ui drives the real renderer", () => {
     expect(collapsed.snapshot).toContain("Expand the run");
     expect(collapsed.snapshot).not.toContain('list "Run steps"');
 
+    await ui("click", info.ui, "--name", "More");
     await ui("click", info.ui, "--name", "Inspector");
     const inspected = await ui("snapshot", info.ui);
     const runLog = (inspected.snapshot as string).slice((inspected.snapshot as string).indexOf('complementary "Inspector"'));

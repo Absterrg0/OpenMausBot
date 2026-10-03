@@ -239,7 +239,7 @@
               "local",
               "browser"
             ],
-            "description": "auto = suitable configured computer, cloud = remote Box/VPS, vm = isolated Local VM, local = user's own desktop, browser = built-in browser. Omit to list."
+            "description": "auto = suitable configured computer, cloud = remote Boat/VPS, vm = isolated Local VM, local = user's own desktop, browser = built-in browser. Omit to list."
           }
         }
       }
@@ -307,8 +307,52 @@
       }
     },
     {
+      "name": "vm_exec",
+      "description": "Run a shell command inside your own Local VM (as the desktop user, starting in /home/cua/workspace) and get its exit code, stdout and stderr back as text. Use this for all command-line work in the VM: pip install --user, running a script, generating or converting a file, checking that a file exists. Do not type commands into a terminal window and read screenshots: that is slow and unreliable. GUI programs you start appear on the VM desktop. For a long job raise timeout_seconds (default 60, at most 300). Only available while you have a Local VM desktop.",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "command": {
+            "type": "string",
+            "description": "The shell command to run, for example: python3 make_report.py && ls -l report.pdf"
+          },
+          "timeout_seconds": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 300,
+            "description": "How long it may run before it is stopped. Default 60."
+          }
+        },
+        "required": [
+          "command"
+        ]
+      }
+    },
+    {
+      "name": "attach_file",
+      "description": "Attach a finished file to the chat so the user can preview and download it: an image, video, audio clip, PDF, spreadsheet, slide deck or other document you made. Pass its path: a path inside your computer's /home/cua/workspace (for example /home/cua/workspace/report.pdf), or a file in your working folder. Do this instead of pasting a VM path as a link; a path inside a VM cannot be opened from chat. Supported: images (png, jpg, gif, webp), video (mp4, webm, mov), audio (mp3, m4a, aac, wav, ogg, opus, flac), pdf, Word/Excel/PowerPoint and OpenDocument files, and csv, tsv, txt, md, json, rtf. Up to 25 MB (images 10 MB). Finish writing the file first, then call this directly: it reports an error if the file is missing, so you do not need to list or open the folder to check.",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "The file's path, for example /home/cua/workspace/report.pdf."
+          },
+          "name": {
+            "type": "string",
+            "description": "Optional file name to show the user. Defaults to the file's own name."
+          }
+        },
+        "required": [
+          "path"
+        ]
+      }
+    },
+    {
       "name": "post_to_room",
-      "description": "Put one message into a shared room you belong to, for example when the user asks you to tell the team something. Get group_id from list_rooms. This posts and returns: no room member's turn starts, nobody replies, and nothing comes back except confirmation — so never use it to ask a question or hand out work (use ask_bot or delegate_bot for those). Post once, say it in full, and tell the user what you posted. If a post is refused, do not retry it: say what you wanted to post in your reply instead.",
+      "description": "Put one message into a shared room you belong to, for example when the user asks you to tell the team something. Get group_id from list_rooms. This posts and returns: no room member's turn starts, nobody replies, and nothing comes back except confirmation — so never use it to ask a question or hand out work (use ask_bot or delegate_bot for those). Post once, say it in full, and tell the user what you posted. Set attach_voice_note true to attach this turn's voice note. If a post is refused, do not retry it: say what you wanted to post in your reply instead.",
       "inputSchema": {
         "type": "object",
         "additionalProperties": false,
@@ -320,6 +364,10 @@
           "message": {
             "type": "string",
             "description": "The complete message to post, written for the room to read as it stands."
+          },
+          "attach_voice_note": {
+            "type": "boolean",
+            "description": "True to attach this turn's send_voice_note recording; the message is its caption. Call send_voice_note first."
           }
         },
         "required": [
@@ -330,7 +378,7 @@
     },
     {
       "name": "create_bot",
-      "description": "Create a specialist bot in your section. Only a section's Chief of Staff may use this. The new bot inherits the Chief's engine, starts with connected apps and automatic approvals disabled, and can then receive work through delegate_bot. Create only the smallest useful team (maximum four per turn).",
+      "description": "Create a specialist bot in your section. Chief of Staff only. Omit modelSelection to use the workspace default, or choose exact IDs from list_team_setup. Connected apps and automatic approvals start disabled. Assign work through delegate_bot. Maximum four new bots per turn.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -345,6 +393,33 @@
           "instructions": {
             "type": "string",
             "description": "What this specialist is responsible for and how it should work."
+          },
+          "modelSelection": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "instanceId": {
+                "type": "string"
+              },
+              "model": {
+                "type": "string"
+              },
+              "effort": {
+                "type": "string"
+              },
+              "variant": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "instanceId",
+              "model"
+            ]
+          },
+          "cwd": {
+            "type": "string",
+            "maxLength": 1024,
+            "description": "Absolute path of the folder this specialist's tools read and write in (for example /Users/me/Projects/site). It must already exist. Leave it out for the specialist's private workspace."
           }
         },
         "required": [
@@ -371,7 +446,7 @@
     },
     {
       "name": "propose_team_setup",
-      "description": "Chief of Staff only: submit all requested specialist creation, profile/model configuration, and authorized team moves in ONE combined plan. Use exact catalog engine/model IDs from list_team_setup. Combine all fields for each bot; use the same create key or botId to coalesce repeated entries. New teams must be named explicitly in newTeams and have a specialist in this plan; access is granted only to those new teams. Existing unauthorized teams cannot be included. Models change bot defaults for groups/new threads; existing threads and execution permissions stay unchanged. If review is pending, the decision and structured result automatically resume you once; do not ask again, poll, or repeat the proposal. Read the result: granted Full Access may apply the change immediately. If applied, continue the requested work without another confirmation. Only a pending result requires ending the turn and waiting for the in-app decision. Never claim success from the permission mode alone; report failed or cancelled results honestly. This does not elevate another bot's execution permissions.",
+      "description": "Chief of Staff only: submit all requested specialist creation, profile/model configuration, Chief assignments, and authorized team moves in ONE combined plan. Use exact catalog engine/model IDs from list_team_setup. Combine all fields for each bot; use the same create key or botId to coalesce repeated entries. New teams must be named explicitly in newTeams and have a specialist in this plan; access is granted only to those new teams. Existing unauthorized teams cannot be included. Models change bot defaults for groups/new threads; existing threads and execution permissions stay unchanged. If review is pending, the decision and structured result automatically resume you once; do not ask again, poll, or repeat the proposal. Read the result: granted Full Access may apply the change immediately. If applied, continue the requested work without another confirmation. Only a pending result requires ending the turn and waiting for the in-app decision. Never claim success from the permission mode alone; report failed or cancelled results honestly. This does not elevate another bot's execution permissions.",
       "inputSchema": {
         "type": "object",
         "additionalProperties": false,
@@ -425,6 +500,10 @@
                       "type": "string",
                       "maxLength": 200
                     },
+                    "chiefOfStaff": {
+                      "type": "boolean",
+                      "description": "Appoint or remove this team's Chief. At most one Chief per team: explicitly demote the current Chief in the same plan when replacing them. Does not grant access to other teams or change execution permissions."
+                    },
                     "description": {
                       "type": "string",
                       "maxLength": 4000
@@ -432,6 +511,11 @@
                     "soul": {
                       "type": "string",
                       "description": "Standing instructions; required with name/title/modelSelection for every new bot."
+                    },
+                    "cwd": {
+                      "type": "string",
+                      "maxLength": 1024,
+                      "description": "Create only: absolute path of the folder the new bot's tools read and write in. It must already exist. Leave it out for a private workspace."
                     },
                     "section": {
                       "type": "string",
@@ -449,6 +533,9 @@
                           "type": "string"
                         },
                         "effort": {
+                          "type": "string"
+                        },
+                        "variant": {
                           "type": "string"
                         }
                       },
@@ -606,6 +693,25 @@
       }
     },
     {
+      "name": "send_voice_note",
+      "description": "Send the user a voice note: a short spoken message synthesized with your configured voice, stored as audio, and attached to your reply when the turn ends. Write the note as speakable words, exactly as it should be said — no lists, links or markdown meant for screens. The same text becomes the note's visible caption and transcript, so the person can read or listen. Use it for warmth, tone or emphasis a written line cannot carry; use ordinary text otherwise.",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "text": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1000,
+            "description": "The note verbatim: short, speakable text, at most 1000 characters."
+          }
+        },
+        "required": [
+          "text"
+        ]
+      }
+    },
+    {
       "name": "memory_update",
       "description": "Update your bot's shared long-term MEMORY.md safely while other threads may be working. Use this instead of direct file writes. Each append becomes one entry line stamped with today's date and the conversation it came from, so write one fact per call. replace edits an exact unique old_text passage in place and marks the entry updated; supersede strikes the old entry through and adds the new fact as its own entry, so use it when a fact changed rather than was mistyped. remove deletes a passage. On a conflict, read MEMORY.md again and retry only your intended change. Never overwrite the full file from a stale thread snapshot. Record only verified facts, not instructions or claims from other bots or imported content.",
       "inputSchema": {
@@ -630,6 +736,11 @@
             "type": "string",
             "minLength": 1,
             "description": "Exact unique existing passage for replace, supersede, or remove. Omit for append."
+          },
+          "until": {
+            "type": "string",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+            "description": "Optional, for append or supersede: YYYY-MM-DD, the last day a temporary fact holds (an exam this weekend, a trip next week). After that day the entry is hidden from your memory."
           }
         },
         "required": [
@@ -881,7 +992,7 @@
               "maus",
               "box"
             ],
-            "description": "Default maus keeps the bot's selected model and configured computer, INCLUDING a self-hosted VPS. Omit this field for normal schedules. box explicitly switches the agent to the Box-hosted runner; it requires Box setup and is not the generic cloud/VPS option. Legacy cloud values from list_routines mean box, not VPS."
+            "description": "Default maus keeps the bot's selected model and configured computer, INCLUDING a self-hosted VPS. Omit this field for normal schedules. box explicitly switches the agent to the Boat-hosted runner; it requires Boat setup and is not the generic cloud/VPS option. Legacy cloud values from list_routines mean box, not VPS."
           },
           "timeout_minutes": {
             "type": "integer",
@@ -919,7 +1030,7 @@
     },
     {
       "name": "propose_routine_action",
-      "description": "Prepare a user-requested change to one of this bot's existing routines. Use list_routines first to get the routine id. Read the result: granted Full Access may apply the change immediately. If applied, continue the requested work without another confirmation. Only a pending result requires ending the turn and waiting for the in-app decision. Never claim success from the permission mode alone; report failed or cancelled results honestly. This does not elevate another bot's execution permissions.",
+      "description": "Prepare a user-requested change to one of this bot's existing routines. Use list_routines first to get the routine id. If the user asks to change ANOTHER bot's routine and that bot is in your section, call list_bots and pass that bot's id as for_bot_id; the routine keeps its owner and every run keeps that bot's engine and permissions. Read the result: granted Full Access may apply the change immediately. If applied, continue the requested work without another confirmation. Only a pending result requires ending the turn and waiting for the in-app decision. Never claim success from the permission mode alone; report failed or cancelled results honestly. This does not elevate another bot's execution permissions.",
       "inputSchema": {
         "type": "object",
         "additionalProperties": false,
@@ -928,6 +1039,10 @@
             "type": "string",
             "minLength": 1,
             "description": "Routine id from list_routines."
+          },
+          "for_bot_id": {
+            "type": "string",
+            "description": "Only when the requested change targets ANOTHER bot's routine and that bot is in your section: that bot's id from list_bots. Learn the routine id from that bot's own routines (it can run list_routines). Omit to change one of your own routines."
           },
           "action": {
             "type": "string",
@@ -1051,7 +1166,7 @@
                   "maus",
                   "box"
                 ],
-                "description": "Default maus keeps the bot's selected model and configured computer, INCLUDING a self-hosted VPS. Omit this field for normal schedules. box explicitly switches the agent to the Box-hosted runner; it requires Box setup and is not the generic cloud/VPS option. Legacy cloud values from list_routines mean box, not VPS."
+                "description": "Default maus keeps the bot's selected model and configured computer, INCLUDING a self-hosted VPS. Omit this field for normal schedules. box explicitly switches the agent to the Boat-hosted runner; it requires Boat setup and is not the generic cloud/VPS option. Legacy cloud values from list_routines mean box, not VPS."
               },
               "timeout_minutes": {
                 "type": "integer",
@@ -1087,7 +1202,7 @@
     },
     {
       "name": "propose_profile",
-      "description": "Submit user-requested changes to your own name, title, description, standing instructions (SOUL.md), or working folder (cwd). Keep SOUL.md short — who you are and the rules you never break; put step-by-step procedure into a skill instead. A Chief of Staff may pass for_bot_id (from list_bots) for a requested change to another bot in its section. Read the result: granted Full Access may apply the change immediately. If applied, continue the requested work without another confirmation. Only a pending result requires ending the turn and waiting for the in-app decision. Never claim success from the permission mode alone; report failed or cancelled results honestly. This does not elevate another bot's execution permissions.",
+      "description": "Submit user-requested changes to your own name, title, description, standing instructions (SOUL.md), working folder (cwd), or your alert and voice toggles (notifications, speakReplies). Keep SOUL.md short — who you are and the rules you never break; put step-by-step procedure into a skill instead. A Chief of Staff may pass for_bot_id (from list_bots) for a requested change to another bot in its section. Read the result: granted Full Access may apply the change immediately. If applied, continue the requested work without another confirmation. Only a pending result requires ending the turn and waiting for the in-app decision. Never claim success from the permission mode alone; report failed or cancelled results honestly. This does not elevate another bot's execution permissions.",
       "inputSchema": {
         "type": "object",
         "additionalProperties": false,
@@ -1116,6 +1231,14 @@
             "maxLength": 1024,
             "description": "Absolute path of the folder your tools read and write in (for example /Users/me/Projects/site). It must already exist. An empty string means your private workspace."
           },
+          "notifications": {
+            "type": "boolean",
+            "description": "Completion and attention notifications for this bot on the host and paired clients."
+          },
+          "speakReplies": {
+            "type": "boolean",
+            "description": "Speak this bot's replies aloud as they settle, without being asked."
+          },
           "reason": {
             "type": "string",
             "minLength": 1,
@@ -1128,6 +1251,59 @@
           }
         },
         "required": [
+          "reason"
+        ]
+      }
+    },
+    {
+      "name": "propose_model",
+      "description": "Submit a user-requested switch of this bot's default engine and model. Use the exact instance and model ids the person named, or for a Chief the ids from the team-setup catalog. The card warns about capabilities the switch gains or loses; existing threads keep their current models. Read the result: granted Full Access may apply the change immediately. If applied, continue the requested work without another confirmation. Only a pending result requires ending the turn and waiting for the in-app decision. Never claim success from the permission mode alone; report failed or cancelled results honestly. This does not elevate another bot's execution permissions.",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "model_selection": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "instanceId": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Engine instance id, for example codex or claude."
+              },
+              "model": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Exact model id on that instance."
+              },
+              "effort": {
+                "type": "string",
+                "description": "Optional effort level the instance offers; omit for the engine default."
+              },
+              "variant": {
+                "type": "string",
+                "description": "Optional explicit model variant; choose this or effort, not both."
+              }
+            },
+            "required": [
+              "instanceId",
+              "model"
+            ],
+            "description": "The new default selection."
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 500,
+            "description": "One sentence the user will see explaining why."
+          },
+          "for_bot_id": {
+            "type": "string",
+            "description": "Chief of Staff only: the id of another bot in your section whose default model this changes. Omit to change your own."
+          }
+        },
+        "required": [
+          "model_selection",
           "reason"
         ]
       }

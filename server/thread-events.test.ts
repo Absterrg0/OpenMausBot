@@ -52,6 +52,18 @@ describe("readThreadEvents", () => {
     expect(page.entries[0]).toMatchObject({ kind: "runtime", data: { eventId: "e1" } });
   });
 
+  it("keeps a runtime notice, which reports without failing the turn", () => {
+    const eventsDir = tmp();
+    const nativeDir = tmp();
+    writeFileSync(
+      join(eventsDir, "t1.ndjson"),
+      line(runtime({ eventId: "e1", type: "runtime.notice", createdAt: "2026-08-17T10:00:00.000Z", message: "OpenCode no longer offers x" })) +
+        line(runtime({ eventId: "e2", type: "runtime.notice", createdAt: "2026-08-17T10:00:01.000Z" })),
+    );
+    const page = readThreadEvents({ eventsDir, nativeDir, threadId: "t1" });
+    expect(page.entries.map((entry) => (entry.data as { eventId: string }).eventId)).toEqual(["e1"]);
+  });
+
   it("caps each log to its most recent `limit` lines and reports what it skipped", () => {
     const eventsDir = tmp();
     const nativeDir = tmp();
@@ -126,6 +138,36 @@ describe("readThreadEvents", () => {
     const page = readThreadEvents({ eventsDir, nativeDir, threadId: "t1" });
     expect(page.entries.map((entry) => (entry.data as { eventId?: string }).eventId)).toEqual(["rich"]);
     expect(page.entries[0]!.data).toMatchObject({ questions: [question] });
+  });
+
+  // origin marks asks parsed out of model-authored output; events recorded
+  // before the field existed must keep replaying, and anything but the two
+  // documented marks is not this contract.
+  it("replays an ask's origin and keeps events recorded before it existed", () => {
+    const eventsDir = tmp();
+    const nativeDir = tmp();
+    const base = {
+      provider: "boatagent",
+      threadId: "t1",
+      type: "request.opened",
+      requestType: "question",
+      tool: "omb-ask",
+      summary: "Which framework?",
+    };
+    writeFileSync(
+      join(eventsDir, "t1.ndjson"),
+      line({ ...base, eventId: "from-tool", createdAt: "1", origin: "tool" }) +
+        line({ ...base, eventId: "from-output", createdAt: "2", origin: "output" }) +
+        line({ ...base, eventId: "pre-origin", createdAt: "3" }) +
+        line({ ...base, eventId: "bad-origin", createdAt: "4", origin: "elsewhere" }),
+    );
+    writeFileSync(join(nativeDir, "t1.ndjson"), "");
+    const page = readThreadEvents({ eventsDir, nativeDir, threadId: "t1" });
+    expect(page.entries.map((entry) => (entry.data as { eventId?: string }).eventId)).toEqual([
+      "from-tool",
+      "from-output",
+      "pre-origin",
+    ]);
   });
 
   it("rejects malformed retry telemetry while retaining a valid retry event", () => {

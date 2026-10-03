@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { recordEvents } from "../testing/events.ts";
+import { buildTurnContext, NATIVELY_REPLAYING_DRIVER_KINDS } from "../turn-context.ts";
+import { instanceConfigs } from "../config.ts";
 import { OpenAICompatDriver } from "./openai-compat.ts";
 
 describe("OpenAICompatDriver", () => {
@@ -22,7 +24,8 @@ describe("OpenAICompatDriver", () => {
 
   it("registers with the openai-compat kind and a display name", () => {
     expect(OpenAICompatDriver.driverKind).toBe("openai-compat");
-    expect(OpenAICompatDriver.metadata.displayName).toMatch(/OpenRouter|Groq/);
+    expect(OpenAICompatDriver.metadata.displayName).toBe("Other (OpenAI-compatible)");
+    expect(OpenAICompatDriver.metadata.access).toBe("api");
   });
 
   it("falls back to the OpenRouter endpoint by default", () => {
@@ -53,6 +56,52 @@ describe("OpenAICompatDriver", () => {
     }
   });
 
+  it("keeps a provider's own instance off the workspace key, URL and model", async () => {
+    process.env.OPENAI_COMPAT_API_KEY = "workspace-key";
+    process.env.OPENAI_COMPAT_URL = "https://openrouter.ai/api/v1";
+    const before = process.env.OPENAI_COMPAT_MODEL;
+    process.env.OPENAI_COMPAT_MODEL = "meta-llama/llama-3.3-70b-instruct";
+    try {
+      const config = OpenAICompatDriver.decodeConfig({ url: "https://api.openai.com/v1", apiKeyEnv: "OMB_OPENAI_API_KEY", catalog: "openai" });
+      expect(config).toMatchObject({ url: "https://api.openai.com/v1", catalog: "openai" });
+      expect(config.model).toBeUndefined();
+      const inst = await OpenAICompatDriver.create({
+        instanceId: "openai", displayName: "OpenAI", enabled: true, config,
+        environment: { OPENAI_COMPAT_API_KEY: "workspace-key" },
+      });
+      // No OpenAI key: unavailable, never the workspace key against OpenAI.
+      expect((await inst.snapshot()).state).toBe("unavailable");
+      expect(inst.models.default).toBe("gpt-5");
+      await inst.dispose();
+      // A custom key variable still falls back, as it always has.
+      expect(OpenAICompatDriver.decodeConfig({ apiKeyEnv: "GROQ_KEY" }).model).toBe("meta-llama/llama-3.3-70b-instruct");
+    } finally {
+      if (before === undefined) delete process.env.OPENAI_COMPAT_MODEL;
+      else process.env.OPENAI_COMPAT_MODEL = before;
+    }
+  });
+
+  it("lists only OpenAI's chat models, newest first", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ data: [
+      { id: "gpt-4.1", created: 1 },
+      { id: "text-embedding-3-large", created: 9 },
+      { id: "gpt-5", created: 3 },
+      { id: "gpt-4o-realtime-preview", created: 8 },
+      { id: "dall-e-3", created: 7 },
+      { id: "o3", created: 2 },
+      { id: "gpt-5-codex", created: 6 },
+    ] }), { status: 200 })));
+    const inst = await OpenAICompatDriver.create({
+      instanceId: "openai", displayName: "OpenAI", enabled: true,
+      config: OpenAICompatDriver.decodeConfig({ url: "https://api.openai.com/v1", apiKeyEnv: "OMB_OPENAI_API_KEY", catalog: "openai" }),
+      environment: { OMB_OPENAI_API_KEY: "sk-fixture" },
+    });
+    await vi.waitFor(() => expect(inst.models.options.map((option) => option.id)).toEqual(["gpt-5", "o3", "gpt-4.1"]));
+    // A provider's own list is its official catalog, not custom models.
+    expect(inst.models.options.every((option) => !option.custom)).toBe(true);
+    await inst.dispose();
+  });
+
   it("reports unavailable without an API key", async () => {
     const inst = await OpenAICompatDriver.create({
       instanceId: "test-1",
@@ -65,6 +114,96 @@ describe("OpenAICompatDriver", () => {
     expect(snap.state).toBe("unavailable");
     await inst.dispose();
   });
+
+  // The setup card used to show a config.json sentence as an "Open install
+  // in Terminal" command. The key is saved in the app.
+  it("sends setup to Settings → API keys instead of a terminal", async () => {
+    expect(OpenAICompatDriver.install?.command).toBeUndefined();
+    expect(OpenAICompatDriver.install?.settings).toBe("connections");
+    expect(OpenAICompatDriver.install?.signInCommand).toContain("Settings → API keys");
+    const inst = await OpenAICompatDriver.create({
+      instanceId: "test-setup", displayName: "Router", enabled: true,
+      config: { url: "https://openrouter.ai/api/v1", apiKeyEnv: "OPENAI_COMPAT_API_KEY" }, environment: {},
+    });
+    const snap = await inst.snapshot();
+    expect(snap).toMatchObject({ state: "unavailable", reason: expect.stringContaining("Settings → API keys") });
+    expect(JSON.stringify(snap)).not.toContain("config.json");
+    await inst.dispose();
+  });
+
+  // Security: before, a hand-edited instance with its own URL and no key of
+  // its own received the workspace key and sent it to that host
+  // (verified: GET https://third-party.example.test/v1/models with
+  // "Bearer sk-or-WORKSPACE").
+  // An instance naming its own key variable reads only that variable, not
+  // the server's OPENAI_COMPAT_API_KEY either.
+  it.each([
+    ["its own URL", { url: "https://third-party.example.test/v1" }, ["WORKSPACE"]],
+    ["its own key variable", { url: "https://third-party.example.test/v1", apiKeyEnv: "THIRD_PARTY_KEY" }, ["WORKSPACE", "OPERATOR"]],
+  ])("sends the workspace key nowhere near an instance with %s", async (_label, config, absent) => {
+    process.env.OPENAI_COMPAT_API_KEY = "sk-or-OPERATOR";
+    const seen: string[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      seen.push(JSON.stringify(init?.headers ?? {}));
+      return new Response('{"data":[]}', { headers: { "content-type": "application/json" } });
+    }));
+    const map = instanceConfigs({
+      openaiCompat: { key: "sk-or-WORKSPACE" },
+      instances: { claude: { driver: "claudeAgent" }, router: { driver: "openai-compat", config } },
+    });
+    const entry = map.router!;
+    const inst = await OpenAICompatDriver.create({
+      instanceId: "router", displayName: "Router", enabled: true,
+      config: OpenAICompatDriver.decodeConfig(entry.config), environment: entry.environment as Record<string, string>,
+    });
+    await inst.refreshModels?.();
+    await inst.snapshot();
+    for (const secret of absent) expect(JSON.stringify(seen)).not.toContain(secret);
+    await inst.dispose();
+  });
+
+  it("rejects remote HTTP computer use before starting tools or a completion request", async () => {
+    const request = vi.fn(async (_url: string | URL | Request) => new Response('{"data":[]}', { headers: { "content-type": "application/json" } }));
+    vi.stubGlobal("fetch", request);
+    const inst = await OpenAICompatDriver.create({ instanceId: "cleartext", displayName: "Fixture", enabled: true,
+      config: { url: "http://remote.example.test/v1", apiKeyEnv: "FIXTURE_KEY" }, environment: { FIXTURE_KEY: "synthetic" } });
+    try {
+      await expect(inst.adapter.sendTurn({ threadId: "cleartext", text: "Inspect the screen", model: "fixture",
+        integrations: { localComputer: { command: "must-not-start", args: [], env: {} } } })).rejects.toThrow("require HTTPS");
+      expect(request.mock.calls.some(call => String(call[0]).includes("chat/completions"))).toBe(false);
+    } finally { await inst.dispose(); }
+  });
+  it("smoke: offers ask_user and returns the person's reply verbatim", async () => {
+    const askBody = 'data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"ask1","type":"function","function":{"name":"ask_user","arguments":'
+      + JSON.stringify(JSON.stringify({ questions: [{ question: "Ship the fixture?", options: [{ label: "Yes" }, { label: "No" }] }] }))
+      + '}}]}}]}\n\n'
+      + 'data: {"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}\n\n';
+    const finalBody = 'data: {"choices":[{"index":0,"delta":{"content":"done"}}]}\n\n'
+      + 'data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}\n\n';
+    const bodies: string[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      if (String(input).endsWith("/models")) return new Response(JSON.stringify({ data: [] }), { status: 200 });
+      bodies.push(String(init?.body));
+      return new Response(bodies.length === 1 ? askBody : finalBody, { status: 200, headers: { "content-type": "text/event-stream" } });
+    }));
+    const inst = await OpenAICompatDriver.create({
+      instanceId: "compat-ask", displayName: "Compat", enabled: true,
+      config: { url: "https://api.example.com/v1", apiKeyEnv: "OPENAI_COMPAT_API_KEY" },
+      environment: { OPENAI_COMPAT_API_KEY: "secret" },
+    });
+    const recorder = recordEvents(inst.adapter);
+    await inst.adapter.sendTurn({ threadId: "thread", text: "hi", model: "vendor/model" });
+    const opened = await recorder.until((event) => event.type === "request.opened");
+    expect(opened).toMatchObject({ requestType: "question", tool: "ask_user", choices: ["Yes", "No"] });
+    const reply = "The user answered your questions.\n\nQ: Ship the fixture?\nA: Yes";
+    expect(await inst.adapter.respondToRequest("thread", opened.requestId!, { behavior: "answer", message: reply })).toBe("answered");
+    const completed = await recorder.until((event) => event.type === "turn.completed");
+    expect(completed).toMatchObject({ ok: true });
+    expect(bodies[0]).toContain('"ask_user"');
+    expect(JSON.parse(JSON.parse(bodies[1]!).messages.at(-1).content).result).toBe(reply);
+    recorder.stop();
+    await inst.dispose();
+  }, 20_000);
 
   it("exposes a refreshed model catalog", async () => {
     vi.stubGlobal(
@@ -346,6 +485,126 @@ describe("OpenAICompatDriver", () => {
 
     expect(sentBody?.stream).toBe(true);
     expect(sentBody?.stream_options).toEqual({ include_usage: true });
+    recorder.stop();
+    await inst.dispose();
+  });
+
+  it("does not double the transcript when the thread was rewound", async () => {
+    let sentBody: any = null;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+        const url = String(input);
+        if (url.endsWith("/models")) return new Response(JSON.stringify({ data: [] }), { status: 200 });
+        sentBody = JSON.parse(String(init?.body));
+        return new Response(
+          'data: {"choices":[{"delta":{"content":"ok"}}]}\n' +
+            'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n' + "data: [DONE]\n",
+          { status: 200, headers: { "content-type": "text/event-stream" } },
+        );
+      }),
+    );
+    const transcript = [
+      { role: "user" as const, text: "u25-sentinel-first-message" },
+      { role: "assistant" as const, text: "u25-sentinel-first-reply" },
+    ];
+    // Mirrors server/index.ts's real call: buildTurnContext only inlines the
+    // transcript into turnText when the driver is NOT in
+    // NATIVELY_REPLAYING_DRIVER_KINDS. openai-compat's runtime already
+    // replays via SendTurnInput.transcript (messagesFor() in
+    // openai-chat.ts), so both must not fire for the same turn.
+    const { turnText } = buildTurnContext({
+      text: "second message",
+      transcript,
+      rewound: true,
+      fresh: false,
+      externallyUpdated: false,
+      replaysNatively: NATIVELY_REPLAYING_DRIVER_KINDS.includes("openai-compat"),
+    });
+    const inst = await OpenAICompatDriver.create({
+      instanceId: "test-u25",
+      displayName: "U25",
+      enabled: true,
+      config: { url: "http://host.lima.internal:9090/v1", apiKeyEnv: "TEST_KEY" },
+      environment: { TEST_KEY: "secret" },
+    });
+    const recorder = recordEvents(inst.adapter);
+
+    // index.ts ALSO passes the raw transcript on SendTurnInput, which
+    // messagesFor() in openai-chat.ts turns into its own chat messages. Both
+    // would land in the same outgoing request if replaysNatively were wrong.
+    await inst.adapter.sendTurn({ threadId: "thread-u25", text: turnText, transcript });
+    await recorder.until((e) => e.type === "turn.completed");
+
+    const serialized = JSON.stringify(sentBody?.messages);
+    const occurrences = serialized.split("u25-sentinel-first-message").length - 1;
+    expect(occurrences).toBe(1);
+    recorder.stop();
+    await inst.dispose();
+  });
+
+  it("keeps the system message to the stable half and carries the volatile half in the newest user message", async () => {
+    let sentBody: any = null;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+        const url = String(input);
+        if (url.endsWith("/models")) return new Response(JSON.stringify({ data: [] }), { status: 200 });
+        sentBody = JSON.parse(String(init?.body));
+        return new Response(
+          'data: {"choices":[{"delta":{"content":"hi"}}]}\n' + "data: [DONE]\n",
+          { status: 200, headers: { "content-type": "text/event-stream" } },
+        );
+      }),
+    );
+    const inst = await OpenAICompatDriver.create({
+      instanceId: "test-prompt-split",
+      displayName: "Prompt split",
+      enabled: true,
+      config: { url: "http://localhost:9/v1", apiKeyEnv: "TEST_KEY" },
+      environment: { TEST_KEY: "secret" },
+    });
+    const recorder = recordEvents(inst.adapter);
+
+    await inst.adapter.sendTurn({
+      threadId: "thread-prompt-split",
+      text: "hello",
+      system: "Standing rules.\n\nMemory: likes quiet hours.",
+      systemStable: "Standing rules.",
+      systemVolatile: "Memory: likes quiet hours.",
+      transcript: [
+        { role: "user" as const, text: "earlier" },
+        { role: "assistant" as const, text: "answer" },
+      ],
+    });
+    await recorder.until((e) => e.type === "turn.completed");
+
+    // The resent prefix (system + transcript) must stay byte-identical when
+    // the volatile half changes, so only the stable half may sit in the
+    // system message. The volatile half rides the newest user message on
+    // every turn: the stored transcript never contains the delivered
+    // notes, so a model handed nothing would lose its memory.
+    const messages: any[] = sentBody?.messages ?? [];
+    expect(messages[0]).toEqual({ role: "system", content: "Standing rules." });
+    expect(messages.slice(1, 3)).toEqual([
+      { role: "user", content: "earlier" },
+      { role: "assistant", content: "answer" },
+    ]);
+    expect(messages.at(-1)).toEqual({
+      role: "user",
+      content: "Context from OpenMausBot updated since this conversation started; it replaces any earlier copy:\n\nMemory: likes quiet hours.\n\nhello",
+    });
+
+    // A turn without the split keeps the legacy single-block shape.
+    await inst.adapter.sendTurn({
+      threadId: "thread-prompt-split-legacy",
+      text: "bare",
+      system: "Whole block.",
+    });
+    await recorder.until((e) => e.type === "turn.completed" && e.threadId === "thread-prompt-split-legacy");
+    const legacy: any[] = sentBody?.messages ?? [];
+    expect(legacy[0]).toEqual({ role: "system", content: "Whole block." });
+    expect(legacy.at(-1)).toEqual({ role: "user", content: "bare" });
     recorder.stop();
     await inst.dispose();
   });

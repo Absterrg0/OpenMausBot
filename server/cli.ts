@@ -23,6 +23,7 @@
 // This module only exports; openmausbot.ts is the entry that runs main(), so
 // bundling this file into other entries (pair-cli.ts) never runs it twice.
 import { spawn, type ChildProcess } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -31,6 +32,10 @@ import { fileURLToPath } from "node:url";
 import qrcode from "qrcode-terminal";
 
 import { parseAllowList } from "./account-signin.ts";
+import { appendAdminAction, flushAdminActivity, sharedSignIn } from "./admin-activity.ts";
+import { bindDecisionRetention, decisionRetentionDays } from "./decision-log.ts";
+import { hostedWorkspaceConfigured } from "./enterprise.ts";
+import { resolveLoopbackTrust } from "./request-auth.ts";
 import { writeFileAtomic } from "./atomic.ts";
 import { ensureCaddy, normalizeDomainOption, startCaddy, type RunningCaddy } from "./caddy.ts";
 import { runServiceCommand } from "./service-cli.ts";
@@ -57,6 +62,8 @@ import {
   type CompanionOriginEndpoint,
   type ManagedTunnelAccess,
   type RunningTunnel,
+  type TunnelAccount,
+  type TunnelRecovery,
 } from "./tunnel.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -261,7 +268,7 @@ fleet   many client workspaces on one Linux server, each its own account,
         --dry-run always prints. Install the package permanently first.
         init --operator USER also installs the fleet agent, a root service
         on a Unix socket only USER may open, so the workspace running as
-        USER manages the others from Settings → Workspaces.
+        USER manages the others from Settings → Installations.
 
 --tailscale  serve over your tailnet: Tailscale terminates HTTPS and the
              link uses this machine's MagicDNS name (needs Tailscale signed in
@@ -319,10 +326,25 @@ export function serverVersion(here = HERE): string {
 const message = (error: unknown) => (error instanceof Error ? error.message : String(error));
 
 // ── talking to a running server (loopback = owner) ────────────────────
+/** Set only inside `openmausbot serve` on a service-trust server: the secret
+ * it handed the server it started, which opens that server's pairing route. */
+let serveOwnerToken: string | undefined;
+
 async function api(port: number, path: string, init: { method?: string; body?: string } = {}): Promise<{ status: number; body: any }> {
-  const res = await fetch(`http://127.0.0.1:${port}${path}`, { method: init.method, body: init.body, headers: { "content-type": "application/json" }, signal: AbortSignal.timeout(3000) });
+  // x-openmausbot-cli names the tool in the admin activity log; on loopback
+  // it is the owner either way, so it grants nothing.
+  const headers: Record<string, string> = { "content-type": "application/json", "x-openmausbot-cli": "1", ...(serveOwnerToken ? { "x-openmausbot-cli-owner": serveOwnerToken } : {}) };
+  const res = await fetch(`http://127.0.0.1:${port}${path}`, { method: init.method, body: init.body, headers, signal: AbortSignal.timeout(3000) });
   const body: unknown = await res.json().catch(() => ({}));
   return { status: res.status, body };
+}
+
+/** What to do when a server treats this command as a local service rather
+ * than its owner (OMB_LOOPBACK_TRUST=service, or a hosted workspace). */
+export const SERVICE_TRUST_HELP = "This server does not treat commands on this computer as its owner (OMB_LOOPBACK_TRUST=service, or a hosted workspace), so it will not pair devices or list sessions for them. Sign in as an admin and use Settings → Remote access, let people sign in with their email (openmausbot access add you@example.com), or restart the server with OMB_LOOPBACK_TRUST=owner.";
+
+function refusedAsService(status: number, body: any): boolean {
+  return status === 403 && typeof body?.error === "string" && /shared server|Sign in through the workspace portal/.test(body.error);
 }
 
 async function serverUp(port: number, pid?: number): Promise<boolean> {
@@ -402,7 +424,7 @@ function startupPreferences(options: CliOptions): NonNullable<AppConfig["cliStar
 async function showPhonePairing(options: CliOptions, origin: string | undefined, log: (line: string) => void): Promise<boolean> {
   const ready = !!origin && await verifyPhoneEndpoint(options.port, origin);
   if (!ready) {
-    log("Phone access is not reachable yet. Your local workspace is ready; no phone pairing code was created.");
+    log("Phone access is not reachable yet. OpenMausBot is ready on this computer; no phone pairing code was created.");
     log("Check the HTTPS connection, then run openmausbot pair again with the same --data-dir and --port.");
     return false;
   }
@@ -491,6 +513,7 @@ async function mintPairing(port: number, options: { label?: string; client?: boo
   if (options.label) request.label = options.label;
   if (options.client) request.scopes = ["client"];
   const { status, body } = await api(port, "/api/auth/pairing", { method: "POST", body: JSON.stringify(request) });
+  if (refusedAsService(status, body)) throw new Error(SERVICE_TRUST_HELP);
   if (status !== 200) throw new Error(`server refused to mint a pairing code: ${typeof body?.error === "string" ? body.error : status}`);
   const url = options.publicUrl ? `${options.publicUrl}/pair#code=${body.code}` : typeof body.url === "string" ? body.url : null;
   // A server too old to mint a credential simply has no invite: the web link
@@ -561,6 +584,10 @@ export async function runSessions(options: CliOptions): Promise<number> {
   }
   if (options.revoke) {
     const { status, body } = await api(options.port, `/api/auth/sessions/${encodeURIComponent(options.revoke)}`, { method: "DELETE" });
+    if (refusedAsService(status, body)) {
+      console.error(SERVICE_TRUST_HELP);
+      return 1;
+    }
     if (status !== 200) {
       console.error(`could not revoke: ${typeof body?.error === "string" ? body.error : status}`);
       return 1;
@@ -568,7 +595,15 @@ export async function runSessions(options: CliOptions): Promise<number> {
     console.log(`revoked ${options.revoke}: that device is signed out and its stream is closed`);
     return 0;
   }
-  const { body } = await api(options.port, "/api/auth/sessions");
+  const { status, body } = await api(options.port, "/api/auth/sessions");
+  if (refusedAsService(status, body)) {
+    console.error(SERVICE_TRUST_HELP);
+    return 1;
+  }
+  if (status !== 200) {
+    console.error(`could not list sessions: ${typeof body?.error === "string" ? body.error : status}`);
+    return 1;
+  }
   const sessions: Array<{ id: string; label: string; scopes: string[]; lastSeenAt: number; expiresAt: number }> = Array.isArray(body?.sessions) ? body.sessions : [];
   if (options.json) {
     console.log(JSON.stringify(sessions, null, 2));
@@ -635,9 +670,23 @@ export async function runAccess(options: CliOptions, io: CliIo = defaultIo()): P
   const admins = list(Reflect.get(current, "admins"));
   const members = list(Reflect.get(current, "members"));
   const overridden = process.env.OMB_SIGNIN_EMAILS !== undefined || process.env.OMB_SIGNIN_MEMBER_EMAILS !== undefined;
-  const write = (next: { admins: string[]; members: string[] }) => {
+  const write = async (next: { admins: string[]; members: string[] }) => {
     mkdirSync(options.dataDir, { recursive: true, mode: 0o700 });
     writeFileAtomic(file, `${JSON.stringify({ ...raw, signIn: next }, null, 2)}\n`, { mode: 0o600 });
+    // The same row Settings → People writes, named for the command line,
+    // pruned by the same window the server would use — kept, like the
+    // server's, only where more than one person signs in.
+    if (!sharedSignIn({ admins, members }) && !sharedSignIn(next) && !hostedWorkspaceConfigured()) return;
+    const decisions = raw.decisions && typeof raw.decisions === "object" ? (raw.decisions as { retentionDays?: unknown }).retentionDays : undefined;
+    bindDecisionRetention(() => decisionRetentionDays(typeof decisions === "number" ? decisions : undefined));
+    const changed = (["admins", "members"] as const).filter((key) => next[key].join(",") !== (key === "admins" ? admins : members).join(","));
+    appendAdminAction(options.dataDir, {
+      category: "people", action: "people.update", target: { kind: "settings" }, actor: { kind: "cli" },
+      changed: changed.map((key) => `signIn.${key}`),
+      before: Object.fromEntries(changed.map((key) => [`signIn.${key}`, key === "admins" ? admins : members])),
+      after: Object.fromEntries(changed.map((key) => [`signIn.${key}`, next[key]])),
+    });
+    await flushAdminActivity(options.dataDir);
   };
   if (options.accessAction === "list") {
     if (!admins.length && !members.length) {
@@ -660,11 +709,11 @@ export async function runAccess(options: CliOptions, io: CliIo = defaultIo()): P
       io.error(`${entry} is not on the list`);
       return 1;
     }
-    write({ admins: without(admins), members: without(members) });
+    await write({ admins: without(admins), members: without(members) });
     io.log(`${entry} can no longer sign in (existing sessions stay until they expire or are revoked with \`openmausbot sessions revoke\`)`);
     return 0;
   }
-  write(options.chatOnly ? { admins: without(admins), members: [...without(members), entry] } : { admins: [...without(admins), entry], members: without(members) });
+  await write(options.chatOnly ? { admins: without(admins), members: [...without(members), entry] } : { admins: [...without(admins), entry], members: without(members) });
   io.log(`${entry} can sign in at /pair with an emailed code (${options.chatOnly ? "chat and approvals" : "full access"})`);
   if (overridden) io.log("note: OMB_SIGNIN_EMAILS / OMB_SIGNIN_MEMBER_EMAILS are set in the environment and win over this list while the server runs");
   return 0;
@@ -767,7 +816,7 @@ export async function runBrowser(options: CliOptions, io: CliIo = defaultIo()): 
     if (process.platform === "linux" && !options.withDeps) io.error("on Linux, install Chrome's system libraries with `sudo openmausbot browser install --with-deps`, then retry `openmausbot browser install` as the user running serve");
     return 1;
   }
-  io.log("browser installed for this user and data directory; run serve as the same user, then enable it under Settings → Experimental and per bot");
+  io.log("browser installed for this user and data directory; run serve as the same user, then enable it under Settings → Computers and per bot");
   if (process.platform === "linux" && options.withDeps) io.log("if serve runs as another user, run `openmausbot browser install` from that user's login shell too");
   return 0;
 }
@@ -793,12 +842,20 @@ interface TunnelPlan {
   binary: string;
   guardian: string;
   origin: CompanionOriginEndpoint;
+  /** Account mode only: keeps the running tunnel's endpoint alive (idle
+   * reclaim recovery). A fleet's container is restarted by the fleet instead. */
+  account: TunnelAccount | null;
 }
 
 /** Everything `--tunnel` needs before the server starts, or the one reason
  * it cannot have it. Fails closed: no silent fallback to a local-only server. */
-async function planTunnel(options: CliOptions, log: (line: string) => void): Promise<TunnelPlan | { error: string }> {
+async function planTunnel(options: CliOptions, log: (line: string) => void, recovery: TunnelRecovery): Promise<TunnelPlan | { error: string }> {
   let access: ManagedTunnelAccess | null = null;
+  let account: TunnelAccount | null = null;
+  const fail = (error: string) => {
+    account?.service.dispose();
+    return { error };
+  };
   const credential = fleetCredential();
   if (credential) {
     // A fleet-started container: the credential is the whole identity.
@@ -809,30 +866,34 @@ async function planTunnel(options: CliOptions, log: (line: string) => void): Pro
       return { error: `--tunnel: ${message(error)}` };
     }
   } else {
-    const account = createTunnelAccount({ dataDir: options.dataDir, version: serverVersion() });
-    if (account.credentials.status === "unavailable") return { error: `${account.credentials.file} exists but could not be read; fix or remove it` };
+    account = createTunnelAccount({ dataDir: options.dataDir, version: serverVersion(), recovery });
+    if (account.credentials.status === "unavailable") return fail(`${account.credentials.file} exists but could not be read; fix or remove it`);
     if (!describeTunnelAccount(account.credentials.read()).email) {
-      return { error: "no account on this machine yet: run `openmausbot login` first, then `openmausbot serve --tunnel`" };
+      return fail("no account on this machine yet: run `openmausbot login` first, then `openmausbot serve --tunnel`");
     }
     // A fresh connector token when the control plane answers; the saved one otherwise.
     try {
       const state = await account.service.retry();
-      if (state.message && !tunnelAccess(account.credentials.read())) log(`tunnel: ${state.message}`);
+      const saved = tunnelAccess(account.credentials.read()) !== null;
+      // Said even when a saved address exists: an expired sign-in means this
+      // machine can no longer repair that address on its own.
+      if (state.status === "signed-out") log(`tunnel: the sign-in on this machine expired; run \`openmausbot login\` to renew it${saved ? " (serving the saved address until then)" : ""}`);
+      else if (state.message) log(`tunnel: ${state.message}${saved ? " Serving the saved address for now." : ""}`);
     } catch (error) {
       log(`tunnel: control plane not reachable right now (${message(error)}); using the saved address`);
     }
     access = tunnelAccess(account.credentials.read());
-    if (!access) return { error: "this machine has no public address; run `openmausbot login` again" };
+    if (!access) return fail("this machine has no public address; run `openmausbot login` again");
   }
   let binary: string;
   try {
     binary = await ensureCloudflared({ dataDir: options.dataDir, log });
   } catch (error) {
-    return { error: `--tunnel: ${message(error)}` };
+    return fail(`--tunnel: ${message(error)}`);
   }
   const guardian = guardianEntry();
-  if (!guardian) return { error: "--tunnel: the connector guardian is missing from this install" };
-  return { access, binary, guardian, origin: createTunnelOrigin() };
+  if (!guardian) return fail("--tunnel: the connector guardian is missing from this install");
+  return { access, binary, guardian, origin: createTunnelOrigin(), account };
 }
 
 export async function runServe(options: CliOptions, log: (line: string) => void = console.log): Promise<number> {
@@ -852,8 +913,11 @@ export async function runServe(options: CliOptions, log: (line: string) => void 
     tailscale = probe.status;
   }
   let plan: TunnelPlan | null = null;
+  // The tunnel this process serves, once it runs; the account service's
+  // background recovery reads it (see TunnelRecovery).
+  const serving: { tunnel: RunningTunnel | null } = { tunnel: null };
   if (options.tunnel) {
-    const planned = await planTunnel(options, log);
+    const planned = await planTunnel(options, log, { running: () => serving.tunnel });
     if ("error" in planned) {
       console.error(planned.error);
       return 1;
@@ -881,6 +945,14 @@ export async function runServe(options: CliOptions, log: (line: string) => void 
     OMB_WEBHOOK_PORT: process.env.OMB_WEBHOOK_PORT || String(options.port + 1),
   };
   if (options.local) delete env.OMB_PUBLIC_URL;
+  // A service-trust server refuses session-less local admin requests, this
+  // CLI's included. Hand the server we start a per-launch secret over its
+  // stdin (not its environment, which every engine it starts inherits) so
+  // this process alone can still print the pairing code.
+  const serviceTrust = resolveLoopbackTrust({ env, desktopManaged: false, hostedWorkspace: hostedWorkspaceConfigured(env) }).trust === "service";
+  const ownerToken = serviceTrust ? randomBytes(32).toString("base64url") : undefined;
+  if (ownerToken) env.OMB_CLI_OWNER_STDIN = "1";
+  else delete env.OMB_CLI_OWNER_STDIN;
   if (entry.staticDir) env.OMB_STATIC_DIR = entry.staticDir;
   if (entry.skillsDir && !process.env.OMB_SKILLS_DIR) env.OMB_SKILLS_DIR = entry.skillsDir;
   if (options.label && !process.env.OMB_ENVIRONMENT_LABEL) env.OMB_ENVIRONMENT_LABEL = options.label;
@@ -915,9 +987,15 @@ export async function runServe(options: CliOptions, log: (line: string) => void 
     }
     if (startupCancelled) throw new SetupCancelled();
     if (publicUrl) env.OMB_PUBLIC_URL = publicUrl;
-    child = spawn(entry.command, entry.args, { env, stdio: ["ignore", logFd ?? "inherit", logFd ?? "inherit"] });
+    child = spawn(entry.command, entry.args, { env, stdio: [ownerToken ? "pipe" : "ignore", logFd ?? "inherit", logFd ?? "inherit"] });
+    if (ownerToken) {
+      child.stdin?.on("error", () => { /* the server exited first; startup reports it */ });
+      child.stdin?.end(`${ownerToken}\n`);
+      serveOwnerToken = ownerToken;
+    }
   } catch (error) {
     if ((tailscaleServing || (startupCancelled && tailscaleAttempted)) && tailscale) await tailscaleServeOff(tailscale).catch(() => undefined);
+    plan?.account?.service.dispose();
     if (plan) cleanupTunnelOrigin(plan.origin);
     if (error instanceof SetupCancelled) {
       log("Startup cancelled. No server was started; your saved work is unchanged.");
@@ -939,6 +1017,8 @@ export async function runServe(options: CliOptions, log: (line: string) => void 
   let stopping: Promise<void> | null = null;
   const stop = () => {
     stopping ??= (async () => {
+      serving.tunnel = null;
+      plan?.account?.service.dispose();
       // The gateway and the edge stop accepting before the server they forward to goes away.
       if (tunnel) await tunnel.stop().catch(() => undefined);
       if (caddy) await caddy.stop().catch(() => undefined);
@@ -998,6 +1078,10 @@ export async function runServe(options: CliOptions, log: (line: string) => void 
         onState: (state) => log(describeTunnelState(state, plan.access.endpoint)),
       });
       tunnel.started.catch((error: unknown) => log(`tunnel: ${message(error)}`));
+      // From here on the endpoint is checked every 15 minutes; one reclaimed
+      // while this machine was offline is re-created behind the same address.
+      serving.tunnel = tunnel;
+      void plan.account?.service.restore().catch(() => undefined);
     }
     log("");
     log(`OpenMausBot is running on http://127.0.0.1:${options.port}${publicUrl ? `, reachable at ${publicUrl}` : ""}`);
@@ -1020,17 +1104,24 @@ export async function runServe(options: CliOptions, log: (line: string) => void 
           new Promise((done) => { timer = setTimeout(done, 15_000); })]);
         if (timer) clearTimeout(timer);
       }
-      if (!stopping && exited === null) await showPhonePairing(options, publicUrl, log);
+      if (!stopping && exited === null) await showPhonePairing(options, publicUrl, log).catch((error: unknown) => log(`no pairing code: ${message(error)}`));
     } else if (options.pair && !options.guided) {
       log("");
-      log(await mintPairing(options.port, { label: options.label ? `${options.label} owner` : undefined, client: options.client, publicUrl: publicUrl ?? undefined }));
-      log("");
-      log("another device later:  openmausbot pair --label \"Kitchen iPad\"");
+      // A refused code is no reason to stop a server that is running fine.
+      try {
+        log(await mintPairing(options.port, { label: options.label ? `${options.label} owner` : undefined, client: options.client, publicUrl: publicUrl ?? undefined }));
+        log("");
+        log("another device later:  openmausbot pair --label \"Kitchen iPad\"");
+      } catch (error) {
+        log(`no pairing code: ${message(error)}`);
+        log("start without one next time:  openmausbot serve --no-pair");
+      }
     }
     log(options.guided ? "\nKeep this terminal open while using your bots. Ctrl+C stops the server, not your saved work." : "stop with Ctrl+C");
     if (options.guided) log("Next time: openmausbot · Change AI or phone setup: openmausbot setup · Pair another phone: openmausbot pair");
     return await childExit;
   } finally {
+    serveOwnerToken = undefined;
     await stop();
     process.removeListener("SIGINT", onSignal);
     process.removeListener("SIGTERM", onSignal);

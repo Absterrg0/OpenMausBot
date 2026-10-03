@@ -28,6 +28,16 @@ function nvmBinDirs(): string[] {
   }
 }
 
+/** A sealed test fixture finds CLIs only where it was granted them: its own
+ * PATH, OMB_EXTRA_PATH, app-managed dirs, and install dirs under its own
+ * temporary home. The machine-wide install dirs and the login shell's PATH
+ * would hand it this computer's real CLIs — a Homebrew `codex` made the
+ * fixture's ChatGPT plan engine "available" on a developer Mac (#2035).
+ * Only the verification launcher (scripts/control-omb.ts) sets it. */
+function sealedFixture(): boolean {
+  return process.env.OMB_TEST_SEALED_PATH === "1";
+}
+
 function knownDirs(): string[] {
   const home = homedir();
   return [
@@ -37,11 +47,15 @@ function knownDirs(): string[] {
     join(home, ".grok", "bin"), // x.ai installer
     join(home, ".opencode", "bin"), // opencode installer
     join(home, ".claude", "local"), // claude "local install"
-    "/opt/homebrew/bin", // brew, Apple silicon
-    "/usr/local/bin", // brew Intel / classic installs
+    // Machine-wide rather than under the (possibly temporary) home.
+    ...(sealedFixture() ? [] : [
+      "/opt/homebrew/bin", // brew, Apple silicon
+      "/usr/local/bin", // brew Intel / classic installs
+    ]),
     join(home, ".volta", "bin"),
     join(home, ".bun", "bin"),
     join(home, ".asdf", "shims"),
+    join(home, ".local", "share", "mise", "shims"), // mise installer
     join(home, ".deno", "bin"),
     join(home, "bin"),
     ...nvmBinDirs(),
@@ -53,8 +67,9 @@ function knownDirs(): string[] {
  * invisible until it restarts, because Windows never pushes PATH changes
  * into a live process. Scanning the standard install locations recovers
  * those without a restart — `~/.grok/bin` (the x.ai installer) and
- * `%APPDATA%\npm` (global npm shims), plus `%LOCALAPPDATA%\agy\bin`, cover
- * every engine we ship an install command for. */
+ * `%APPDATA%\npm` (global npm shims), plus `%LOCALAPPDATA%\agy\bin` and
+ * `%LOCALAPPDATA%\cursor-agent`, cover every engine we ship an install
+ * command for. */
 function windowsKnownDirs(): string[] {
   const home = homedir();
   const appData = process.env.APPDATA ?? join(home, "AppData", "Roaming");
@@ -63,12 +78,15 @@ function windowsKnownDirs(): string[] {
     join(appData, "npm"), // npm -g shims: claude, codex
     join(home, ".grok", "bin"), // x.ai installer
     join(localAppData, "agy", "bin"), // Antigravity installer
+    // Cursor installer: cursor-agent.* and its `agent` copies (MOCA-272)
+    join(localAppData, "cursor-agent"),
     join(home, ".local", "bin"), // claude native installer
     join(home, ".claude", "local"),
     join(home, "bin"), // Factory droid installer (%USERPROFILE%\bin)
     join(home, ".bun", "bin"),
     join(home, ".deno", "bin"),
     join(home, "go", "bin"),
+    join(process.env.ProgramFiles ?? "C:\\Program Files", "Docker", "Docker", "resources", "bin"), // Docker Desktop installer
   ];
 }
 
@@ -120,7 +138,7 @@ export function augmentedPath(): string {
   // belt-and-braces: fold in the login shell's PATH once, in the
   // background — catches anything the known-dirs list doesn't (custom
   // rc exports). Never blocks a spawn; the next one benefits.
-  if (!probed && !process.env.VITEST && process.platform !== "win32") {
+  if (!probed && !process.env.VITEST && !sealedFixture() && process.platform !== "win32") {
     probed = true;
     probeLoginShellPath();
   }
@@ -155,6 +173,22 @@ export function resetPathCacheForTests(): void {
   probed = false;
   loginShellPath = null;
   registeredDirs.length = 0;
+}
+
+/** The user's home directory as this platform defines it. Windows keeps the
+ * real profile in USERPROFILE; a HOME that leaks in from a POSIX-flavored
+ * shell is not where Windows CLIs keep their state, so USERPROFILE wins there
+ * and HOME wins everywhere else. */
+export function userHome(env: Record<string, string | undefined> = process.env): string {
+  return process.platform === "win32"
+    ? env.USERPROFILE || env.HOME || homedir()
+    : env.HOME || env.USERPROFILE || homedir();
+}
+
+/** `<user home>/.<name>` — the per-harness state directory every CLI keeps
+ * (`.qwen`, `.grok`, `.codex`…), Windows-correct everywhere. */
+export function harnessHome(name: string, env: Record<string, string | undefined> = process.env): string {
+  return join(userHome(env), `.${name}`);
 }
 
 /** Every `name` binary on the augmented PATH as absolute paths, in PATH

@@ -18,6 +18,7 @@ import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -33,8 +34,10 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListLayoutInfo
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -45,6 +48,7 @@ import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowDropDown
+import androidx.compose.material.icons.filled.Call
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Settings
@@ -63,8 +67,10 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -96,6 +102,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.openmausbot.companion.R
+import com.openmausbot.companion.audio.MicrophoneAccess
 import com.openmausbot.companion.core.AttachmentPolicy
 import com.openmausbot.companion.core.Chat
 import com.openmausbot.companion.core.ChatTarget
@@ -112,9 +119,12 @@ import com.openmausbot.companion.core.TranscriptRow
 import com.openmausbot.companion.core.target
 import com.openmausbot.companion.core.transcriptRows
 import java.util.Locale
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -173,7 +183,15 @@ fun ChatScreen(
 /** The transcript is on its way. Leaving is still possible while it is. */
 @Composable
 private fun OpeningThread(onBack: () -> Unit) {
-    Column(modifier = Modifier.fillMaxSize()) {
+    val latestOnBack by rememberUpdatedState(onBack)
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            // The wait answers the swipe too: the reader changed their mind
+            // about this thread, and should not have to wait for it to load
+            // to say so.
+            .horizontalBackSwipe(onBack = { latestOnBack() }),
+    ) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -207,6 +225,18 @@ private fun LoadedChat(
     val session = environment.session
     val dictation = environment.dictation
     val chatDrafts = environment.chatDrafts
+    val liveCalls = environment.liveCalls
+    val liveCall by liveCalls.state.collectAsState()
+    var showingLiveSettings by remember { mutableStateOf(false) }
+    // The call that waits on this phone's first-call disclosure.
+    var pendingLiveCall by remember { mutableStateOf<PendingLiveCall?>(null) }
+    fun startLiveCall(call: PendingLiveCall) =
+        liveCalls.start(call.botId, call.threadId, call.botName, MicrophoneAccess { environment.mic.ensure(it) })
+    // A call holds the microphone in every chat, not only its own: the manager
+    // is app-scoped and the call runs on while the person reads another chat,
+    // where dictation's audio focus would end it as "another app took the audio".
+    val callHoldsMic = liveCall.holdsMedia
+    LaunchedEffect(callHoldsMic) { if (callHoldsMic) dictation.stop() }
     val haptics = rememberHaptics()
     val scope = rememberCoroutineScope()
     var threadOpenJob by remember { mutableStateOf<Job?>(null) }
@@ -431,6 +461,8 @@ private fun LoadedChat(
     val transcript = remember(rawTranscript, activityDetail) {
         transcriptRows(rawTranscript, activityDetail)
     }
+    var expandedTurns by remember(threadId) { mutableStateOf(emptySet<String>()) }
+    var revealedTurnMessageId by remember(threadId) { mutableStateOf<String?>(null) }
     val predictiveChips = remember(quickReplies) {
         quickReplies.map { PredictiveChip(title = it.title, prompt = it.prompt, icon = it.icon) }
     }
@@ -438,7 +470,7 @@ private fun LoadedChat(
     val reasoning = state.reasoning[threadId]
     // Stream, then reasoning, then the bare fact of being busy — the order in
     // `ChatView.swift`, and the reason it is a rule rather than three `if`s here.
-    val tail = LiveTail.of(streaming = streaming, reasoning = reasoning, busy = chat.busy)
+    val tail = LiveTail.of(streaming = streaming, reasoning = reasoning, busy = chat.busy, detail = activityDetail)
     val liveText = streaming?.takeIf { tail == TranscriptTail.STREAM }
     val liveReasoning = reasoning?.takeIf { tail == TranscriptTail.REASONING }
     val hasMore = state.hasMore[threadId] == true
@@ -575,16 +607,44 @@ private fun LoadedChat(
         if (liveCount == 0 || itemCount == 0) return@LaunchedEffect
         listState.scrollToItem(itemCount - 1)
     }
+    // The call bar sits under the transcript and changes height as a call
+    // goes on: a caption line once it is live, a second line on the remote
+    // bar. The list gets shorter from the bottom then, and a LazyColumn keeps
+    // its top where it was, so the newest message would slide out of sight
+    // under the bar. A list that showed its end keeps showing it, whatever
+    // made it shorter; one the reader has scrolled up stays where it is.
+    LaunchedEffect(listState) {
+        var height = -1
+        snapshotFlow { listState.layoutInfo }.collect { info ->
+            val shrunkBy = if (height < 0) 0 else height - info.viewportSize.height
+            height = info.viewportSize.height
+            val by = TranscriptLayout.keepEndInView(info.endHiddenBelow(), shrunkBy)
+            if (by == 0 || listState.isScrollInProgress) return@collect
+            try {
+                listState.scrollBy(by.toFloat())
+            } catch (taken: CancellationException) {
+                // A drag took the list first: the reader is in charge.
+                currentCoroutineContext().ensureActive()
+            }
+        }
+    }
     // A search hit lands on its message.
     LaunchedEffect(focusedMessageId, transcript.size) {
         val target = focusedMessageId ?: return@LaunchedEffect
         val index = transcript.indexOfFirst { row ->
-            row.id == target ||
-                (row as? TranscriptRow.ActivityRun)?.items?.any { it.id == target } == true
+            row.id == target || row.containsMessage(target)
         }
         if (index < 0) return@LaunchedEffect
+        val turn = transcript[index] as? TranscriptRow.AssistantTurn
+        if (turn != null) expandedTurns = expandedTurns + turn.turnId
         listState.scrollToItem(headerCount + index)
-        session.consumeFocus(target)
+        if (turn != null) {
+            // The fold can span several screens. Its child brings the actual
+            // search hit into view before retiring the pending focus.
+            revealedTurnMessageId = target
+        } else {
+            session.consumeFocus(target)
+        }
         settled = true
     }
 
@@ -762,7 +822,26 @@ private fun LoadedChat(
     BackHandler(enabled = !showingPlus && hudOpen) { closeHud() }
     BackHandler(enabled = !showingPlus && !hudOpen) { leaveToRoster() }
 
-    Box(modifier = Modifier.fillMaxSize()) {
+    // A swipe across the conversation is the platform's back gesture carried
+    // to the body of the screen — one exit chain, so the pill, the system's
+    // back, and the swipe can never disagree about what leaving means.
+    fun backBySwipe() {
+        when {
+            showingPlus -> showingPlus = false
+            hudOpen -> closeHud()
+            else -> leaveToRoster()
+        }
+    }
+
+    // Live chat state recomposes this scope mid-drag; the latest state-backed
+    // exit decision keeps the detector running without restarting it.
+    val latestBackBySwipe = rememberUpdatedState(::backBySwipe)
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .horizontalBackSwipe(onBack = { latestBackBySwipe.value() }),
+    ) {
         Column(modifier = Modifier.fillMaxSize()) {
             Box(
                 modifier = Modifier
@@ -809,10 +888,7 @@ private fun LoadedChat(
                                             activityDetail,
                                         )
                                         val index = freshRows.indexOfFirst { row ->
-                                            row.id == anchor ||
-                                                (row as? TranscriptRow.ActivityRun)
-                                                    ?.items
-                                                    ?.any { it.id == anchor } == true
+                                            row.id == anchor || row.containsMessage(anchor)
                                         }
                                         if (index < 0) return@launch
                                         // The "load earlier" row is item 0 for as
@@ -859,6 +935,23 @@ private fun LoadedChat(
                                     openThread = ::openThread,
                                 )
                                 is TranscriptRow.ActivityRun -> ActivityRunChip(message.items, ::openThread)
+                                is TranscriptRow.AssistantTurn -> AssistantTurnChip(
+                                    turn = message,
+                                    chat = chat,
+                                    expanded = message.turnId in expandedTurns,
+                                    revealMessageId = revealedTurnMessageId,
+                                    onRevealed = { target ->
+                                        session.consumeFocus(target)
+                                        if (revealedTurnMessageId == target) revealedTurnMessageId = null
+                                    },
+                                    onToggle = {
+                                        expandedTurns = if (message.turnId in expandedTurns) expandedTurns - message.turnId
+                                            else expandedTurns + message.turnId
+                                    },
+                                    openLink = ::openLink,
+                                    openAttachment = ::openAttachment,
+                                    openThread = ::openThread,
+                                )
                             }
                         }
                     }
@@ -882,7 +975,7 @@ private fun LoadedChat(
                     unreadElsewhere = remember(state, chat) {
                         (state.unreadCount - if (chat.unread) 1 else 0).coerceAtLeast(0)
                     },
-                    onBack = { leaveToRoster() },
+                    onBack = { backBySwipe() },
                     onOpenThreads = {
                         dictation.stop()
                         focusManager.clearFocus()
@@ -892,6 +985,18 @@ private fun LoadedChat(
                         dictation.stop()
                         if (bot != null) onOpenComputer(bot.id)
                     },
+                    onCall = {
+                        if (bot != null) {
+                            // MicPermissionController holds one pending callback:
+                            // dictation must be off before the call asks.
+                            dictation.stop()
+                            focusManager.clearFocus()
+                            val call = PendingLiveCall(bot.id, threadId, bot.name)
+                            // A phone's first Live call says first what a call sends to OpenAI.
+                            if (liveCalls.disclosureDue) pendingLiveCall = call else startLiveCall(call)
+                        }
+                    },
+                    showCall = LiveCallRules.offersCall(liveCall, state.liveCall),
                     // A bot's face and its name pill are both the door to its
                     // profile; a room has no profile, so its pill opens the same
                     // sheet the + does.
@@ -909,6 +1014,16 @@ private fun LoadedChat(
                         .widthIn(max = CHAT_CONTENT_MAX_WIDTH),
                 )
             }
+
+            LiveCallBarHost(
+                chat = chat,
+                onSettings = { showingLiveSettings = true },
+                modifier = Modifier
+                    .align(Alignment.CenterHorizontally)
+                    .widthIn(max = CHAT_CONTENT_MAX_WIDTH)
+                    .fillMaxWidth()
+                    .padding(horizontal = 12.dp),
+            )
 
             Composer(
                 modifier = Modifier
@@ -941,6 +1056,20 @@ private fun LoadedChat(
                 onCancelQueued = { queued ->
                     scope.launch { session.cancelQueued(queued, chat) }
                 },
+                onEditQueued = { queued ->
+                    // The computer drops it from the queue first; only a
+                    // confirmed removal hands the words back, so a send that
+                    // already joined the turn is never resent. The composer is
+                    // this conversation's cached draft, so a thread switch
+                    // mid-request still lands the words in the right place.
+                    val target = composer
+                    scope.launch {
+                        if (session.cancelQueued(queued, chat)) {
+                            target.onTypedChange(queued.editDraft(keeping = target.text))
+                            publishFrom(target)
+                        }
+                    }
+                },
                 openingFileName = openingFileName,
                 attachmentError = fileOpenError ?: attachmentError,
                 onRemoveAttachment = { attachment ->
@@ -966,6 +1095,7 @@ private fun LoadedChat(
                     publishFrom(composer)
                 },
                 onToggleDictation = {
+                    if (callHoldsMic) return@Composer
                     focusManager.clearFocus()
                     dictation.toggle(capturing = draft)
                 },
@@ -1012,6 +1142,22 @@ private fun LoadedChat(
                 onOpenOverview(it)
                 showingProfile = false
             },
+        )
+    }
+
+    if (showingLiveSettings) {
+        LiveCallSettingsSheet(onDismiss = { showingLiveSettings = false })
+    }
+
+    pendingLiveCall?.let { call ->
+        LiveCallDisclosureDialog(
+            onStart = {
+                pendingLiveCall = null
+                liveCalls.acceptDisclosure()
+                startLiveCall(call)
+            },
+            // Records nothing: the next tap shows it again.
+            onCancel = { pendingLiveCall = null },
         )
     }
 
@@ -1064,8 +1210,8 @@ private val HEADER_SCRIM_FADE = 24.dp
 private val HEADER_CLEARANCE = 128.dp
 
 /**
- * Back on the left with the rest-of-app unread count, the bot's computer on the
- * right, and the bot itself between them over its name.
+ * Back on the left with the rest-of-app unread count, a Live call and the bot's
+ * computer on the right, and the bot itself between them over its name.
  *
  * The strip behind the two buttons is opaque and then fades out, so the
  * transcript slides under the chrome and disappears rather than stopping at a
@@ -1078,6 +1224,13 @@ private fun ChatHeader(
     unreadElsewhere: Int,
     onBack: () -> Unit,
     onWatchComputer: () -> Unit,
+    onCall: () -> Unit,
+    /**
+     * False while this phone is on a call (the bar has the controls) and while
+     * the computer reports one running from another device, which has to hang
+     * up first: [LiveCallRules.offersCall].
+     */
+    showCall: Boolean,
     onOpenProfile: () -> Unit,
     onOpenThreads: () -> Unit,
     modifier: Modifier = Modifier,
@@ -1107,8 +1260,16 @@ private fun ChatHeader(
         ) {
             BackPill(unreadElsewhere = unreadElsewhere, onBack = onBack)
             Spacer(Modifier.weight(1f))
-            // The computer is a bot idea; a room has none (§12).
+            // The computer and the phone are bot ideas; a room has neither (§12).
             if (chat is Chat.BotChat) {
+                if (showCall) {
+                    ChromeButton(
+                        icon = Icons.Filled.Call,
+                        contentDescription = "Call ${chat.name}",
+                        onClick = onCall,
+                    )
+                    Spacer(Modifier.width(8.dp))
+                }
                 ChromeButton(
                     painter = painterResource(R.drawable.ic_display),
                     contentDescription = "Watch ${chat.name}'s computer",
@@ -1410,6 +1571,7 @@ private fun Composer(
     steering: Boolean,
     onSteer: (() -> Unit)?,
     onCancelQueued: (QueuedSend) -> Unit,
+    onEditQueued: (QueuedSend) -> Unit,
     openingFileName: String?,
     attachmentError: String?,
     onRemoveAttachment: (PendingMessageAttachment) -> Unit,
@@ -1482,6 +1644,7 @@ private fun Composer(
                 send = queued,
                 onSteer = onSteer,
                 steering = steering,
+                onEdit = { onEditQueued(queued) },
                 onCancel = { onCancelQueued(queued) },
                 modifier = Modifier.fillMaxWidth(),
             )
@@ -1697,4 +1860,18 @@ private fun Composer(
             }
         }
     }
+}
+
+/** A Live call the phone button asked for, while the first-call disclosure is up. */
+private data class PendingLiveCall(val botId: String, val threadId: String, val botName: String)
+
+/**
+ * How much of the list's end — its last item and the padding after it — lies
+ * below the viewport, in px: 0 while the end shows, and [Int.MAX_VALUE] when
+ * the last item is not even laid out (the end is a screen or more away).
+ */
+private fun LazyListLayoutInfo.endHiddenBelow(): Int {
+    val last = visibleItemsInfo.lastOrNull() ?: return 0
+    if (last.index < totalItemsCount - 1) return Int.MAX_VALUE
+    return (last.offset + last.size + afterContentPadding - viewportEndOffset).coerceAtLeast(0)
 }

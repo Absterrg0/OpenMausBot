@@ -3,12 +3,13 @@
 // bot-settings/; this dialog owns only the fetches (overview, system-prompt,
 // history) and which accordion row is expanded.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ChevronDown, Search, X } from "lucide-react";
+import { ChevronDown, ChevronLeft, Search, X } from "lucide-react";
 
 import { api, useStore, type Bot } from "@/state/store";
 import type { BotOverview } from "@/lib/bot-overview-types";
 import { cn } from "@/lib/cn";
 import { ConfirmDialog } from "./ConfirmDialog";
+import { useCaptionChrome } from "./DesktopCapabilities";
 import { BOT_SECTIONS } from "./bot-settings/sections";
 import { useBotSettingsDerived } from "./bot-settings/useBotSettingsDerived";
 import { OverviewSection } from "./bot-settings/OverviewSection";
@@ -25,27 +26,62 @@ import { PermissionsSection } from "./bot-settings/PermissionsSection";
 import { VoiceSection } from "./bot-settings/VoiceSection";
 import { HistorySection, type HistoryRow } from "./bot-settings/HistorySection";
 import { UsageSection } from "./bot-settings/UsageSection";
+import { VisibilitySection } from "./bot-settings/VisibilitySection";
+import { t } from "@/lib/i18n";
+import { useAdvancedMode } from "@/lib/interface-mode";
+import { SimpleBotPanel } from "./bot-settings/SimpleBotPanel";
+import { useOwnerOrAdmin } from "@/lib/use-owner-or-admin";
 import type { PromptPreviewData } from "./bot-settings/PromptPreview";
+
+const sectionLabel = (entry: (typeof BOT_SECTIONS)[number]) => (entry.labelKey ? t(entry.labelKey) : entry.label);
+
+// Deep links the Simple panel already answers (a bare open, Edit profile,
+// "Read all" into the instructions) stay on it; any other section opens the
+// full fold-out view at that row.
+const SIMPLE_PANEL_SECTIONS: ReadonlySet<(typeof BOT_SECTIONS)[number]["id"]> = new Set(["overview", "identity", "soul"]);
 
 function sectionMatches(entry: (typeof BOT_SECTIONS)[number], query: string): boolean {
   if (!query) return true;
-  return [entry.label, ...entry.keywords].some((part) => part.toLowerCase().includes(query));
+  return [entry.label, sectionLabel(entry), ...entry.keywords].some((part) => part.toLowerCase().includes(query));
 }
 
-export function BotSettingsDialog({ bot }: { bot: Bot }) {
+export function BotSettingsDialog({ bot, overlay = false }: {
+  bot: Bot;
+  /** Float over the chat instead of taking a column: the inspector or
+   * computer panel is open too and the window cannot seat both (App). */
+  overlay?: boolean;
+}) {
   const { state, dispatch, flushBotPatches } = useStore();
   const section = state.botSettingsSection;
   const derived = useBotSettingsDerived(bot);
   const dialogRef = useRef<HTMLElement | null>(null);
+  // Windows draws its caption buttons over the top-right corner, where this
+  // panel's close button sits; drop the header below them.
+  const { padClass } = useCaptionChrome();
   const [query, setQuery] = useState("");
   // Keep expansion in the store too: header deep links can arrive while
   // this panel is already mounted, including after collapsing the same row.
   const collapsed = !state.botSettingsExpandAccordion;
   const q = query.trim().toLowerCase();
+  // Simple mode opens on the short Details/Library panel; "All settings"
+  // (or a deep link to a section it does not cover) switches to the full
+  // fold-out view for this opening only — App remounts the panel per open.
+  const advanced = useAdvancedMode();
+  const wantsFullView = !collapsed && !SIMPLE_PANEL_SECTIONS.has(section);
+  const [showAll, setShowAll] = useState(wantsFullView);
+  useEffect(() => {
+    if (wantsFullView) setShowAll(true);
+  }, [wantsFullView, section]);
+  const simpleView = !advanced && !showAll;
   // Slack is offered only where the server has an Admin page to link to
   // (a hosted organisation workspace); otherwise its row does not exist.
   const slackUrl = useSlackManagementUrl(bot.id);
-  const sections = BOT_SECTIONS.filter((entry) => entry.id !== "slack" || slackUrl !== null);
+  // Who can see a bot matters only where several people sign in: a browser
+  // on a served workspace, and there only to an admin.
+  const ownerOrAdmin = useOwnerOrAdmin();
+  const sections = BOT_SECTIONS
+    .filter((entry) => entry.id !== "slack" || slackUrl !== null)
+    .filter((entry) => entry.id !== "visibility" || (!window.ogb && ownerOrAdmin === true));
   const visibleSections = sections.filter((entry) => sectionMatches(entry, q));
 
   const [overview, setOverview] = useState<BotOverview | null>(null);
@@ -109,7 +145,7 @@ export function BotSettingsDialog({ bot }: { bot: Bot }) {
   // returning from either editor must reload their overview/prompt too.
   // Await the existing write queue instead of racing a second debounce.
   useEffect(() => {
-    if (section !== "overview") return;
+    if (section !== "overview" || simpleView) return;
     let cancelled = false;
     const fetchOverviewAndPrompt = async () => {
       await flushBotPatches(bot.id);
@@ -138,7 +174,7 @@ export function BotSettingsDialog({ bot }: { bot: Bot }) {
     return () => {
       cancelled = true;
     };
-  }, [bot.id, section, factsSignature, state.routines, state.webhooks, flushBotPatches]);
+  }, [bot.id, section, simpleView, factsSignature, state.routines, state.webhooks, flushBotPatches]);
 
   // Read the file-backed history only when its section is opened. A newer
   // load (or leaving History) invalidates older rows, revision, and errors.
@@ -268,7 +304,7 @@ export function BotSettingsDialog({ bot }: { bot: Bot }) {
         // while the user consults another section. It fetches when it
         // becomes the active section. Always mounted; visibility toggled
         // via hidden on the accordion body wrapper.
-        return <MemorySection bot={bot} active={!collapsed && section === "memory"} />;
+        return <MemorySection bot={bot} active={!collapsed && section === "memory"} onToggle={(enabled) => derived.patch({ memoryEnabled: enabled })} />;
       case "routines":
         return <RoutinesSection bot={bot} routines={derived.botRoutines} runs={state.routineRuns} />;
       case "access":
@@ -279,6 +315,8 @@ export function BotSettingsDialog({ bot }: { bot: Bot }) {
         return <PermissionsSection bot={bot} derived={derived} />;
       case "voice":
         return <VoiceSection bot={bot} derived={derived} />;
+      case "visibility":
+        return <VisibilitySection bot={bot} />;
       case "history":
         return historyRows === null && historyError ? (
           <div className="rounded-xl bg-card p-4 text-[13px] text-ink-secondary">Couldn’t load history.</div>
@@ -310,9 +348,43 @@ export function BotSettingsDialog({ bot }: { bot: Bot }) {
         role="dialog"
         aria-labelledby="bot-settings-title"
         tabIndex={-1}
-        className="animate-panel-in absolute inset-0 z-40 flex h-full min-w-0 flex-col border-l border-hairline/40 bg-panel outline-none lg:static lg:z-auto lg:w-[min(420px,42vw)] lg:shrink-0"
+        className={cn(
+          // focus() lands here when the panel opens; the global :focus-visible
+          // ring would frame the whole sheet, so it is off for the container.
+          "animate-panel-in absolute inset-0 z-40 flex h-full min-w-0 flex-col border-l border-hairline/40 bg-panel outline-none focus-visible:outline-none",
+          overlay
+            // Below md every panel already covers the window; from md up
+            // this one hugs the right edge over the chat, shadowed so it
+            // reads as a sheet on top of the panel that stays beneath it.
+            ? "md:inset-auto md:right-0 md:top-0 md:bottom-0 md:w-[min(420px,42vw)] md:shadow-2xl"
+            : "md:static md:z-auto md:w-[min(420px,42vw)] md:shrink-0",
+        )}
       >
-        <div className="flex shrink-0 items-center justify-between px-4 py-3">
+        {simpleView ? (
+          <SimpleBotPanel
+            bot={bot}
+            derived={derived}
+            headerClassName={padClass}
+            onClose={() => dispatch({ type: "toggleSettings", open: false })}
+            onAllSettings={() => setShowAll(true)}
+            onAddSkill={() => {
+              setShowAll(true);
+              dispatch({ type: "toggleSettings", open: true, section: "skills" });
+            }}
+          />
+        ) : <>
+        {!advanced && (
+          <button
+            type="button"
+            data-bot-settings-back
+            onClick={() => setShowAll(false)}
+            className={cn("flex shrink-0 items-center gap-1 self-start px-3 pt-3 text-[13px] text-ink-secondary hover:text-ink", padClass)}
+          >
+            <ChevronLeft size={15} className="pointer-events-none" />
+            {t("botSettings.simple.back")}
+          </button>
+        )}
+        <div className={cn("flex shrink-0 items-center justify-between px-4 py-3", !advanced ? undefined : padClass)}>
           <span id="bot-settings-title" className="truncate text-[15px] font-semibold text-ink">
             {bot.name}
           </span>
@@ -326,7 +398,7 @@ export function BotSettingsDialog({ bot }: { bot: Bot }) {
           </button>
         </div>
 
-        <div className="mx-4 mb-2 flex shrink-0 items-center gap-2 rounded-lg bg-control/70 px-2.5 py-2">
+        <div className="mx-4 mb-2 flex shrink-0 items-center gap-2 rounded-lg border border-transparent bg-control/70 px-2.5 py-2 focus-within:border-focus">
           <Search size={14} className="shrink-0 text-ink-secondary" />
           <input
             value={query}
@@ -356,7 +428,8 @@ export function BotSettingsDialog({ bot }: { bot: Bot }) {
               even when search filters its row out of view. Other unmatched
               rows are omitted entirely. */}
           {sections.map((entry) => {
-            const { id, label, icon: Icon } = entry;
+            const { id, icon: Icon } = entry;
+            const label = sectionLabel(entry);
             const matched = sectionMatches(entry, q);
             if (!matched && id !== "memory") return null;
             const open = !collapsed && section === id;
@@ -405,6 +478,7 @@ export function BotSettingsDialog({ bot }: { bot: Bot }) {
             );
           })}
         </div>
+        </>}
       </aside>
       <ConfirmDialog
         open={rollbackTarget !== null}

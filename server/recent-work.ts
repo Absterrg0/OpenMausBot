@@ -93,9 +93,9 @@ export function recentWorkLines(threads: readonly BotThread[], latest: readonly 
 export function recentWork(
   store: RecentWorkStore,
   bot: Pick<BotRecord, "id" | "threadId" | "tasks">,
-  opts: { userName: string; currentThreadId?: string; now?: number; windowMs?: number },
+  opts: { userName: string; currentThreadId?: string; now?: number; windowMs?: number; include?: (threadId: string) => boolean },
 ): RecentWorkLine[] {
-  const threads = botThreads(store, bot, opts.userName).filter((thread) => thread.threadId !== opts.currentThreadId);
+  const threads = botThreads(store, bot, opts.userName).filter((thread) => thread.threadId !== opts.currentThreadId && (!opts.include || opts.include(thread.threadId)));
   if (!threads.length) return [];
   const since = (opts.now ?? Date.now()) - (opts.windowMs ?? RECENT_WORK_WINDOW_MS);
   return recentWorkLines(threads, latestSaidByBot(threads.map((thread) => thread.threadId), bot.id, since, RECENT_WORK_MAX_LINES));
@@ -171,4 +171,20 @@ export function parseSince(value: string, now = Date.now()): number | null {
   // the memory/log/YYYY-MM-DD.md day names.
   const parsed = Date.parse(/^\d{4}-\d{2}-\d{2}$/.test(text) ? `${text}T00:00` : value.trim());
   return Number.isFinite(parsed) ? parsed : null;
+}
+
+/** The forms that name a whole day rather than one instant. */
+const WHOLE_DAY = /^(?:today|yesterday|\d{4}-\d{2}-\d{2})$/;
+
+/** The closing end of a window a person types. `since` takes a day's first
+ * instant, so `until` has to take its last: read the same way, `since` and
+ * `until` on one day span no time at all and a full day of work reads back as
+ * nothing. Only the forms that name a day are stretched — a span ("24h"), an
+ * epoch, or a date with a clock time still means the instant it names. */
+export function parseUntil(value: string, now = Date.now()): number | null {
+  const at = parseSince(value, now);
+  if (at === null || !WHOLE_DAY.test(value.trim().toLowerCase())) return at;
+  const end = new Date(at);
+  end.setHours(23, 59, 59, 999);
+  return end.getTime();
 }

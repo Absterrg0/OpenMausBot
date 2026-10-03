@@ -1,6 +1,13 @@
-import { CornerDownRight, Trash2 } from "lucide-react";
+import { CornerDownRight, Pencil, Trash2 } from "lucide-react";
 
+import type { SteerQueueReason } from "../../shared/wire";
 import { t } from "@/lib/i18n";
+import { replySnippet } from "@/lib/replies";
+import { splitTranscriptCitations } from "@/lib/citations";
+
+function queuedMessageLabel(text: string): string {
+  return splitTranscriptCitations(text).citations.length ? replySnippet(text, 500) : text;
+}
 
 export function composerCanSteerQueuedMessages(
   busy: boolean,
@@ -47,7 +54,9 @@ export function doubleEnterSteersQueue(
  * The queue sits directly above the composer rather than pretending these
  * words are already part of the transcript. Only its head owns Steer: room
  * queues drain one item at a time, while bot queues coalesce all waiting
- * items into one follow-up. Delete remains available on every exact queue id.
+ * items into one follow-up. Edit and Delete remain available on every exact
+ * queue id: Edit takes the message out of the queue and hands its words back
+ * to the composer, so nothing unsent is ever changed behind the harness.
  */
 export function QueuedComposerMessages({
   items,
@@ -56,8 +65,9 @@ export function QueuedComposerMessages({
   steering = false,
   steerInterrupts = false,
   onCancel,
+  onEdit,
 }: {
-  items: Array<{ queueId: string; text: string; reason?: "capacity" }>;
+  items: Array<{ queueId: string; text: string; reason?: SteerQueueReason }>;
   onSteer?: () => void;
   steerMode?: "all" | "next";
   steering?: boolean;
@@ -65,6 +75,8 @@ export function QueuedComposerMessages({
    * the hint must say what the click really does. */
   steerInterrupts?: boolean;
   onCancel: (queueId: string) => void;
+  /** Pull this queued message back into the composer to tweak or extend it. */
+  onEdit?: (queueId: string) => void;
 }) {
   if (!items.length) return null;
 
@@ -98,20 +110,24 @@ export function QueuedComposerMessages({
       }
       aria-live="polite"
     >
+      {items.some((item) => item.reason === "group-turn") && (
+        <p className="px-3 pt-2 text-[12px] text-ink-secondary">{t("composer.queued.groupTurn")}</p>
+      )}
       {items.some((item) => item.reason === "capacity") && (
         <p className="px-3 pt-2 text-[12px] text-ink-secondary">{t("composer.queued.capacity")}</p>
       )}
       <ul className="divide-y divide-hairline/25" aria-label={t("composer.queued.list")}>
-        {items.map((item, index) => (
-          <li key={item.queueId} className="flex min-h-10 min-w-0 items-center gap-2 px-2.5 py-1.5">
+        {items.map((item, index) => {
+          const label = queuedMessageLabel(item.text);
+          return <li key={item.queueId} className="flex min-h-10 min-w-0 items-center gap-2 px-2.5 py-1.5">
             <CornerDownRight
               size={14}
               strokeWidth={1.8}
               className="shrink-0 text-ink-secondary"
               aria-hidden="true"
             />
-            <span dir="auto" className="min-w-0 flex-1 truncate text-[14px] text-ink" title={item.text}>
-              {item.text}
+            <span dir="auto" className="min-w-0 flex-1 truncate text-[14px] text-ink" title={label}>
+              {label}
             </span>
             {index === 0 && onSteer && (
               <button
@@ -131,6 +147,17 @@ export function QueuedComposerMessages({
                 {steerLabel}
               </button>
             )}
+            {onEdit && (
+              <button
+                type="button"
+                onClick={() => onEdit(item.queueId)}
+                aria-label={t("composer.queued.editAria", { index: index + 1, count: items.length })}
+                title={t("composer.queued.editTitle")}
+                className="flex size-7 shrink-0 items-center justify-center rounded-lg text-ink-secondary outline-none hover:bg-raised-hover hover:text-ink focus-visible:ring-2 focus-visible:ring-accent/60"
+              >
+                <Pencil size={14} aria-hidden="true" />
+              </button>
+            )}
             <button
               type="button"
               onClick={() => onCancel(item.queueId)}
@@ -140,8 +167,8 @@ export function QueuedComposerMessages({
             >
               <Trash2 size={14} aria-hidden="true" />
             </button>
-          </li>
-        ))}
+          </li>;
+        })}
       </ul>
     </div>
   );

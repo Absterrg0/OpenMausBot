@@ -11,6 +11,7 @@ import type { GroupGoalRunStatus } from "../shared/group-goal-run.ts";
 import type { RoutineRequestOperation } from "../shared/routine-request.ts";
 import { normalizeCronSchedule, nextCronRuns, type RoutineCronSchedule } from "../shared/routine-schedule.ts";
 import { isRoutineProblemRun } from "../shared/routines.ts";
+import { ROUTINE_PARTS, type PartPair, type RoutinePart } from "./package-parts.ts";
 
 export interface RoutineIntervalWindow {
   start: string;
@@ -48,7 +49,7 @@ export type RoutineScheduleInput =
   | Exclude<RoutineSchedule, RoutineIntervalSchedule>
   | RoutineIntervalScheduleInput;
 
-/** `cloud` runs the agent itself inside the bot's Box VM. `maus` keeps
+/** `cloud` runs the agent itself inside the bot's Boat VM. `maus` keeps
  * using the provider selected on the MAUS and only borrows its configured
  * computer tools, if any. */
 export type RoutineRunOn = "maus" | "cloud";
@@ -108,9 +109,34 @@ export interface Routine {
   sourceThreadId?: string;
   /** Stable visible report destination; execution still gets a fresh task. */
   resultsThreadId?: string;
+  /** Server-private: added from the organization's library. Never on the
+   * wire (routineWithHealth drops it); packageStamps() reads it. */
+  installedPackage?: RoutinePackageStamp;
   nextRunAt: number | null;
   createdAt: number;
   updatedAt: number;
+}
+
+/** Which organization install a routine came from, its key in the package,
+ * and each part's release and written hashes (server/package-parts.ts). */
+export interface RoutinePackageStamp {
+  installId: string;
+  key: string;
+  parts: Record<RoutinePart, PartPair>;
+}
+
+const HASH = /^[a-f0-9]{64}$/;
+function loadInstalledPackage(value: unknown): RoutinePackageStamp | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const stamp = value as Partial<RoutinePackageStamp>;
+  if (typeof stamp.installId !== "string" || !/^[a-f0-9]{32}$/.test(stamp.installId) || typeof stamp.key !== "string" || !stamp.key || stamp.key.length > 80) return undefined;
+  const parts = stamp.parts as Record<string, Partial<PartPair>> | undefined;
+  if (!parts || typeof parts !== "object" || !ROUTINE_PARTS.every((part) => HASH.test(String(parts[part]?.r)) && HASH.test(String(parts[part]?.w)))) return undefined;
+  return {
+    installId: stamp.installId,
+    key: stamp.key,
+    parts: Object.fromEntries(ROUTINE_PARTS.map((part) => [part, { r: parts[part]!.r!, w: parts[part]!.w! }])) as Record<RoutinePart, PartPair>,
+  };
 }
 
 export interface RoutineRun {
@@ -255,7 +281,11 @@ export interface RoutineManagerOptions {
   emit?: (payload: Record<string, unknown>) => void;
   botState: (botId: string) => "ready" | "busy" | "missing";
   goalState?: (groupId: string, coordinatorBotId: string) => "ready" | "busy" | "missing";
-  createTask: (botId: string, title: string, activate?: boolean) => { threadId: string } | null;
+  /** A task for one run of `routineId` (it may name who the run is for). */
+  createTask: (botId: string, title: string, activate?: boolean, routineId?: string) => { threadId: string } | null;
+  /** When set, run this bot's routine in that existing conversation instead of
+   * a new hidden task. Room goals never use it. */
+  joinConversation?: (run: RoutineRun) => string | null;
   createGoalTask?: (groupId: string, title: string) => { threadId: string } | null;
   isResultsThread?: (botId: string, threadId: string) => boolean;
   /** Reuse routine.resultsThreadId, keep a trusted chat source, or allocate a new ID. */
@@ -780,8 +810,10 @@ export class RoutineManager {
               overlap: routine.overlap === "queue" ? "queue" : undefined,
               skippedRuns: Number.isSafeInteger(routine.skippedRuns) && routine.skippedRuns! > 0 ? routine.skippedRuns : undefined,
               lastSkippedAt: Number.isSafeInteger(routine.lastSkippedAt) && routine.lastSkippedAt! >= 0 && routine.lastSkippedAt! <= MAX_DATE_MS ? routine.lastSkippedAt : undefined,
+              installedPackage: loadInstalledPackage(routine.installedPackage),
             };
             if (loaded.timeoutMinutes === undefined) delete loaded.timeoutMinutes;
+            if (loaded.installedPackage === undefined) delete loaded.installedPackage;
             delete loaded.failureStreak;
             return [loaded];
           })
@@ -870,7 +902,27 @@ export class RoutineManager {
       .sort((a, b) => (b.finishedAt ?? b.createdAt) - (a.finishedAt ?? a.createdAt) || b.createdAt - a.createdAt);
     const success = outcomes.findIndex(run => run.status === "completed");
     const failures = success < 0 ? outcomes.length : success;
-    return { ...cloneRoutine(routine), ...(failures ? { failureStreak: failures } : {}) };
+    const { installedPackage: _installedPackage, ...visible } = cloneRoutine(routine);
+    return { ...visible, ...(failures ? { failureStreak: failures } : {}) };
+  }
+
+  /** Routines added from the organization's library, with their stamps. */
+  packageStamps(): Array<{ routineId: string; botId: string; enabled: boolean; stamp: RoutinePackageStamp }> {
+    return this.routines.flatMap((routine) => routine.installedPackage
+      ? [{ routineId: routine.id, botId: routine.botId, enabled: routine.enabled, stamp: structuredClone(routine.installedPackage) }]
+      : []);
+  }
+
+  /** Record which organization install a just-created routine belongs to. */
+  stampInstalledPackage(id: string, stamp: RoutinePackageStamp): boolean {
+    const clean = loadInstalledPackage(stamp);
+    if (!clean) throw new Error("Invalid routine package stamp");
+    if (!this.routines.some((routine) => routine.id === id)) return false;
+    this.commitMutation(() => {
+      const routine = this.routines.find((candidate) => candidate.id === id)!;
+      routine.installedPackage = clean;
+    });
+    return true;
   }
 
   /** Whether this computer should stay awake for routines: a run is in
@@ -1527,12 +1579,19 @@ export class RoutineManager {
           continue;
         }
         // A webhook is an incoming message, so make its task the bot's live
-        // chat immediately. Scheduled work remains detached and unobtrusive.
-        const task = run.target === "room-goal"
+        // chat immediately. Scheduled work stays in its own task unless the
+        // workspace has asked for runs to join the conversation they report to.
+        const startedAt = this.now();
+        const suffix = ` · ${new Date(startedAt).toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}`;
+        const title = `${run.routineName.slice(0, 80 - suffix.length).trimEnd()}${suffix}`;
+        const joined = run.target === "room-goal" ? null : this.options.joinConversation?.(run) || null;
+        const task = joined
+          ? { threadId: joined }
+          : run.target === "room-goal"
           ? run.groupId
-            ? this.options.createGoalTask?.(run.groupId, run.routineName) ?? null
+            ? this.options.createGoalTask?.(run.groupId, title) ?? null
             : null
-          : this.options.createTask(run.botId, run.routineName, run.triggerSource === "webhook");
+          : this.options.createTask(run.botId, title, run.triggerSource === "webhook", run.routineId);
         if (!task) {
           this.failRun(run, run.target === "room-goal"
             ? "Could not create a room task for this goal"
@@ -1540,7 +1599,7 @@ export class RoutineManager {
           continue;
         }
         run.threadId = task.threadId;
-        run.startedAt = this.now();
+        run.startedAt = startedAt;
         run.status = "running";
         this.save();
         this.emitRun(run);

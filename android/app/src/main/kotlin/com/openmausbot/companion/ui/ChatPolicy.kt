@@ -14,6 +14,7 @@ import com.openmausbot.companion.core.Room
 import com.openmausbot.companion.core.Session
 import com.openmausbot.companion.core.chat
 import com.openmausbot.companion.core.TranscriptRow
+import com.openmausbot.companion.core.webhookContent
 
 /**
  * The decisions the chat and roster screens make that are worth testing without
@@ -129,6 +130,16 @@ object TranscriptLayout {
         message.role == Message.Role.USER -> BubbleTail.TRAILING
         else -> BubbleTail.LEADING
     }
+
+    /**
+     * How far to scroll the transcript, in px, after it got [shrunkBy] px
+     * shorter from the bottom — the call bar under it grew — so that a list
+     * that showed its end shows it again. [hiddenBelow] is how much of the
+     * list's end is below it now. If more is hidden than the list lost, the
+     * end was out of view already: the reader had scrolled up, and stays put.
+     */
+    fun keepEndInView(hiddenBelow: Int, shrunkBy: Int): Int =
+        if (shrunkBy > 0 && hiddenBelow in 1..shrunkBy) hiddenBelow else 0
 }
 
 /**
@@ -288,12 +299,12 @@ object RosterLayout {
         SearchPolicy.filter(summaries, query)
 
     /**
-     * Whether the unsearched roster has any row at all. Rooms live in the strip
-     * and tiles are not rows, so "no bots yet" is about bots — which is also
-     * what the empty state says.
+     * Whether the unsearched roster lists anything at all: a bot, or a group —
+     * a row in compact, a tile in comfortable. Only when there is neither does
+     * "No bots yet" show; drawn over group rows, it would sit on top of them.
+     * The iPhone asks the same question.
      */
-    fun listsAnyBot(summaries: List<ChatSummary>): Boolean =
-        summaries.any { it.chat is Chat.BotChat }
+    fun listsAnyChat(summaries: List<ChatSummary>): Boolean = summaries.isNotEmpty()
 
     /** The strip is part of the roster, not of a search result. */
     fun showsGroups(query: String): Boolean = query.isEmpty()
@@ -467,16 +478,26 @@ object MessageActions {
     /** The text worth putting on the clipboard, or null when there is none. */
     fun copyableText(message: Message): String? = when (message.kind) {
         Message.Kind.TEXT, Message.Kind.UNKNOWN -> message.text
-            ?.let { AttachedMessageContent.parse(it) }
-            ?.text
+            ?.let { message.webhookContent?.task ?: AttachedMessageContent.parse(it).text }
             ?.takeIf { it.isNotBlank() }
         // An approval card is worth copying for what it is asking to do.
         Message.Kind.OPTIONS -> message.card
             ?.let { card -> listOf(card.title, card.subtitle).filter { it.isNotBlank() } }
             ?.takeIf { it.isNotEmpty() }
             ?.joinToString("\n\n")
-        // A tool chip is context, and a screenshot is pixels.
-        Message.Kind.ACTIVITY, Message.Kind.SCREEN -> null
+        // A tool chip is context, a screenshot is pixels, a digest is a log line.
+        Message.Kind.ACTIVITY, Message.Kind.SCREEN, Message.Kind.DIGEST -> null
+        Message.Kind.COMPACTION -> message.compaction?.summary ?: message.text?.takeIf { it.isNotBlank() }
+        // The run's report and error are the parts worth keeping; the headline without either.
+        Message.Kind.ROUTINE_RUN -> message.routineRun
+            ?.let { run ->
+                listOfNotNull(
+                    run.headline,
+                    run.summary?.takeIf { it.isNotBlank() },
+                    run.error?.takeIf { it.isNotBlank() },
+                ).joinToString("\n\n")
+            }
+            ?: message.text?.takeIf { it.isNotBlank() }
     }
 
     /**
@@ -486,6 +507,7 @@ object MessageActions {
      */
     fun editableText(message: Message): String? {
         if (message.role != Message.Role.USER || message.kind != Message.Kind.TEXT) return null
+        if (message.webhookContent != null) return null
         val raw = message.text ?: return null
         if (AttachedMessageContent.parse(raw).attachments.isNotEmpty()) return null
         return raw

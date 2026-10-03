@@ -37,6 +37,7 @@ export const UI_MUTATING = new Set(["click", "type", "press", "flag", "eval"]);
 
 const ENTRIES = {
   threads: { entry: "/scripts/testing/threads-preview.tsx", route: "/__threads.html", title: "Isolated OpenMaus Chat" },
+  settings: { entry: "/src/testing/bot-settings.tsx", route: "/__bot-settings.html", title: "Isolated Bot Settings" },
 } as const satisfies Record<string, Parameters<typeof mountPreview>[1]>;
 const FAKE_MODES = ["happy", "exit-early", "hang", "malformed", "stream", "not-logged-in", "slow", "background-result"];
 const SEEDED_BOT = "Pepper";
@@ -92,7 +93,7 @@ export function sessionEnv(handle: SessionEnv, parentEnv: NodeJS.ProcessEnv = pr
 
 /** Run one agent-browser verb with --json and return its `data`. The binary's
  * stderr is never surfaced: it can echo paths and environment. */
-function agentBrowser(
+export function agentBrowser(
   binary: string,
   env: NodeJS.ProcessEnv,
   args: string[],
@@ -429,7 +430,7 @@ export async function launchUi(
   args: string[],
   parentEnv: NodeJS.ProcessEnv = process.env,
   io: { stdout: NodeJS.WritableStream; stderr: NodeJS.WritableStream } = process,
-  fixtureOptions: { boxFixtureApi?: string } = {},
+  fixtureOptions: { boatFixtureApi?: string } = {},
 ): Promise<void> {
   const values = parse("ui launch", args, { entry: { type: "string" }, "tool-calls": { type: "string" }, mode: { type: "string" } });
   const entryName = typeof values.entry === "string" ? values.entry : "threads";
@@ -468,7 +469,7 @@ export async function launchUi(
     const { binary, chrome } = await ensureUiBrowser(parentEnv, note);
     checkpoint();
     fixture = await launchVerificationServer({ ...parentEnv, ...fakeEnv }, startup.signal, undefined,
-      { binaryPath: binary, executablePath: chrome ?? "" }, undefined, undefined, [], fixtureOptions.boxFixtureApi);
+      { binaryPath: binary, executablePath: chrome ?? "" }, undefined, undefined, [], fixtureOptions.boatFixtureApi);
     checkpoint();
     const api = fixtureApi(fixture.info.url);
     await api("PATCH", "/api/config", { language: "en" });

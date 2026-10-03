@@ -1,5 +1,8 @@
 import { z } from "zod";
 
+import { CONNECTOR_SLUG_PATTERN, CONNECTOR_TOOL_NAME_PATTERN } from "./wire.ts";
+import { parseToolScope, type ToolScope } from "./tool-scope.ts";
+
 export const MAX_TEAM_BACKUP_BYTES = 50 * 1024 * 1024;
 export const TEAM_BACKUP_CONTENTS = "Bot profiles, instructions, sections, rooms, playbooks, routines, each bot's memory (MEMORY.md, topic notes and daily logs) and conversation text (all tasks and branches).";
 export const TEAM_BACKUP_EXCLUSIONS = "Files, images, custom avatars, account connections, model settings and permissions are not included. Action cards are saved as text. Memory is saved with secrets removed. Imported routines start paused.";
@@ -60,6 +63,28 @@ const memory = z.object({
   logs: z.array(z.object({ name: z.string().regex(/^\d{4}-\d{2}-\d{2}\.md$/), text: memoryText })).max(10_000),
 });
 
+/** The private backup is the one portable format grants travel in, so the
+ * shape is checked with the same patterns the store validates patches
+ * against. Shareable exports never carry grants at all, and an import
+ * always lands bots grant-less whatever the file says. */
+const connectorTools = z.record(
+  z.string().regex(CONNECTOR_SLUG_PATTERN),
+  z.object({ tools: z.union([z.literal("*"), z.array(z.string().regex(CONNECTOR_TOOL_NAME_PATTERN)).min(1).max(500)]) }),
+);
+
+/** A responder kind from a newer release restores as the room's first
+ * member as lead (what a room without one does) instead of refusing the
+ * whole backup. Malformed values still fail the schema. */
+function knownRoomResponder(value: unknown): unknown {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return value;
+  const group = value as { memberIds?: unknown; defaultResponder?: unknown };
+  const kind = group.defaultResponder && typeof group.defaultResponder === "object"
+    ? (group.defaultResponder as { kind?: unknown }).kind : undefined;
+  if (typeof kind !== "string" || ["member", "everyone", "mentions", "auto"].includes(kind)) return value;
+  const first = Array.isArray(group.memberIds) && typeof group.memberIds[0] === "string" ? group.memberIds[0] : undefined;
+  return { ...group, defaultResponder: first ? { kind: "member", botId: first } : { kind: "mentions" } };
+}
+
 const backupSchema = z.object({
   format: z.literal("openmaus.backup"),
   version: z.literal(1),
@@ -80,9 +105,12 @@ const backupSchema = z.object({
     chiefOfStaff: z.boolean(),
     hidden: z.boolean(),
     playbooks: z.array(playbook).max(200),
+    connectorTools: connectorTools.optional(),
+    toolScope: z.custom<ToolScope>((value) => value !== undefined && parseToolScope(value).ok, "Invalid tool selection")
+      .transform((value) => { const parsed = parseToolScope(value); return parsed.ok ? parsed.scope! : value; }).optional(),
     memory: memory.optional(),
   })).min(1).max(200),
-  groups: z.array(z.object({
+  groups: z.array(z.preprocess(knownRoomResponder, z.object({
     ...owner,
     memberIds: z.array(key).max(200),
     dm: z.boolean(),
@@ -91,8 +119,9 @@ const backupSchema = z.object({
       z.object({ kind: z.literal("member"), botId: key }),
       z.object({ kind: z.literal("everyone") }),
       z.object({ kind: z.literal("mentions") }),
+      z.object({ kind: z.literal("auto"), fallbackBotId: key.optional() }),
     ]),
-  })).max(2_000),
+  }))).max(2_000),
   routines: z.array(z.object({
     name, prompt: z.string().trim().min(1).max(200_000),
     target: z.enum(["bot", "room-goal"]), botId: key, groupId: key.optional(),
@@ -132,7 +161,9 @@ export function parseTeamBackup(input: unknown): TeamBackup {
   for (const group of backup.groups) {
     if (group.memberIds.some((id) => !bots.has(id))) throw new Error("Invalid backup: unknown room member");
     unique(group.memberIds, "room member");
-    if (group.defaultResponder.kind === "member" && !group.memberIds.includes(group.defaultResponder.botId)) {
+    const lead = group.defaultResponder.kind === "member" ? group.defaultResponder.botId
+      : group.defaultResponder.kind === "auto" ? group.defaultResponder.fallbackBotId : undefined;
+    if (lead !== undefined && !group.memberIds.includes(lead)) {
       throw new Error("Invalid backup: room responder is not a member");
     }
     if (group.dm && (group.memberIds.length !== 2 || group.tasks.length !== 1)) throw new Error("Invalid backup: invalid direct-message room");

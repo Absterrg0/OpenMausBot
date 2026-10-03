@@ -71,6 +71,28 @@ export type RuntimeEvent = RuntimeEventBase &
         usage?: { input: number; output: number; cachedInput?: number };
       }
     | {
+        type: "turn.wait_started";
+        /** The computer resource this turn queued behind (e.g. "computer:box:bx_…"). */
+        resource: string;
+        /** Where this turn sat in the resource's arrival-ordered waitlist when
+         * the wait began (#1652). */
+        position?: number;
+        /** Who held the computer when the wait began, if the holder was known. */
+        holder?: { name: string; task?: string };
+      }
+    | {
+        type: "turn.wait_ended";
+        resource: string;
+        holder?: { name: string; task?: string };
+        /** How long the turn actually waited. */
+        waitedMs: number;
+        /** acquired: the claim landed; stopped: the turn was stopped or
+         * cancelled while waiting; parked: the wait ceiling settled the turn
+         * for resume (#1651); gave_up: the pre-parking ceiling, kept so
+         * recorded logs still replay. */
+        outcome: "acquired" | "gave_up" | "parked" | "stopped";
+      }
+    | {
         type: "item.started";
         itemType: "tool" | "reasoning";
         title?: string;
@@ -95,11 +117,21 @@ export type RuntimeEvent = RuntimeEventBase &
         requestType: "permission" | "question";
         tool: string;
         summary: string;
+        /** Complete native shell input and its effective working directory.
+         * Used for exact-command grants; never reconstructed from a display
+         * summary, tool title, or argv. Absent when either value is unknown. */
+        command?: { command: string; cwd: string };
         choices?: string[];
         /** A provider's structured ask (Claude's AskUserQuestion): the whole
          * set of questions, each with its own options, so the card can offer
          * them instead of an Allow/Deny a person cannot answer. */
         questions?: AskQuestion[];
+        /** Where the ask came from: a harness tool call ("tool" — the
+         * default, and what every event before this field implied), or a
+         * block parsed out of model-authored final output ("output", the
+         * turn-held transport). Cards and logs can badge the latter as
+         * agent-composed; untrusted-input rules apply either way. */
+        origin?: "tool" | "output";
         approvalScope?: "local-computer";
         /** Provider asks to widen its configured sandbox. Only explicit Full
          * access may answer this automatically; Auto/remembered grants may not. */
@@ -137,8 +169,12 @@ export type RuntimeEvent = RuntimeEventBase &
     // configuring something, not by retrying — the UI offers setup instead.
     // `terminal: true` records failure of the complete turn, rather than a
     // transient error or a legacy provider's diagnostic during cancellation.
-    | { type: "runtime.error"; message: string; setup?: boolean; terminal?: boolean }
+    // `claudeUpdate: true` narrows a setup failure to "this Claude Code is
+    // too old for the model": the UI offers to run `claude update` for them.
+    | { type: "runtime.error"; message: string; setup?: boolean; terminal?: boolean; claudeUpdate?: boolean }
+    /** Something the person should know that did not fail the turn — for
+     * example, a saved model the engine no longer offers was replaced. */
+    | { type: "runtime.notice"; message: string }
   );
 
 export type RuntimeEventListener = (event: RuntimeEvent) => void;
-

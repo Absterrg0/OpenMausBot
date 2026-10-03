@@ -2,9 +2,11 @@ import { describe, expect, it } from "vitest";
 
 import {
   botsMissingConnectedApps,
+  botsWithLimitedServiceTools,
   hasUsableConnectedApps,
   connectedInventoryCopy,
   connectorActionLabel,
+  connectorSetupNotice,
   disconnectAccountConfirmation,
   mergeCompleteConnectorStatus,
   mergeCurrentConnectorStatus,
@@ -21,6 +23,46 @@ const engine = (instanceId: string, composioMcp: boolean) =>
   ({ instanceId, capabilities: { composioMcp } }) as unknown as InstanceInfo;
 const bot = (id: string, fields: Partial<Bot> = {}) =>
   ({ id, name: id, modelSelection: { instanceId: "claude" }, ...fields }) as unknown as Bot;
+
+describe("bots whose connected-app tools are limited by grants", () => {
+  const instances = [engine("claude", true), engine("grok", false)];
+
+  it("leaves legacy bots and all-tools grants out", () => {
+    const bots = [
+      bot("legacy"),
+      bot("star", { connectorTools: { gmail: { tools: "*" } } }),
+    ];
+    expect(botsWithLimitedServiceTools(bots, instances, "gmail")).toEqual([]);
+  });
+
+  it("names partial lists and services an explicit record leaves out", () => {
+    // Inside an explicit record, a service with no entry has no tools —
+    // that bot must be surfaced here, never silently treated as full.
+    const bots = [
+      bot("partial", { connectorTools: { gmail: { tools: ["GMAIL_SEND_EMAIL"] } } }),
+      bot("absent", { connectorTools: { gmail: { tools: "*" } } }),
+    ];
+    expect(botsWithLimitedServiceTools(bots, instances, "gmail").map((b) => b.id)).toEqual(["partial"]);
+    expect(botsWithLimitedServiceTools(bots, instances, "slack").map((b) => b.id)).toEqual(["partial", "absent"]);
+  });
+
+  it("counts a grant shape this build cannot read as limited", () => {
+    const future = bot("future", {
+      connectorTools: { gmail: { tools: { prefix: "GMAIL_" } } } as unknown as Bot["connectorTools"],
+    });
+    expect(botsWithLimitedServiceTools([future], instances, "gmail")).toEqual([future]);
+  });
+
+  it("never points at bots whose editor is a dead end from here", () => {
+    const grant = { connectorTools: { gmail: { tools: ["GMAIL_SEND_EMAIL"] } } } as Partial<Bot>;
+    const bots = [
+      bot("hidden", { hidden: true, ...grant }),
+      bot("off", { composio: false, ...grant }),
+      bot("grok", { ...grant, modelSelection: { instanceId: "grok" } as Bot["modelSelection"] }),
+    ];
+    expect(botsWithLimitedServiceTools(bots, instances, "gmail")).toEqual([]);
+  });
+});
 
 describe("connected apps a bot cannot see", () => {
   const instances = [engine("claude", true), engine("grok", false)];
@@ -256,5 +298,41 @@ describe("an answer the server was not sure about", () => {
   it("treats a missing authority flag as authoritative, preserving today's behaviour", () => {
     const merged = mergeCompleteConnectorStatus(connectedGmail, {}, new Map(), new Map());
     expect(merged.gmail.connected).toBe(false);
+  });
+});
+
+describe("connected apps setup notice", () => {
+  const base = { configured: false, stale: false, remoteClient: false };
+
+  it("tells a fresh install what to do instead of reporting an outage", () => {
+    // A source build, a fixture or a fresh self-hosted server never had a
+    // connection service: nothing is down, the user just has not added a key.
+    expect(connectorSetupNotice({ ...base, setup: "needs-setup" })).toEqual({
+      key: "connectors.setupNeeded",
+      tone: "info",
+    });
+    expect(connectorSetupNotice({ ...base, setup: "needs-setup", remoteClient: true })).toEqual({
+      key: "connectors.setupNeededRemote",
+      tone: "info",
+    });
+  });
+
+  it("still warns when the managed service really is unavailable", () => {
+    expect(connectorSetupNotice({ ...base, setup: "service-unavailable" })).toEqual({
+      key: "connectors.notConfigured",
+      tone: "warning",
+    });
+  });
+
+  it("keeps the warning for an older host that does not say why", () => {
+    expect(connectorSetupNotice({ ...base, setup: undefined })).toEqual({
+      key: "connectors.notConfigured",
+      tone: "warning",
+    });
+  });
+
+  it("says nothing when apps work or the stale banner already explains", () => {
+    expect(connectorSetupNotice({ ...base, configured: true, setup: "ready" })).toBeNull();
+    expect(connectorSetupNotice({ ...base, stale: true, setup: "needs-setup" })).toBeNull();
   });
 });

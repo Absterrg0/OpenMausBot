@@ -18,6 +18,8 @@ beforeAll(() => {
 });
 
 // Analytics boots PostHog on import, which wants a real browser.
+// Pinned to Advanced: these cover the Advanced rail; Simple has its own suite.
+vi.mock("@/lib/interface-mode", () => ({ useAdvancedMode: () => true, setAdvancedMode: () => {} }));
 vi.mock("@/lib/analytics", () => ({
   analyticsEnabled: () => false,
   setAnalyticsEnabled: () => {},
@@ -37,24 +39,24 @@ describe("Settings → General", () => {
     setLocale("pt-br");
     const pt = await renderSettings();
     expect(pt).toContain("Configurações");
-    expect(pt).toContain("Mecanismos");
+    expect(pt).toContain("Provedores de modelos");
     expect(pt).toContain("Idioma do app");
     expect(pt).toContain("Duração máxima do turno");
 
     // same module instance, no reload: a frozen label would still say
-    // "Mecanismos" here
+    // "Provedores de modelos" here
     setLocale("ja");
     const ja = await renderSettings();
     expect(ja).toContain("設定");
-    expect(ja).toContain("エンジン");
-    expect(ja).not.toContain("Mecanismos");
+    expect(ja).toContain("モデルプロバイダー");
+    expect(ja).not.toContain("Provedores de modelos");
   });
 
   it("stays English when no language is picked", async () => {
     setLocale("en");
     const en = await renderSettings();
     expect(en).toContain("Settings");
-    expect(en).toContain("Engines");
+    expect(en).toContain("Model providers");
     expect(en).toContain("Maximum turn length");
   });
 

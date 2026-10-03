@@ -89,6 +89,11 @@ What the screenshot looks like when the recipe passes (`evidence/chat-ui/chat-ui
 
 The permanent form of this recipe is `scripts/testing/control-omb-ui.e2e.test.ts`:
 
+The fixture also hit-tests the rendered empty band beside **This run**. It
+must target the conversation rather than the transparent dock, while points
+inside the card and composer still target those controls. This checks browser
+pointer targeting, not native OS wheel delivery.
+
 ```sh
 OMB_UI_E2E=1 pnpm exec vitest run scripts/testing/control-omb-ui.e2e.test.ts
 ```
@@ -118,7 +123,7 @@ real fixture health check and verifies that clicking a deliberately missing
 control fails. The card remains collapsible; the old execution timeline is no
 longer shown above chat.
 
-For activity detail, click **Inspector → Run Log**. It shows the selected
+For activity detail, click **More → Inspector → Run Log**. It shows the selected
 conversation's recorded commands, statuses and timestamps; command previews
 may be shortened. **Events** and **Raw** retain the underlying technical views.
 The recipe checks tab switching and saves `run-log.png` alongside `chat-ui.png`.
@@ -126,6 +131,13 @@ The recipe checks tab switching and saves `run-log.png` alongside `chat-ui.png`.
 not chat text or raw protocol data. Review copied logs before sharing: automatic
 redaction is best effort. Neither this log nor a successful command proves an
 unasserted user outcome.
+
+`scripts/testing/usage-details-ui.e2e.test.ts` checks the header's **More** menu,
+usage breakdown, clipboard success and refusal, and responsive geometry at
+390, 800, 1100 and 1600 px. It checks that opening bot settings folds the sidebar
+without changing its saved density and closing settings restores it. Evidence
+includes screenshots and a `.usage-details.json` next to the fixture log.
+These are renderer checks, not native Windows caption-button verification.
 
 It runs when an agent-browser binary resolves and is skipped with a printed
 reason otherwise; `OMB_UI_E2E=1` forces the verified download. The `ui-smoke`
@@ -207,6 +219,50 @@ until agent-browser no longer lists it), then the preview, then the fixture,
 and removes only its data directory; the server log stays at the printed path
 and the tools directory keeps the downloads. Every verb refuses a handle whose
 launch has stopped.
+
+## Live key prompt cancellation
+
+With a fresh `ui launch` handle in `$H`, run the delayed-key-save regression:
+
+```sh
+pnpm control:omb ui eval --ui "$H" --js "$(cat scripts/testing/live-key-lifecycle.js)"
+```
+
+It submits the real key form, then dismisses it or switches chats by keyboard-style
+activation before the synthetic save resolves. Both results must show
+`oldPromptDetached: true`, `microphoneStarts: 0`, and `phase: "idle"`. The script
+clears only the disposable fixture's Live key, stubs credential saving and media,
+and restores the bridge and call mode in `finally`. It never saves a real key or
+opens the microphone; it does not prove real-audio acceptance. Stop the launcher
+as described above.
+
+## Queued edits and Claude update recovery
+
+The queued-message Edit action must remove the server's held send before
+returning its text to the same thread's draft, ahead of any existing text.
+A phone's `404 no such queued message` response retires a stale queue row,
+but must return **false** for editing: those words may already be running.
+The client regressions cover that distinction and successful cancellation:
+
+```sh
+cd ios && swift test --filter QueuedSendClientTests
+# From android/ with JDK 17 and the Android SDK configured:
+./gradlew :core:test --tests '*SessionP1Test*'
+```
+
+To exercise the desktop Claude update card without an actual provider,
+launch an isolated UI with `FAKE_CLAUDE_MODE=api-error` and
+`FAKE_CLAUDE_API_ERROR="API Error: 400 Claude Code 2.1.268 does not support this model; version 2.1.280 or newer is required."`.
+Send one short message, then click **Update Claude for me**. The fake updater
+must report its synthetic version and the card must offer **Retry**, even
+when a digest follows the error. This proves the update request and recovery
+UI, not a real Claude installation or a successful provider retry.
+
+The native transcript suites also exercise wrapper-free pasted text and the
+update card with offline data. Android drives a failed update and a successful
+retry against loopback responses; iOS checks the manual command path in a
+disposable simulator. See [iOS](ios-transcript.md) and
+[Android](android-transcript.md).
 
 ## What this proves, and what it does not
 

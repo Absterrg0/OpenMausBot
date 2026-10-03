@@ -28,7 +28,9 @@ import com.openmausbot.companion.ui.CompanionEnvironment
 import com.openmausbot.companion.ui.MicPermissionController
 import com.openmausbot.companion.ui.NotificationPermissionController
 import com.openmausbot.companion.ui.PermissionPreferences
+import com.openmausbot.companion.audio.LiveCallManager
 import com.openmausbot.companion.audio.VoicePreviewPlayer
+import com.openmausbot.companion.audio.VoiceNotePlayer
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.coroutines.EmptyCoroutineContext
 import kotlinx.coroutines.CoroutineScope
@@ -147,6 +149,8 @@ class OnboardingScene(
         notifications = notifications,
         avatars = AvatarImageStore(fetch = { null }),
         voicePreview = VoicePreviewPlayer(context),
+        voiceNotes = VoiceNotePlayer(context),
+        liveCalls = LiveCallManager(context, session, scope),
         dictation = SpeechDictation(
             context = context,
             hasRecordAudio = { false },

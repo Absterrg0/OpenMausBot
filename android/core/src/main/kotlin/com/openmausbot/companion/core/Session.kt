@@ -73,6 +73,10 @@ class Session(
     private val metadataFn: suspend (CompanionClient) -> CompanionConnectionMetadata = { client ->
         client.connectionMetadata()
     },
+    /** Test seam: the computer's running Live call, read after a fresh hello. */
+    private val liveCallFn: suspend (CompanionClient) -> LiveCallState? = { client ->
+        client.liveCall()
+    },
     /** Test seam for the handoff between a completed transfer and its caller. */
     private val afterAttachmentDownload: suspend () -> Unit = {},
 ) {
@@ -219,6 +223,8 @@ class Session(
         awaitRestored()
         gate.withLock {
             if (pairingInFlight) throw PairingInProgressException()
+            // An unsafe address has not submitted the code. Let the user correct it and retry.
+            if (PairingInvite.normalizedServerCode(credential) != null) connection.requireServerTransport()
             if (isQrCredential(credential) && credential in spentQrCredentials) {
                 _actionError.value = SPENT_QR_MESSAGE
                 clearInviteIfCredential(credential)
@@ -238,35 +244,25 @@ class Session(
                 } else {
                     connection
                 }
-                val outcome = try {
-                    pairFn(invited, credential, deviceName, pairRequestId)
+                val (pairedConnection, pairedToken) = try {
+                    redeemPairing(invited, credential, deviceName, pairRequestId)
                 } catch (error: Throwable) {
                     if (error is kotlinx.coroutines.CancellationException) throw error
-                    val routeFailure = error is PairingRouteError
+                    val routeFailure = error is PairingRouteError || error is ServerPairingRetryError
                     if (qr && !routeFailure) burnQrCredential(credential)
                     _actionError.value = if (qr && !routeFailure) qrFailureMessage(error) else error.message
                     throw error
                 }
                 if (qr) burnQrCredential(credential)
-
-                val paired = outcome.response
-                // Route dialing may change the active endpoint, but neither it nor the response may
-                // replace the policy captured from the user's original selection.
-                var stored = outcome.connection.copy(
-                    allowedRouteKinds = invited.allowedRouteKinds,
-                    allowedLocalRouteURLs = invited.allowedLocalRouteURLs,
-                )
-                if (paired.serverName.isNotEmpty()) stored = stored.copy(name = paired.serverName)
-                stored = stored.applyingPairingAdvertisement(paired.hosts, paired.endpoints)
-                val winner = outcome.connection.activeEndpoint
-                    ?: CompanionEndpoint.direct(outcome.connection.host, outcome.connection.port, priority = 10_000)
-                stored = winner?.let(stored::promoting) ?: stored.promoting(stored.host)
+                var stored = pairedConnection
+                val winner = stored.activeEndpoint
+                    ?: CompanionEndpoint.direct(stored.host, stored.port, priority = 10_000)
                 registry.matchingConnection(stored)?.let { existing -> stored = stored.copy(id = existing.id) }
                 val firstPairing = registry.connections.isEmpty()
                 val updatedRegistry = registry.upsert(stored)
 
                 try {
-                    tokenStore.save(stored.id, paired.token)
+                    tokenStore.save(stored.id, pairedToken)
                     // The education marker goes down before the connection
                     // becomes restorable. A process that stops between the two
                     // leaves an orphan marker, which the router ignores while
@@ -288,11 +284,11 @@ class Session(
                 registry = updatedRegistry
                 _connections.value = registry.connections
                 _connection.value = stored
-                token = paired.token
+                token = pairedToken
                 // The route that just redeemed leads this session; later launches return to the
                 // desktop's security-prioritized typed order.
                 rotation = CandidateRotation(liveRoutes(stored, winner))
-                client = clientFactory(stored, paired.token)
+                client = clientFactory(stored, pairedToken)
                 _state.value = CompanionState()
                 _restoreState.value = RestoreState.Ready
                 _pairingRequested.value = false
@@ -301,6 +297,46 @@ class Session(
             }
         }
         connect()
+    }
+
+    private suspend fun redeemPairing(
+        invited: Connection,
+        credential: String,
+        deviceName: String,
+        requestId: String,
+    ): Pair<Connection, String> {
+        val serverCode = PairingInvite.normalizedServerCode(credential)
+        if (serverCode != null) {
+            val descriptor: ServerEnvironment
+            val paired: ServerPairResponse
+            try {
+                descriptor = CompanionClient(invited, null, httpClient).environment()
+                paired = CompanionClient.pairWithServer(invited, serverCode, deviceName, requestId, httpClient)
+            } catch (error: java.io.IOException) {
+                if (error is APIError.Status && error.code < 500 && error.code != 429) throw error
+                throw ServerPairingRetryError(error)
+            }
+            check(paired.environment.environmentId == descriptor.environmentId) {
+                "The server changed while pairing. Scan a new code and try again."
+            }
+            return invited.copy(
+                name = paired.environment.label.ifEmpty { invited.name },
+                serverEnvironmentId = paired.environment.environmentId,
+                serverScopes = paired.session.scopes,
+            ) to paired.token
+        }
+        val outcome = pairFn(invited, credential, deviceName, requestId)
+        val paired = outcome.response
+        var stored = outcome.connection.copy(
+            allowedRouteKinds = invited.allowedRouteKinds,
+            allowedLocalRouteURLs = invited.allowedLocalRouteURLs,
+        )
+        if (paired.serverName.isNotEmpty()) stored = stored.copy(name = paired.serverName)
+        stored = stored.applyingPairingAdvertisement(paired.hosts, paired.endpoints)
+        val winner = outcome.connection.activeEndpoint
+            ?: CompanionEndpoint.direct(outcome.connection.host, outcome.connection.port, priority = 10_000)
+        stored = winner?.let(stored::promoting) ?: stored.promoting(stored.host)
+        return stored to paired.token
     }
 
     suspend fun pair(
@@ -577,7 +613,7 @@ class Session(
                 // reopens the stream. Holding the lock makes that `finally` wait.
                 streamJob = scope.launch {
                     try {
-                        runStream()
+                        runStream(generation)
                     } finally {
                         gate.withLock {
                             if (streamGeneration == generation) {
@@ -718,7 +754,7 @@ class Session(
             _status.value = Status.Connecting
             val job = scope.launch {
                 try {
-                    runStream()
+                    runStream(generation)
                 } finally {
                     gate.withLock {
                         if (streamGeneration == generation) {
@@ -775,7 +811,7 @@ class Session(
         // published immediately so a concurrent connect() sees it.
         val job = scope.launch {
             try {
-                runStream()
+                runStream(generation)
             } finally {
                 gate.withLock {
                     if (streamGeneration == generation) {
@@ -795,12 +831,20 @@ class Session(
         endpointRefreshJob = null
     }
 
-    private suspend fun runStream() {
+    /** [generation] is the one this stream was launched under; what it starts in the background checks it before writing. */
+    private suspend fun runStream(generation: Int) {
         while (currentCoroutineContext().isActive) {
             val activeClient = client ?: return
             _status.value = Status.Connecting
             var receivedHello = false
             try {
+                activeClient.connection.serverEnvironmentId?.let { expected ->
+                    // Fail closed before sending the bearer if the address serves a new workspace.
+                    if (activeClient.environment().environmentId != expected) {
+                        _status.value = Status.Unauthorized
+                        return
+                    }
+                }
                 eventsFn(activeClient, _state.value.cursor, screenWatchers > 0)
                     .collect { frame ->
                         currentCoroutineContext().ensureActive()
@@ -810,7 +854,7 @@ class Session(
                             is Frame.Hello -> {
                                 receivedHello = true
                                 if (!payload.resumed) {
-                                    hydrate()
+                                    hydrate(generation)
                                     _state.update { it.resetCursor(payload.cursor) }
                                 }
                                 _status.value = Status.Live
@@ -850,7 +894,7 @@ class Session(
         }
     }
 
-    private suspend fun hydrate() {
+    private suspend fun hydrate(generation: Int) {
         val activeClient = client ?: return
         val fleet = hydrateFn(activeClient, 50)
         _state.update { it.hydrate(fleet) }
@@ -870,6 +914,28 @@ class Session(
                 throw error
             } catch (_: Exception) {
                 emptySet()
+            }
+        }
+        // The fleet snapshot does not carry the Live call. A phone that
+        // reconnects mid-call reads it here; one that reconnects after the
+        // computer restarted learns the call is gone the same way. An older
+        // harness answers 404 and the state is left alone. Off the critical
+        // path, like the engine list above.
+        scope.launch {
+            val readAt = _state.value.liveCallRevision
+            val call = try {
+                liveCallFn(activeClient)
+            } catch (error: CancellationException) {
+                throw error
+            } catch (_: Exception) {
+                return@launch
+            }
+            // The stream this read belongs to may be gone by now: another
+            // computer, or a restart whose own read (or frame) is newer. A
+            // late answer must not overwrite either, nor a `live.call` frame
+            // that reached the line while it was out.
+            gate.withLock {
+                if (streamGeneration == generation) _state.update { it.applyLiveCallLookup(call, readAt) }
             }
         }
     }
@@ -990,6 +1056,7 @@ class Session(
      * would be decorative.
      */
     private fun refreshConnectionMetadata(source: CompanionClient) {
+        if (source.connection.pairedWithServer) return
         val connectionId = _connection.value?.id ?: return
         val workingEndpoint = rotation.currentEndpoint ?: source.connection.activeEndpoint
         endpointRefreshJob?.cancel()
@@ -1102,20 +1169,44 @@ class Session(
      * once the harness confirms, so a failed cancel leaves the words on
      * screen still waiting — which is what is actually true.
      */
-    suspend fun cancelQueued(send: QueuedSend, chat: Chat) {
-        val activeClient = client ?: return
+    /** True only when the computer confirmed cancellation, so an
+     * edit never hands back words that already joined a turn. */
+    suspend fun cancelQueued(send: QueuedSend, chat: Chat): Boolean {
+        val activeClient = client ?: return false
         val destination = when (chat) {
             is Chat.BotChat -> MessageDestination.Bot(chat.bot.id, chat.threadId)
             is Chat.RoomChat -> MessageDestination.Room(chat.room.id, chat.threadId)
         }
         try {
-            activeClient.cancelQueued(send.queueId, destination)
+            val cancelled = activeClient.cancelQueued(send.queueId, destination)
+            if (client !== activeClient) return false
             _state.update { it.forgetQueued(send.queueId, chat.threadId) }
+            return cancelled
+        } catch (error: CancellationException) {
+            throw error
+        } catch (error: APIError) {
+            if (client !== activeClient) return false
+            if (error.isUnauthorized) _status.value = Status.Unauthorized
+            _actionError.value = error.message
+            return false
+        }
+    }
+
+    /**
+     * Update Claude Code for the engine a failed turn ran on. The answer is
+     * for the card that asked, not the app-wide error banner: it shows the
+     * version on success and the harness's own words (already written for a
+     * person — "stop the running turn first") on failure.
+     */
+    suspend fun updateClaude(instanceId: String): ClaudeUpdateResult {
+        val activeClient = client ?: return ClaudeUpdateResult.Failed("This computer is offline.")
+        return try {
+            ClaudeUpdateResult.Updated(activeClient.updateClaude(instanceId))
         } catch (error: CancellationException) {
             throw error
         } catch (error: APIError) {
             if (error.isUnauthorized) _status.value = Status.Unauthorized
-            _actionError.value = error.message
+            ClaudeUpdateResult.Failed(error.message ?: "Claude Code could not be updated.")
         }
     }
 
@@ -1504,6 +1595,98 @@ class Session(
         }
     }
 
+    // ── Live calls ──
+
+    /**
+     * Ask the computer for a Live session for this phone's offer. Throws
+     * [APIError] so the call bar can show the computer's own words; a 401
+     * marks this session revoked the way [cloudDesktop] does. The private
+     * `perform {}` helper is deliberately not used here or below: it writes
+     * `actionError`, which raises the global "Something went wrong" dialog
+     * over a bar that has its own place for errors.
+     */
+    suspend fun startLiveCall(botId: String, threadId: String, sdp: String): LiveCallStart =
+        liveCallRequest { source ->
+            val answer = source.startLiveCall(botId, threadId, sdp)
+            if (_connection.value?.id != source.connection.id) {
+                if (answer is LiveCallStart.Started) runCatching { source.endLiveCall(answer.call.callId) }
+                throw APIError.Transport("The computer changed while the call was starting.")
+            }
+            answer
+        }
+
+    /**
+     * Hang up on the computer — this phone's own call, or another device's
+     * from the remote bar. Quiet: a lost answer changes nothing the phone
+     * can act on. The ended call is mirrored into [state] so a bar reading
+     * the computer's side sees it at once, but only while that call still
+     * reads as running there ([CompanionState.applyLiveCallEnd]).
+     *
+     * A 404 means the computer no longer runs that call. If the line here
+     * still shows it running, a frame was missed: the line is read again
+     * rather than guessed at, as the desktop and the iPhone do.
+     */
+    suspend fun endLiveCall(callId: String): LiveCallState? {
+        val connectionId = _connection.value?.id
+        val ended = try {
+            liveCallRequest { it.endLiveCall(callId) }
+        } catch (error: CancellationException) {
+            throw error
+        } catch (error: Exception) {
+            val gone = (error as? APIError.Status)?.code == 404
+            if (gone && _connection.value?.id == connectionId && _state.value.showsRunningLiveCall(callId)) {
+                liveCall()
+            }
+            return null
+        }
+        if (_connection.value?.id == connectionId) _state.update { it.applyLiveCallEnd(callId, ended) }
+        return ended
+    }
+
+    /**
+     * The computer's current Live call, mirrored into [state] unless a
+     * `live.call` frame or a hang-up answer reached the line while the read
+     * was out ([CompanionState.applyLiveCallLookup]). Null when there is
+     * none, or the read failed.
+     */
+    suspend fun liveCall(): LiveCallState? {
+        val connectionId = _connection.value?.id
+        val readAt = _state.value.liveCallRevision
+        val call = try {
+            liveCallRequest { liveCallFn(it) }
+        } catch (error: CancellationException) {
+            throw error
+        } catch (_: Exception) {
+            return null
+        }
+        if (_connection.value?.id == connectionId) _state.update { it.applyLiveCallLookup(call, readAt) }
+        return call
+    }
+
+    suspend fun liveSettings(): LiveSettings? = configStatus()?.live
+
+    /** Throws [APIError] so the settings sheet can say why a change did not stick. */
+    suspend fun updateLiveSettings(patch: LiveSettingsPatch): LiveSettings =
+        liveCallRequest { it.updateLiveSettings(patch) }
+
+    private suspend fun <T> liveCallRequest(body: suspend (CompanionClient) -> T): T {
+        val activeClient = client ?: throw APIError.Transport(OFFLINE_MESSAGE)
+        val connectionId = _connection.value?.id
+        return try {
+            body(activeClient)
+        } catch (error: APIError) {
+            if (error.isUnauthorized) {
+                gate.withLock {
+                    // Only the live computer's 401 may mark this session revoked.
+                    if (connectionId != null && _connection.value?.id == connectionId) {
+                        _status.value = Status.Unauthorized
+                    }
+                }
+            }
+            throw error
+        }
+    }
+
     suspend fun markRead(chat: Chat) {
         perform(quietly = true) {
             when (chat) {
@@ -1763,6 +1946,24 @@ class Session(
         }
     }
 
+    /**
+     * Snooze or wake one thread. The PATCH's bot frame also lands on the
+     * stream; the refresh keeps the sheet from waiting for it, exactly as
+     * rename does.
+     */
+    suspend fun snoozeTask(task: BotTask, forBot: Bot, snoozedUntil: Long?): Boolean {
+        val activeClient = client ?: return false
+        return try {
+            activeClient.snoozeTask(forBot.id, task.threadId, snoozedUntil)
+            refresh()
+            true
+        } catch (error: Throwable) {
+            if (error is CancellationException) throw error
+            _actionError.value = error.message
+            false
+        }
+    }
+
     suspend fun createTask(forRoom: Room, title: String?): Room? = mutateTask(null) { client ->
         client.createRoomTask(forRoom.id, title).also { updated ->
             _state.update { it.apply(Frame.Room(updated)) }
@@ -1970,7 +2171,12 @@ class Session(
         }
     }
 
-    suspend fun loadOverview(botId: String): BotOverview? {
+    /**
+     * The overview read. [quiet] suppresses the global action error for
+     * supplementary callers — the profile sheet's grants fetch — where a
+     * failed read should leave one section absent, not error the profile.
+     */
+    suspend fun loadOverview(botId: String, quiet: Boolean = false): BotOverview? {
         val activeClient = client ?: return null
         val connectionId = _connection.value?.id
         return try {
@@ -1979,7 +2185,7 @@ class Session(
             overview.takeIf { _connection.value?.id == connectionId }
         } catch (error: Throwable) {
             if (error is CancellationException) throw error
-            if (_connection.value?.id == connectionId) _actionError.value = error.message
+            if (!quiet && _connection.value?.id == connectionId) _actionError.value = error.message
             null
         }
     }
@@ -2054,8 +2260,30 @@ class Session(
         }
     }
 
+    /**
+     * Edit and retry. The edited text replaces the old message on screen the
+     * moment it is sent, hiding the old answer, and the computer's fork takes
+     * over as soon as either its response or its stream frames land. A failed
+     * edit simply drops the stand-in, so the old branch returns.
+     */
     suspend fun edit(message: Message, forBot: Bot, text: String) {
-        perform { it.edit(forBot.id, message.id, text, forBot.threadId) }
+        if (client == null) return
+        val threadId = forBot.threadId
+        val connectionId = _connection.value?.id
+        val pending = PendingEdit(message.id, text, baseLeafId = _state.value.botForThread(threadId)?.activeLeafId)
+        _state.update { it.copy(pendingEdits = it.pendingEdits + (threadId to pending)) }
+        try {
+            perform { activeClient ->
+                val fork = activeClient.edit(forBot.id, message.id, text, threadId, pending.requestId)
+                if (fork != null && _connection.value?.id == connectionId) {
+                    _state.update { it.adoptEdit(fork, threadId, expectedPending = pending) }
+                }
+            }
+        } finally {
+            _state.update {
+                if (it.pendingEdits[threadId] == pending) it.copy(pendingEdits = it.pendingEdits - threadId) else it
+            }
+        }
     }
 
     suspend fun switchVersion(to: Message, forBot: Bot) {
@@ -2106,6 +2334,7 @@ class Session(
         const val SPENT_QR_MESSAGE =
             "That pairing code was already used. Start pairing again on your computer and rescan the new QR code."
         const val THREAD_GONE_MESSAGE = "That thread is no longer on your computer."
+        const val OFFLINE_MESSAGE = "This computer is offline."
 
         /** High-entropy QR token — distinct from a retryable six-digit code. */
         fun isQrCredential(credential: String): Boolean =
@@ -2119,3 +2348,9 @@ class PairingInProgressException : IllegalStateException("Another pairing attemp
 
 /** Thrown when a burned QR credential is presented again. */
 class SpentPairingCredentialException : IllegalStateException(Session.SPENT_QR_MESSAGE)
+
+/** What became of an in-chat Claude Code update. */
+sealed interface ClaudeUpdateResult {
+    data class Updated(val version: String) : ClaudeUpdateResult
+    data class Failed(val message: String) : ClaudeUpdateResult
+}

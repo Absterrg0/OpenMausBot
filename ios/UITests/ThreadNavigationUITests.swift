@@ -26,7 +26,9 @@ final class ThreadNavigationUITests: XCTestCase {
         openGmail(in: app)
 
         let topBarThreads = app.buttons["header-threads"]
-        XCTAssertTrue(topBarThreads.waitForExistence(timeout: 5))
+        // The chat header settles late on a loaded CI runner. 5s timed out
+        // here while the thread open itself was correct, same as assertThread.
+        XCTAssertTrue(topBarThreads.waitForExistence(timeout: 10))
         topBarThreads.tap()
         let iCloud = app.buttons["thread-preview-icloud"]
         XCTAssertTrue(iCloud.waitForExistence(timeout: 5))
@@ -45,7 +47,19 @@ final class ThreadNavigationUITests: XCTestCase {
 
     @MainActor
     func testRosterShowsFolderThreadsAndSwitchesLocally() {
-        let app = launchPreview()
+        rosterShowsFolderThreadsAndSwitchesLocally(density: nil)
+    }
+
+    /// Comfortable is still a choice in Settings: its Threads row and folder
+    /// disclosure get the same check.
+    @MainActor
+    func testRosterShowsFolderThreadsAndSwitchesLocallyInComfortable() {
+        rosterShowsFolderThreadsAndSwitchesLocally(density: "comfortable")
+    }
+
+    @MainActor
+    private func rosterShowsFolderThreadsAndSwitchesLocally(density: String?) {
+        let app = launchPreview(density: density)
         openGmail(in: app)
         assertThread("Triage Gmail", in: app)
         XCTAssertTrue(transcriptContains("I’m reviewing Gmail here", in: app))
@@ -71,8 +85,88 @@ final class ThreadNavigationUITests: XCTestCase {
     }
 
     @MainActor
-    func testHomeSearchFindsSiblingTitlesAndFolders() {
+    func testGmailRendersATableAndTasks() {
         let app = launchPreview()
+        openGmail(in: app)
+        let wide = String(repeating: "W", count: 80)
+
+        let grid = app.descendants(matching: .any)["message-preview-gmail-grid"]
+        XCTAssertTrue(grid.waitForExistence(timeout: 5))
+        func cell(_ label: String) -> XCUIElement {
+            grid.descendants(matching: .any).matching(NSPredicate(format: "label == %@", label)).firstMatch
+        }
+        let labels = ["Alpha", "Beta", "one", wide]
+        for label in labels {
+            XCTAssertTrue(cell(label).waitForExistence(timeout: 5), label)
+        }
+        let alpha = cell("Alpha")
+        let beta = cell("Beta")
+        let one = cell("one")
+        let token = cell(wide)
+        XCTAssertEqual(alpha.frame.midY, beta.frame.midY, accuracy: 1)
+        XCTAssertEqual(one.frame.midY, token.frame.midY, accuracy: 1)
+        XCTAssertGreaterThan(one.frame.midY, alpha.frame.midY)
+        XCTAssertEqual(alpha.frame.width, one.frame.width, accuracy: 1)
+        XCTAssertEqual(beta.frame.width, token.frame.width, accuracy: 1)
+        XCTAssertEqual(token.frame.height, one.frame.height, accuracy: 1)
+        let cellIds = [
+            "message-preview-gmail-grid-scroll-cell-0-0",
+            "message-preview-gmail-grid-scroll-cell-0-1",
+            "message-preview-gmail-grid-scroll-cell-1-0",
+            "message-preview-gmail-grid-scroll-cell-1-1",
+        ]
+        let identified = cellIds.map { grid.descendants(matching: .any)[$0] }
+        for (element, label) in zip(identified, labels) {
+            XCTAssertTrue(element.waitForExistence(timeout: 5))
+            XCTAssertEqual(element.label, label)
+        }
+        let order = identified.map(\.label)
+        XCTAssertEqual(order, labels)
+        func absent(_ label: String, in element: XCUIElement) {
+            let match = element.descendants(matching: .any).matching(NSPredicate(format: "label CONTAINS %@", label)).firstMatch
+            XCTAssertFalse(match.exists, label)
+        }
+        absent("DATA TABLE", in: grid)
+        absent("Copy CSV", in: grid)
+        absent("rows", in: grid)
+        absent("| --- | --- |", in: grid)
+
+        let scroll = app.descendants(matching: .any)["message-preview-gmail-grid-scroll"]
+        XCTAssertTrue(scroll.waitForExistence(timeout: 5))
+        let before = token.frame.origin.x
+        token.swipeLeft()
+        XCTAssertLessThan(token.frame.origin.x, before)
+
+        let tasks = app.descendants(matching: .any)["message-preview-gmail-tasks"]
+        XCTAssertTrue(tasks.waitForExistence(timeout: 5))
+        XCTAssertTrue(tasks.descendants(matching: .any)["Quant baskets"].waitForExistence(timeout: 5))
+        XCTAssertTrue(tasks.staticTexts["1."].exists)
+        XCTAssertTrue(tasks.descendants(matching: .any)["completed, Ship the notes"].exists)
+        XCTAssertFalse(tasks.buttons["completed, Ship the notes"].exists)
+        XCTAssertTrue(tasks.descendants(matching: .any)["not completed, waiting"].exists)
+        XCTAssertFalse(tasks.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "**")).firstMatch.exists)
+        XCTAssertFalse(tasks.descendants(matching: .any).matching(NSPredicate(format: "label CONTAINS %@", "[x] Ship the notes")).firstMatch.exists)
+
+        let mine = app.descendants(matching: .any)["message-preview-gmail-user-md"]
+        XCTAssertTrue(mine.waitForExistence(timeout: 5))
+        XCTAssertTrue(mine.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "| --- | --- |")).firstMatch.exists)
+        XCTAssertTrue(mine.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "[x] done")).firstMatch.exists)
+        recordScreenshot("Gmail table and task list", in: app)
+    }
+
+    @MainActor
+    func testHomeSearchFindsSiblingTitlesAndFolders() {
+        homeSearchFindsSiblingTitlesAndFolders(density: nil)
+    }
+
+    @MainActor
+    func testHomeSearchFindsSiblingTitlesAndFoldersInComfortable() {
+        homeSearchFindsSiblingTitlesAndFolders(density: "comfortable")
+    }
+
+    @MainActor
+    private func homeSearchFindsSiblingTitlesAndFolders(density: String?) {
+        let app = launchPreview(density: density)
         app.buttons["threads-toggle.preview-pepper"].tap()
         app.buttons["Search"].tap()
         let search = app.textFields["Search threads"]
@@ -192,7 +286,10 @@ final class ThreadNavigationUITests: XCTestCase {
         assertThread("Triage Gmail", in: app)
         XCTAssertTrue(transcriptContains("I’m reviewing Gmail here", in: app))
         app.buttons["Back"].tap()
-        XCTAssertEqual(app.buttons["threads-toggle.preview-pepper"].value as? String, "Expanded, 1 threads")
+        // One thread left is the bot itself: the compact roster drops the
+        // thread control, and the row opens that thread.
+        XCTAssertTrue(app.buttons["chat-row.preview-pepper"].waitForExistence(timeout: 5))
+        assertMissing(app.buttons["threads-toggle.preview-pepper"])
     }
 
     @MainActor
@@ -221,20 +318,26 @@ final class ThreadNavigationUITests: XCTestCase {
         recordScreenshot("Partial bulk deletion keeps the remaining thread selected", in: app)
     }
 
+    /// `density` nil starts from the install default (compact), whatever an
+    /// earlier run saved; otherwise that density for this launch only.
     @MainActor
-    private func launchPreview(extraArguments: [String] = [], islandIntro: String = "never") -> XCUIApplication {
+    private func launchPreview(
+        extraArguments: [String] = [], islandIntro: String = "never", density: String? = nil
+    ) -> XCUIApplication {
         continueAfterFailure = false
         let app = XCUIApplication()
         // Xcode may prelaunch the app after installing an updated build.
         // Restart it so Session initializes with the offline fixture flags.
         app.terminate()
+        let densityArguments = density.map { ["-companion.prefs.rosterDensity", $0] }
+            ?? ["-reset-list-density"]
         app.launchArguments = [
             "-store-preview", "-threads-preview",
             "-AppleLanguages", "(en)", "-AppleLocale", "en_US",
             "-companion.prefs.islandIntro", islandIntro,
             "-companion.onboarding.welcomeSeen", "YES",
             "-companion.onboarding.notificationsSeen", "YES"
-        ] + extraArguments
+        ] + densityArguments + extraArguments
         app.launch()
         // Simulator installation can restore an unpaired, prewarmed scene
         // without the preview arguments once. Restart only that wrong route;

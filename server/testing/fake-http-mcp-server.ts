@@ -12,14 +12,20 @@ export interface FakeHttpMcpOptions {
   transport?: "http" | "sse";
   /** require this header on every request; anything else gets 401 */
   requireHeader?: { name: string; value: string };
+  /** accept a request only when this approves its Authorization header */
+  acceptBearer?: (authorization: string | undefined) => boolean;
+  /** WWW-Authenticate value sent with a 401 */
+  wwwAuthenticate?: string;
   /** never answer tools/list (initialize still works) */
   silentTools?: boolean;
   description?: string;
+  tools?: Array<{ name: string; inputSchema: Record<string, unknown> }>;
 }
 
 export interface FakeHttpMcp {
   url: string;
   seenHeaders: IncomingMessage["headers"][];
+  calls: unknown[];
   close(): Promise<void>;
 }
 
@@ -36,7 +42,8 @@ export async function startFakeHttpMcp(options: FakeHttpMcpOptions = {}): Promis
   const transport = options.transport ?? "http";
   const seenHeaders: FakeHttpMcp["seenHeaders"] = [];
   const streams = new Set<ServerResponse>();
-  const answerFor = (frame: { id?: unknown; method?: unknown }) => {
+  const calls: unknown[] = [];
+  const answerFor = (frame: { id?: unknown; method?: unknown; params?: unknown }) => {
     if (frame.method === "initialize") {
       return {
         jsonrpc: "2.0",
@@ -48,16 +55,24 @@ export async function startFakeHttpMcp(options: FakeHttpMcpOptions = {}): Promis
       return {
         jsonrpc: "2.0",
         id: frame.id,
-        result: { tools: [{ name: "read_notes", description: options.description ?? "Read saved notes" }] },
+        result: { tools: options.tools ?? [{ name: "read_notes", description: options.description ?? "Read saved notes" }] },
       };
+    }
+    if (frame.method === "tools/call" && options.tools) {
+      calls.push(frame.params);
+      return { jsonrpc: "2.0", id: frame.id, result: { content: [{ type: "text", text: "remote execution recorded" }] } };
     }
     return null;
   };
   const server: Server = createServer((req, res) => {
     void (async () => {
       seenHeaders.push({ ...req.headers });
-      if (options.requireHeader && req.headers[options.requireHeader.name.toLowerCase()] !== options.requireHeader.value) {
-        res.writeHead(401, { "content-type": "application/json" }).end(JSON.stringify({ error: "unauthorized" }));
+      if ((options.requireHeader && req.headers[options.requireHeader.name.toLowerCase()] !== options.requireHeader.value)
+        || (options.acceptBearer && !options.acceptBearer(req.headers.authorization))) {
+        res.writeHead(401, {
+          "content-type": "application/json",
+          ...(options.wwwAuthenticate ? { "www-authenticate": options.wwwAuthenticate } : {}),
+        }).end(JSON.stringify({ error: "unauthorized" }));
         return;
       }
       if (transport === "sse" && req.method === "GET") {
@@ -71,7 +86,7 @@ export async function startFakeHttpMcp(options: FakeHttpMcpOptions = {}): Promis
         res.writeHead(req.method === "DELETE" ? 405 : 404).end();
         return;
       }
-      const frame = JSON.parse((await readBody(req)) || "{}") as { id?: unknown; method?: unknown };
+      const frame = JSON.parse((await readBody(req)) || "{}") as { id?: unknown; method?: unknown; params?: unknown };
       // hold the request open: the client's own timeout has to end it
       if (frame.method === "tools/list" && options.silentTools) return;
       const answer = answerFor(frame);
@@ -98,6 +113,7 @@ export async function startFakeHttpMcp(options: FakeHttpMcpOptions = {}): Promis
   return {
     url: `http://127.0.0.1:${port}/${transport === "sse" ? "sse" : "mcp"}`,
     seenHeaders,
+    calls,
     close: () => new Promise<void>((resolve) => {
       server.closeAllConnections();
       server.close(() => resolve());

@@ -30,7 +30,32 @@ extension BotTask {
     }
 }
 
+extension [BotTask] {
+    /// The soonest still-future timed snooze in a list, nil when nothing is
+    /// scheduled to wake: 0 sleeps until activity and never ticks, and a
+    /// timestamp already in the past has nothing left to wait for. Pure, so
+    /// a list can re-render on the clock rather than waiting for a snapshot.
+    public func nextSnoozeExpiry(now: Date = Date()) -> Double? {
+        let nowMs = now.timeIntervalSince1970 * 1_000
+        return compactMap { task -> Double? in
+            guard let until = task.snoozedUntil, until > 0, until > nowMs else { return nil }
+            return until
+        }.min()
+    }
+}
+
 extension Bot {
+    /// Older computers have one conversation but no task metadata. The
+    /// thread lists, and a compact row's status, stand this in for it.
+    var legacyThread: BotTask {
+        BotTask(
+            threadId: threadId, title: "", createdAt: createdAt,
+            modelSelection: modelSelection, busy: busy, waitingOnTeammate: waitingOnTeammate,
+            unread: unread,
+            approvalMode: approvalMode, autoApprove: autoApprove, alwaysAllow: alwaysAllow
+        )
+    }
+
     /// Within every group, pinned threads come first and the rest follow
     /// the newest update. A folder rises with the thread of its that sits
     /// highest in that order, the same way the desktop sidebar does; saved
@@ -41,13 +66,15 @@ extension Bot {
     /// A folder-name search keeps all of that folder's visible threads,
     /// in relevance order rather than attention tiers.
     ///
-    /// Threads a bot closed are folded away by default, the way the desktop
-    /// sidebar folds them: a PM bot that opened ten helper threads and closed
-    /// them must not leave ten rows behind. They are never gone — a search
-    /// or `includingClosed` (the manage sheet) lists them, and a closed
-    /// thread that is running, unread, or open here stays in the list. A
-    /// thread the person archived folds away the same way, with the same
-    /// attention override.
+    /// Threads a bot closed, the person archived, or the person snoozed are
+    /// folded away by default, the way the desktop sidebar folds them: a PM
+    /// bot that opened ten helper threads and closed them must not leave ten
+    /// rows behind. They are never gone — a search or `includingClosed`
+    /// (the manage sheet) lists them, and a folded thread that is working,
+    /// unread, or open here stays in the list. An archived thread folds away
+    /// with the same attention override: a working or waiting archived
+    /// thread resurfaces. A snoozed thread folds the same way: the sentinel
+    /// sleeps until activity and a timestamp only while its clock still runs.
     /// - Parameter queuedThreadIds: threads holding a queued send, from the
     ///   client's queue state. A closed or archived thread with a held send
     ///   stays in the list the way a running one does — activity strings
@@ -62,18 +89,13 @@ extension Bot {
         if tasks == nil {
             // Older computers have one conversation but no task metadata.
             // An explicitly empty modern list must stay empty.
-            threads = [BotTask(
-                threadId: threadId, title: "", createdAt: createdAt,
-                modelSelection: modelSelection, busy: busy, waitingOnTeammate: waitingOnTeammate,
-                unread: unread,
-                approvalMode: approvalMode, autoApprove: autoApprove, alwaysAllow: alwaysAllow
-            )]
+            threads = [legacyThread]
         } else if includingClosed || !search.isEmpty {
             threads = visibleTasks
         } else {
             threads = visibleTasks.filter { task in
                 task.pinned == true
-                    || !(task.isClosed || task.isArchived)
+                    || !(task.isClosed || task.isArchived || task.isSnoozed())
                     || task.demandsAttention(queued: queuedThreadIds.contains(task.threadId))
                     || task.threadId == threadId
             }
@@ -129,12 +151,7 @@ extension Bot {
     public func attentionOrderedTasks(queuedThreadIds: Set<String> = []) -> [BotTask] {
         let threads: [BotTask]
         if tasks == nil {
-            threads = [BotTask(
-                threadId: threadId, title: "", createdAt: createdAt,
-                modelSelection: modelSelection, busy: busy, waitingOnTeammate: waitingOnTeammate,
-                unread: unread,
-                approvalMode: approvalMode, autoApprove: autoApprove, alwaysAllow: alwaysAllow
-            )]
+            threads = [legacyThread]
         } else {
             threads = visibleTasks.filter { task in
                 !(task.isClosed || task.isArchived)

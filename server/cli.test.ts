@@ -6,9 +6,11 @@ import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { applyStartupPreferences, formatSessions, pairingBlock, parseArgs, qrToString, runAccess, runLogin, runOnboardingCommand, serverEntry, type CliOptions, verifyPhoneEndpoint } from "./cli.ts";
+import { readAdminActivityRange } from "./admin-activity.ts";
 import { SetupCancelled } from "./cli-prompts.ts";
 import { removeTempDir, waitForExit } from "./testing/cleanup.ts";
 import { startControlPlaneStub } from "./testing/control-plane-stub.ts";
+import { freePortBlock } from "./testing/ports.ts";
 
 const SERVER_DIR = dirname(fileURLToPath(import.meta.url));
 const setup = vi.hoisted(() => ({ runSetup: vi.fn(), isSetupComplete: vi.fn(), readCliStartup: vi.fn(), saveCliStartup: vi.fn() }));
@@ -417,8 +419,8 @@ describe.skipIf(process.platform === "win32")("serve --tunnel", () => {
     const stub = await startControlPlaneStub();
     const fake = join(home, "cloudflared");
     writeFileSync(fake, "#!/bin/sh\nexec sleep 300\n", { mode: 0o755 });
-    const port = 21000 + Math.floor(Math.random() * 9000);
-    const originPort = 31000 + Math.floor(Math.random() * 9000);
+    const port = await freePortBlock([0, 1, 10_000]);
+    const originPort = port + 10_000;
     const fleetEnv = {
       HOME: home,
       USERPROFILE: home,
@@ -483,8 +485,8 @@ describe.skipIf(process.platform === "win32")("serve --tunnel", () => {
     const quiet = { log: () => undefined, error: () => undefined, ask: async () => stub.otp };
     expect(await runLogin({ command: "login", port: 1, dataDir, tailscale: false, tunnel: false, client: false, pair: true, json: false, email: "cli@example.test" }, quiet)).toBe(0);
     vi.unstubAllEnvs();
-    const port = 21000 + Math.floor(Math.random() * 9000);
-    const originPort = 31000 + Math.floor(Math.random() * 9000);
+    const port = await freePortBlock([0, 1, 10_000]);
+    const originPort = port + 10_000;
     const child = cli(["serve", "--tunnel", "--port", String(port), "--data-dir", dataDir, "--label", "tunnel test"], {
       HOME: home,
       USERPROFILE: home,
@@ -518,7 +520,7 @@ describe.skipIf(process.platform === "win32")("serve --tunnel", () => {
         }
         await new Promise((r) => setTimeout(r, 250));
       }
-      expect(descriptor?.status).toBe(200);
+      expect(descriptor?.status, out.match(/^tunnel:.*$/gm)?.join("\n")).toBe(200);
       // ...but a request with no headers at all, which the loopback listener would take as the owner, is a stranger here
       const stranger = await fetch(`${gateway}/api/bots`);
       expect(stranger.status).toBe(403);
@@ -580,6 +582,15 @@ describe("openmausbot access", () => {
       expect(await runAccess({ ...base, accessAction: "remove", email: "her@example.test" }, io)).toBe(0);
       expect(await runAccess({ ...base, accessAction: "remove", email: "her@example.test" }, io)).toBe(1);
       expect(JSON.parse(readFileSync(join(dataDir, "config.json"), "utf8")).signIn).toEqual({ admins: [], members: ["@agentada.test"] });
+      // Each change once more than one person signs in is in the admin
+      // activity log, named for the command line; the first, a lone admin, is not.
+      const rows = readAdminActivityRange(dataDir, { from: new Date(Date.now() - 600_000), to: new Date(Date.now() + 600_000) });
+      expect(rows.map((row) => [row.action, row.actor.kind, row.changed])).toEqual([
+        ["people.update", "cli", ["signIn.members"]],
+        ["people.update", "cli", ["signIn.admins", "signIn.members"]],
+        ["people.update", "cli", ["signIn.members"]],
+      ]);
+      expect(rows[0]!.after).toEqual({ "signIn.members": ["@agentada.test"] });
     } finally {
       await removeTempDir(home);
     }

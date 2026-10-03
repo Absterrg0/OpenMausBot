@@ -67,8 +67,25 @@ export interface WebhookManagerOptions {
   }) => { id: string };
   cancelQueued?: (webhookId: string, message: string) => void;
   pendingRuns?: (webhookId: string) => number;
-  /** Sink for delivery:"post" webhooks: the payload text lands in the bot's chat. */
-  post?: (botId: string, text: string) => void;
+  /** Sink for delivery:"post" webhooks: the payload text lands as the
+   *  bot's own message in `threadId` -- the trigger's own stable
+   *  destination from `resolvePostThread`, never a caller-supplied
+   *  "current" thread. */
+  post?: (botId: string, threadId: string, text: string) => void;
+  /** Resolves the stable thread a delivery:"post" webhook's messages land
+   *  in, creating it on first use. Mirrors RoutineManagerOptions'
+   *  resolveResultsThread/isResultsThread pair (routines.ts): called on
+   *  every `post` dispatch, exactly like routines.ts's newRun calls
+   *  resolveResultsThread on every run, so the resolver itself owns the
+   *  reuse-vs-allocate decision from `trigger.resultsThreadId` rather than
+   *  the dispatcher special-casing "already have one". `forceNew` is
+   *  unused by any call site today (no caller resets a webhook's
+   *  destination yet) but kept for signature parity with that sibling and
+   *  any future explicit-reset entry point. Absent (a host with no task
+   *  creation support) makes every `post` delivery fail with 503 instead
+   *  of silently falling back to a shared/ambient thread -- see
+   *  https://github.com/milind-soni/OpenMausBot/issues/2071. */
+  resolvePostThread?: (trigger: WebhookTrigger, forceNew: boolean) => string | undefined;
   /** The execution store commits this identity together with the queued run. */
   findRun?: (webhookId: string, deliveryId: string) => { id: string } | null;
 }
@@ -83,7 +100,12 @@ const MAX_ATTEMPTS = 2_000;
 const MAX_EVENT_CHARS = 48_000;
 const RATE_WINDOW_MS = 60_000;
 const RATE_LIMIT = 10;
-const MAX_PENDING_RUNS = 3;
+/** Unfinished (queued, running or waiting) runs one webhook may hold before
+ * new deliveries are refused with 429. A webhook can set its own limit; one
+ * fanning out a project manager's events needs more than a CI hook does. */
+export const DEFAULT_MAX_PENDING_RUNS = 3;
+export const MAX_PENDING_RUNS_LIMIT = 50;
+const maxPendingRunsSchema = z.number().int().min(1).max(MAX_PENDING_RUNS_LIMIT);
 
 const runOnSchema = z.enum(["maus", "cloud"]);
 const deliverySchema = z.enum(["run", "post"]);
@@ -97,6 +119,8 @@ const triggerInputSchema = z.object({
   enabled: z.boolean().optional(),
   verificationPending: z.boolean().optional(),
   eventTypes: eventTypesSchema,
+  /** `null` goes back to the default. */
+  maxPendingRuns: maxPendingRunsSchema.nullable().optional(),
 });
 const triggerPatchSchema = triggerInputSchema.partial();
 const verificationSampleSchema = z.object({
@@ -118,11 +142,18 @@ const storedWebhookSchema = z.object({
   updatedAt: z.number().finite().nonnegative(),
   lastReceivedAt: z.number().finite().nonnegative().optional(),
   lastRunId: z.string().optional(),
+  /** delivery:"post" only: the stable destination thread, resolved once
+   *  via WebhookManagerOptions.resolvePostThread and reused forever
+   *  after -- see the `post`/`resolvePostThread` doc comments above. */
+  resultsThreadId: z.string().min(1).optional(),
   deliveryCount: z.number().int().nonnegative(),
   verificationPending: z.boolean().optional(),
   verifiedAt: z.number().finite().nonnegative().optional(),
   verificationSample: verificationSampleSchema.optional(),
   eventTypes: eventTypesSchema,
+  // A hand-edited value out of range falls back to the default instead of
+  // making the whole webhooks file unreadable.
+  maxPendingRuns: maxPendingRunsSchema.optional().catch(undefined),
   secretHash: z.string().regex(/^[a-f0-9]{64}$/),
 });
 const deliveryReceiptSchema = z.object({
@@ -202,6 +233,7 @@ function cleanInput(input: WebhookTriggerInput): CleanWebhookInput {
   };
   if (eventTypes.length) clean.eventTypes = eventTypes;
   if (input.delivery) clean.delivery = input.delivery;
+  if (typeof input.maxPendingRuns === "number") clean.maxPendingRuns = input.maxPendingRuns;
   return clean;
 }
 
@@ -346,10 +378,12 @@ export class WebhookManager {
       enabled: patch.enabled ?? trigger.enabled,
       verificationPending: patch.verificationPending ?? trigger.verificationPending,
       eventTypes: patch.eventTypes ?? trigger.eventTypes,
+      maxPendingRuns: patch.maxPendingRuns === undefined ? trigger.maxPendingRuns : patch.maxPendingRuns,
     });
     if (this.options.botState(clean.botId) === "missing") fail(400, "That MAUS no longer exists");
     Object.assign(trigger, clean, { updatedAt: this.now() });
     if (!clean.eventTypes?.length) delete trigger.eventTypes;
+    if (clean.maxPendingRuns === undefined) delete trigger.maxPendingRuns;
     if (patch.enabled === false) {
       this.options.cancelQueued?.(trigger.id, "The webhook was paused before this delivery started");
     }
@@ -473,8 +507,11 @@ export class WebhookManager {
 
     // A sender retrying an already-accepted delivery must remain idempotent
     // even while this webhook's queue is full. Only new work consumes a slot.
-    if ((this.options.pendingRuns?.(trigger.id) ?? 0) >= MAX_PENDING_RUNS) {
-      fail(429, "This webhook already has too many unfinished tasks");
+    const maxPendingRuns = trigger.maxPendingRuns ?? DEFAULT_MAX_PENDING_RUNS;
+    const pendingRuns = this.options.pendingRuns?.(trigger.id) ?? 0;
+    if (pendingRuns >= maxPendingRuns) {
+      fail(429, `This webhook already has ${pendingRuns} unfinished ${pendingRuns === 1 ? "task" : "tasks"} (its limit is ${maxPendingRuns}). `
+        + "Retry after one finishes, or raise \"Unfinished tasks at once\" in the webhook's settings.");
     }
 
     const recent = (this.rate.get(trigger.endpointId) ?? []).filter((at) => now - at < RATE_WINDOW_MS);
@@ -490,10 +527,22 @@ export class WebhookManager {
       // Never fall through to a task run: a stored post webhook on a server
       // without a post sink is a configuration error, not a run request.
       if (!this.options.post) fail(503, "This server cannot post webhook messages to chat");
+      // Resolved on every dispatch, exactly like routines.ts's newRun calls
+      // resolveResultsThread on every run -- the resolver owns the
+      // reuse-vs-allocate decision from trigger.resultsThreadId, so a host
+      // without resolvePostThread wired can only fail closed here, never
+      // silently fall back to whatever thread the bot happens to have
+      // selected right now (the bug this replaces -- issue #2071).
+      const threadId = this.options.resolvePostThread?.(trigger, false);
+      if (!threadId) fail(503, "This server could not resolve a destination thread for this delivery");
+      if (threadId !== trigger.resultsThreadId) {
+        trigger.resultsThreadId = threadId;
+        trigger.updatedAt = now;
+      }
       const raw = event.payload as { text?: unknown } | null;
       const text =
         raw && typeof raw === "object" && typeof raw.text === "string" && raw.text.trim() ? raw.text : serializePayload(event.payload);
-      this.options.post(trigger.botId, text.slice(0, 20000));
+      this.options.post(trigger.botId, threadId, text.slice(0, 20000));
       this.deliveries.push({ key: `${trigger.endpointId}:${deliveryId}`, runId: "post", at: now });
       if (this.deliveries.length > MAX_DELIVERIES) this.deliveries.splice(0, this.deliveries.length - MAX_DELIVERIES);
       trigger.lastReceivedAt = now;

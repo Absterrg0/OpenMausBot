@@ -3,20 +3,29 @@
 #
 #   brew install xcodegen && cd ios && xcodegen generate && open OpenMausCompanion.xcodeproj
 #
-# XcodeGen is a development tool, not a dependency of the app: the app
-# itself has none. If you'd rather not install it, make an iOS App target
-# in Xcode by hand, add the App/ folder, and add the local CompanionCore
-# package — the Info.plist keys below are the part that is easy to miss.
+# XcodeGen is a development tool, not a dependency of the app: the app's one
+# dependency is the WebRTC package below, for Live calls. If you'd rather not
+# install XcodeGen, make an iOS App target in Xcode by hand, add the App/
+# folder, the local CompanionCore package and the WebRTC package — the
+# Info.plist keys below are the part that is easy to miss.
 name: OpenMausCompanion
 options:
   bundleIdPrefix: com.openmausbot
   deploymentTarget:
-    iOS: "17.0"
+    iOS: "16.0"
   createIntermediateGroups: true
 
 packages:
   CompanionCore:
     path: .
+  # Live calls: the phone's WebRTC audio goes straight to OpenAI. A prebuilt
+  # XCFramework of Google's WebRTC (BSD), pinned exactly because the generated
+  # project's Package.resolved is never committed. App target only: the
+  # extensions never call anyone, and CompanionCore stays Foundation-only so
+  # `swift test` runs on a Mac. Adds ~12 MB to the app on a phone.
+  WebRTC:
+    url: https://github.com/stasel/WebRTC
+    exactVersion: 153.0.0
 
 schemes:
   OpenMausCompanion:
@@ -40,6 +49,7 @@ targets:
     dependencies:
       - package: CompanionCore
         product: CompanionCore
+      - package: WebRTC
       - target: OpenMausCompanionWidgets
       - target: OpenMausShareExtension
     settings:
@@ -108,7 +118,8 @@ targets:
           OpenMausBot uses the camera only to scan a pairing QR code shown on
           your computer.
         NSMicrophoneUsageDescription: >-
-          OpenMausMobile listens while you dictate a message to a bot.
+          OpenMausMobile listens while you dictate a message to a bot or talk
+          to it on a Live call.
         NSSpeechRecognitionUsageDescription: >-
           OpenMausMobile converts your speech into text so you can send it
           to a bot. Recognition runs on this phone when it can.
@@ -206,16 +217,28 @@ targets:
               NSExtensionActivationSupportsFileWithMaxCount: 4
               NSExtensionActivationSupportsAttachmentsWithMaxCount: 4
 
-  # The Live Activity lives in a widget extension. It shares the mascot's
-  # drawing and data with the app, and the activity contract in Shared/.
+  # The Live Activity lives in a widget extension, alongside the home-screen
+  # widgets. It shares the mascot's drawing and data with the app, and the
+  # activity contract in Shared/.
   OpenMausCompanionWidgets:
     type: app-extension
     platform: iOS
+    # Live Activities and the Dynamic Island arrived in 16.1, so this
+    # extension cannot go as low as the app itself. iPhones on 16.0 simply
+    # install the app without the widget extension.
+    deploymentTarget: "16.1"
     sources:
       - path: Widgets
       - path: Shared
+      # Home-screen widgets read their snapshot from the App Group, and the
+      # answer intent resolves tokens through the same shared connection
+      # store the Share extension uses.
+      - path: AppShared
       - path: App/MausAvatar.swift
       - path: App/MausFaceData.swift
+      # MascotState resolves the face for the post-answer refresh a widget
+      # performs; it is self-contained above Core, so it rides along.
+      - path: App/MascotState.swift
     dependencies:
       # MausAvatar draws whichever body a bot wears, and the body catalog and
       # its path parser live in CompanionCore. The extension shares the
@@ -229,12 +252,25 @@ targets:
         CURRENT_PROJECT_VERSION: "6"
         SWIFT_VERSION: "5.9"
         TARGETED_DEVICE_FAMILY: "1,2"
+        APPLICATION_EXTENSION_API_ONLY: YES
         SKIP_INSTALL: true
+    # The widget extension joins the trusted-extension family the Share
+    # extension set up: the App Group carries its snapshot, and the shared
+    # keychain access group carries the tokens its answer intent will ask
+    # for.
+    entitlements:
+      path: Widgets/OpenMausCompanionWidgets.entitlements
+      properties:
+        com.apple.security.application-groups:
+          - group.com.openmausbot.shared
+        keychain-access-groups:
+          - $(AppIdentifierPrefix)group.com.openmausbot.shared
     info:
       path: Widgets/Info.plist
       properties:
         CFBundleDisplayName: MausBot
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        OpenMausKeychainAccessGroup: $(AppIdentifierPrefix)group.com.openmausbot.shared
         NSExtension:
           NSExtensionPointIdentifier: com.apple.widgetkit-extension

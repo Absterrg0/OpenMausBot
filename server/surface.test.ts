@@ -149,7 +149,43 @@ describe("surfacePrompt", () => {
     expect(text).toContain("select the requested available place");
     expect(text).toContain("changing places requires select_computer");
     expect(text).toContain("Never silently replace an explicitly requested VM with the host desktop");
-    expect(text).not.toContain("ask the user to change the conversation's computer selector");
+    expect(text).not.toContain("ask the user to change where this conversation works");
+  });
+
+  it("sends the person to the Computer panel, the place control both interface modes show", () => {
+    const text = surfacePrompt({ computer: "cloud", browser: false }, { pinned: "cloud" });
+    expect(text).toContain("explain the mismatch and ask the user to change where this conversation works in the Computer panel");
+    expect(text).toContain("changing places requires the user's choice in the Computer panel, not a different tool name");
+    // Simple mode has no composer chip, so no selector the person cannot see.
+    expect(text).not.toContain("computer selector");
+  });
+
+  // Every shape of the paragraph a turn can get: each mount, pinned or not,
+  // with and without select_computer.
+  const mounts: Array<{ computer: "cloud" | null; browser: boolean }> = [
+    { computer: "cloud", browser: false }, { computer: null, browser: true }, { computer: "cloud", browser: true }, { computer: null, browser: false },
+  ];
+  const shapes = mounts.flatMap((mounted) => ([{}, { canSelect: true }, { canSelect: true, pinned: "cloud" }] as Array<{ canSelect?: boolean; pinned?: "cloud" }>)
+    .map((opts) => ({ mounted, opts })));
+
+  it("tells a Cloud home's bots only about the places it has", () => {
+    for (const { mounted, opts } of shapes) {
+      const text = surfacePrompt(mounted, { ...opts, cloudHome: true });
+      expect(text, JSON.stringify({ mounted, opts })).not.toMatch(/Local VM|\bVM\b|host desktop|user's host|host window/);
+      if (mounted.computer || mounted.browser) {
+        expect(text).toContain("the cloud computer is remote, the built-in browser is a separate browser, and the user's own computer cannot be reached from here");
+        expect(text).toContain("never act on a different computer.");
+      }
+      if (opts.canSelect) expect(text).toContain("select an available cloud computer without asking");
+    }
+  });
+
+  it("leaves every other server's paragraph exactly as it was", () => {
+    for (const { mounted, opts } of shapes) {
+      expect(surfacePrompt(mounted, { ...opts, cloudHome: false })).toBe(surfacePrompt(mounted, opts));
+    }
+    expect(surfacePrompt({ computer: "cloud", browser: true }, { canSelect: true }))
+      .toContain("this computer is the user's host, Local VM is an isolated desktop, the cloud computer is remote");
   });
 });
 
@@ -187,4 +223,10 @@ describe("surface parsing", () => {
     expect(surfaceOfComputerKind("local")).toBe("local");
     expect(surfaceOfComputerKind(null)).toBeNull();
   });
+});
+
+
+it("does not instruct use of a selected browser when no surface is mounted", () => {
+  expect(surfacePrompt({ computer: null, browser: false }, { canSelect: true })).not.toContain("For online research");
+  expect(surfacePrompt({ computer: null, browser: true })).toContain("For online research");
 });

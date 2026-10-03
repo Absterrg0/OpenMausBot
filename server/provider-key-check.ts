@@ -5,18 +5,22 @@
 // The answer is a verdict and, on success, a few model ids; never the key,
 // never the raw response. Keys travel only over TLS, except to a loopback
 // test double.
-export type ProviderKeyKind = "anthropic" | "openaiCompat" | "xai";
+export type ProviderKeyKind = "anthropic" | "openai" | "openrouter" | "openaiCompat" | "xai" | "mistral" | "cerebras";
 
 export type ProviderKeyVerdict =
   | { ok: true; check: "authentication" | "models"; models: string[] }
   | { ok: false; reason: "rejected" | "unreachable" | "unexpected"; status?: number };
 
-export const PROVIDER_KEY_KINDS: readonly ProviderKeyKind[] = ["anthropic", "openaiCompat", "xai"];
+export const PROVIDER_KEY_KINDS: readonly ProviderKeyKind[] = ["anthropic", "openai", "openrouter", "openaiCompat", "xai", "mistral", "cerebras"];
 
 const DEFAULT_URLS: Record<ProviderKeyKind, string> = {
   anthropic: "https://api.anthropic.com",
+  openai: "https://api.openai.com/v1",
+  openrouter: "https://openrouter.ai/api/v1",
   openaiCompat: "https://openrouter.ai/api/v1",
   xai: "https://api.x.ai/v1",
+  mistral: "https://api.mistral.ai/v1",
+  cerebras: "https://api.cerebras.ai/v1",
 };
 
 const MAX_MODELS = 5;
@@ -35,7 +39,7 @@ export function providerModelsUrl(provider: ProviderKeyKind, base?: string | nul
 
 function modelIds(body: unknown): string[] {
   const record = body && typeof body === "object" ? (body as { data?: unknown; models?: unknown }) : null;
-  const list = Array.isArray(record?.data) ? record.data : Array.isArray(record?.models) ? record.models : [];
+  const list = Array.isArray(body) ? body : Array.isArray(record?.data) ? record.data : Array.isArray(record?.models) ? record.models : [];
   const ids: string[] = [];
   for (const entry of list) {
     const item = entry && typeof entry === "object" ? (entry as { id?: unknown; name?: unknown }) : null;
@@ -61,7 +65,7 @@ export async function checkProviderKey(
   if (url.protocol !== "https:" && !(url.protocol === "http:" && isLoopback(url.hostname))) {
     return { ok: false, reason: "unexpected" };
   }
-  const authenticate = input.provider === "openaiCompat"
+  const authenticate = (input.provider === "openaiCompat" || input.provider === "openrouter")
     && url.origin === "https://openrouter.ai" && url.pathname === "/api/v1/models";
   if (authenticate) url.pathname = "/api/v1/key";
   const headers: Record<string, string> =

@@ -3,29 +3,19 @@
 // Custom and are written into ~/.qwen/settings.json modelProviders.
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
-import { homedir } from "node:os";
 import { join } from "node:path";
 
 import type { ModelCatalog } from "../../contracts.ts";
+import { qualifiedModelLabel } from "../../contracts.ts";
+import { harnessHome } from "../../env-path.ts";
+import { parseQwenLogLine } from "./quiet-status.ts";
 import { decodeInjectId, hostApiKey, localHost, mergeLocalInject } from "../local-inject.ts";
 import { createAcpDriver, type AcpSupport } from "./core.ts";
 
 const EMPTY: ModelCatalog = { default: "", options: [] };
 
-function qwenHome(env: Record<string, string | undefined>): string {
-  const home = process.platform === "win32"
-    ? env.USERPROFILE || env.HOME || homedir()
-    : env.HOME || env.USERPROFILE || homedir();
-  return join(home, ".qwen");
-}
-
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
-}
-
-function qwenModelLabel(id: string, name: string): string {
-  if (!name || name.toLocaleLowerCase().endsWith(id.toLocaleLowerCase())) return id;
-  return `${id} — ${name}`;
 }
 
 type QwenRoute = { id: string; model: string; label: string; provider: string; protocol: string; baseUrl?: string; envKey?: string };
@@ -34,7 +24,7 @@ const PROTOCOLS = new Set(["openai", "anthropic", "gemini", "vertex-ai"]);
 function readQwenRoutes(env: Record<string, string | undefined>): QwenRoute[] {
   let settings: unknown;
   try {
-    settings = JSON.parse(readFileSync(join(qwenHome(env), "settings.json"), "utf8")) as unknown;
+    settings = JSON.parse(readFileSync(join(harnessHome("qwen", env), "settings.json"), "utf8")) as unknown;
   } catch {
     return [];
   }
@@ -92,7 +82,11 @@ function readQwenRoutes(env: Record<string, string | undefined>): QwenRoute[] {
 /** Public metadata only. Use Qwen's provider-qualified ACP selectors, not raw model IDs. */
 export function readQwenModelCatalog(env: Record<string, string | undefined> = process.env): ModelCatalog {
   const options = readQwenRoutes(env).map(({ id, model, label, provider }) => ({
-    id, label: qwenModelLabel(model, label), custom: true as const, provider,
+    id,
+    label: qualifiedModelLabel(model, label, {
+      redundantWhen: (id, name) => name.toLocaleLowerCase().endsWith(id.toLocaleLowerCase()),
+    }),
+    custom: true as const, provider,
   }));
   return { default: options[0]?.id ?? "", options };
 }
@@ -111,7 +105,7 @@ export function ensureQwenInjectModel(
   const host = localHost(inject.host);
   if (!host) return modelId;
 
-  const dir = qwenHome(env);
+  const dir = harnessHome("qwen", env);
   mkdirSync(dir, { recursive: true });
   const path = join(dir, "settings.json");
   let settings: Record<string, unknown> = {};
@@ -199,6 +193,15 @@ export function resolveQwenTurnModel(model: string | undefined, env: Record<stri
   return matches[0].id;
 }
 
+/** Where Qwen Code 0.24 writes a session's debug log: `<runtime dir>/debug/<session id>.txt`,
+ * the runtime dir being QWEN_RUNTIME_DIR, else QWEN_HOME, else ~/.qwen. */
+export function qwenDebugLogPath(env: Record<string, string | undefined>, sessionId: string): string | null {
+  const off = ["", "0", "false", "off", "no"].includes((env.QWEN_DEBUG_LOG_FILE ?? "").trim().toLowerCase());
+  if (off || !/^[\w-]{1,128}$/.test(sessionId)) return null;
+  const base = env.QWEN_RUNTIME_DIR || env.QWEN_HOME || harnessHome("qwen", env);
+  return join(base, "debug", `${sessionId}.txt`);
+}
+
 /** Qwen Code's own approval ladder, passed through (qwen --help, 0.24):
  * `--approval-mode default` asks, `auto-edit` approves file edits, `auto`
  * runs Qwen's LLM classifier that approves safe actions and blocks risky
@@ -233,11 +236,21 @@ const support: AcpSupport = {
   // A raw -m only changes the model within the saved provider. ACP switches
   // the complete route and confirms it before any prompt leaves OMB.
   spawnArgs: (config, turn) => ["--acp", ...qwenApprovalArgs(config.fullAuto, turn.approvalMode)],
+  // Qwen's live session/load returns its cached MCP clients, ignoring fresh
+  // credentials. Cold-load the same conversation when those inputs change.
+  restartOnMcpChange: true,
   selectModel: { configId: "model" },
   pickAuthMethod: () => null,
   authFailure: "continue",
   isAuthenticated: () => true,
   buildPromptText: (turn) => (turn.system ? `${turn.system}\n\n${turn.text}` : turn.text),
+  // Qwen says nothing over ACP while it retries a rate limit or compresses
+  // its history, but its debug log does. Turn the log on (unless the person
+  // turned it off) and read it while a prompt is quiet.
+  transformEnv: (env) => {
+    if (env.QWEN_DEBUG_LOG_FILE === undefined) env.QWEN_DEBUG_LOG_FILE = "1";
+  },
+  statusLog: { path: qwenDebugLogPath, parse: parseQwenLogLine },
 };
 
 export const QwenAgentDriver = createAcpDriver(support);

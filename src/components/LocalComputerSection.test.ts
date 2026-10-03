@@ -4,8 +4,16 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { setLocale } from "@/lib/i18n";
 
+const storeFixture = vi.hoisted(() => ({ config: null as unknown }));
+vi.mock("@/state/store", async (importOriginal) => {
+  const original = await importOriginal<typeof import("@/state/store")>();
+  return { ...original, useStore: () => ({ state: { ...original.initialState, config: storeFixture.config }, dispatch: vi.fn() }) };
+});
+
 import {
   CloudComputersCard,
+  LocalComputerSection,
+  LocalVmIdleTimeoutSetting,
   LocalVmInventoryCard,
   VpsComputersCard,
   cloudComputerActionPlan,
@@ -13,6 +21,7 @@ import {
   computerInventoryRequest,
   confirmComputerAction,
   localVmInventoryState,
+  parseLocalVmIdleTimeoutMinutes,
   reconcileCloudInventoryPayload,
   perBotLocalVmDeletePlan,
   reconcileCloudInventorySnapshot,
@@ -75,11 +84,11 @@ describe("computer inventory request wiring", () => {
     expect(request).toBeNull();
     expect(confirm).toHaveBeenCalledOnce();
     expect(confirm).toHaveBeenCalledWith(
-      "Delete Research's Local VM? Its durable workspace files will remain.",
+      "Delete Research's Local VM? Files in its durable folder will remain.",
     );
   });
 
-  it("builds the exact confirmed Local VM, Box, and VPS lifecycle requests", () => {
+  it("builds the exact confirmed Local VM, Boat, and VPS lifecycle requests", () => {
     const confirm = vi.fn(() => true);
     const local = confirmComputerAction(perBotLocalVmDeletePlan(cloudVm), confirm);
     const cloudDelete = confirmComputerAction(cloudComputerActionPlan("delete", ownedCloudComputer), confirm);
@@ -289,16 +298,16 @@ describe("cloud computer inventory UI", () => {
 
   it("keeps disconnected, unavailable, and empty states distinct", () => {
     const disconnected = renderCard({ configured: false });
-    expect(disconnected).toContain("Box is not connected");
+    expect(disconnected).toContain("Boat is not connected");
     expect(disconnected).not.toContain("No OpenMaus-managed cloud computers found");
 
-    const unavailable = renderCard({ unavailableReason: "ascii.dev is unavailable" });
-    expect(unavailable).toContain("ascii.dev is unavailable");
+    const unavailable = renderCard({ unavailableReason: "boat.dev is unavailable" });
+    expect(unavailable).toContain("boat.dev is unavailable");
     expect(unavailable).not.toContain("No OpenMaus-managed cloud computers found");
 
     const endpointFailure = renderCard({ configured: null, unavailableReason: "Computer inventory could not load" });
     expect(endpointFailure).toContain("Computer inventory could not load");
-    expect(endpointFailure).not.toContain("Box is not connected");
+    expect(endpointFailure).not.toContain("Boat is not connected");
 
     const empty = renderCard();
     expect(empty).toContain("No OpenMaus-managed cloud computers found");
@@ -343,7 +352,7 @@ describe("cloud computer inventory UI", () => {
 
   it("does not treat an unavailable or unconfigured empty inventory as proof of deletion", () => {
     for (const payload of [
-      { configured: true, available: false, problem: "Box is unavailable", instances: [] },
+      { configured: true, available: false, problem: "Boat is unavailable", instances: [] },
       { configured: false, available: false, problem: null, instances: [] },
     ]) {
       const result = reconcileCloudInventoryPayload(
@@ -524,5 +533,46 @@ describe("VPS computer inventory UI", () => {
     expect(running).not.toContain(">Remove</button>");
     expect(renderCard({ instances: [{ ...ownedVps, state: "paused" }] }))
       .toContain('bg-control text-ink-secondary">Pausado</span>');
+  });
+});
+
+describe("Settings → Computers on an OMB Cloud home", () => {
+  afterEach(() => { storeFixture.config = null; });
+  const cards = () => [...renderToStaticMarkup(createElement(LocalComputerSection)).matchAll(/<div class="text-\[15px\] font-medium text-ink">([^<]+)<\/div>/g)].map((match) => match[1]);
+
+  it("sets up a Local VM on a desktop or self-hosted server", () => {
+    expect(cards()).toEqual(expect.arrayContaining(["Cloud computers", "Local VM", "Setup"]));
+  });
+
+  it("shows no Local VM, and no steps to install one, where it cannot exist", () => {
+    storeFixture.config = { cloudHome: true };
+    const titles = cards();
+    expect(titles).toContain("Cloud computers");
+    expect(titles).not.toContain("Local VM");
+    expect(titles).not.toContain("Setup");
+  });
+});
+
+describe("Local VM idle timeout setting", () => {
+  it.each([["5", 5], ["30", 30], [" 480 ", 480], ["1440", 1_440]])("accepts %j", (value, minutes) => {
+    expect(parseLocalVmIdleTimeoutMinutes(value)).toBe(minutes);
+  });
+
+  it.each(["", "4", "1441", "1.5", "-30", "30m", "1e2"])("rejects %j", (value) => {
+    expect(parseLocalVmIdleTimeoutMinutes(value)).toBeNull();
+  });
+
+  it("shows the confirmed window as a bounded, labelled minutes field", () => {
+    const markup = renderToStaticMarkup(createElement(LocalVmIdleTimeoutSetting, {
+      minutes: 30,
+      disabled: false,
+      onSave: async () => {},
+    }));
+    expect(markup).toContain('for="local-vm-idle-timeout"');
+    expect(markup).toContain("Stop idle desktops after");
+    expect(markup).toContain('min="5"');
+    expect(markup).toContain('max="1440"');
+    expect(markup).toContain('value="30"');
+    expect(markup).toContain("minutes");
   });
 });

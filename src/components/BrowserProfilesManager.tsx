@@ -2,7 +2,7 @@ import { useEffect, useId, useState } from "react";
 import { Globe, Plus, Trash2 } from "lucide-react";
 import { api, ApiError, useStore, type Bot, type BotAnnouncement, type BrowserProfile, type ConfigStatus } from "@/state/store";
 import { browserProfileDeletionBlockReason, browserProfilesMutation, newBrowserProfileId } from "@/lib/browser-profiles";
-import { readSessionState } from "@/lib/session";
+import { isOwnerOrAdmin, readSessionState } from "@/lib/session";
 import { t } from "@/lib/i18n";
 
 /** Browser-panel and workspace settings share one editor. The server owns
@@ -27,7 +27,7 @@ export function BrowserProfilesManager({ bot, onProfileChanged, disabled = false
   useEffect(() => {
     let alive = true;
     void readSessionState().then((session) => {
-      if (alive) setCanManage(session.kind === "loopback" || (session.kind === "session" && session.scopes.includes("admin")));
+      if (alive) setCanManage(isOwnerOrAdmin(session));
     });
     return () => { alive = false; };
   }, []);
@@ -132,7 +132,7 @@ export function BrowserProfilesManager({ bot, onProfileChanged, disabled = false
   if (canManage === false) return <p className="text-[12px] text-ink-secondary">{t("settings.profiles.ownerOnly")}</p>;
 
   const inputClass = "min-w-0 flex-1 rounded-md border border-hairline/40 bg-inset px-2.5 py-2 text-[13px] text-ink outline-none focus:border-accent disabled:opacity-50";
-  const buttonClass = "shrink-0 rounded-md bg-control px-2.5 py-2 text-[12px] text-ink hover:bg-control-hover disabled:opacity-50";
+  const buttonClass = "shrink-0 rounded-md bg-control px-2.5 py-2 text-[12px] text-ink hover:bg-raised-hover disabled:opacity-50";
   const selected = currentBot?.browserProfile ?? "";
   return (
     <div className="flex min-w-0 flex-col gap-3" aria-busy={busy}>

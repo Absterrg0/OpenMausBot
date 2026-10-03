@@ -10,19 +10,45 @@ const fixture = vi.hoisted(() => ({
   section: "appearance" as AppSettingsSection,
   showThreads: true,
   setShowThreads: vi.fn(),
+  showRunCard: true,
+  setShowRunCard: vi.fn(),
+  sidebarDensity: "comfortable" as "comfortable" | "compact" | "icons",
+  setSidebarDensity: vi.fn(),
+  notificationSounds: true,
+  setNotificationSounds: vi.fn(),
+  advancedMode: false,
+  setAdvancedMode: vi.fn(),
   api: vi.fn(),
   dispatch: vi.fn(),
   switches: [] as ComponentProps<typeof Switch>[],
 }));
+vi.mock("./DesktopCapabilities", () => ({ useDesktopCapabilities: () => ({ capabilities: {} }) }));
 
 vi.mock("@/state/store", async (importOriginal) => ({
   ...await importOriginal<typeof import("@/state/store")>(),
   api: fixture.api,
-  useStore: () => ({ state: { appSettingsSection: fixture.section }, dispatch: fixture.dispatch }),
+  useStore: () => ({ state: { appSettingsSection: fixture.section, instances: [] }, dispatch: fixture.dispatch }),
 }));
 vi.mock("@/lib/thread-preferences", () => ({
   useShowThreads: () => fixture.showThreads,
   setShowThreads: fixture.setShowThreads,
+}));
+vi.mock("@/lib/run-card-preferences", () => ({
+  useShowRunCard: () => fixture.showRunCard,
+  setShowRunCard: fixture.setShowRunCard,
+}));
+vi.mock("@/lib/sidebar-preferences", async (importOriginal) => ({
+  ...await importOriginal<typeof import("@/lib/sidebar-preferences")>(),
+  useSidebarDensity: () => fixture.sidebarDensity,
+  setSidebarDensity: fixture.setSidebarDensity,
+}));
+vi.mock("@/lib/notification-preferences", () => ({
+  useNotificationSounds: () => fixture.notificationSounds,
+  setNotificationSounds: fixture.setNotificationSounds,
+}));
+vi.mock("@/lib/interface-mode", () => ({
+  useAdvancedMode: () => fixture.advancedMode,
+  setAdvancedMode: fixture.setAdvancedMode,
 }));
 vi.mock("@/lib/analytics", () => ({ analyticsEnabled: () => false, setAnalyticsEnabled: vi.fn() }));
 vi.mock("./SettingsPrimitives", async (importOriginal) => {
@@ -40,6 +66,11 @@ beforeEach(() => {
   vi.clearAllMocks();
   fixture.section = "appearance";
   fixture.showThreads = true;
+  fixture.showRunCard = true;
+  fixture.sidebarDensity = "comfortable";
+  fixture.notificationSounds = true;
+  // these pin the Advanced rail; Simple has its own suite (SettingsModal.simple.test.ts)
+  fixture.advancedMode = true;
   fixture.switches = [];
   vi.stubGlobal("window", {});
   vi.stubGlobal("document", { documentElement: { dataset: {} } });
@@ -54,11 +85,40 @@ afterEach(() => {
 const render = () => renderToStaticMarkup(createElement(SettingsModal));
 
 describe("Settings → Appearance", () => {
+  it.each([true, false])("flips Advanced mode from the top of General when the switch is %s", (enabled) => {
+    fixture.section = "general";
+    fixture.advancedMode = enabled;
+    const html = render();
+    expect(html.indexOf('aria-label="Advanced mode"')).toBeLessThan(html.indexOf("Language"));
+    expect(html).toContain('aria-label="Advanced mode"');
+    expect(html).toContain("Nothing is deleted either way");
+    const toggle = fixture.switches.find((props) => props["aria-label"] === "Advanced mode")!;
+    expect(toggle.checked).toBe(enabled);
+    toggle.onClick!({} as never);
+    expect(fixture.setAdvancedMode).toHaveBeenCalledWith(!enabled);
+    expect(fixture.api).not.toHaveBeenCalled();
+    expect(fixture.dispatch).not.toHaveBeenCalled();
+  });
+
+  it("keeps the Advanced mode switch reachable from a paired remote client", () => {
+    vi.stubGlobal("window", { ogb: { remoteClient: { active: true } } });
+    expect(render()).toContain('aria-label="Advanced mode"');
+  });
+
+  it("does not repeat the Advanced mode switch in Appearance on this computer", () => {
+    expect(render()).not.toContain('aria-label="Advanced mode"');
+  });
+
+
   it("groups skins, thread visibility, and tool-call display with preservation copy", () => {
     const html = render();
     expect(html).toContain('<option value="appearance" selected="">Appearance</option>');
     expect(html).toContain("Midnight");
     expect(html).toContain('aria-label="Show threads"');
+    expect(html).toContain('aria-label="Pinned bots as circles"');
+    expect(html).toContain('aria-label="Universal pins"');
+    expect(html).toContain("from every group");
+    expect(html).toContain("like Grok Bot");
     expect(html).toContain('aria-label="Show tool calls in chat"');
     expect(html).toContain("on this device only");
     expect(html).toContain("all conversation history and running work");
@@ -78,15 +138,68 @@ describe("Settings → Appearance", () => {
     expect(fixture.dispatch).not.toHaveBeenCalled();
   });
 
+  it.each([true, false])("mutes notification sounds on this computer only when the switch is %s", (enabled) => {
+    fixture.notificationSounds = enabled;
+    const html = render();
+    expect(html).toContain('aria-label="Notification sounds"');
+    expect(html).toContain("keep the banners but lose the chime");
+    const toggle = fixture.switches.find((props) => props["aria-label"] === "Notification sounds")!;
+    expect(toggle.checked).toBe(enabled);
+    toggle.onClick!({} as never);
+    expect(fixture.setNotificationSounds).toHaveBeenCalledWith(!enabled);
+    expect(fixture.api).not.toHaveBeenCalled();
+    expect(fixture.dispatch).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["comfortable", "Comfortable"],
+    ["compact", "Compact"],
+    ["icons", "Avatars only"],
+  ] as const)("shows the saved sidebar density (%s) in Appearance", (density, label) => {
+    fixture.sidebarDensity = density;
+    const html = render();
+    expect(html).toContain('aria-label="Choose sidebar density"');
+    expect(html).toContain("Sidebar density");
+    expect(html).toContain("collapsing the sidebar from its header");
+    expect(html).toContain(`<option value="${density}" selected="">${label}</option>`);
+    for (const option of ["Comfortable", "Compact", "Avatars only"]) expect(html).toContain(`>${option}</option>`);
+    expect(fixture.setSidebarDensity).not.toHaveBeenCalled();
+    expect(fixture.api).not.toHaveBeenCalled();
+    expect(fixture.dispatch).not.toHaveBeenCalled();
+  });
+
+  it("offers the run card visibility toggle in Appearance", () => {
+    fixture.showRunCard = true;
+    const html = render();
+    expect(html).toContain('aria-label="Show the run card"');
+    expect(html).toContain("This run");
+    expect(html).toContain("saving the run as a skill");
+    const toggle = fixture.switches.find((props) => props["aria-label"] === "Show the run card")!;
+    expect(toggle.checked).toBe(true);
+    toggle.onClick!({} as never);
+    expect(fixture.setShowRunCard).toHaveBeenCalledWith(false);
+    expect(fixture.api).not.toHaveBeenCalled();
+    expect(fixture.dispatch).not.toHaveBeenCalled();
+
+    fixture.showRunCard = false;
+    render();
+    const off = fixture.switches.filter((props) => props["aria-label"] === "Show the run card").at(-1)!;
+    expect(off.checked).toBe(false);
+    off.onClick!({} as never);
+    expect(fixture.setShowRunCard).toHaveBeenLastCalledWith(true);
+  });
+
   it("leaves non-appearance General settings in place", () => {
     fixture.section = "general";
     const html = render();
     expect(html).toContain("Profile");
     expect(html).toContain("Maximum turn length");
     expect(html).toContain("Maximum running threads per bot");
+    expect(html).toContain("Automatic recovery");
     expect(html).toContain('aria-label="App language"');
     expect(html).toContain("Diagnostics");
     expect(html).not.toContain('aria-label="Show threads"');
+    expect(html).not.toContain('aria-label="Choose sidebar density"');
     expect(html).not.toContain('aria-label="Show tool calls in chat"');
     expect(html).not.toContain("Midnight");
   });
@@ -102,6 +215,8 @@ describe("Settings → Appearance", () => {
     expect(html).not.toContain('<option value="backups">');
     expect(html).toContain("Midnight");
     expect(html).toContain('aria-label="Show threads"');
+    expect(html).toContain('aria-label="Notification sounds"');
+    expect(html).toContain('aria-label="Choose sidebar density"');
     expect(html).not.toContain('aria-label="Show tool calls in chat"');
   });
 
@@ -119,6 +234,10 @@ describe("Settings → Appearance", () => {
     const html = render();
     expect(html).toContain("Appearance");
     expect(html).toContain('aria-label="Show threads"');
+    expect(html).toContain('aria-label="Pinned bots as circles"');
+    expect(html).toContain('aria-label="Universal pins"');
+    expect(html).toContain("from every group");
+    expect(html).toContain("like Grok Bot");
     expect(html).toContain("all conversation history and running work");
     expect(html).not.toContain("settings.threadDisplay");
   });
@@ -127,10 +246,10 @@ describe("Settings → Appearance", () => {
     fixture.section = "desktopWorkspaces";
     vi.stubGlobal("window", { ogb: { environments: {} } });
     const local = render();
-    expect(local).toContain('<option value="desktopWorkspaces" selected="">Connected workspaces</option>');
-    expect(local).toContain("Workspace address or pairing link");
+    expect(local).toContain('<option value="desktopWorkspaces" selected="">Servers</option>');
+    expect(local).toContain("Server address or pairing link");
     expect(local).toContain("Name (optional)");
-    expect(local).toContain("Your workspaces");
+    expect(local).toContain("Your servers");
     expect(local).toContain("npx openmausbot pair --label");
     fixture.section = "general";
     vi.stubGlobal("window", { ogb: { workspaces: {} } });
@@ -141,7 +260,7 @@ describe("Settings → Appearance", () => {
     fixture.section = "organization";
     vi.stubGlobal("window", { ogb: { organization: {} } });
     const local = render();
-    expect(local).toContain('<option value="organization" selected="">Organisation</option>');
+    expect(local).toContain('<option value="organization" selected="">Organization</option>');
     expect(local).toContain("personal and local models");
     fixture.section = "appearance";
     vi.stubGlobal("window", {});
@@ -149,5 +268,15 @@ describe("Settings → Appearance", () => {
     vi.stubGlobal("window", { ogb: { organization: {}, remoteClient: { active: true } } });
     expect(render()).not.toContain('<option value="organization"');
     expect(render()).toContain("Midnight");
+  });
+  it("offers personal Cloud separately and only through the local desktop bridge", () => {
+    fixture.section = "cloudAccount";
+    vi.stubGlobal("window", { ogb: { cloudAccount: {} } });
+    expect(render()).toContain('<option value="cloudAccount" selected="">OMB Cloud</option>');
+    expect(render()).toContain("Free local use");
+    fixture.section = "appearance";
+    vi.stubGlobal("window", {}); expect(render()).not.toContain('<option value="cloudAccount"');
+    vi.stubGlobal("window", { ogb: { cloudAccount: {}, remoteClient: { active: true } } });
+    expect(render()).not.toContain('<option value="cloudAccount"');
   });
 });

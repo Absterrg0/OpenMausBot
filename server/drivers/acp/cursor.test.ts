@@ -4,7 +4,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 
-import { ensureDirs } from "../../config.ts";
+import { ensureDirs, NATIVE_DIR } from "../../config.ts";
 import { recordEvents } from "../../testing/events.ts";
 import { removeTempDir } from "../../testing/cleanup.ts";
 import {
@@ -270,6 +270,39 @@ describe("CursorAgentDriver", () => {
     }
   });
 
+  it("answers cursor/ask_question method-not-found instead of guessing its shape", async () => {
+    // cursor/ask_question's wire shape is unverified, so the driver keeps the
+    // fail-closed default: reject the method, never answer it with a guessed
+    // shape. The fake prompt completes only after the rejection arrives.
+    ensureDirs();
+    chmodSync(FAKE_CLI, 0o755);
+    process.env.FAKE_ACP_MODE = "ask-question-unsupported";
+    const instance = await CursorAgentDriver.create({
+      instanceId: "cursor-ask-unwired",
+      displayName: "Cursor",
+      environment: {},
+      enabled: true,
+      config: { cli: FAKE_CLI, fullAuto: false },
+    });
+    const recorder = recordEvents(instance.adapter);
+    try {
+      const { turnId } = await instance.adapter.sendTurn({ threadId: "t-cursor-ask-unwired", text: "hi" });
+      await recorder.until((e) => e.type === "turn.completed" && e.turnId === turnId);
+      const outbound = readFileSync(join(NATIVE_DIR, "t-cursor-ask-unwired.ndjson"), "utf8")
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line) as { dir?: string; msg?: { id?: number; error?: { code?: number } } });
+      // The native log is append-only across runs of the whole file: the
+      // latest reply for this id is this run's, not a stale earlier one.
+      const reply = outbound.filter((entry) => entry.dir === "out" && entry.msg?.id === 9300).at(-1);
+      expect(reply?.msg?.error).toMatchObject({ code: -32601 });
+    } finally {
+      recorder.stop();
+      await instance.dispose();
+      delete process.env.FAKE_ACP_MODE;
+    }
+  });
+
   it("keeps going when session/set_model is missing and argv already pinned the model", async () => {
     ensureDirs();
     chmodSync(FAKE_CLI, 0o755);
@@ -327,6 +360,35 @@ describe("resolveCursorAcpModelId", () => {
     expect(resolveCursorAcpModelId(ADVERTISED, "grok-4.6[effort=high,fast=true]")).toBe(
       "grok-4.6[effort=high,fast=true]",
     );
+  });
+
+  describe("when one base is advertised with and without fast", () => {
+    const FAST_FIRST = [
+      { modelId: "composer-2.5[fast=true]", name: "Composer 2.5 Fast" },
+      { modelId: "composer-2.5[fast=false]", name: "Composer 2.5" },
+    ];
+
+    it("resolves the plain slug to the non-fast variant even when fast is listed first", () => {
+      expect(resolveCursorAcpModelId(FAST_FIRST, "composer-2.5")).toBe("composer-2.5[fast=false]");
+    });
+
+    it("resolves the plain slug to the non-fast variant when it is listed first", () => {
+      expect(resolveCursorAcpModelId([...FAST_FIRST].reverse(), "composer-2.5")).toBe(
+        "composer-2.5[fast=false]",
+      );
+    });
+
+    it("resolves the `-fast` slug to the fast=true variant", () => {
+      expect(resolveCursorAcpModelId(FAST_FIRST, "composer-2.5-fast")).toBe("composer-2.5[fast=true]");
+    });
+
+    it("falls back to the only advertised variant for the plain slug", () => {
+      expect(resolveCursorAcpModelId([FAST_FIRST[0]], "composer-2.5")).toBe("composer-2.5[fast=true]");
+    });
+
+    it("does not map a `-fast` slug onto a non-fast variant", () => {
+      expect(resolveCursorAcpModelId([FAST_FIRST[1]], "composer-2.5-fast")).toBeNull();
+    });
   });
 
   it("returns null when the agent advertised no models, so the caller keeps the argv slug", () => {

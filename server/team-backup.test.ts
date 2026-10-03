@@ -58,6 +58,21 @@ function fixture() {
 describe("additive portable team backups", () => {
   beforeEach(() => rmSync(DATA_DIR, { recursive: true, force: true }));
 
+  it("carries tool restrictions through backup and import without restoring execution grants", () => {
+    const { store, routines, chief, scout } = fixture();
+    const scope = { allow: ["native:read", "mcp:notes:read"], deny: ["mcp:notes:write"] };
+    store.patchBot(chief.id, { toolScope: scope } as never);
+    store.patchBot(scout.id, { toolScope: { allow: [] } } as never);
+    const backup = createTeamBackup(store, routines.listRoutines(), "Selected tools");
+    expect(backup.bots.find((bot) => bot.key === chief.id)).toHaveProperty("toolScope", scope);
+    const restored = importTeamBackup(store, routines, backup, selection());
+    expect(restored.bots.find((bot) => bot.name === "Mira 2")).toMatchObject({ toolScope: scope, computer: "off", composio: false, approvalMode: "ask", connectorTools: {} });
+    expect(restored.bots.find((bot) => bot.name === "Scout 2")).toHaveProperty("toolScope", { allow: [] });
+    const invalid = structuredClone(backup) as unknown as { bots: Array<{ toolScope: unknown }> };
+    invalid.bots[0].toolScope = { allow: null };
+    expect(() => parseTeamBackup(invalid)).toThrow();
+  });
+
   it("carries each bot's memory, topic notes and daily logs, scrubbed on the way out and private on the way in", () => {
     const { store, routines, chief, scout } = fixture();
     const now = new Date(2026, 8, 10, 12);
@@ -162,6 +177,23 @@ describe("additive portable team backups", () => {
     const second = importTeamBackup(store, routines, backup, selection());
     expect(second.bots.find((bot) => bot.name === "Mira 3")).toMatchObject({ section: "Engineering 3", chiefOfStaff: true });
     expect(store.bot(importedChief.id)).toEqual(importedChief);
+  });
+
+  it("carries connector grants in the private backup but lands imported bots grant-less", () => {
+    const { store, routines, chief } = fixture();
+    store.patchBot(chief.id, { connectorTools: { gmail: { tools: ["GMAIL_SEND_EMAIL", "GMAIL_SEND_EMAIL"] } } });
+    const backup = createTeamBackup(store, routines.listRoutines(), "Granted team");
+    expect(backup.bots.find((bot) => bot.key === chief.id)?.connectorTools).toEqual({
+      gmail: { tools: ["GMAIL_SEND_EMAIL"] },
+    });
+    const result = importTeamBackup(store, routines, JSON.parse(JSON.stringify(backup)), selection());
+    const imported = result.bots.find((bot) => bot.name === "Mira 2")!;
+    expect(imported.composio).toBe(false);
+    expect(imported.connectorTools).toEqual({});
+    // the backup format itself rejects grant shapes the store would refuse
+    const tampered = JSON.parse(JSON.stringify(backup)) as { bots: { key: string; connectorTools: unknown }[] };
+    tampered.bots[0].connectorTools = { gmail: { tools: [] } };
+    expect(() => parseTeamBackup(tampered)).toThrow();
   });
 
   it("keeps first-message title markers armed-once through backup and restore", () => {
@@ -292,6 +324,8 @@ describe("additive portable team backups", () => {
     const dm = store.createGroup("Old direct message", [chief.id, scout.id], true);
     store.appendMessage(dm.threadId, { role: "bot", kind: "text", text: "Keep this old reply", from: { botId: chief.id, name: chief.name, color: chief.color } });
     store.deleteBot(chief.id);
+    // Recreate the pre-repair records this legacy-export regression covers.
+    Object.assign(group, { memberIds: [chief.id, scout.id], defaultResponder: { kind: "member", botId: chief.id } });
     const backup = createTeamBackup(store, routines.listRoutines(), "My team");
     expect(backup.warnings).toHaveLength(4);
     expect(backup.routines).toEqual([]);

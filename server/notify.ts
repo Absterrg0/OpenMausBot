@@ -59,6 +59,18 @@ export function blockedTarget(
   return { threadId: room.threadId, group: { id: room.id, name: room.name } };
 }
 
+/** A workspace spend notice (server/spend.ts decides when). It opens the
+ * thread whose turn crossed the line, so clicking it lands somewhere real,
+ * but it is the workspace's news, not that bot's: the bot's notification
+ * toggle does not silence it. */
+export function buildSpendNotification(
+  bot: Pick<NotifyBot, "id" | "name">,
+  threadId: string,
+  text: { title: string; body: string },
+): Notification {
+  return { kind: "spend", botId: bot.id, botName: bot.name, threadId, title: text.title, body: summarize(text.body, 200) };
+}
+
 /** Build the frame for one event, or null when it should stay quiet.
  *
  * Kept pure and separate from the event fold so the policy — which is the
@@ -95,7 +107,9 @@ export function buildNotification(
               ? `${who} couldn't start`
               : kind === "incident"
                 ? `${who} hit a problem`
-                : `${who} finished`;
+                : kind === "delegation-settled"
+                  ? `${who} resumed with results`
+                  : `${who} finished`;
 
   // A "finished" with nothing to say is not worth a notification — the
   // badge in the sidebar already carries that much.

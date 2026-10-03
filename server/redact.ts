@@ -2,7 +2,7 @@
 //
 // The native tee writes every provider message verbatim, which is what makes
 // protocol drift diagnosable — but the messages that set a session up carry
-// the credentials the agent is handed: the box token and the comms token
+// the credentials the agent is handed: the boat token and the comms token
 // travel inside `session/new`'s mcpServers env, and a Composio consumer key
 // travels in an MCP header. Those logs sit in ~/.openmausbot/native as
 // ordinary files, are read by anyone debugging, and get pasted into issues.
@@ -20,6 +20,7 @@ const SECRET_KEY_PARTS = ["token", "secret", "password", "passwd", "apikey", "ap
  * every real one is spelled (API_KEY, consumer-key, xai_key). */
 function isSecretName(name: string): boolean {
   const lower = name.toLowerCase();
+  if (lower === "omb_gate_upstream" || lower === "omb_remote_mcp_server") return true;
   if (SECRET_KEY_PARTS.some((part) => lower.includes(part))) return true;
   return /(^|[_.-])keys?$/.test(lower);
 }

@@ -12,6 +12,13 @@
 - Removing someone also ends their open account streams and stream tickets.
   Independently paired devices remain under Remote access management.
 
+- On a workspace whose members the organization's Admin manages
+  (`OMB_ADMIN_MEMBERSHIP=portal`) the card is read-only: who has signed in,
+  what they spent, and a **Manage people in Admin** link
+  (`<OMB_ADMIN_URL>/people?workspace=<slug>`, from `GET /api/config`
+  `membership.peopleUrl`). Remote access there lists signed-in devices and
+  offers no pairing code, since a hosted workspace refuses them.
+
 ## Driving it
 
 ```sh
@@ -20,8 +27,8 @@ pnpm exec vitest run server/people-invite.test.ts server/email-signin.test.ts sr
 
 `server/people-invite.test.ts` boots the real server with no sign-in list and a
 stubbed control plane, then walks the card's own requests: the owner adds the
-first admin, the admin signs in with the emailed code and invites a member,
-the member's link serves the sign-in page, the member gets a chat-only cookie
+first admin, the admin signs in with the emailed code and invites a user,
+the user's link serves the sign-in page, the user gets a chat-only cookie
 session and cannot change the list, a promotion applies to the next sign-in
 while the device already issued keeps its scopes, a removal refuses new
 sign-ins and revokes all old account cookies and tickets, and a `@domain` entry

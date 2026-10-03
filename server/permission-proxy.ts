@@ -14,7 +14,7 @@
 // CLI's own AskUserQuestion. It is the tool the model actually reaches for
 // when it wants a person to choose, and acceptEdits will not run it unasked,
 // so it lands here looking like "may I run a tool?" — which is how a question
-// ended up on screen as an Allow/Deny box over a JSON blob. It is intercepted
+// ended up on screen as an Allow/Deny dialog over a JSON blob. It is intercepted
 // below and asked as what it is: one card carrying every question it posed,
 // answered through the tool's own `answers` field.
 //
@@ -22,6 +22,12 @@
 import { connect } from "node:net";
 import { randomUUID } from "node:crypto";
 import { parseAskQuestions, questionAnswersByQuestion } from "../shared/ask-question.ts";
+import { allowsTool, parseToolScope } from "../shared/tool-scope.ts";
+
+const selection = parseToolScope(process.env.OMB_PERMISSION_TOOL_SCOPE === undefined
+  ? undefined : (() => { try { return JSON.parse(process.env.OMB_PERMISSION_TOOL_SCOPE); } catch { return null; } })());
+if (!selection.ok) throw new Error(selection.error);
+const allowQuestion = allowsTool(selection.scope, { kind: "mcp", server: "ogb", name: "ask_user" });
 
 const socketPath = process.argv[2] ?? "";
 
@@ -101,8 +107,8 @@ const asRecord = (value: unknown): Record<string, unknown> | null =>
  *
  * There is deliberately no "fall through to the permission path" here. That
  * path cannot answer this tool — allowing it throws the click away, as
- * above — so the fallback offered a person an Allow/Deny box over raw JSON.
- * That box is the bug this file exists to remove.
+ * above — so the fallback offered a person an Allow/Deny dialog over raw JSON.
+ * That dialog is the bug this file exists to remove.
  */
 async function answerNativeQuestions(input: unknown): Promise<string> {
   // Unanswerable entries are SKIPPED by the parser, not fatal: one bad entry
@@ -185,11 +191,13 @@ async function handle(msg: any) {
       },
     });
   }
-  if (msg.method === "tools/list") return send({ jsonrpc: "2.0", id: msg.id, result: { tools: TOOLS } });
+  // approve is the CLI's private permission callback, not an execution grant.
+  if (msg.method === "tools/list") return send({ jsonrpc: "2.0", id: msg.id, result: { tools: TOOLS.filter((tool) => tool.name === "approve" || allowQuestion) } });
   if (msg.method === "tools/call") {
     const name = msg.params?.name;
     const args = msg.params?.arguments ?? {};
     const reply = (text: string) => send({ jsonrpc: "2.0", id: msg.id, result: { content: [{ type: "text", text }] } });
+    if (name === "ask_user" && !allowQuestion) return reply("OpenMausBot: this question tool is excluded by the bot's tool selection.");
     // AskUserQuestion is a question wearing a permission's clothes. It never
     // continues into the permission path below — see nativeQuestions.
     if (name === "approve" && args.tool_name === ASK_USER_QUESTION) {

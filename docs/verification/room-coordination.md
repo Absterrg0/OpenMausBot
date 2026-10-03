@@ -29,9 +29,14 @@ handoff loop inside those turns.
 
 The tools are `list_room_targets` and `coordinate_bots`. Discovery includes
 reachable bots as well as rooms. The latter addresses 1–4 existing bots in this
-room (default), or — in ordinary direct chat without a room — the sender's one
-standing conversation with each recipient. A Chief can reach additional teams only
+room (default), or — in ordinary direct chat without a room — a fresh thread
+for each distinct assignment to a recipient. A Chief can reach additional teams only
 after the owner grants that access in [team settings](team-access.md).
+A multi-recipient room request posts its brief once, addressed to all accepted
+recipients. Each recipient still has a separate execution and result. An
+identical retry does not post again; different briefs remain separate. Requests
+in direct conversations keep their individual messages.
+
 Recipients run sequentially per room, with their own models, permissions and
 working environments. Busy recipients queue. Once all requested results arrive,
 the sender resumes in the original conversation. A lead can consult its own
@@ -39,16 +44,14 @@ specialists; it never inherits the parent Chief's cross-team access or permissio
 Advice is not a verification
 receipt: the lead must ask the reviewer to run the requested checks.
 
-Outside a room there is exactly one conversation per pair of bots, titled after
-the sender (“@Clive”), reused by every later assignment from that sender so the
-recipient still has the earlier context, and never closed automatically. A
-recipient still carrying one thread per assignment from an older version has its
-most recently active one adopted as that conversation rather than gaining
-another row; nothing is deleted or closed. A second assignment that arrives
-while the first is still running gets its own thread beside it, named by the
-optional `label` (otherwise “@Clive · parallel work”), and that thread closes
-itself once its result has been reported. `request_key` is only a within-turn
-idempotency token; it never selects a conversation.
+Outside a room, each distinct assignment gets a fresh recipient thread titled
+for the sender and optional `label` (otherwise “@Clive · work”). Give each
+assignment a self-contained brief, including rework. Successful reported work
+closes in the sidebar but remains readable; failed or withheld work remains
+visible. Existing conversations are not adopted, retitled or reopened.
+An identical `request_key` retry keeps the original thread and executes once;
+conflicting reuse is refused without leaving an extra task. Room requests
+continue to use their explicit destination thread.
 
 The chat shows an avatar and “Sent to Eli · Delivery”; clicking opens the
 receiving conversation. Same-room receipts have no unnecessary navigation.
@@ -90,6 +93,31 @@ conversation.
 
 ## Repeatable checks
 
+### Rooms containing a supervising Chief
+
+A section bot can list and post to its room when an out-of-section Chief in
+that room has an owner-reviewed `managedSections` grant for the bot's section.
+This includes a Chief in General (no section). In that same conversation,
+`list_room_targets` advertises the Chief and section peers, and `coordinate_bots`
+can address them by ID. The exception does not grant direct-chat access or
+access to the Chief in another room. Other cross-section members, unmanaged
+Chiefs, and peer restrictions still block work. Revoking supervision before
+queued work starts prevents dispatch.
+
+```sh
+pnpm exec vitest run server/peer-roster.test.ts server/post-to-room.test.ts server/room-coordination.e2e.test.ts server/direct-coordination.e2e.test.ts server/room-handoffs.test.ts server/peer-allowlist.e2e.test.ts
+```
+
+The coordination suites use `launchVerificationServer`, `control-omb`, and the
+actual agents MCP proxy with a scripted provider and disposable HOME/data.
+They assert discovered targets, accepted or refused tool calls, durable
+handoff state, the destination conversation, and absence of dispatch after
+revocation. They cover both named-section and sectionless Chiefs; the posting
+suite independently checks room listing and transcript writes. These are
+server workflow checks, not UI or live-model verification.
+
+### Broader coordination checks
+
 ```sh
 pnpm exec vitest run server/room-handoffs.test.ts server/room-coordination.e2e.test.ts src/components/GroupView.test.ts src/lib/room-activity.test.ts --maxWorkers=2
 pnpm exec vitest run server/group-goal-run.e2e.test.ts server/group-goal-wait-cap.e2e.test.ts server/drivers/agents-proxy.test.ts --maxWorkers=2
@@ -108,7 +136,7 @@ approvals and validation. Multiple required approvals are presented together;
 no recipient starts until all are allowed. It does not claim model judgment or artifact correctness.
 The direct-chat suite exercises Clive → lead → specialist → lead → Clive with
 the real MCP proxy, no room, and no changes to unrelated conversations. It also
-checks one conversation per bot pair across separate user turns, its title,
+checks fresh threads for separate direct assignments, their titles,
 labelled concurrent work that closes itself, recipient model/permission
 defaults, idempotency without extra tasks, capacity-bound queues, dispatch to a
 spare recipient thread while unrelated work remains active, pinned parent

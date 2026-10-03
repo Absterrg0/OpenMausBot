@@ -49,6 +49,7 @@ describe("provider key check", () => {
     expect(providerModelsUrl("openaiCompat")).toBe("https://openrouter.ai/api/v1/models");
     expect(providerModelsUrl("openaiCompat", "https://api.openai.com/v1")).toBe("https://api.openai.com/v1/models");
     expect(providerModelsUrl("xai", "")).toBe("https://api.x.ai/v1/models");
+    expect(providerModelsUrl("mistral")).toBe("https://api.mistral.ai/v1/models");
   });
 
   it("sends the provider's own header shape and returns a few model ids on success", async () => {
@@ -61,6 +62,14 @@ describe("provider key check", () => {
     expect(openai.ok).toBe(true);
     expect(seen[1]).toMatchObject({ path: "/v1/models", headers: { authorization: "Bearer good-key" } });
     expect(seen[1]!.headers["x-api-key"]).toBeUndefined();
+  });
+
+  it.each(["array", "data", "models"])("accepts %s model catalogs with the same bounded id filtering", async shape => {
+    const models = [{ id: "large" }, null, { name: "small" }, { id: 7 }, { id: "x".repeat(121) },
+      { id: "three" }, { id: "four" }, { id: "five" }, { id: "six" }];
+    const provider: typeof fetch = async () => Response.json(shape === "array" ? models : { [shape]: models });
+    expect(await checkProviderKey({ provider: "mistral", key: "fixture" }, provider))
+      .toEqual({ ok: true, check: "models", models: ["large", "small", "three", "four", "five"] });
   });
 
   it("tells a rejected key from a broken provider and from an unreachable one", async () => {
@@ -95,8 +104,21 @@ describe("provider key check", () => {
       .toEqual({ ok: false, reason: "rejected", status: 401 });
     expect(await checkProviderKey({ provider: "openaiCompat", key: "valid-fixture-key", url: "https://openrouter.ai/api/v1/" }, openRouter))
       .toEqual({ ok: true, check: "authentication", models: [] });
-    expect(paths).toHaveLength(2);
+    // The OpenRouter row authenticates the same way.
+    expect(await checkProviderKey({ provider: "openrouter", key: "valid-fixture-key" }, openRouter))
+      .toEqual({ ok: true, check: "authentication", models: [] });
+    expect(paths).toHaveLength(3);
     expect(paths.every((path) => path.endsWith("/key"))).toBe(true);
+  });
+
+  it("checks an OpenAI key against OpenAI, never OpenRouter", async () => {
+    const urls: string[] = [];
+    const openAi: typeof fetch = async (input) => {
+      urls.push(String(input));
+      return Response.json({ data: [{ id: "gpt-5" }] });
+    };
+    expect(await checkProviderKey({ provider: "openai", key: "sk-fixture" }, openAi)).toEqual({ ok: true, check: "models", models: ["gpt-5"] });
+    expect(urls).toEqual(["https://api.openai.com/v1/models"]);
   });
 
   it("does not call a custom compatible server's nonexistent /key endpoint", async () => {

@@ -9,6 +9,12 @@ import { redactSecrets } from "./redact.ts";
 const flat = (value: unknown) => JSON.stringify(value);
 
 describe("redactSecrets", () => {
+  it("omits private MCP descriptors even when a credential uses an ordinary header name", () => {
+    const descriptor = JSON.stringify({ url: "https://example.test/mcp", headers: { "x-tenant": "private-synthetic-value" } });
+    const logged = redactSecrets({ params: { mcpServers: [{ env: [{ name: "OMB_GATE_UPSTREAM", value: descriptor }] }] }, env: { OMB_REMOTE_MCP_SERVER: descriptor } });
+    expect(flat(logged)).not.toContain("private-synthetic-value");
+    expect(flat(logged)).toContain("OMB_GATE_UPSTREAM");
+  });
   it("masks the tokens in an ACP session/new, keeping the shape", () => {
     const sessionNew = {
       jsonrpc: "2.0",
@@ -31,7 +37,7 @@ describe("redactSecrets", () => {
             command: "/usr/bin/node",
             args: ["/app/computer-proxy.js"],
             env: [
-              { name: "OGB_BOX_ID", value: "box-9" },
+              { name: "OGB_BOX_ID", value: "boat-9" },
               { name: "OGB_BOX_TOKEN", value: "box_live_abcdefghijklmnop" },
             ],
           },
@@ -48,7 +54,7 @@ describe("redactSecrets", () => {
     expect(out).toContain("OMB_COMMS_TOKEN");
     expect(out).toContain("OGB_BOX_TOKEN");
     expect(out).toContain("bot-123");
-    expect(out).toContain("box-9");
+    expect(out).toContain("boat-9");
     expect(out).toContain("/app/agents-proxy.js");
     // and it says how long the value was, which is what you debug with
     expect(out).toContain("«redacted 24 chars»");

@@ -15,9 +15,23 @@ export interface BotOverview {
   reaches: string[];
   wont: string[];
   recent: Array<{ at: number; summary: string }>;
+  /** Per-service connector tool grants, for read-only display. Absent when
+   * the bot carries no grants record — then composio alone decides. */
+  grants?: BotOverviewGrant[];
   /** Optional setup ideas, each pointing at the relevant settings section.
    * These are customization suggestions, not requirements for chatting. */
   setup: SetupStep[];
+}
+
+/** One service's tool grants as a client should summarize them. Mirrors the
+ * levels the web grant editor already renders (connector-grants.ts): "all"
+ * is a whole-service wildcard, "partial" is an exact list whose size is
+ * toolCount, "none" is a service granted nothing. */
+export interface BotOverviewGrant {
+  slug: string;
+  level: "all" | "partial" | "none";
+  /** Granted tool count; 0 unless level is "partial". */
+  toolCount: number;
 }
 
 export type SetupStepId = "identity" | "soul" | "folder" | "apps" | "schedule";
@@ -46,6 +60,7 @@ export interface OverviewFacts {
     | "approvePeerComms"
     | "peers"
     | "composio"
+    | "connectorTools"
     | "browser"
     | "chiefOfStaff"
     | "managedSections"
@@ -62,6 +77,9 @@ export interface OverviewFacts {
   skills: Array<{ name: string; description: string; enabled: boolean }>;
   engine: { agentsMcp?: boolean; composioMcp?: boolean; browserMcp?: boolean; computerMcp?: boolean } | null;
   browserEnabled?: boolean;
+  /** This server is a Cloud home (cloud-home.ts): it has no "this computer"
+   * of the person's and no Local VM. */
+  cloudHome?: boolean;
   connectedApps: { configured: boolean; authoritative: boolean; services: string[] };
   sectionPeers: number;
   timeZone: string;
@@ -196,14 +214,33 @@ function couldUseApps(facts: OverviewFacts): boolean {
   return facts.bot.composio !== false && facts.connectedApps.configured && Boolean(facts.engine?.composioMcp);
 }
 
-function computerReach(computer: BotRecord["computer"]): string | null {
+/** Summarize a bot's connectorTools record for the Overview. Undefined in,
+ * undefined out: a bot with no record keeps legacy all-tools behavior and
+ * the field stays off the wire. An explicit record — even an empty one —
+ * becomes a (possibly empty) list, sorted by slug so both phones and the
+ * web dialog render it in one deterministic order. */
+export function grantsSummary(connectorTools: BotRecord["connectorTools"]): BotOverviewGrant[] | undefined {
+  if (connectorTools === undefined) return undefined;
+  return Object.entries(connectorTools)
+    .map(([slug, grant]): BotOverviewGrant => {
+      if (grant.tools === "*") return { slug, level: "all", toolCount: 0 };
+      if (grant.tools.length > 0) return { slug, level: "partial", toolCount: grant.tools.length };
+      return { slug, level: "none", toolCount: 0 };
+    })
+    .sort((a, b) => (a.slug < b.slug ? -1 : 1));
+}
+
+function computerReach(computer: BotRecord["computer"], cloudHome = false): string | null {
+  // A Cloud home never offers either; say so rather than list a preference
+  // that every task there refuses.
+  const unavailable = cloudHome ? ", which isn't available on OMB Cloud" : "";
   switch (computer) {
     case "cloud":
       return "Computer preference: cloud computer.";
     case "vm":
-      return "Computer preference: Local VM.";
+      return `Computer preference: Local VM${unavailable}.`;
     case "local":
-      return "Computer preference: this computer.";
+      return `Computer preference: this computer${unavailable}.`;
     case "browser":
       return "Computer preference: browser only.";
     case "off":
@@ -215,7 +252,7 @@ function computerReach(computer: BotRecord["computer"]): string | null {
 
 function reachesLines(facts: OverviewFacts): string[] {
   const lines: string[] = [];
-  const computer = computerReach(facts.bot.computer);
+  const computer = computerReach(facts.bot.computer, facts.cloudHome);
   if (computer) lines.push(computer);
   lines.push(facts.bot.cwd ? `Works in ${facts.bot.cwd}.` : "Works in its private workspace.");
   const apps = facts.connectedApps;
@@ -272,6 +309,7 @@ export function buildBotOverview(facts: OverviewFacts): BotOverview {
     reaches: reachesLines(facts),
     wont: wontLines(facts),
     recent: facts.recent,
+    grants: grantsSummary(facts.bot.connectorTools),
     setup: setupSteps(facts),
   };
 }

@@ -24,6 +24,11 @@ import { voiceKeyDraftValue, type VoiceKeyDraft } from "@/lib/voice-key-draft";
 import { Switch } from "./SettingsPrimitives";
 
 const SAMPLE = "Morning. Overnight the tests went green, and I left two notes for you in the thread.";
+const FISH_MODELS = [
+  { value: "s2.1-pro", label: "voice.fish.modelPro" },
+  { value: "s2.1-pro-free", label: "voice.fish.modelFree" },
+] as const;
+type FishModel = (typeof FISH_MODELS)[number]["value"];
 
 export function VoiceSettings({
   bot,
@@ -31,7 +36,7 @@ export function VoiceSettings({
   workspaceConfigurationLocked = false,
 }: {
   bot: Bot;
-  onPatch: (patch: Partial<Pick<Bot, "voice" | "speakReplies">>) => void;
+  onPatch: (patch: Partial<Pick<Bot, "voice" | "speakReplies" | "voiceNotes">>) => void;
   workspaceConfigurationLocked?: boolean;
 }) {
   const { state, dispatch } = useStore();
@@ -42,6 +47,7 @@ export function VoiceSettings({
   const [model, setModel] = useState("");
   const [saving, setSaving] = useState(false);
   const [savingServer, setSavingServer] = useState(false);
+  const [savingFishModel, setSavingFishModel] = useState(false);
   const [switching, setSwitching] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [voices, setVoices] = useState<Array<{ id: string; label: string; description?: string }>>([]);
@@ -84,6 +90,9 @@ export function VoiceSettings({
         : provider === "xai" ? t("voice.grok.host") : "Host voice";
   const systemVoicesAvailable = capabilities.host.platform === "darwin";
   const hostConfigured = Boolean(tts?.configured);
+  // Cloud Pro's voice: it works with no saved key, and a key pasted here
+  // replaces it.
+  const included = Boolean(tts?.included);
   const configured = usesLocalSystem || hostConfigured;
 
   useEffect(() => {
@@ -194,6 +203,17 @@ export function VoiceSettings({
       .finally(() => setSavingServer(false));
   };
 
+  const saveFishModel = (next: FishModel) => {
+    if (next === tts?.fishModel || savingFishModel) return;
+    setSavingFishModel(true);
+    setError(null);
+    // a setting, not a secret: it rides the ordinary config write
+    api("/api/config", { method: "PUT", body: JSON.stringify({ tts: { fishModel: next } }) })
+      .then((status: ConfigStatus) => dispatch({ type: "configStatus", config: status }))
+      .catch((e: Error) => setError(e.message))
+      .finally(() => setSavingFishModel(false));
+  };
+
   if (!tts) return null;
 
   const selectedVoice = usesLocalSystem ? deviceVoice : (bot.voice ?? "");
@@ -215,8 +235,8 @@ export function VoiceSettings({
                 : provider === "xai"
                   ? ` ${t("voice.grok.sharedKey")}`
                 : provider === "chatterbox"
-                  ? " the Chatterbox server address is shared by the workspace."
-                  : ` the ${cloudProvider?.name ?? "voice provider"} key is shared by the workspace.`}</>}
+                  ? " the Chatterbox server address is shared by this installation."
+                  : ` the ${cloudProvider?.name ?? "voice provider"} key is shared by this installation.`}</>}
       </div>
 
       {localMacClient && (
@@ -283,7 +303,7 @@ export function VoiceSettings({
         <div className="mb-1.5 flex items-center gap-2 text-[13px] text-ink-secondary">
           <span className={cn("size-1.5 rounded-full", configured ? "bg-success" : "bg-raised-hover")} />
           <span>{cloudProvider.name} key</span>
-          {configured && <span className="text-[11px] text-success">Connected</span>}
+          {configured && <span className="text-[11px] text-success">{included ? t("keys.includedWithCloudPro") : "Connected"}</span>}
         </div>
         <div className="flex gap-2">
           <input
@@ -291,10 +311,10 @@ export function VoiceSettings({
             value={key}
             onChange={(e) => setKeyDraft({ provider: cloudProvider.id, value: e.target.value })}
             onKeyDown={(e) => e.key === "Enter" && key.trim() && void saveKey()}
-            placeholder={configured ? "••••••••  (paste to replace)" : cloudProvider.placeholder}
+            placeholder={configured && !included ? "••••••••  (paste to replace)" : cloudProvider.placeholder}
             aria-label={`${cloudProvider.name} key`}
             autoComplete="off"
-            className="w-full rounded-lg border border-hairline/40 bg-inset px-3 py-2 text-[13px] text-ink placeholder:text-ink-secondary focus:border-hairline focus:outline-none"
+            className="w-full rounded-lg border border-hairline/40 bg-inset px-3 py-2 text-[13px] text-ink placeholder:text-ink-secondary focus:outline-none"
           />
           <button
             onClick={() => void saveKey()}
@@ -314,6 +334,26 @@ export function VoiceSettings({
             Get a key from {cloudProvider.name}
           </a>
         )}
+        </div>
+      )}
+
+      {!workspaceConfigurationLocked && provider === "fish" && (
+        <div className="mt-4">
+          <div className="mb-1.5 text-[13px] text-ink-secondary">{t("voice.fish.model")}</div>
+          <select
+            value={tts.fishModel ?? "s2.1-pro"}
+            onChange={(e) => saveFishModel(e.target.value as FishModel)}
+            disabled={savingFishModel}
+            aria-label={t("voice.fish.model")}
+            className="w-full rounded-lg border border-hairline/40 bg-inset px-3 py-2 text-[13px] text-ink focus:outline-none disabled:opacity-50"
+          >
+            {FISH_MODELS.map((option) => (
+              <option key={option.value} value={option.value}>
+                {t(option.label)}
+              </option>
+            ))}
+          </select>
+          <div className="mt-1.5 text-[11.5px] leading-relaxed text-ink-secondary">{t("voice.fish.modelHint")}</div>
         </div>
       )}
 
@@ -340,7 +380,7 @@ export function VoiceSettings({
             aria-label="Chatterbox server address"
             autoComplete="off"
             spellCheck={false}
-            className="w-full rounded-lg border border-hairline/40 bg-inset px-3 py-2 text-[13px] text-ink placeholder:text-ink-secondary focus:border-hairline focus:outline-none"
+            className="w-full rounded-lg border border-hairline/40 bg-inset px-3 py-2 text-[13px] text-ink placeholder:text-ink-secondary focus:outline-none"
           />
           <button
             onClick={() => void saveServer()}
@@ -359,7 +399,7 @@ export function VoiceSettings({
           aria-label="Chatterbox model"
           autoComplete="off"
           spellCheck={false}
-          className="mt-2 w-full rounded-lg border border-hairline/40 bg-inset px-3 py-2 text-[13px] text-ink placeholder:text-ink-secondary focus:border-hairline focus:outline-none"
+          className="mt-2 w-full rounded-lg border border-hairline/40 bg-inset px-3 py-2 text-[13px] text-ink placeholder:text-ink-secondary focus:outline-none"
         />
         <div className="mt-1.5 text-[11.5px] leading-relaxed text-ink-secondary">
           Any OpenAI-compatible server running Chatterbox works, no key needed.{" "}
@@ -383,7 +423,8 @@ export function VoiceSettings({
               value={selectedVoice}
               onChange={(e) => chooseVoice(e.target.value)}
               aria-label={`${bot.name}'s voice`}
-              className="w-full rounded-lg border border-hairline/40 bg-inset px-3 py-2 text-[13px] text-ink focus:border-hairline focus:outline-none"
+              data-voice-picker
+              className="w-full rounded-lg border border-hairline/40 bg-inset px-3 py-2 text-[13px] text-ink focus:outline-none"
             >
               <option value="">
                 {loadingVoices
@@ -391,7 +432,7 @@ export function VoiceSettings({
                   : usesLocalSystem
                     ? "Mac system default"
                     : tts.voice
-                      ? "Workspace default"
+                      ? "Installation default"
                       : "Pick a voice"}
               </option>
               {selectedVoice && !voices.some((voice) => voice.id === selectedVoice) && (
@@ -428,6 +469,20 @@ export function VoiceSettings({
           checked={Boolean(bot.speakReplies)}
           aria-label="Read this bot's replies aloud"
           onClick={() => onPatch({ speakReplies: !bot.speakReplies })}
+        />
+      </div>
+
+      <div className="mt-4 flex items-center justify-between gap-4">
+        <div>
+          <div className="text-[13px] font-medium text-ink">Voice notes</div>
+          <div className="mt-0.5 text-[11.5px] leading-relaxed text-ink-secondary">
+            Let this agent send spoken notes; on unless switched off here.
+          </div>
+        </div>
+        <Switch
+          checked={bot.voiceNotes !== false}
+          aria-label="Let this bot send voice notes"
+          onClick={() => onPatch({ voiceNotes: bot.voiceNotes === false })}
         />
       </div>
 

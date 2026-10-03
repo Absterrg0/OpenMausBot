@@ -9,6 +9,8 @@
  * fails compilation until it is either declared here or explicitly listed
  * as server-private. */
 import type { ApprovalMode } from "./approval-mode.ts";
+import type { ToolScope } from "./tool-scope.ts";
+import type { CommandAllowlistCandidate } from "./command-allowlist.ts";
 import type { TurnDigest } from "./digest.ts";
 import type { BotAvatarCrop } from "./bot-avatar.ts";
 import type { MascotBodyId } from "./mascot-bodies.ts";
@@ -16,6 +18,8 @@ import type { CredentialTargetId } from "./credential-request.ts";
 import type { TeamSetupRequest } from "./team-setup.ts";
 import type { RoutineRequestCardData } from "./routine-request.ts";
 import type { ProfileRequestCardData } from "./profile-request.ts";
+import type { ModelRequestCardData } from "./model-request.ts";
+import type { TighteningRequestCardData } from "./tightening-request.ts";
 import type { SkillRequestCardData } from "./skill-request.ts";
 import type { QuestionRequestCardData } from "./ask-question.ts";
 import type { RoutineRunCardData } from "./routine-run.ts";
@@ -47,7 +51,7 @@ export interface ModelSelection {
   variant?: string;
 }
 
-/** Which cloud computer backs computer: "cloud"; absent means Box. */
+/** Which cloud computer backs computer: "cloud"; absent means Boat. */
 export type CloudBackend = "box" | "vps";
 
 /** A place a bot can act. cloud covers both cloud backends — from the
@@ -63,8 +67,11 @@ export type MausColor =
  * ten-face vocabulary still carry those names. */
 export type MausExpression = string;
 
-/** What the bot is doing right now, as the harness sees it. */
-export type BotActivity = "working" | "waiting-on-you" | "idle" | "no-signal" | "dead";
+/** What the bot is doing right now, as the harness sees it. `parked.computer`
+ * is task-level only (ADR-2, #1651): a thread whose turn settled at the
+ * computer wait ceiling and resumes when the seat frees. It never elevates
+ * the bot-level activity and never counts as busy. */
+export type BotActivity = "working" | "waiting-on-you" | "idle" | "no-signal" | "dead" | "parked.computer";
 
 /** The bot that opened a thread on itself or a teammate. */
 export interface TaskOpenedBy {
@@ -101,6 +108,11 @@ export interface TaskUsage {
   context?: { tokens: number; window?: number };
 }
 
+/** Accounting for the currently displayed room thread, across all speakers. */
+export interface GroupThreadUsage extends TaskUsage {
+  lastSpeaker?: { botId: string; name: string };
+}
+
 /** One task = one conversation with its own context, thread and provider
  * session. Wire form: no resumeCursors or lastInstanceId — the harness's
  * own bookkeeping that no client has ever used. */
@@ -129,6 +141,11 @@ export interface WireTask {
   /** Epoch ms of the newest message, or createdAt when the thread has none.
    * Server-derived. Clients must not write it. */
   updatedAt?: number;
+  /** When the person snoozed this thread. 0 means "until new activity" and
+   * the store clears it the moment the thread wakes; a future epoch ms means
+   * "until then" and reads treat an expired value as absent, so no timer or
+   * migration is ever needed. Absent = not snoozed. */
+  snoozedUntil?: number;
   /** Defaults are copied when a task is created. */
   modelSelection?: ModelSelection;
   approvalMode?: ApprovalMode;
@@ -147,6 +164,12 @@ export interface WireTask {
   turnStartedAt?: number;
   /** Where this conversation works when pinned; absent = follow the bot. */
   surface?: Surface;
+  /** The pin above is the machine's own record (where an Auto turn landed,
+   * or the bot's select_computer choice), not a person's, so the next Works
+   * on change moves it. Derived at projection from the server-private
+   * provenance and never stored; absent on a person's pin and on a pin from
+   * before the server recorded who set it. */
+  surfaceAuto?: true;
   /** what this task has spent, banked once per turn */
   usage?: TaskUsage;
   /** the folder this task's turns run in, pinned on its first turn. */
@@ -171,13 +194,41 @@ export interface InstalledPlaybook {
 }
 
 /** Listing provenance and connector intent retained for package details
- * and future re-export. It never means the apps are authorized. */
+ * and future re-export. It never means the apps are authorized. Every field
+ * after requiredApps is additive and optional: older records have none. */
 export interface InstalledPackageMetadata {
   id: string;
   name: string;
   release: string;
   requiredApps: Array<{ slug: string; label: string; reason: string; optional?: boolean }>;
+  /** Where it came from; absent on older records means "file". */
+  source?: "file" | "org";
+  /** file: a random id per import; org: derived from the organization and package. */
+  installId?: string;
+  /** This bot's key in the package, so a re-export keeps its identity. */
+  agentKey?: string;
+  /** Set when the bot was created from a package preset. */
+  presetKey?: string;
+  /** What the package suggested. Never applied: imported bots start on Ask. */
+  suggestedApproval?: "ask" | "auto";
+  /** org only */
+  publisher?: { organizationId: string; slug: string; name: string };
+  /** org only: "<publisher slug>/<package id>" */
+  ref?: string;
+  /** org only: the release bytes that were applied */
+  sha256?: string;
 }
+
+/** One service's connector tool grant: `"*"` widens to every tool on the
+ * service, an explicit list names exact tools. */
+export interface ConnectorToolGrant {
+  tools: "*" | string[];
+}
+
+/** Lowercased Composio service slug, e.g. `gmail`. */
+export const CONNECTOR_SLUG_PATTERN = /^[a-z0-9][a-z0-9_-]{0,80}$/;
+/** Composio tool names are upper-snake, e.g. `GMAIL_SEND_EMAIL`. */
+export const CONNECTOR_TOOL_NAME_PATTERN = /^[A-Z][A-Z0-9_]{0,127}$/;
 
 /** A bot as a client may see it. Wire form: no provider session
  * bookkeeping (resumeCursors), no elevation journal (approvalGrant), no
@@ -211,13 +262,19 @@ export interface WireBot {
   avatarUrl: string | null;
   /** Mascot, or the crop applied to avatarUrl. */
   avatarCrop?: BotAvatarCrop;
+  /** Zoom of a custom image. Absent means 1, the unzoomed cover crop. */
+  avatarZoom?: number;
+  /** Horizontal point of the image kept in the crop, 0–1. Absent means center. */
+  avatarFocusX?: number;
+  /** Vertical point of the image kept in the crop, 0–1. Absent means center. */
+  avatarFocusY?: number;
   /** True when any task has unread output. */
   unread: boolean;
   /** Default for new tasks; navigating tasks never changes this value. */
   modelSelection: ModelSelection;
   /** where the bot works ("Works on"). Unset = auto. */
   computer?: Surface | "off";
-  /** Which cloud computer backs computer: "cloud"; absent means Box. */
+  /** Which cloud computer backs computer: "cloud"; absent means Boat. */
   cloudBackend?: CloudBackend;
   /** Auto mode may prepare/start this bot's managed VPS container. */
   autoStartVps?: boolean;
@@ -233,6 +290,11 @@ export interface WireBot {
   speakReplies?: boolean;
   /** This bot's own voice id, so a room of bots doesn't sound like one person. */
   voice?: string;
+  /** Whether this bot may send voice notes. Absent/true = allowed; false
+   * hides the tool and refuses the route even with a voice configured. */
+  voiceNotes?: boolean;
+  /** Whether this bot uses native memory. Absent/true = enabled. */
+  memoryEnabled?: boolean;
   /** Queue direct-chat messages behind outstanding delegated work. */
   parkDirectMessages?: boolean;
   /** true after an edit/branch-switch rewound the visible conversation. */
@@ -253,10 +315,22 @@ export interface WireBot {
   peers?: string[];
   /** Whether this bot may use the workspace's connected apps. */
   composio?: boolean;
+  /** Which connected-app tools this bot may call, by service slug. Absent
+   * defers to the legacy `composio` boolean above (unset/true = every tool,
+   * false = none); an explicit `{}` grants no tools. Grants never travel in
+   * shareable exports and imported bots always land with none. */
+  connectorTools?: Record<string, ConnectorToolGrant>;
   /** Whether this bot gets the app's built-in browser. */
   browser?: boolean;
+  /** Memory upkeep: the harness captures facts from finished chats into
+   * MEMORY.md and topic files, adds facts about the person to About me and
+   * tidies nightly. On unless explicitly false; every change is journaled
+   * and can be undone. */
+  memoryUpkeep?: boolean;
   /** Which of the app-wide MCP servers this bot mounts, by name. */
   mcpServers?: string[];
+  /** Owner-selected original tool identities. An empty allowlist permits none. */
+  toolScope?: ToolScope;
   /** Id of a named browser profile; absent = the bot's own private session. */
   browserProfile?: string;
   /** Public, package-authored playbooks installed for this bot. */
@@ -268,14 +342,41 @@ export interface WireBot {
   /** What the bot is doing right now; transient like busy. */
   activity?: BotActivity;
   createdAt: number;
+  /** Who may see this bot on a workspace several people share. Absent means
+   * everyone. Sent to admins only; a member's copy of a bot never carries it. */
+  visibility?: BotVisibility;
 }
 
+/** Who may see a bot: every signed-in person, admins only, or the listed
+ * addresses (and `@domain` entries) plus admins. See server/bot-visibility.ts. */
+export type BotVisibility = "everyone" | "admins" | { people: string[] };
+
 /** The person a user message is from, as the server resolved it from their
- * own session. Attribution only, never authority: nothing may be allowed or
- * refused because of it, and no request body can supply it. */
+ * own session. No request body can supply it. `name` is attribution only:
+ * nothing may be allowed or refused because of it. `id` is an opaque key the
+ * server derives from the authenticated session (the account email when
+ * there is one, else the paired session), and decides one thing only: on a
+ * workspace shared by several people, whose session may answer the card
+ * this request raised. */
 export interface ResolvedSender {
   name: string;
+  id?: string;
 }
+
+/** Who answered a card: a signed-in person (named as their messages are), the
+ * owner on this machine, or a session-less local caller on a shared server
+ * (`worker`: the Slack worker, or any other process on that machine). */
+export type CardAnswerer = (
+  /** `person`: the answering session's opaque person key, recorded on an OMB
+   * Cloud home only, where it decides whether an answer came from the owner
+   * (server/cloud-lending.ts). */
+  | { kind: "session"; name: string; person?: string }
+  | { kind: "loopback" }
+  | { kind: "worker" }
+) & {
+  /** "call": decided by voice on a Live call, not tapped. */
+  via?: "call";
+};
 
 /** One transcript line. Serialized as stored — the durable delivery
  * identity (roomRequest) rides the wire unchanged. */
@@ -294,8 +395,14 @@ export interface WireMessage {
     by: "person" | "harness";
   };
   /** Durable provider output stored by the harness; renderers receive only
-   * the allowlisted /api/attachments URL. */
-  attachments?: Array<{ kind: "image"; path: string; mime: string }>;
+   * the allowlisted /api/attachments URL. `file` entries are documents, audio
+   * and video a bot attached with attach_file; they are opened through the
+   * message-scoped file route, never by path. */
+  attachments?: Array<
+    | { kind: "image"; path: string; mime: string }
+    | { kind: "file"; path: string; mime: string; name: string }
+    | { kind: "audio"; path: string; mime: string; durationMs?: number }
+  >;
   card?: OptionCardData;
   connector?: ConnectorCardData;
   secret?: SecretRequestCardData;
@@ -306,6 +413,9 @@ export interface WireMessage {
   /** activity messages: tool name + outcome. */
   tool?: {
     name: string; ok?: boolean; spoken?: string; setup?: boolean; terminal?: boolean; summary?: string; input?: string; output?: string;
+    /** error rows: the installed Claude Code is too old for the model, and
+     * the UI can offer to update it in place. */
+    claudeUpdate?: boolean;
     /** Provider item identity, scoped to the owning turn. */
     itemId?: string;
     /** Whether the harness captured the full redacted result. Private
@@ -314,8 +424,19 @@ export interface WireMessage {
   };
   /** user messages sent INTO a running turn (capabilities.queueing). */
   steered?: boolean;
-  /** A user-role message that arrived through the server's HTTP API. */
-  via?: "api";
+  /** user messages a peer bot handed to this thread's RUNNING turn through
+   * the non-interrupting aside lane: peer context folded in mid-turn, never
+   * a new request. The text is stored enveloped exactly as injected, so any
+   * later reader sees the sender and the not-steering framing. */
+  aside?: boolean;
+  /** A user-role message that arrived through the server's HTTP API
+   * ("api"), or a request a person spoke on a Live call ("call"). */
+  via?: "api" | "call";
+  /** A user line an external interface relayed through the guarded send
+   * route (the Slack worker, for someone else, as this computer): nobody
+   * typed it in one of this workspace's clients. A Live call never reads it
+   * back as what the caller typed. */
+  relayed?: boolean;
   /** Which person sent this user message, when the workspace has more than
    * one. The server authenticates per person but used to attribute every
    * user turn to the single profile name, so on a shared or paired instance
@@ -354,6 +475,10 @@ export interface WireMessage {
   from?: { botId: string; name: string; color: string };
   /** Set on a room message a bot pushed in with post_to_room. */
   peerPost?: { unattended?: boolean };
+  /** A room reply whose speaker the decision model picked (an Auto room),
+   * with how sure it was. Absent on every other message; clients that do
+   * not know it ignore it. */
+  routedBy?: { provider: "jev"; probability: number };
   /** Set on the user-role line another bot delivered into this bot's own
    * conversation (ask_bot, start_thread). */
   peerAsk?: { botId: string; name: string; unattended?: boolean };
@@ -373,34 +498,81 @@ export interface OptionCardData {
   title: string;
   subtitle: string;
   options: string[];
+  /** Distinguishes a provider question from an approval after its live run ends. */
+  requestType?: "permission" | "question";
   answered?: string;
   /** What was actually answered, when the answer is words rather than a
    * verdict. */
   answeredText?: string;
   dismissed?: boolean;
+  /** Who settled the card, when a person or service answered it. */
+  answeredBy?: CardAnswerer;
   /** Present when this card is a live provider ask (approval/question). */
   requestId?: string;
   /** permission cards: the tool being requested. */
   tool?: string;
   /** why this card is waiting: guard, mode, sandbox or delivery error. */
   held?: string;
+  /** Terminal: this proposal went stale while open (revision mismatch or
+   * a superseding request). Nothing can answer it; a fresh proposal is
+   * needed, and clients must not offer its options. */
+  expired?: boolean;
   /** Catalog key for held when it is one of the fixed notes. */
   heldCode?: string;
   /** the narrow grant "always allow" remembers for a harness-native card. */
   allowKey?: string;
   /** the provider can remember an allow for the rest of its session. */
   allowSession?: boolean;
+  /** Exact native command offered for an owner/admin to remember. */
+  commandAllowlist?: CommandAllowlistCandidate;
   /** Local actions never share remembered grants with cloud/tool approvals. */
   approvalScope?: "local-computer";
   /** A durable chat-created routine proposal. */
   routineRequest?: RoutineRequestCardData;
   /** A durable profile-change proposal (propose_profile). */
   profileRequest?: ProfileRequestCardData;
+  /** A durable default-model proposal (propose_model). */
+  modelRequest?: ModelRequestCardData;
+  /** A durable authority-tightening proposal (propose_tightening). */
+  tighteningRequest?: TighteningRequestCardData;
   teamSetupRequest?: TeamSetupRequest;
   /** A durable learned-skill proposal. */
   skillRequest?: SkillRequestCardData;
   /** A provider's structured question set. */
   questionRequest?: QuestionRequestCardData;
+}
+
+/** Which app holds the microphone of a Live call. Self-declared; for display and logs only. */
+export type LiveClient = "desktop" | "ios" | "android";
+export type LiveCallStatus = "connecting" | "live" | "ending" | "ended";
+/** Why a call ended. "signed-out": the sign-in or paired phone that started
+ * it was signed out, revoked or unpaired. A client that does not know a
+ * reason shows the call's `error` text, or plain "Call ended.". */
+export type LiveEndReason =
+  | "hung-up" | "idle" | "expired" | "content" | "remote-hangup" | "connection-lost"
+  | "sideband-lost" | "deleted" | "shutdown" | "signed-out" | "error";
+
+/** The one Live call a harness runs. Never carries the key or any speech. */
+export interface LiveCallState {
+  callId: string;
+  botId: string;
+  threadId: string;
+  client: LiveClient;
+  voice: string;
+  /** epoch ms when the session was created */
+  startedAt: number;
+  status: LiveCallStatus;
+  endReason?: LiveEndReason;
+  /** short, user-facing; present when the call ended on a problem */
+  error?: string;
+}
+
+/** Non-secret Live settings, as GET /api/config and PATCH /api/live/settings report them. */
+export interface LiveSettings {
+  configured: boolean;
+  voice: string;
+  readTypedReplies: boolean;
+  idleMinutes: number;
 }
 
 export interface ConnectorCardData {
@@ -429,14 +601,22 @@ export interface SecretRequestCardData {
   phoneOperationId?: string;
   provided?: boolean;
   dismissed?: boolean;
+  /** A newer request for the same credential replaced this card; it no
+   * longer offers entry and cannot be provided or dismissed. */
+  superseded?: boolean;
   resumed?: boolean;
   error?: string;
 }
 
+/** Who answers a room message nobody was @mentioned in. `auto` asks the
+ * decision model (server/decider/room-routing.ts) and falls back to
+ * `fallbackBotId` (else the first member) whenever it is off or unsure.
+ * Readers must treat any kind they do not know as the default lead. */
 export type GroupDefaultResponder =
   | { kind: "member"; botId: string }
   | { kind: "everyone" }
-  | { kind: "mentions" };
+  | { kind: "mentions" }
+  | { kind: "auto"; fallbackBotId?: string };
 
 /** One independent conversation inside a user-created channel. */
 export interface GroupTask {
@@ -457,6 +637,8 @@ export interface GroupTask {
 /** A room as a client may see it: the record plus the computed working
  * flag (publicGroupState). */
 export interface WireGroup {
+  /** Computed from the usage ledger, not stored in groups.json. */
+  usage?: GroupThreadUsage | null;
   id: string;
   /** The active task's thread. Direct-message channels stay single-threaded. */
   threadId: string;
@@ -488,6 +670,10 @@ export interface WireGroup {
   /** New user-created rooms start with setup pending. */
   setupCompletedAt?: number | null;
   setupSkippedAt?: number | null;
+  /** The narrowest audience this room has ever had (see
+   * server/bot-visibility.ts): a bot leaving never widens who may see the
+   * transcript. Sent to admins only. */
+  audienceFloor?: BotVisibility;
   /** True while any member (or hand-off) is mid-turn. Computed at
    * projection time, never persisted. */
   working: boolean;
@@ -499,9 +685,37 @@ export interface WireGroup {
 // the app consumes, payload typed by the shape that actually goes over the
 // wire. Transport-owned frames (hello, ping) stay in src/lib/live-events.
 
+/** Why a steer-queue entry waits: a shared thread slot, or the bot's room
+ * turn (which runs one at a time per bot). */
+export type SteerQueueReason = "capacity" | "group-turn";
+
 /** Pending steer-queue chips, as `queuedSteerSnapshot` emits them and the
  * `bot.queued` frame carries them: threadId → queued items. */
-export type BotQueuedMessages = Record<string, Array<{ queueId: string; text: string; reason?: "capacity" }>>;
+export type BotQueuedMessages = Record<string, Array<{ queueId: string; text: string; reason?: SteerQueueReason }>>;
+
+/** Skills library (features.skillsLibrary) browse surface: one row per
+ * library entry, with the bots currently assigned to it. Version comes
+ * from the org package stamp when one exists; locally imported skills
+ * carry null. */
+export interface SkillsLibrarySkillWire {
+  name: string;
+  description: string;
+  source: string;
+  enabled: boolean;
+  tags: string[];
+  version: string | null;
+  importedAt: string;
+  license?: string;
+  compatibility?: string;
+  warnings: string[];
+  assignedBots: Array<{ id: string; name: string }>;
+}
+
+/** PUT body for a bot's assignment list: the full list, applied
+ * idempotently. */
+export interface BotAssignedSkillsWire {
+  skills: string[];
+}
 
 export type ServerFrame =
   | { kind: "sections"; sections: string[] }
@@ -524,6 +738,7 @@ export type ServerFrame =
   | { kind: "computer"; botId: string; state: "provisioning" | "waking" }
   | { kind: "computer-control"; botId: string; held: boolean; helpReason: string | null }
   | { kind: "bot.deleted"; botId: string }
+  | { kind: "live.call"; botId: string; threadId: string; call: LiveCallState | null }
   /** The config status object spread flat into the frame; its full typing
    * is the deferred client-model extraction (see j1-phase-bc-progress). */
   | ({ kind: "config" } & Record<string, unknown>);

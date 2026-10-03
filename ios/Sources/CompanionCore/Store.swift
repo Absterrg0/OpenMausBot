@@ -19,6 +19,27 @@ public struct SidebarSection: Identifiable, Hashable, Sendable {
     public var id: String { name }
 }
 
+/// An edit the person just submitted, shown in place of the message it
+/// replaces until the computer answers. It is presentation, never folded
+/// into `messages`: the computer's fork is the only real version.
+public struct PendingEdit: Equatable, Sendable {
+    public let requestId = UUID().uuidString
+    public var baseLeafId: String?
+    public var sourceId: String
+    public var text: String
+    public var at: Double
+
+    public init(sourceId: String, text: String, at: Double = Date().timeIntervalSince1970 * 1000, baseLeafId: String? = nil) {
+        self.baseLeafId = baseLeafId
+        self.sourceId = sourceId
+        self.text = text
+        self.at = at
+    }
+
+    /// The id the stand-in row renders under while the edit is in flight.
+    public var placeholderId: String { "pending-edit-\(sourceId)" }
+}
+
 public struct CompanionState: Sendable {
     public var bots: [Bot] = []
     public var rooms: [Room] = []
@@ -48,6 +69,9 @@ public struct CompanionState: Sendable {
     /// `screens=on`, and only the newest frame is kept — these are hundreds
     /// of kilobytes each and a history of them is worth nothing.
     public var screens: [String: ScreenFrame] = [:]
+    /// Edits in flight, per thread. Not hydrated and not cleared by a
+    /// hydrate: they belong to the request that is still running.
+    public var pendingEdits: [String: PendingEdit] = [:]
     /// Mid-turn sends the harness is holding until the running turn settles,
     /// by thread. They are deliberately NOT in messages: appending one now
     /// would make it the active leaf, and the rest of the running turn would
@@ -58,6 +82,12 @@ public struct CompanionState: Sendable {
     /// bounded tombstone list, so a slow response cannot re-add a row for a
     /// message that is already in the transcript.
     public var drainedQueueIds: [String] = []
+    /// The Live call the paired computer is running, or nil. The harness owns
+    /// it; the phone never writes a guess from its own actions — a
+    /// `live.call` frame, `GET /api/live/call` (Session) or the harness's
+    /// answer to a hang-up (`applyLiveCallEnd`) is the only source. Kept as
+    /// `ended` until the harness clears it, so the bar can say why.
+    public var liveCall: LiveCallState?
 
     public init() {}
 
@@ -82,8 +112,24 @@ public struct CompanionState: Sendable {
     }
 
     /// The active branch of a bot conversation. Rooms and legacy linear
-    /// threads return their full transcript.
+    /// threads return their full transcript. An edit in flight shows in place
+    /// of the message it replaces, and hides everything that followed it,
+    /// so the old question and its old answer leave the screen immediately.
     public func visibleTranscript(forThread threadId: String) -> [Message] {
+        let branch = activeBranch(forThread: threadId)
+        guard let pending = pendingEdits[threadId],
+              let index = branch.firstIndex(where: { $0.id == pending.sourceId }) else {
+            // No edit, or the computer's fork is already the visible branch.
+            return branch
+        }
+        let source = branch[index]
+        var standIn = Message(id: pending.placeholderId, role: .user, kind: .text, at: pending.at)
+        standIn.text = pending.text
+        standIn.parentId = source.parentId
+        return Array(branch[..<index]) + [standIn]
+    }
+
+    private func activeBranch(forThread threadId: String) -> [Message] {
         let all = transcript(forThread: threadId)
         guard let leafId = activeLeafIds[threadId] ?? bot(forThread: threadId)?.activeLeafId else { return all }
         let byId = Dictionary(all.map { ($0.id, $0) }, uniquingKeysWith: { _, newest in newest })
@@ -280,18 +326,49 @@ public struct CompanionState: Sendable {
         reconcileQueued(threadId: threadId)
     }
 
+    /// Fold the fork an edit request returned. The stream normally delivers
+    /// the same fork and its leaf move first; when the response wins that
+    /// race the fork still becomes visible now. A leaf that already sits on
+    /// or below the fork stays put, so a reply that arrived is never hidden.
+    public mutating func adoptEdit(_ message: Message, inThread threadId: String, expectedPending: PendingEdit? = nil) {
+        let currentLeaf = activeLeafIds[threadId] ?? bot(forThread: threadId)?.activeLeafId
+        append(message, to: threadId)
+        if let pending = expectedPending {
+            guard pendingEdits[threadId] == pending, currentLeaf == pending.baseLeafId else { return }
+        }
+        guard !activeBranch(forThread: threadId).contains(where: { $0.id == message.id }) else { return }
+        activeLeafIds[threadId] = message.id
+        if let index = bots.firstIndex(where: { $0.threadId == threadId }) {
+            bots[index].activeLeafId = message.id
+        }
+    }
+
     /// User-message alternatives created by edit-and-retry, oldest first.
     public func versions(of message: Message, inThread threadId: String) -> [Message] {
         guard message.role == .user, message.kind == .text else { return [] }
-        return transcript(forThread: threadId)
-            .filter { $0.role == .user && $0.kind == .text && $0.parentId == message.parentId }
-            .sorted { $0.at == $1.at ? $0.id < $1.id : $0.at < $1.at }
+        return userMessageVersions(inThread: threadId)[message.parentId] ?? []
+    }
+
+    /// Group once for a transcript render, not once for every user bubble.
+    public func userMessageVersions(inThread threadId: String) -> [String?: [Message]] {
+        Dictionary(grouping: transcript(forThread: threadId)
+            .filter { $0.role == .user && $0.kind == .text }
+            .sorted { $0.at == $1.at ? $0.id < $1.id : $0.at < $1.at }, by: \.parentId)
     }
 
     // MARK: - Folding
 
     public mutating func apply(_ streamFrame: StreamFrame) {
         apply(streamFrame.frame)
+    }
+
+    /// Fold a UI delivery atomically, including the cursor. Publishing a
+    /// local copy once avoids invalidating every view twice for every token.
+    public mutating func applyBatch(_ frames: [StreamFrame]) {
+        for frame in frames {
+            apply(frame)
+            advance(to: frame.seq)
+        }
     }
 
     public mutating func apply(_ frame: Frame) {
@@ -452,6 +529,9 @@ public struct CompanionState: Sendable {
         case let .botQueued(queues):
             replaceBotQueues(queues)
 
+        case let .liveCall(_, _, call):
+            liveCall = call
+
         // Nothing to fold: config and provisioning state are not part of
         // this client's job yet.
         case .computer, .config, .unknown:
@@ -521,6 +601,43 @@ public struct CompanionState: Sendable {
         default:
             break
         }
+    }
+
+    /// The harness's answer to `POST /api/live/call/end` for `callId`, from
+    /// the remote bar's hang-up: the bar goes on the answer rather than on
+    /// the frame that follows it. Applied only while that call still reads
+    /// as running here — a frame that already said `ended`, cleared the line
+    /// or brought a newer call is later news than this answer.
+    ///
+    /// `answer` is nil when the harness no longer runs that call (404).
+    /// Returns true when the call still reads as running all the same: a
+    /// frame was missed, and the caller should ask for the line again rather
+    /// than guess at it.
+    public mutating func applyLiveCallEnd(callId: String, answer: LiveCallState?) -> Bool {
+        guard let shown = liveCall, shown.callId == callId, shown.isRunning else { return false }
+        guard let answer else { return true }
+        if answer.callId == callId { liveCall = answer }
+        return false
+    }
+
+    /// The harness's answer to `GET /api/live/call`, applied only if nothing
+    /// newer reached the line while the request was out: no frame folded
+    /// (the cursor is where it was) and no hang-up answer applied (the line
+    /// is what it was). A lookup that straddles a start could otherwise put
+    /// back a `null` from before the 201 and end the call that just began.
+    /// Mirrors `hydrate(_:waitingThreads:ifCursorMatches:)`.
+    ///
+    /// Returns false when the answer was stale and dropped; the stream
+    /// already carried something newer.
+    @discardableResult
+    public mutating func applyLiveCallLookup(
+        _ call: LiveCallState?,
+        ifCursorMatches expectedCursor: String?,
+        lineWas expectedLine: LiveCallState?
+    ) -> Bool {
+        guard cursor == expectedCursor, liveCall == expectedLine else { return false }
+        liveCall = call
+        return true
     }
 
     /// Forget a bot's screen. Called when the panel closes, so the next one

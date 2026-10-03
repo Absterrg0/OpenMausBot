@@ -3,13 +3,17 @@ import { useCallback, useEffect, useMemo, useRef, useState, type SetStateAction 
 import { ArrowUp, BookOpen, Clock, Mic, Paperclip, Square, Target, Users, X } from "lucide-react";
 import { useStore, visibleMessages, currentTaskBot, type Bot, type Group, type Message } from "@/state/store";
 import { cn } from "@/lib/cn";
+import { useMenuMotion } from "./MenuMotion";
 import { activeLocale, t } from "@/lib/i18n";
+import { useOwnerOrAdmin } from "@/lib/use-owner-or-admin";
+import { useAdvancedMode } from "@/lib/interface-mode";
 import {
   draftRevision,
   appendDraftAttachments,
   changeDraftAttachmentPending,
   forgetFailedComposerSend,
   markDraftEdited,
+  prependComposerDraft,
   recoverFailedComposerSend,
   rememberFailedComposerSend,
   replaceDraftAttachment,
@@ -24,10 +28,12 @@ import {
 import { BotAvatar } from "./Avatar";
 import { MentionTextarea } from "./MentionTextarea";
 import { ComposerAttachments, pathForFile } from "./ComposerAttachments";
+import { splitTranscriptCitations, type CitationAttachment } from "@/lib/citations";
 import { LocalComputerAutoWarning } from "./LocalComputerAutoWarning";
 import { PlaceChip } from "./PlaceChip";
 import { FullAccessWarning } from "./FullAccessWarning";
 import { ApprovalModeSelector } from "./ApprovalModeSelector";
+import { CommandAllowlistDialog } from "./CommandAllowlistDialog";
 import { approvalModeFor, type ApprovalMode } from "../../shared/approval-mode";
 import {
   appendPastedText,
@@ -36,7 +42,9 @@ import {
   clipboardImageFiles,
   composeMessage,
   composerShouldRefocus,
+  composerTakesFocusOnOpen,
   imageAttachmentFromFile,
+  replyTargetTakesFocus,
   intakeFiles,
   isLongPaste,
   optimisticImageAttachment,
@@ -46,8 +54,9 @@ import {
   type PasteAttachment,
 } from "@/lib/composer-attachments";
 import { normalizeState } from "@/lib/mascot";
-import { goalCoordinatorForComposer, groupComposerHint, roomRespondersForComposer } from "@/lib/group-routing";
+import { goalCoordinatorForComposer, groupComposerHint, jevRoomRoutingOn, roomRespondersForComposer } from "@/lib/group-routing";
 import { PendingApprovalActions, PendingApprovalPanel, pendingApprovals } from "./PendingApproval";
+import { CallButton } from "./CallView";
 import { useDesktopCapabilities } from "./DesktopCapabilities";
 import { ReplyQuote } from "./ReplyQuote";
 import { useThreadRefs } from "./ThreadRefs";
@@ -111,8 +120,12 @@ export function Composer({
   const bot = profile ? currentTaskBot(profile) : undefined;
   const locked = setupLocked || Boolean(bot?.awaitingThreadSnapshot);
   const { state, dispatch } = useStore();
+  const ownerOrAdmin = useOwnerOrAdmin();
   const { threads, currentBotId } = useThreadRefs();
   const { capabilities } = useDesktopCapabilities();
+  // Simple leaves where a conversation works to its bot's Works on (Auto by
+  // default); pinning a place per conversation is an Advanced control.
+  const advanced = useAdvancedMode();
   const remoteClient = window.ogb?.remoteClient?.active === true;
   // Unified target: a 1:1 bot thread or a room. In a room the @ picker
   // offers members plus @everyone; explicit mentions override the room's
@@ -217,6 +230,8 @@ export function Composer({
   const [dismissedAt, setDismissedAt] = useState<number | null>(null); // Esc'd this @
   const [dismissedSlashAt, setDismissedSlashAt] = useState<number | null>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const draftIdRef = useRef(draftId);
+  draftIdRef.current = draftId;
   // the latest caret, readable from callbacks without re-creating them
   const caretRef = useRef(0);
   caretRef.current = caret;
@@ -230,6 +245,39 @@ export function Composer({
       input.setSelectionRange(at, at);
     });
   }, []);
+  // The composer is keyed by thread, so mounting means a thread was just
+  // opened: put the caret at the end of its draft so the person can type
+  // without clicking the box first. Touch screens are skipped — focusing
+  // there pops the on-screen keyboard over the conversation.
+  useEffect(() => {
+    if (window.matchMedia?.("(hover: none) and (pointer: coarse)").matches) return;
+    const frame = requestAnimationFrame(() => {
+      const input = inputRef.current;
+      if (!input || input.disabled || !composerTakesFocusOnOpen(document.activeElement, input)) return;
+      input.focus();
+      input.setSelectionRange(input.value.length, input.value.length);
+    });
+    return () => cancelAnimationFrame(frame);
+  }, []);
+  // Choosing a message to reply to means typing the reply comes next, so the
+  // caret follows the new target the same way it does when a thread opens.
+  // A reply restored with the thread is the open effect's; the ref starts on
+  // it so the two never both run.
+  const replyToId = replyTo?.id ?? null;
+  const focusedReplyRef = useRef(replyToId);
+  useEffect(() => {
+    const previous = focusedReplyRef.current;
+    focusedReplyRef.current = replyToId;
+    if (!replyTargetTakesFocus(previous, replyToId)) return;
+    if (window.matchMedia?.("(hover: none) and (pointer: coarse)").matches) return;
+    const frame = requestAnimationFrame(() => {
+      const input = inputRef.current;
+      if (!input || input.disabled || !composerTakesFocusOnOpen(document.activeElement, input)) return;
+      input.focus();
+      input.setSelectionRange(input.value.length, input.value.length);
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [replyToId]);
   const mentionListRef = useRef<HTMLDivElement>(null);
   // what was typed before the mic went on — partials append after it
   const baseText = useRef("");
@@ -315,6 +363,8 @@ export function Composer({
     return mentionChoicesForQuery(pool, mention.query);
   }, [mention, dismissedAt, state.bots, bot?.id, group, members]);
   const mentionPickerOpen = candidates.length > 0;
+  const commandMotion = useMenuMotion(commandPickerOpen);
+  const mentionMotion = useMenuMotion(mentionPickerOpen);
 
   useEffect(
     () => setHighlight(0),
@@ -398,6 +448,28 @@ export function Composer({
     }
   };
   useEffect(() => setSteering(false), [threadId, queueHeadId]);
+  // Edit pulls a queued message back into the composer. The server removes it
+  // from the queue first; only a confirmed removal hands the words back, so a
+  // message that already drained into a turn can never also be resent.
+  const editQueued = (queueId: string) => {
+    const queued = queuedMessages.find((item) => item.queueId === queueId);
+    if (!queued) return;
+    const targetDraftId = draftId;
+    const onCancelled = () => {
+      const cited = splitTranscriptCitations(queued.text);
+      if (cited.display) prependComposerDraft(targetDraftId, cited.display);
+      appendDraftAttachments(targetDraftId, cited.citations);
+      if (targetDraftId !== draftIdRef.current) return;
+      requestAnimationFrame(() => {
+        const input = inputRef.current;
+        if (!input) return;
+        input.focus();
+        input.setSelectionRange(cited.display.length, cited.display.length);
+      });
+    };
+    if (group) dispatch({ type: "cancelGroupQueued", groupId: group.id, threadId, queueId, onCancelled });
+    else if (bot) dispatch({ type: "cancelQueued", botId: bot.id, threadId, queueId, onCancelled });
+  };
   // Double-Enter gesture: when a send lands as a queued chip on a busy
   // steer-capable thread (live steer lost its race, an attachment, an
   // older CLI), a second Enter within a short window pulls that queue into
@@ -434,6 +506,7 @@ export function Composer({
     threadId: string;
   } | null>(null);
   const [attachmentNotice, setAttachmentNotice] = useState<string | null>(null);
+  const [commandAllowlistTarget, setCommandAllowlistTarget] = useState<{ botId: string; botName: string; threadId: string } | null>(null);
   // Approval mode belongs to one bot; a room has several, each with its own.
   const modeBot = group ? undefined : bot;
   const approvalEngine = modeBot
@@ -681,12 +754,18 @@ export function Composer({
         editText(base ? `${base} ${line.text}` : line.text);
       }
     });
-    const offEnd = bridge.onSpeechEnd(({ code }) => {
+    const offEnd = bridge.onSpeechEnd(({ code, reason }) => {
       setRecording(false);
       if (code === 2) {
         setSpeechError(t("composer.dictation.macOnly"));
       } else if (code === 1) {
-        setSpeechError(t("composer.dictation.permission"));
+        setSpeechError(t(
+          reason === "dictation-disabled"
+            ? "composer.dictation.disabled"
+            : reason === "speech-not-authorized"
+              ? "composer.dictation.permission"
+              : "composer.dictation.failed",
+        ));
       }
     });
     void bridge.speechStart();
@@ -744,11 +823,11 @@ export function Composer({
             </button>
           </div>
         ))}
-        {commandPickerOpen && (
+        {commandMotion.shown && (
           <div
             role="listbox"
             aria-label={t("composer.commands.aria")}
-            className="absolute bottom-full left-2 z-20 mb-2 w-80 overflow-hidden rounded-xl border border-hairline/40 bg-raised shadow-lg"
+            className={cn("absolute bottom-full left-2 z-20 mb-2 w-80 overflow-hidden rounded-xl border border-hairline/40 bg-raised shadow-lg", commandMotion.className)} {...commandMotion.exitProps}
           >
             <div className="border-b border-hairline/20 px-3 py-2 text-[10px] font-semibold uppercase tracking-[0.08em] text-ink-secondary">
               {t("composer.commands.title")}
@@ -784,12 +863,12 @@ export function Composer({
             ))}
           </div>
         )}
-        {mentionPickerOpen && (
+        {mentionMotion.shown && (
           <div
             ref={mentionListRef}
             role="listbox"
             aria-label={t("composer.mention.aria")}
-            className="absolute bottom-full left-2 z-20 mb-2 max-h-72 w-72 overflow-x-hidden overflow-y-auto overscroll-contain rounded-xl border border-hairline/40 bg-raised shadow-lg"
+            className={cn("absolute bottom-full left-2 z-20 mb-2 max-h-72 w-72 overflow-x-hidden overflow-y-auto overscroll-contain rounded-xl border border-hairline/40 bg-raised shadow-lg", mentionMotion.className)} {...mentionMotion.exitProps}
           >
             {candidates.map((peer, i) => (
               <button
@@ -856,6 +935,7 @@ export function Composer({
           items={attachments}
           onAdd={addAttachments}
           onRemove={removeAttachment}
+          onChangeCitation={(citation: CitationAttachment) => editAttachments((current) => current.map((attachment) => attachment.id === citation.id ? citation : attachment))}
           onDisplayInChatBox={displayPasteInChatBox}
           allowImages={engineSupportsImages}
           notice={attachmentNotice}
@@ -873,6 +953,7 @@ export function Composer({
             if (group) dispatch({ type: "cancelGroupQueued", groupId: group.id, threadId, queueId });
             else if (bot) dispatch({ type: "cancelQueued", botId: bot.id, threadId, queueId });
           }}
+          onEdit={locked ? undefined : editQueued}
         />
         <div className="relative">
           {/* App-ground from the pill midline down, full-bleed. Bubbles may
@@ -885,8 +966,15 @@ export function Composer({
             data-composer-backdrop
             className="pointer-events-none absolute -left-5 -right-5 -bottom-3 top-1/2 bg-app"
           />
-        <div data-tour="composer" className="relative z-[1] rounded-3xl bg-composer px-2 py-1.5 ring-1 ring-composer-ring">
-        <div className="flex items-end gap-1">
+        {/* One row while it fits: chips, editor, mic. The editor is the only
+            child that can shrink, so in a narrow column (a bot's settings open
+            beside the chat, a small window) it collapsed to a few pixels and
+            its placeholder stacked one letter per line, while the auto-grow
+            made the box tall to fit them. Below the container width where the
+            chips and the placeholder cannot share a line, the editor takes a
+            full line of its own above the chips instead. */}
+        <div data-tour="composer" className="@container/composer relative z-[1] rounded-3xl bg-composer px-2 py-1.5 ring-1 ring-composer-ring">
+        <div data-composer-row className="flex items-end gap-1 @max-[30rem]/composer:flex-wrap">
           <input
             ref={fileInput}
             type="file"
@@ -899,7 +987,7 @@ export function Composer({
             }}
           />
           {!locked && (
-            <div className="flex items-center gap-1">
+            <div className="flex flex-wrap items-center gap-1">
               <button
                 type="button"
                 onClick={() => fileInput.current?.click()}
@@ -950,9 +1038,10 @@ export function Composer({
                   onSelect={setApprovalMode}
                   disabled={Boolean(modeBot.busy)}
                   trustedModesAvailable={trustedThreadAccess}
+                  onManageCommandAllowlist={ownerOrAdmin === true ? () => setCommandAllowlistTarget({ botId: modeBot.id, botName: modeBot.name, threadId: modeBot.threadId }) : undefined}
                 />
               )}
-              {modeBot && !remoteClient && (
+              {modeBot && !remoteClient && advanced && (
                 <PlaceChip
                   bot={modeBot}
                   task={composerTask}
@@ -964,6 +1053,7 @@ export function Composer({
             </div>
           )}
           <MentionTextarea
+          wrapperClassName="@max-[30rem]/composer:order-first @max-[30rem]/composer:basis-full"
           inputRef={inputRef}
           peers={group ? members ?? [] : state.bots.filter((member) => member.id !== bot?.id)}
           everyone={Boolean(group && !group.dm)}
@@ -1071,14 +1161,14 @@ export function Composer({
                     ? t("composer.placeholder.goal", { name: group.name })
                     : t("composer.placeholder.group", {
                         name: group.name,
-                        hint: groupComposerHint(group, members ?? []),
+                        hint: groupComposerHint(group, members ?? [], { jevOn: jevRoomRoutingOn(state.config) }),
                       })
                   : t("composer.placeholder.bot", { name: bot?.name ?? "" })
           }
           aria-label={t("composer.placeholder.bot", { name: group ? group.name : (bot?.name ?? "") })}
             className="block max-h-[9rem] min-h-6 w-full resize-none overflow-y-auto bg-transparent px-1 py-1 text-[15px] leading-6 placeholder:text-ink-secondary focus:outline-none"
           />
-          <div className="flex items-center gap-1">
+          <div data-composer-actions className="flex items-center gap-1 @max-[30rem]/composer:ml-auto">
           {/* Stop stays a stop. Stop-then-steer is named beside the queued
               message above, where its effect is visible before activation. */}
           {busy && !locked && (
@@ -1106,6 +1196,10 @@ export function Composer({
             <Mic size={18} />
           </button>
         )}
+        {/* Calling the bot lives here, beside dictation, rather than in the
+            chat header: it is another way to talk to it. Rooms keep their
+            group call button in the room header. */}
+        {bot && !group && <CallButton bot={bot} placement="composer" />}
         {hasContent && !locked && (
           <button
             onClick={send}
@@ -1140,6 +1234,11 @@ export function Composer({
         </div>
       </div>
       <div className="pointer-events-auto">
+      {commandAllowlistTarget && <CommandAllowlistDialog
+        key={`${commandAllowlistTarget.botId}:${commandAllowlistTarget.threadId}`}
+        {...commandAllowlistTarget}
+        onClose={() => setCommandAllowlistTarget(null)}
+      />}
       <FullAccessWarning
         open={approvalWarning?.mode === "full"}
         scope="thread"

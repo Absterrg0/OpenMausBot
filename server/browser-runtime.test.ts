@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { BrowserRuntime, browserRuntimeEnv, type BrowserSpawnSpec } from "./browser-runtime.ts";
+import { BrowserRuntime, TransportError, browserRuntimeEnv, type BrowserSpawnSpec } from "./browser-runtime.ts";
 
 const runtimes: BrowserRuntime[] = [];
 function runtime(options: ConstructorParameters<typeof BrowserRuntime>[0] = {}) {
@@ -65,6 +65,23 @@ describe("browser takeover gate", () => {
     await human;
     expect(value.heldBy("s")).toBeNull();
     await expect(value.withAgentAction("s", async () => "safe screenshot")).resolves.toBe("safe screenshot");
+  });
+
+  it("says whether a take waited for the bot's action, and when an interruption needs a restart", async () => {
+    const value = runtime();
+    await expect(value.take("s", "owner")).resolves.toBe(false);
+    value.release("s", "owner");
+    const action = deferred();
+    const pending = value.withAgentAction("s", () => action.promise);
+    const observed = expect(pending).rejects.toThrow(/paused/);
+    const taking = value.take("s", "owner");
+    action.resolve(); await observed;
+    await expect(taking).resolves.toBe(true);
+    expect(value.interrupted("s")).toBe(false);
+    await expect(value.withHumanAction("s", "owner", async () => { throw new Error("navigation timed out"); })).rejects.toThrow(/timed out/);
+    expect(value.interrupted("s")).toBe(true);
+    await value.close("s");
+    expect(value.interrupted("s")).toBe(false);
   });
 
   it("release cancels an in-flight take and does not grant control afterwards", async () => {
@@ -149,6 +166,7 @@ describe("browser takeover gate", () => {
 const FAKE_MCP = `
 const lines = require('node:readline').createInterface({input:process.stdin});
 let initialized = false;
+let rpcTimeoutCalls = 0;
 lines.on('line', line => {
   const m = JSON.parse(line);
   if (m.method === 'notifications/initialized') { initialized = true; return; }
@@ -160,6 +178,12 @@ lines.on('line', line => {
   else if (m.params.name === 'oversized') { process.stdout.write('x'.repeat(16777217)); return; }
   else if (m.params.name === 'bulky') result = { content:[{type:'text',text:'x'.repeat(50000)},{type:'image',data:'AAAA',mimeType:'image/png'}], structuredContent:{ huge: 'y'.repeat(200000) } };
   else if (m.params.name === 'rpc-error') { process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:m.id,error:{code:-1,message:'Expected refusal'}})+'\\n'); return; }
+  else if (m.params.name === 'rpc-timeout') { rpcTimeoutCalls += 1; if (rpcTimeoutCalls === 1) { process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:m.id,error:{code:-1,message:'request timed out'}})+'\\n'); return; } result = { content:[{type:'text',text:'engine answered a repeat rpc-timeout call'}] }; }
+  else if (m.params.name === 'agent_browser_open' && m.params.arguments.url === 'https://refused.test') result = { isError:true, content:[{type:'text',text:'Navigation refused'}] };
+  else if (m.params.name === 'agent_browser_snapshot' && process.env.REJECT_VERIFICATION === '1') { process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:m.id,error:{code:-1,message:'Snapshot refused'}})+'\\n'); return; }
+  else if (m.params.name === 'agent_browser_snapshot' && process.env.HANG_VERIFICATION === '1') return;
+  else if (m.params.name === 'agent_browser_snapshot' && process.env.EMPTY_VERIFICATION === '1') result = { content:[] };
+  else if (m.params.name === 'agent_browser_snapshot' && process.env.FAIL_VERIFICATION === '1') result = { isError:true, content:[{type:'text',text:'Snapshot unavailable'}] };
   else result = { content:[{type:'text',text:JSON.stringify(m.params)}],pid:process.pid };
   process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:m.id,result})+'\\n');
 });
@@ -167,6 +191,57 @@ lines.on('line', line => {
 const spec = (): BrowserSpawnSpec => ({ command: process.execPath, args: ["-e", FAKE_MCP], env: { PATH: process.env.PATH } });
 
 describe("server-owned browser MCP runtime", () => {
+  it("does not turn a failed navigation or failed observation into success", async () => {
+    const value = runtime();
+    await expect(value.agentRpc("refused", spec(), "tools/call", {
+      name: "agent_browser_open", arguments: { url: "https://refused.test" },
+    })).resolves.toEqual({ isError: true, content: [{ type: "text", text: "Navigation refused" }] });
+    const failing = spec();
+    failing.env.FAIL_VERIFICATION = "1";
+    const result = await value.agentRpc("unverified", failing, "tools/call", {
+      name: "agent_browser_open", arguments: { url: "https://example.com" },
+    }) as { isError: boolean; content: Array<{ text: string }> };
+    expect(result.isError).toBe(true);
+    expect(result.content[1].text).toContain("verification failed");
+    expect(result.content[2].text).toBe("Snapshot unavailable");
+  });
+  it("preserves navigation when its observation rejects at the RPC level", async () => {
+    const value = runtime(), failing = spec();
+    failing.env.REJECT_VERIFICATION = "1";
+    const result = await value.agentRpc("rejected-snapshot", failing, "tools/call", {
+      name: "agent_browser_open", arguments: { url: "https://example.com" },
+    }) as { isError: boolean; content: Array<{ text: string }> };
+    expect(result.isError).toBe(true);
+    expect(JSON.parse(result.content[0].text).name).toBe("agent_browser_open");
+    expect(result.content[1].text).toContain("verification failed");
+    await expect(value.withAgentAction("rejected-snapshot", async () => "available")).resolves.toBe("available");
+  });
+  it("keeps transport uncertainty when post-navigation observation times out", async () => {
+    const value = runtime({ requestTimeoutMs: 1_000 }), failing = spec();
+    failing.env.HANG_VERIFICATION = "1";
+    await expect(value.agentRpc("hung-snapshot", failing, "tools/call", {
+      name: "agent_browser_open", arguments: { url: "https://example.com" },
+    })).rejects.toBeInstanceOf(TransportError);
+    await expect(value.withAgentAction("hung-snapshot", async () => "no")).rejects.toThrow(/Restart/);
+  });
+  it("does not claim page verification when the snapshot is empty", async () => {
+    const empty = spec();
+    empty.env.EMPTY_VERIFICATION = "1";
+    const result = await runtime().agentRpc("empty-snapshot", empty, "tools/call", {
+      name: "agent_browser_open", arguments: { url: "https://example.com" },
+    }) as { isError: boolean; content: Array<{ text: string }> };
+    expect(result.isError).toBe(true);
+    expect(result.content[1].text).toContain("verification failed");
+  });
+  it("observes the same page after navigation without repeating the navigation", async () => {
+    const value = runtime();
+    const result = await value.agentRpc("verified-open", spec(), "tools/call", {
+      name: "agent_browser_open", arguments: { url: "https://example.com", session: "wrong-session" },
+    }) as { content: Array<{ text: string }> };
+    expect(JSON.parse(result.content[0].text)).toEqual({ name: "agent_browser_open", arguments: { url: "https://example.com" } });
+    expect(result.content[1].text).toContain("sign-in");
+    expect(JSON.parse(result.content[2].text)).toEqual({ name: "agent_browser_snapshot", arguments: { compact: true } });
+  });
   it("inherits only host plumbing and explicit engine settings", () => {
     vi.stubEnv("OPENAI_API_KEY", "must-not-inherit");
     try {
@@ -217,6 +292,21 @@ describe("server-owned browser MCP runtime", () => {
     }
   });
 
+  it("surfaces an engine-reported JSON-RPC timeout instead of retrying it", async () => {
+    // Only a TransportError timeout may be retried: its timer already killed
+    // that child, so the next attempt starts a fresh transport. This engine
+    // answers "request timed out" over a live transport, which is the engine
+    // refusing rather than the plumbing failing; retrying would re-ask the
+    // same wedged engine for the whole window.
+    const value = runtime();
+    // The fixture times out only the first rpc-timeout call and answers any
+    // repeat distinctly, so a retry would resolve instead of reject: the
+    // rejection below is proof the first timeout stayed the final outcome.
+    const failure = value.agentRpc("s", spec(), "tools/call", { name: "rpc-timeout" });
+    await expect(failure).rejects.toThrow(/request timed out/);
+    await expect(failure).rejects.not.toBeInstanceOf(TransportError);
+  });
+
   it("still refuses an agent after a human's own interrupted command, browser alive", async () => {
     // The other half of the contract: this uncertainty is NOT self-resolving,
     // because the browser is still running and may act again.
@@ -240,7 +330,51 @@ describe("server-owned browser MCP runtime", () => {
     expect(other.pid).not.toBe(list.pid);
     await value.take("one", "owner");
     await expect(value.agentRpc("one", spec(), "tools/call", { name: "echo" })).rejects.toThrow(/paused/);
-    await expect(value.agentRpc("one", spec(), "tools/list", {})).resolves.toMatchObject({ tools: [{ name: "echo" }] });
+    await expect(value.agentRpc("one", spec(), "tools/list", {})).resolves.toMatchObject({ tools: [{ name: "echo" }, { name: "restart_browser" }] });
+  });
+
+  it("lets the agent restart an interrupted browser itself, then resume", async () => {
+    const closeBrowser = vi.fn(async () => true);
+    const value = runtime({ closeBrowser });
+    await value.agentRpc("s", spec(), "tools/list", {});
+    await expect(value.agentRpc("s", spec(), "tools/call", { name: "crash" })).rejects.toThrow();
+    await expect(value.agentRpc("s", spec(), "tools/call", { name: "echo" })).rejects.toThrow(/restart_browser/);
+    // A new turn lists tools without reaching the engine: the engine's tools
+    // from the last list, plus the one way out.
+    const listed = await value.agentRpc("s", spec(), "tools/list", {}) as { tools: Array<{ name: string }> };
+    expect(listed.tools.map((tool) => tool.name)).toEqual(["echo", "restart_browser"]);
+    const check = vi.fn();
+    await expect(value.agentRpc("s", spec(), "tools/call", { name: "restart_browser", arguments: {} }, check))
+      .resolves.toMatchObject({ content: [{ text: expect.stringContaining("Browser restarted") }] });
+    expect(closeBrowser).toHaveBeenCalledWith("s", expect.objectContaining({ command: process.execPath }));
+    expect(check).toHaveBeenCalledTimes(2);
+    expect(value.heldBy("s")).toBeNull();
+    await expect(value.agentRpc("s", spec(), "tools/call", { name: "echo", arguments: { text: "back" } }))
+      .resolves.toMatchObject({ content: [{ text: expect.stringContaining("back") }] });
+  });
+
+  it("stays uncertain without holding the browser when the agent's restart cannot close it", async () => {
+    const value = runtime({ closeBrowser: async () => false });
+    await value.agentRpc("s", spec(), "tools/list", {});
+    await expect(value.agentRpc("s", spec(), "tools/call", { name: "crash" })).rejects.toThrow();
+    await expect(value.agentRpc("s", spec(), "tools/call", { name: "restart_browser" })).rejects.toThrow(/could not be closed/);
+    await expect(value.agentRpc("s", spec(), "tools/call", { name: "echo" })).rejects.toThrow(/Restart/);
+    // No agent-owned hold: the person's own Restart button still works.
+    expect(value.heldBy("s")).toBeNull();
+    await value.restart("s", "person", async () => {});
+    await expect(value.agentRpc("s", spec(), "tools/call", { name: "echo" })).resolves.toBeTruthy();
+  });
+
+  it("never lets the agent restart a browser a person controls, or after its turn is revoked", async () => {
+    const closeBrowser = vi.fn(async () => true);
+    const value = runtime({ closeBrowser });
+    await value.agentRpc("s", spec(), "tools/list", {});
+    await value.take("s", "person");
+    await expect(value.agentRpc("s", spec(), "tools/call", { name: "restart_browser" })).rejects.toThrow(/paused/);
+    value.release("s", "person");
+    const revoked = () => { throw new Error("capability revoked"); };
+    await expect(value.agentRpc("s", spec(), "tools/call", { name: "restart_browser" }, revoked)).rejects.toThrow(/revoked/);
+    expect(closeBrowser).not.toHaveBeenCalled();
   });
 
   it("keeps completed MCP refusals distinct from uncertain transport failure", async () => {

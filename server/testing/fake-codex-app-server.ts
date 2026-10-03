@@ -6,7 +6,7 @@
 //
 //   FAKE_CODEX_MODE   happy (default) | approval | resume | stream | windows-command |
 //                     mcp-elicitation | mcp-app-approval | mcp-form | permissions-approval | question |
-//                     multi-question | empty-question | malformed-question | config-profile |
+//                     multi-question | mixed-question | empty-question | malformed-question | config-profile |
 //                     config-profile-unsupported | config-read-error | image |
 //                     logged-in-stdout | logged-out | unauthorized | late-request
 //   FAKE_CODEX_LAUNCH_CRASHES  die at turn/start (before ack) with transient stderr,
@@ -27,6 +27,9 @@
 //   FAKE_CODEX_ASK_HOLD        question modes: record the ask reply and hold the turn open, for
 //                              timeout tests that advance the clock
 //   FAKE_CODEX_DUMP   path to write {pid, argv, env, calls, decision} as JSON
+//   FAKE_CODEX_IGNORE_FEATURES  "1": config/read reports no `-c features.*` override
+//                     (a Codex that did not take them)
+//   FAKE_CODEX_APPROVAL_REQUEST JSON {method, params} override in approval mode
 //   FAKE_CODEX_ACCOUNT_EMAIL  synthetic ChatGPT identity (default ada@example.test)
 //   FAKE_CODEX_ACCOUNT_MODE   chatgpt (default) | api-key | none | unsupported | error | hang
 //   FAKE_CODEX_RESUME_ERROR   JSON-RPC error object to reject thread/resume
@@ -49,6 +52,19 @@ import { existsSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 
 
 
 const mode = process.env.FAKE_CODEX_MODE ?? "happy";
+
+// Follow the spawning server down, including on Windows where ppid does
+// not change after parent exit. Inline: fakes must stay self-contained.
+{
+  const spawner = process.ppid;
+  const orphanWatch = setInterval(() => {
+    if (process.ppid !== spawner) process.exit(0);
+    try { process.kill(spawner, 0); } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ESRCH") process.exit(0);
+    }
+  }, 500);
+  orphanWatch.unref();
+}
 
 // stdout and stderr are separate pipes: the writer cannot order them for
 // the reader, and a fixed sleep only pretends to. These knobs synchronize
@@ -84,6 +100,12 @@ if (process.argv[2] === "login" && process.argv[3] === "status") {
   process.exit(0);
 }
 const calls: Array<{ method: string; params: unknown }> = [];
+// Opt-in config resolution for scope tests; mirror the native -c precedence.
+const mcpOverrides: Record<string, Record<string, unknown>> = {};
+for (let index = 0; process.env.FAKE_CODEX_MCP_OVERRIDES === "1" && index < process.argv.length; index++) {
+  const match = process.argv[index - 1] === "-c" ? /^mcp_servers\.([^.]+)\.([^.]+)=(.*)$/.exec(process.argv[index]!) : null;
+  if (match) (mcpOverrides[match[1]!] ??= {})[match[2]!] = JSON.parse(match[3]!);
+}
 let developerInstructions = "";
 let resumedThread: string | null = null;
 let decision: unknown = null;
@@ -105,6 +127,18 @@ const notify = (method: string, params: any) => out({
 // The response and restored usage notification may arrive in one stdout
 // chunk. Force that ordering for the baseline fixture instead of relying on
 // the OS to coalesce two writes under load.
+// Model the resolved policy returned by native start/resume, including fields
+// absent from the client's short sandbox selector.
+const resolvedSandbox = (params: Record<string, unknown>) => {
+  if (process.env.FAKE_CODEX_RESOLVED_SANDBOX) return JSON.parse(process.env.FAKE_CODEX_RESOLVED_SANDBOX);
+  if (params.sandbox === "danger-full-access") return { type: "dangerFullAccess" };
+  if (params.sandbox === "workspace-write") return {
+    type: "workspaceWrite", networkAccess: false, writableRoots: [],
+    excludeTmpdirEnvVar: false, excludeSlashTmp: false,
+  };
+  return { type: "readOnly" };
+};
+
 const threadReply = (response: unknown) => {
   if (!process.env.FAKE_CODEX_RESTORED_USAGE) return out(response);
   const restored = {
@@ -329,11 +363,19 @@ process.stdin.on("data", (chunk) => {
                   approval_policy: "never",
                   approvals_reviewer: "auto_review",
                   sandbox_mode: "read-only",
-                  mcp_servers: {
+                  mcp_servers: process.env.FAKE_CODEX_MCP_OVERRIDES === "1" ? mcpOverrides : process.env.FAKE_CODEX_MCP_CONFIG ? JSON.parse(process.env.FAKE_CODEX_MCP_CONFIG) : {
                     harmless_name: { env: { DISPLAY_LABEL: "innocuous-config-secret-7a9c" } },
                   },
                 }),
               developer_instructions: process.env.FAKE_CODEX_INSTRUCTIONS ?? null,
+              ...(process.env.FAKE_CODEX_SHELL_ENVIRONMENT_POLICY ? {
+                shell_environment_policy: JSON.parse(process.env.FAKE_CODEX_SHELL_ENVIRONMENT_POLICY),
+              } : {}),
+              // `-c features.<name>=<bool>` overrides, as the real config/read reports them.
+              features: Object.fromEntries(process.argv.flatMap((arg, index) => {
+                const match = process.argv[index - 1] === "-c" ? /^features\.(\w+)=(true|false)$/.exec(arg) : null;
+                return match && process.env.FAKE_CODEX_IGNORE_FEATURES !== "1" ? [[match[1], match[2] === "true"]] : [];
+              })),
             },
             origins: {},
           },
@@ -347,9 +389,9 @@ process.stdin.on("data", (chunk) => {
           out({ jsonrpc: "2.0", id: msg.id, error: JSON.parse(process.env.FAKE_CODEX_RESUME_ERROR) });
         } else if (msg.params?.permissions && (!experimentalApi || mode === "config-profile-unsupported")) {
           out({ jsonrpc: "2.0", id: msg.id, error: { code: -32602, message: "experimental API required for permissions" } });
-        } else if (mode === "resume" || mode === "helper-events" || mode === "instructions-unsupported" || mode === "config-profile" || mode === "config-profile-unsupported" ||
+        } else if (mode === "resume" || mode === "review-events" || mode === "helper-events" || mode === "instructions-unsupported" || mode === "config-profile" || mode === "config-profile-unsupported" ||
             (mode === "resume-then-missing" && !existsSync(process.env.FAKE_CODEX_STATE ?? ""))) {
-          threadReply({ jsonrpc: "2.0", id: msg.id, result: { thread: { id: msg.params?.threadId } } });
+          threadReply({ jsonrpc: "2.0", id: msg.id, result: { thread: { id: msg.params?.threadId }, sandbox: resolvedSandbox(msg.params ?? {}) } });
         } else {
           out({ jsonrpc: "2.0", id: msg.id, error: { code: -32600, message: `no rollout found for thread id ${msg.params?.threadId}` } });
         }
@@ -398,7 +440,7 @@ process.stdin.on("data", (chunk) => {
         } else if (msg.params?.permissions && (!experimentalApi || mode === "config-profile-unsupported")) {
           out({ jsonrpc: "2.0", id: msg.id, error: { code: -32602, message: "experimental API required for permissions" } });
         } else {
-          threadReply({ jsonrpc: "2.0", id: msg.id, result: { thread: { id: "codex-thread-1" }, model: "fake-codex-model" } });
+          threadReply({ jsonrpc: "2.0", id: msg.id, result: { thread: { id: "codex-thread-1" }, model: "fake-codex-model", sandbox: resolvedSandbox(msg.params ?? {}) } });
         }
         break;
       case "turn/start": {
@@ -578,6 +620,13 @@ process.stdin.on("data", (chunk) => {
           : "ls -la";
         notify("item/started", { item: { id: "i1", type: "commandExecution", command } });
         notify("item/started", { item: { id: "w1", type: "webSearch", query: "OpenMausBot" } });
+        const reviewOnce = process.env.FAKE_CODEX_REVIEW_ONCE_FILE;
+        if (process.env.FAKE_CODEX_REVIEW_EVENTS && (!reviewOnce || !existsSync(reviewOnce))) {
+          if (reviewOnce) writeFileSync(reviewOnce, "1");
+          for (const event of JSON.parse(process.env.FAKE_CODEX_REVIEW_EVENTS)) {
+            out({ jsonrpc: "2.0", method: event.method, params: event.params });
+          }
+        }
         if (mode === "mcp-elicitation") {
           out({
             jsonrpc: "2.0",
@@ -651,8 +700,15 @@ process.stdin.on("data", (chunk) => {
               },
             },
           });
-        } else if (mode === "question" || mode === "multi-question" || mode === "empty-question" || mode === "malformed-question") {
-          // one card per ask: a single question vs a bundled pair vs none vs a malformed shape
+        } else if (
+          mode === "question" ||
+          mode === "multi-question" ||
+          mode === "mixed-question" ||
+          mode === "empty-question" ||
+          mode === "malformed-question"
+        ) {
+          // one card per ask: a single question vs a bundled pair vs a
+          // broken-plus-valid pair vs none vs a malformed shape
           out({
             jsonrpc: "2.0",
             id: 101,
@@ -666,6 +722,11 @@ process.stdin.on("data", (chunk) => {
                     question: "Ship today?",
                     options: ["Yes", "No", "Maybe", "Later", "Soon", "Never"].map((label) => ({ label })),
                   }]
+                : mode === "mixed-question"
+                ? [
+                    { id: "q-broken", question: "   ", options: [{ label: "Broken choice" }] },
+                    { id: "q-review", question: "Who reviews?", options: [{ label: "Ada" }, { label: "Lin" }] },
+                  ]
                 : mode === "empty-question"
                 ? []
                 : [
@@ -676,10 +737,17 @@ process.stdin.on("data", (chunk) => {
           });
         } else if (mode === "approval" || mode === "windows-command") {
           const approvalCommand = mode === "windows-command" ? command : "rm -rf scratch";
-          out({ jsonrpc: "2.0", id: 100, method: "execCommandApproval", params: { command: approvalCommand } });
+          const approval = process.env.FAKE_CODEX_APPROVAL_REQUEST
+            ? JSON.parse(process.env.FAKE_CODEX_APPROVAL_REQUEST)
+            : { method: "execCommandApproval", params: { command: approvalCommand } };
+          out({ jsonrpc: "2.0", id: 100, ...approval });
           // turn continues from the approval response handler above
         } else {
           finishTurn();
+          if (process.env.FAKE_CODEX_REVIEW_AFTER_COMPLETION) {
+            const event = JSON.parse(process.env.FAKE_CODEX_REVIEW_AFTER_COMPLETION);
+            out({ jsonrpc: "2.0", method: event.method, params: event.params });
+          }
         }
         break;
       }

@@ -3,12 +3,13 @@
 // once-only rule live in lib/first-conversation.ts; this component only
 // observes the store and persists dismissals to the server's hint list.
 // It stays quiet until the welcome tour is done, and never shows on a
-// paired remote client.
+// paired remote client or to a hosted workspace's member, who cannot save
+// the hint list.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { hintSeenPatch, welcomeDue } from "@/lib/onboarding";
 import { emailGateDone } from "@/lib/analytics";
 import { currentStep } from "@/lib/guided-tour";
-import { anchorFor, nextSpotlight, placementFor, tourComplete, type ChatObservation, type SpotlightId } from "@/lib/first-conversation";
+import { anchorFor, cardAnswered, nextSpotlight, placementFor, tourComplete, type ChatObservation, type SpotlightId } from "@/lib/first-conversation";
 import { t } from "@/lib/i18n";
 import type { MausState } from "@/lib/mascot";
 import { api, useStore, useStreaming } from "@/state/store";
@@ -21,7 +22,7 @@ const COPY: Record<SpotlightId, { key: "onboarding.spot.composer" | "onboarding.
   "spot.connector": { key: "onboarding.spot.connector", mascot: "curious" },
 };
 
-export function FirstConversationTour() {
+export function FirstConversationTour({ quiet = false }: { quiet?: boolean }) {
   const { state, dispatch } = useStore();
   const { streaming } = useStreaming();
   const remoteClient = window.ogb?.remoteClient?.active === true;
@@ -44,6 +45,7 @@ export function FirstConversationTour() {
   }, [busy]);
 
   const eligible =
+    !quiet &&
     !remoteClient &&
     !state.welcomeOpen &&
     Boolean(record?.completedAt) &&
@@ -62,13 +64,6 @@ export function FirstConversationTour() {
     ),
   };
 
-  useEffect(() => {
-    if (!eligible) return;
-    const next = nextSpotlight(observation, seen, active);
-    if (next !== active) setActive(next);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [eligible, seen, active, observation.replyStarted, observation.replyFinished, observation.approvalVisible, observation.connectorVisible]);
-
   const dismiss = useCallback(() => {
     if (!active) return;
     const id = active;
@@ -81,7 +76,20 @@ export function FirstConversationTour() {
       .catch(() => {});
   }, [active, record, dispatch]);
 
-  if (!eligible || !active || !bot) return null;
+  useEffect(() => {
+    if (!eligible) return;
+    // the card was answered: the tip has done its job and must not stay
+    // over the reply that follows
+    if (active && cardAnswered(active, observation)) {
+      dismiss();
+      return;
+    }
+    const next = nextSpotlight(observation, seen, active);
+    if (next !== active) setActive(next);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [eligible, seen, active, dismiss, observation.replyStarted, observation.replyFinished, observation.approvalVisible, observation.connectorVisible]);
+
+  if (!eligible || !active || !bot || cardAnswered(active, observation)) return null;
   const copy = COPY[active];
   return (
     <Spotlight

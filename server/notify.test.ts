@@ -2,7 +2,7 @@
 // tests are mostly about the cases where the answer is "stay quiet".
 import { describe, expect, it } from "vitest";
 
-import { blockedTarget, buildNotification, summarize } from "./notify.ts";
+import { blockedTarget, buildNotification, buildSpendNotification, summarize } from "./notify.ts";
 
 const bot = { id: "bot-1", name: "Scout", threadId: "thread-1" };
 
@@ -23,6 +23,18 @@ describe("buildNotification", () => {
     expect(buildNotification("incident", bot, "thread-1", "the run stopped: exit_before_result")?.title).toBe("Scout hit a problem");
     expect(buildNotification("turn-failed", bot, "thread-1", "the Local VM is not ready")?.title)
       .toBe("Scout couldn't start");
+  });
+
+  it("announces a delegation settle as a resume with results", () => {
+    expect(buildNotification("delegation-settled", bot, "thread-1", "Results in from Atlas")).toMatchObject({
+      kind: "delegation-settled",
+      botId: "bot-1",
+      threadId: "thread-1",
+      title: "Scout resumed with results",
+      body: "Results in from Atlas",
+    });
+    // the toggle rules this frame like every other
+    expect(buildNotification("delegation-settled", { ...bot, notifications: false }, "thread-1", "Results in from Atlas")).toBeNull();
   });
 
   it("stays silent for a bot whose notifications are off", () => {
@@ -107,5 +119,15 @@ describe("summarize", () => {
     expect(long).toHaveLength(140);
     expect(long.endsWith("…")).toBe(true);
     expect(summarize("short")).toBe("short");
+  });
+});
+
+describe("buildSpendNotification", () => {
+  it("opens the thread whose turn crossed the line, and a bot's own toggle does not silence it", () => {
+    const quiet = { ...bot, notifications: false };
+    expect(buildSpendNotification(quiet, "thread-9", { title: "Monthly spend limit reached", body: "$100.00 of $100.00 spent this month (2026-09)." })).toEqual({
+      kind: "spend", botId: "bot-1", botName: "Scout", threadId: "thread-9",
+      title: "Monthly spend limit reached", body: "$100.00 of $100.00 spent this month (2026-09).",
+    });
   });
 });

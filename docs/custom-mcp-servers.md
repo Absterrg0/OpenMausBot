@@ -15,10 +15,99 @@ OpenMausBot saves a new server switched off. Use **Test** to start the command
 advertises. Then turn it on. It becomes available to compatible bots on their
 next task; no app restart is needed.
 
-Tokens for URL servers go in headers, never in the address. Remote servers
-that only offer an OAuth sign-in (no token) cannot be signed into from a bot's
-headless run; use a personal access token or API key the server issues and
-put it in the `Authorization` header.
+Tokens for URL servers go in headers, never in the address.
+
+### Servers that ask you to sign in
+
+Some URL servers take no token; they want you to sign in with your browser
+(OAuth). When **Test** gets an HTTP 401 that points to the server's sign-in
+details (RFC 9728 protected-resource metadata, then the authorization
+server's own metadata), the server shows **Needs sign-in** and a **Sign in**
+button. Sign in opens the provider's page in your browser, which returns to
+OpenMausBot on `127.0.0.1`. The server then shows **Signed in**, and Test
+lists its tools.
+
+- **Which servers work.** The authorization server must support PKCE with
+  S256. If it lets apps register themselves (dynamic client registration),
+  OpenMausBot registers a fresh app for each sign-in. If it only accepts an
+  app registered in advance, add that app as described below. A 401 without
+  sign-in details keeps the old message: check the address and headers.
+- **Where you can sign in.** On the workspace computer or from another
+  device using the redirect URL paste-back flow described below.
+- **Bots never sign in.** A server that needs sign-in is left out of every
+  turn until someone signs in from this page. A signed-in server gets
+  `Authorization: Bearer …` in place of any `Authorization` header you set,
+  so every engine that reaches URL servers can use it.
+- **Tokens are kept apart.** They live in `~/.openmausbot/mcp-oauth.json`
+  (owner-only), never in `config.json` or an API response, and are left out of
+  workspace backups. They belong to the server's address: changing the
+  address or removing the server drops them. **Sign out** revokes them when
+  the server offers that, then forgets them.
+- **Refresh.** A token is refreshed shortly before it expires. If the server
+  refuses the refresh, the server goes back to **Needs sign-in**.
+
+For a headless or remote workspace (including an SSH tunnel), open **Signing
+in from another computer?** while sign-in is waiting. Finish approval in your
+browser. If it redirects to a localhost page that cannot connect, copy the
+**entire URL from the address bar**, paste it into **Redirect URL**, and choose
+**Complete sign-in**. The connection error is expected: that address refers to
+your computer, while OpenMausBot is on the server. No extra port forwarding or
+public callback address is needed. **Open sign-in page** reopens the approval
+page if your browser blocked the first attempt.
+
+Keep the redirect URL private. Complete the flow in the same OMB browser/session
+that started it, within five minutes. Cancellation or logging out ends the
+pending flow; a URL cannot be reused. Existing same-machine sign-in still
+finishes automatically. This works with dynamically registered and
+pre-registered sign-in apps.
+
+#### Servers that need an app registered in advance
+
+Corporate identity providers (Microsoft Entra ID, for example) and some
+hosted servers do not let apps register themselves. Register an app with the
+provider, then edit the server and fill in **Sign-in app**:
+
+- **Client ID** of that app. With a client ID set, OpenMausBot signs in as
+  that app and never registers one.
+- **Client secret**, only for a confidential app. It is write-only like a
+  header value: kept in `config.json`, never shown again, and sent only to
+  the authorization server's token endpoint (HTTP Basic, or in the form when
+  the server lists only `client_secret_post`). It is never copied into
+  `mcp-oauth.json`. Leave it blank to keep the saved one; **Remove saved
+  secret** drops it.
+- **Scopes**, separated by spaces. They replace the scopes the server
+  advertises; add `offline_access` when your provider needs it to issue a
+  refresh token.
+
+After you save, the editor shows the redirect URI to register with the app:
+`http://127.0.0.1:<port>/mcp-oauth/callback`, where the port is fixed for
+the server's address. Sign-in with a registered app always uses that port; if
+another program holds it, sign-in stops and says so. Changing the client ID
+or the scopes signs the server out; a new secret for the same app does not.
+
+### Example: give your bots web search
+
+A good first URL server is You.com's search server, because the free profile
+needs no token at all. Add a URL server with the address
+
+```
+https://api.you.com/mcp?profile=free
+```
+
+leave the headers empty, and press **Test** — the handshake completes and the
+server advertises `you-search` (web search) and `you-discover` (a directory of
+other MCP servers). The free profile is read-only and rate-limited to 100
+searches a day; there is no key, so none is stored. Turn the server on and
+every compatible bot can search the web on its next task — `you-search` results
+arrive like any other tool result, through the approval cards.
+
+If the free limits are too small, [you.com/platform](https://you.com/platform)
+issues an API key with a higher quota and the `you-contents` tool for
+full-page extraction. Add the same address without `?profile=free` and one
+header line, `Authorization: Bearer <your key>` — the key is kept write-only
+like every other header value. `you-research` (multi-step cited reports) is
+served by its own dedicated server, `https://api.you.com/mcp/research` — add
+it the same way, with the same header.
 
 ### Import and choose tools per bot
 
@@ -80,6 +169,29 @@ only passes each flag to a CLI that accepts it, so an older CLI keeps working
 — without the controls it predates — and the Engines page shows an update
 notice with the exact command. `claude update` clears it.
 
+## When your organization manages MCP servers
+
+If this computer is connected to an organization (Settings → Organization)
+and its Admin turns off custom MCP servers, only servers whose name or address
+is on the organization's approved list reach bots. Other configured servers
+stay in your list, marked **Managed by** your organization, but bots do not
+get them, and the "Also use my Claude Code MCP servers" switch has no effect.
+**Paste config** is off, and **Add server** accepts only approved servers.
+Nothing is written to `config.json`; disconnecting the organization restores
+the list as you configured it. With no organization connection, none of this
+applies.
+
+Address entries are HTTPS only. The host is compared label by label, where
+`*` stands for one or more whole labels (`https://*.example.com/mcp` matches
+`https://a.example.com/mcp`, never `https://evil.test/x.example.com/mcp`),
+and the path separately, where `*` matches anything.
+
+Limits: a personal **Codex** engine also loads MCP servers from your own
+`~/.codex/config.toml`, which OpenMausBot does not filter. An organization that
+must block those can allow only company models, or leave personal Codex off
+its engine list. Company Codex uses its own separate home, without your
+`config.toml`.
+
 ## Advanced: edit the file
 
 The same registry lives in `~/.openmausbot/config.json`:
@@ -96,13 +208,19 @@ The same registry lives in `~/.openmausbot/config.json`:
       "type": "http",
       "url": "https://mcp.example.com/mcp",
       "headers": { "Authorization": "Bearer …" }
+    },
+    "corp": {
+      "type": "http",
+      "url": "https://mcp.corp.example/mcp",
+      "oauth": { "clientId": "…", "clientSecret": "…", "scopes": ["api://corp-mcp/read", "offline_access"] }
     }
   },
   "features": { "claudeUserMcp": false }
 }
 ```
 
-`type` is `http` (Streamable HTTP, the default) or `sse`. If you edit the file
+`type` is `http` (Streamable HTTP, the default) or `sse`. `oauth` is the
+optional sign-in app; `clientSecret` and `scopes` may be left out. If you edit the file
 by hand, restart OpenMausBot. Every bot whose engine can mount custom MCP
 servers gets the enabled tools on its next task.
 

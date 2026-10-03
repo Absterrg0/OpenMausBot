@@ -41,6 +41,44 @@ describe("independent bot task state", () => {
     expect(new Store(selection).tasks(bot.id).every(task => task.approvalMode === "ask")).toBe(true);
   });
 
+  it("refreshes one thread's permissions from the bot default and leaves the rest", () => {
+    const store = new Store(selection);
+    const bot = store.createBot({}, { seedMessages: false });
+    const first = bot.threadId;
+    // The opening thread inherits until it has its own copy. A later thread,
+    // and any thread whose level was chosen in the composer, keeps that copy.
+    store.patchTask(bot.id, first, { approvalMode: "ask", autoApprove: false, alwaysAllow: ["Read"] });
+    const model = store.taskByThread(bot.id, first)?.modelSelection;
+    store.appendMessage(first, { role: "user", kind: "text", text: "Keep this conversation" });
+    const history = store.messagesFor(first);
+    const sibling = store.createTask(bot.id, "Sibling", false)!;
+    store.patchBot(bot.id, { approvalMode: "auto", autoApprove: true, alwaysAllow: ["Read", "Bash"] });
+    expect(store.taskByThread(bot.id, first)).toMatchObject({ approvalMode: "ask", autoApprove: false, alwaysAllow: ["Read"], modelSelection: model });
+    expect(store.taskByThread(bot.id, sibling.threadId)).toMatchObject({ approvalMode: "ask", alwaysAllow: [] });
+
+    const refreshed = store.refreshTaskPermissions(bot.id, first);
+    expect(refreshed).toMatchObject({ approvalMode: "auto", autoApprove: true, alwaysAllow: ["Read", "Bash"], modelSelection: model });
+    expect(store.taskByThread(bot.id, sibling.threadId)).toMatchObject({ approvalMode: "ask", autoApprove: false, alwaysAllow: [] });
+    expect(store.bot(bot.id)).toMatchObject({ approvalMode: "auto", autoApprove: true, alwaysAllow: ["Read", "Bash"] });
+    expect(store.messagesFor(first)).toEqual(history);
+    expect(store.refreshTaskPermissions(bot.id, "missing")).toBeNull();
+
+    const reloaded = new Store(selection);
+    expect(reloaded.taskByThread(bot.id, first)).toMatchObject({ approvalMode: "auto", autoApprove: true, alwaysAllow: ["Read", "Bash"] });
+    expect(reloaded.taskByThread(bot.id, sibling.threadId)).toMatchObject({ approvalMode: "ask", alwaysAllow: [] });
+    expect(reloaded.messagesFor(first)).toEqual(history);
+
+    reloaded.patchBot(bot.id, {
+      approvalMode: "full",
+      approvalGrant: { requestId: "grant-1", mode: "full", phase: "prepared", threadId: first, threadOnly: true, refreshPermissions: true },
+    });
+    expect(approvalModeFor(reloaded.bot(bot.id)!)).toBe("ask");
+    const caughtUp = reloaded.refreshTaskPermissions(bot.id, sibling.threadId);
+    expect(caughtUp).toMatchObject({ approvalMode: "full", autoApprove: false, alwaysAllow: ["Read", "Bash"] });
+    expect(reloaded.taskByThread(bot.id, first)?.approvalMode).toBe("auto");
+    expect(reloaded.bot(bot.id)?.approvalMode).toBe("full");
+  });
+
   it("does not partially elevate any thread when saving the all-threads change fails", () => {
     const store = new Store(selection);
     const bot = store.createBot({}, { seedMessages: false });
@@ -53,6 +91,41 @@ describe("independent bot task state", () => {
       const restarted = new Store(selection);
       expect(restarted.tasks(bot.id).every(task => approvalModeFor(restarted.projectBotForTask(bot.id, task.threadId)!) === "ask")).toBe(true);
     } finally { save.mockRestore(); }
+  });
+
+  it("does not let a hidden routine execution hold the bot unread", () => {
+    const store = new Store(selection);
+    const bot = store.createBot({}, { seedMessages: false });
+    const visible = bot.threadId;
+    const execution = store.createTask(bot.id, "Execution", false)!;
+    store.patchTask(bot.id, execution.threadId, { routineRunId: "run-1", unread: true });
+    expect(store.taskByThread(bot.id, execution.threadId)).toMatchObject({ routineRunId: "run-1", unread: false });
+    expect(store.taskByThread(bot.id, visible)?.unread).toBe(false);
+    expect(bot.unread).toBe(false);
+
+    store.patchTask(bot.id, execution.threadId, { routineRunId: undefined, unread: true });
+    expect(store.taskByThread(bot.id, execution.threadId)?.routineRunId).toBeUndefined();
+    expect(store.taskByThread(bot.id, execution.threadId)?.unread).toBe(true);
+    expect(bot.unread).toBe(true);
+  });
+
+  it("heals a saved hidden routine execution that was left unread", () => {
+    const store = new Store(selection);
+    const bot = store.createBot({}, { seedMessages: false });
+    const execution = store.createTask(bot.id, "Execution", false)!;
+    store.patchTask(bot.id, execution.threadId, { routineRunId: "run-1" });
+    const raw = savedBots();
+    const saved = raw.find((row) => row.id === bot.id)!;
+    const hidden = saved.tasks!.find((task) => task.threadId === execution.threadId)!;
+    hidden.unread = true;
+    saved.unread = true;
+    writeFileSync(join(DATA_DIR, "bots.json"), JSON.stringify(raw));
+    const reloaded = new Store(selection);
+    expect(reloaded.taskByThread(bot.id, execution.threadId)).toMatchObject({ routineRunId: "run-1", unread: false });
+    expect(reloaded.bot(bot.id)?.unread).toBe(false);
+    const persisted = savedBots().find((row) => row.id === bot.id)!;
+    expect(persisted.unread).toBe(false);
+    expect(persisted.tasks!.find((task) => task.threadId === execution.threadId)?.unread).toBe(false);
   });
 
   it("persists routine execution identity without sharing context or approval settings", () => {

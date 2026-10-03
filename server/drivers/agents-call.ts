@@ -7,9 +7,11 @@
 // Nothing here reads the environment or holds state of its own. The caller
 // passes a ToolCallContext, and the per-turn counters live on it.
 import { CREDENTIAL_TARGETS, isCredentialTargetId } from "../../shared/credential-request.ts";
+import { parseOptionsCardInput, WATCHER_OPTIONS_CARD_BOT_ID } from "../../shared/options-card.ts";
 import { normalizeCronSchedule } from "../../shared/routine-schedule.ts";
 
 import { peerName } from "../peer-roster.ts";
+import { renderPeerDeliveryReceipts, type PeerDeliveryOutcome, type PeerDeliveryReceipt } from "../peer-delivery.ts";
 import { catalogProfileFromEnv, SHARED_COMPUTER_TOOL_NAMES, WEEKDAYS } from "./agents-catalog.ts";
 import { harnessClientFromEnv } from "./agents-client.ts";
 import type { HarnessClient, Json } from "./agents-client.ts";
@@ -319,7 +321,7 @@ function routineFields(args: Json): { fields: Json; error?: string } {
   const runOn = destination(args.run_on ?? args.runOn);
   const timeoutMinutes = args.timeout_minutes ?? args.timeoutMinutes;
   if (runOn != null && runOn !== "maus" && runOn !== "cloud") {
-    return { fields, error: 'Use run_on="maus" for the bot’s current model and configured computer (including VPS), or run_on="box" only for the Box-hosted agent. Legacy "cloud" also means Box.' };
+    return { fields, error: 'Use run_on="maus" for the bot’s current model and configured computer (including VPS), or run_on="box" only for the Boat-hosted agent. Legacy "cloud" also means Boat.' };
   }
   if (timeoutMinutes != null && (
     typeof timeoutMinutes !== "number" || !Number.isInteger(timeoutMinutes) || timeoutMinutes < 5 || timeoutMinutes > 240
@@ -389,12 +391,88 @@ function recallSpeaker(hit: Json): string {
   return hit.role === "user" ? "user" : "you";
 }
 
+const isPeerDeliveryOutcome = (value: unknown): value is PeerDeliveryOutcome =>
+  value === "queued" || value === "injected" || value === "failed";
+
+/** The delivery receipt a peer-send answer carries, as one prose line.
+ * Unvalidated JSON stays out: a malformed receipt renders nothing rather
+ * than half a line of somebody else's text. */
+function deliveryNote(r: Json): string {
+  const receipt = (r as { receipt?: unknown }).receipt;
+  if (!receipt || typeof receipt !== "object") return "";
+  const { botId, botName, outcome, detail, taskId, requestId } = receipt as Record<string, unknown>;
+  if (typeof botId !== "string" || !botId || typeof detail !== "string" || !detail) return "";
+  if (!isPeerDeliveryOutcome(outcome)) return "";
+  const parsed: PeerDeliveryReceipt = {
+    botId,
+    ...(typeof botName === "string" && botName ? { botName } : {}),
+    outcome,
+    detail,
+    ...(typeof taskId === "string" && taskId ? { taskId } : {}),
+    ...(typeof requestId === "string" && requestId ? { requestId } : {}),
+  };
+  return renderPeerDeliveryReceipts([parsed]);
+}
+
+/** When a recalled line was said, on the machine's own clock. `toISOString()`
+ * answers in UTC, which disagrees with every other day the bot is shown: a
+ * bare `since`/`until` date is read as local midnight (recent-work.ts
+ * parseSince), the recent-work brief's times are local (whenLabel), and the
+ * daily memory logs are named after the local day. East of UTC a message
+ * from this morning was being dated yesterday — so a search for today's work
+ * came back stamped with the wrong date. */
+function recallWhen(at: unknown, dateOnly: boolean): string {
+  if (typeof at !== "number" || !Number.isFinite(at)) return "";
+  const said = new Date(at);
+  if (!Number.isFinite(said.getTime())) return "";
+  const pad = (value: number) => String(value).padStart(2, "0");
+  const day = `${said.getFullYear()}-${pad(said.getMonth() + 1)}-${pad(said.getDate())}`;
+  return dateOnly ? day : `${day} ${pad(said.getHours())}:${pad(said.getMinutes())}`;
+}
+
 export async function callTool(name: string, args: Json, context: ToolCallContext): Promise<ToolCallResult> {
   // The names this body has always used, so it reads (and diffs) as it did
   // when these were the proxy's module-level constants.
   const { botId: BOT_ID, threadId: THREAD_ID, depth: DEPTH, externalRuntime: EXTERNAL_RUNTIME, coordinating: COORDINATING, turn } = context;
   const { delegationTaskIdsThisTurn } = turn;
   const { api, apiResponse } = context.client;
+  if (name === "vm_exec") {
+    const { ok, body } = await apiResponse("/api/internal/vm-exec", {
+      method: "POST",
+      body: JSON.stringify({ command: args.command, ...(typeof args.timeout_seconds === "number" ? { timeout_seconds: args.timeout_seconds } : {}) }),
+    });
+    if (!ok) return { text: String(body.error ?? "Could not run that command."), isError: true };
+    const exitCode = Number(body.exitCode ?? 0);
+    const stdout = String(body.stdout ?? "");
+    const stderr = String(body.stderr ?? "");
+    const lines = [body.timedOut ? "The command was stopped: it ran past its time limit." : `exit code ${exitCode}`];
+    if (stdout) lines.push("--- stdout ---", stdout.replace(/\s+$/, ""));
+    if (stderr) lines.push("--- stderr ---", stderr.replace(/\s+$/, ""));
+    if (!stdout && !stderr && !body.timedOut) lines.push("(no output)");
+    return { text: lines.join("\n"), ...(exitCode !== 0 || body.timedOut ? { isError: true } : {}) };
+  }
+  if (name === "attach_file") {
+    const { ok, body } = await apiResponse("/api/internal/attach-file", {
+      method: "POST",
+      body: JSON.stringify({ path: args.path, ...(typeof args.name === "string" ? { name: args.name } : {}) }),
+    });
+    if (!ok) return { text: String(body.error ?? "Could not attach that file."), isError: true };
+    return { text: `Attached ${String(body.name ?? "the file")} (${Number(body.bytes ?? 0)} bytes). It now appears in the chat with a preview.` };
+  }
+  if (name === "create_options_card") {
+    if (BOT_ID !== WATCHER_OPTIONS_CARD_BOT_ID) {
+      return { text: "create_options_card is not enabled for this bot.", isError: true };
+    }
+    const parsed = parseOptionsCardInput(args);
+    if (!parsed.ok) return { text: parsed.error, isError: true };
+    const result = await api("/api/internal/options-card", {
+      method: "POST",
+      body: JSON.stringify(parsed.value),
+    });
+    return {
+      text: `Rendered the native options card in this Watcher thread (message ${String(result.messageId ?? "created")}). Wait for the person's click or custom response; the card itself authorizes no external action.`,
+    };
+  }
   // Second lock. With sharing off the tool is not in the catalog, so a front
   // end already refuses the call as an unknown tool — the same answer a build
   // without the feature gives. This keeps the handler itself refusing if that
@@ -455,6 +533,33 @@ export async function callTool(name: string, args: Json, context: ToolCallContex
     }) });
     return { text: JSON.stringify(r), ...(r.error ? { isError: true } : {}) };
   }
+  if (name === "send_to_bot") {
+    const botId = String(args.bot_id ?? "").trim();
+    const title = String(args.title ?? "").trim();
+    const message = String(args.message ?? "").trim();
+    if (!botId || !title || !message) {
+      return { text: "send_to_bot needs bot_id, title and message.", isError: true };
+    }
+    if (botId === context.botId) {
+      return { text: "send_to_bot is cross-bot only. Use start_thread to send independent work to yourself.", isError: true };
+    }
+    if (turn.threadsOpenedThisTurn >= MAX_THREADS_PER_TURN) {
+      return { text: `You have already opened ${MAX_THREADS_PER_TURN} threads this turn, which is the limit.`, isError: true };
+    }
+    const r = await api("/api/internal/threads", { method: "POST", body: JSON.stringify({
+      fromBotId: context.botId, fromThreadId: context.threadId, toBotId: botId,
+      title, message, depth: context.depth, oneWay: true,
+    }) });
+    if (r.error) return { text: `Couldn't send to that bot: ${String(r.error)}`, isError: true };
+    turn.threadsOpenedThisTurn += 1;
+    const destination = `@${String(r.botName ?? "that bot")} in #${String(r.title ?? title)} [thread id: ${String(r.threadId ?? "")}]`;
+    const state = r.approvalRequired === true
+      ? `Send to ${destination} is pending approval. The person's approval card appears after this turn ends; dispatch starts once approved.`
+      : r.state === "queued"
+        ? `Send to ${destination} is queued ${ordinal(Number(r.position) || 1)} for a free slot and can dispatch after this turn ends.`
+        : `Send to ${destination} is pending until this turn ends, then dispatch starts.`;
+    return { text: `${state} Its result stays in that thread; nothing there will resume you.` };
+  }
   if (name === "list_bots") {
     const r = await api(`/api/internal/agents?self=${encodeURIComponent(BOT_ID)}`);
     const bots = (r.bots as Array<Json>) ?? [];
@@ -501,6 +606,7 @@ export async function callTool(name: string, args: Json, context: ToolCallContex
   if (name === "post_to_room") {
     const groupId = String(args.group_id ?? "").trim();
     const message = String(args.message ?? "").trim();
+    const attachVoiceNote = args.attach_voice_note === true;
     if (!groupId || !message) {
       return { text: "post_to_room needs group_id (from list_rooms) and message.", isError: true };
     }
@@ -512,12 +618,12 @@ export async function callTool(name: string, args: Json, context: ToolCallContex
     }
     const r = await api("/api/internal/post-to-room", {
       method: "POST",
-      body: JSON.stringify({ fromBotId: BOT_ID, fromThreadId: THREAD_ID, groupId, message }),
+      body: JSON.stringify({ fromBotId: BOT_ID, fromThreadId: THREAD_ID, groupId, message, attachVoiceNote }),
     });
     if (r.error) return { text: String(r.error), isError: true };
     turn.roomPostsThisTurn += 1;
     return {
-      text: `Posted in ${r.roomName ?? "the room"}. Nobody's turn was started, so expect no reply — tell the user it is posted.`,
+      text: `Posted in ${r.roomName ?? "the room"}${r.attachedVoiceNote ? " with the voice note attached" : ""}. Nobody's turn was started, so expect no reply — tell the user it is posted.`,
     };
   }
   if (name === "ask_bot") {
@@ -528,6 +634,7 @@ export async function callTool(name: string, args: Json, context: ToolCallContex
       method: "POST",
       body: JSON.stringify({ fromBotId: BOT_ID, fromThreadId: THREAD_ID, toBotId, message, depth: DEPTH }),
     });
+    const note = deliveryNote(r);
     if (r.timeout) {
       // The peer's turn outlived the synchronous wait, so the harness
       // converted the ask into a delegation — the reply is not lost.
@@ -537,23 +644,38 @@ export async function callTool(name: string, args: Json, context: ToolCallContex
       const amount = waitedSeconds < 60 ? waitedSeconds : Math.round(waitedSeconds / 60);
       const unit = waitedSeconds < 60 ? "second" : "minute";
       return {
-        text: `${r.toBotName ?? "That bot"} is still working after ${amount} ${unit}${amount === 1 ? "" : "s"} — the ask was converted to a delegation so the reply is not lost. Task id: ${taskId}. ${EXTERNAL_RUNTIME ? EXTERNAL_STATUS_GUIDANCE : "Finish your turn now; the result will be delivered to this conversation automatically. Use check_delegation in a later turn only if the user asks for status."}`,
+        text: `${r.toBotName ?? "That bot"} is still working after ${amount} ${unit}${amount === 1 ? "" : "s"} — the ask was converted to a delegation so the reply is not lost. Task id: ${taskId}. ${EXTERNAL_RUNTIME ? EXTERNAL_STATUS_GUIDANCE : "Finish your turn now; the result will be delivered to this conversation automatically. Use check_delegation in a later turn only if the user asks for status."}${note ? `\n\n${note}` : ""}`,
       };
     }
     if (r.busy) {
+      // Aside lane: the teammate was mid-turn on a seam-capable engine, so
+      // the harness folded the message into their running work as peer
+      // context. No new turn started and no reply is coming back through
+      // this call — the receipt says whether the words are already in the
+      // live turn or waiting for it to settle.
+      if (r.aside === "injected") {
+        return {
+          text: `${r.toBotName ?? "That bot"} is mid-turn; your message was handed to them as an aside — peer context folded into their current work, not a request that interrupts or replies. Finish your turn and treat their eventual output as possibly informed by it.`,
+        };
+      }
+      if (r.aside === "queued") {
+        return {
+          text: `${r.toBotName ?? "That bot"} is mid-turn; your aside is queued and will reach them as context when the turn settles. No reply is expected — finish your turn.`,
+        };
+      }
       // The harness queues the message as a delegation when it can; the
       // task id is the asker's claim ticket for the eventual reply.
       const taskId = String(r.taskId ?? "").trim();
       if (taskId) {
         if (!EXTERNAL_RUNTIME) delegationTaskIdsThisTurn.add(taskId);
         return {
-          text: `${r.toBotName ?? "That bot"} is busy right now, so your message was queued as a delegation instead — ${EXTERNAL_RUNTIME ? "it waits for the peer and any required approval" : "it runs after your current turn ends"}. Task id: ${taskId}. ${EXTERNAL_RUNTIME ? EXTERNAL_STATUS_GUIDANCE : "Finish your turn now; the result will be delivered to this conversation automatically. Use check_delegation in a later turn only if the user asks for status."}`,
+          text: `${r.toBotName ?? "That bot"} is busy right now, so your message was queued as a delegation instead — ${EXTERNAL_RUNTIME ? "it waits for the peer and any required approval" : "it runs after your current turn ends"}. Task id: ${taskId}. ${EXTERNAL_RUNTIME ? EXTERNAL_STATUS_GUIDANCE : "Finish your turn now; the result will be delivered to this conversation automatically. Use check_delegation in a later turn only if the user asks for status."}${note ? `\n\n${note}` : ""}`,
         };
       }
-      return { text: `That bot is busy right now — try again after it finishes.` };
+      return { text: `That bot is busy right now — try again after it finishes.${note ? `\n\n${note}` : ""}` };
     }
-    if (r.error) return { text: `Couldn't reach that bot: ${r.error}`, isError: true };
-    return { text: `${r.botName ?? "Bot"} replied:\n${r.text ?? "(no reply)"}` };
+    if (r.error) return { text: `Couldn't reach that bot: ${r.error}${note ? `\n\n${note}` : ""}`, isError: true };
+    return { text: `${r.botName ?? "Bot"} replied:\n${r.text ?? "(no reply)"}${note ? `\n\n${note}` : ""}` };
   }
   if (name === "delegate_bot") {
     const toBotId = String(args.bot_id ?? "").trim();
@@ -569,7 +691,8 @@ export async function callTool(name: string, args: Json, context: ToolCallContex
     };
     if (reason) body.reason = reason;
     const r = await api(`/api/internal/delegate-bot`, { method: "POST", body: JSON.stringify(body) });
-    if (r.error) return { text: `Couldn't queue the delegation: ${r.error}`, isError: true };
+    const delivery = deliveryNote(r);
+    if (r.error) return { text: `Couldn't queue the delegation: ${r.error}${delivery ? `\n\n${delivery}` : ""}`, isError: true };
     // Fire-and-forget by contract: the harness returns immediately, the
     // peer turn runs after our current turn finishes. The task id is the
     // bot's claim ticket for the outcome.
@@ -579,7 +702,7 @@ export async function callTool(name: string, args: Json, context: ToolCallContex
     const suffix = taskId
       ? ` Task id: ${taskId}. ${EXTERNAL_RUNTIME ? EXTERNAL_STATUS_GUIDANCE : "Acknowledge the assignment and finish your turn; the result will be delivered to this conversation automatically. Do not check or wait for it in this turn."}`
       : "";
-    return { text: `${note}${suffix}` };
+    return { text: `${note}${suffix}${delivery ? `\n\n${delivery}` : ""}` };
   }
   if (name === "check_delegation" || name === "wait_delegation") {
     const taskId = String(args.task_id ?? "").trim();
@@ -741,11 +864,13 @@ export async function callTool(name: string, args: Json, context: ToolCallContex
         name: botName,
         role,
         instructions,
+        ...(args.modelSelection !== undefined ? { modelSelection: args.modelSelection } : {}),
+        ...(typeof args.cwd === "string" ? { cwd: args.cwd.trim() } : {}),
       }),
     });
     turn.createdThisTurn += 1;
     return {
-      text: `Created @${r.name ?? botName} in ${r.section ?? "General"} [id: ${r.id}]. Assign work with ${COORDINATING ? "coordinate_bots" : "delegate_bot"}.`,
+      text: `Created @${r.name ?? botName} in ${r.section ?? "General"} [id: ${r.id}].${r.modelSelection ? ` Model: ${JSON.stringify(r.modelSelection)}.` : ""} Assign work with ${COORDINATING ? "coordinate_bots" : "delegate_bot"}.`,
     };
   }
   if (name === "create_room") {
@@ -826,6 +951,26 @@ export async function callTool(name: string, args: Json, context: ToolCallContex
       text: `A secure ${r.label ?? CREDENTIAL_TARGETS[credentialId].label} request is ready. The desktop app and a freshly QR-paired mobile app show its secure entry card; older mobile pairings explain how to pair again or finish on the computer. End this turn; OpenMausBot will resume the task after the user saves or declines. Never ask them to paste the key into chat.`,
     };
   }
+  if (name === "send_voice_note") {
+    if (typeof args.text !== "string" || !args.text.trim()) {
+      return { text: "send_voice_note needs text: the short speakable note, at most 1000 characters.", isError: true };
+    }
+    const text = args.text.trim();
+    if (text.length > 1000) {
+      return { text: `send_voice_note is limited to 1000 characters; this one is ${text.length}. Shorten the note.`, isError: true };
+    }
+    try {
+      await api("/api/internal/voice-note", {
+        method: "POST",
+        body: JSON.stringify({ fromBotId: BOT_ID, fromThreadId: THREAD_ID, text }),
+      });
+      return { text: "Voice note recorded. It will be attached to this turn's reply when the turn ends; the note text is also the visible caption." };
+    } catch (error) {
+      // A missing voice setup is the user's to fix, not a failed turn: hand
+      // the harness's setup guidance straight to the model.
+      return { text: `Voice note not sent: ${error instanceof Error ? error.message : String(error)}`, isError: true };
+    }
+  }
   if (name === "list_routines") {
     const query = new URLSearchParams({ fromBotId: BOT_ID, fromThreadId: THREAD_ID });
     const r = await api(`/api/internal/routines?${query.toString()}`);
@@ -865,11 +1010,14 @@ export async function callTool(name: string, args: Json, context: ToolCallContex
     if (!routineId || !action) {
       return { text: "propose_routine_action needs a routine_id and supported action.", isError: true };
     }
+    const forBotId = String(args.for_bot_id ?? "").trim();
     const body: Json = {
       fromBotId: BOT_ID,
       fromThreadId: THREAD_ID,
       action,
       routineId,
+      // JSON.stringify drops the key entirely when no target was named
+      ...(forBotId ? { forBotId } : {}),
     };
     if (action === "update") {
       if (!jsonRecord(args.changes)) {
@@ -891,14 +1039,23 @@ export async function callTool(name: string, args: Json, context: ToolCallContex
     return confirmationResult(r, `${action.replace("_", " ")} on routine ${routineId}`);
   }
   if (name === "propose_profile") {
+    // A non-boolean toggle would be dropped silently while any valid half of
+    // the request went through, applying a partial proposal the model never
+    // described. Reject the whole call instead.
+    if ((args.notifications !== undefined && typeof args.notifications !== "boolean")
+      || (args.speakReplies !== undefined && typeof args.speakReplies !== "boolean")) {
+      return { text: "propose_profile notifications and speakReplies must be true or false.", isError: true };
+    }
     const changes: Json = {};
     if (typeof args.name === "string") changes.name = args.name.trim();
     if (typeof args.title === "string") changes.title = args.title.trim();
     if (typeof args.description === "string") changes.description = args.description.trim();
     if (typeof args.soul === "string") changes.soul = args.soul;
     if (typeof args.cwd === "string") changes.cwd = args.cwd.trim();
+    if (typeof args.notifications === "boolean") changes.notifications = args.notifications;
+    if (typeof args.speakReplies === "boolean") changes.speakReplies = args.speakReplies;
     if (!Object.keys(changes).length) {
-      return { text: "propose_profile needs at least one of name, title, description, soul, or cwd.", isError: true };
+      return { text: "propose_profile needs at least one of name, title, description, soul, cwd, notifications, or speakReplies.", isError: true };
     }
     const forBotId = String(args.for_bot_id ?? "").trim();
     const r = await api("/api/internal/profile-requests", {
@@ -913,6 +1070,33 @@ export async function callTool(name: string, args: Json, context: ToolCallContex
       }),
     });
     return confirmationResult(r, "the profile change", "profile");
+  }
+  if (name === "propose_model") {
+    const raw = args.model_selection;
+    const fields = typeof raw === "object" && raw !== null && !Array.isArray(raw) ? raw as Record<string, unknown> : null;
+    if (!fields || typeof fields.instanceId !== "string" || !fields.instanceId.trim() || typeof fields.model !== "string" || !fields.model.trim()) {
+      return { text: "propose_model needs model_selection with instanceId and model.", isError: true };
+    }
+    if ((fields.effort !== undefined && (typeof fields.effort !== "string" || !fields.effort.trim()))
+      || (fields.variant !== undefined && (typeof fields.variant !== "string" || !fields.variant.trim()))) {
+      return { text: "propose_model effort and variant must be non-empty strings when supplied.", isError: true };
+    }
+    const selection: Json = { instanceId: fields.instanceId.trim(), model: fields.model.trim() };
+    if (typeof fields.effort === "string" && fields.effort.trim()) selection.effort = fields.effort.trim();
+    if (typeof fields.variant === "string" && fields.variant.trim()) selection.variant = fields.variant.trim();
+    const forBotId = String(args.for_bot_id ?? "").trim();
+    const r = await api("/api/internal/model-requests", {
+      method: "POST",
+      body: JSON.stringify({
+        fromBotId: BOT_ID,
+        fromThreadId: THREAD_ID,
+        modelSelection: selection,
+        reason: args.reason,
+        // JSON.stringify drops the key entirely when no target was named
+        forBotId: forBotId || undefined,
+      }),
+    });
+    return confirmationResult(r, "the default model change", "model");
   }
   if (name === "memory_update") {
     if (!["append", "replace", "remove", "supersede"].includes(String(args.action))
@@ -934,6 +1118,7 @@ export async function callTool(name: string, args: Json, context: ToolCallContex
         action: args.action,
         text: args.text,
         oldText: args.old_text,
+        ...(typeof args.until === "string" && args.until.trim() ? { until: args.until.trim() } : {}),
       }),
     });
     if (r.error || r.ok !== true) {
@@ -1004,7 +1189,7 @@ export async function callTool(name: string, args: Json, context: ToolCallContex
     }
     const lines = hits.map((hit) => {
       // a listing by time shows the time; a search by words keeps the date
-      const when = typeof hit.at === "number" ? new Date(hit.at).toISOString().slice(0, q ? 10 : 16).replace("T", " ") : "";
+      const when = recallWhen(hit.at, Boolean(q));
       const task = typeof hit.task === "string" && hit.task ? `task "${hit.task}"` : "an earlier task";
       const where = hit.current
         ? "this conversation"
@@ -1036,7 +1221,7 @@ export async function callTool(name: string, args: Json, context: ToolCallContex
     } catch (error) {
       return { text: `Couldn't read that message: ${error instanceof Error ? error.message : String(error)}. Use ids from a session_search hit.`, isError: true };
     }
-    const when = typeof r.at === "number" ? new Date(r.at).toISOString().slice(0, 10) : "";
+    const when = recallWhen(r.at, true);
     const readTask = typeof r.task === "string" && r.task ? `task "${r.task}"` : "an earlier task";
     const where = threadId === THREAD_ID ? "this conversation" : r.crossed ? `${readTask}, private to this user` : readTask;
     const note = r.crossed

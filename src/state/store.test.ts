@@ -1,11 +1,16 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
+  api,
+  ApiError,
+  CLOUD_LINK_SETTINGS,
   configStatusFromFrame,
   createStreamDeltaBuffer,
   currentTaskBot,
   initialState,
+  liveCallFromFrame,
   loadSnapshotBoundary,
+  messageVersions,
   openNotificationTarget,
   openThread,
   persistBotUpdate,
@@ -13,6 +18,7 @@ import {
   pinBotThreadAction,
   reducer,
   requestConfirmedBotDeletion,
+  visibleMessages,
   visibleNotificationThread,
   type AppState,
   type Bot,
@@ -24,7 +30,33 @@ import {
 } from "./store";
 import { openLiveEvents, type LiveEventSourceLike, type LiveEventsPlatform } from "../lib/live-events";
 import type { ModelVariantState, RuntimeEvent } from "../../shared/runtime-events";
+import type { ConnectorToolGrant } from "../../shared/wire";
 import type { RoutineRun } from "../lib/routines";
+
+describe("api refusals", () => {
+  afterEach(() => { vi.unstubAllGlobals(); });
+
+  it("keep the refusal's body for callers that read more than the sentence", async () => {
+    const refusal = { error: "Morgan has more than 30 skills. Choose fewer skills and try again.", choices: { skills: ["a", "b"] } };
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify(refusal), { status: 400 })));
+    const error = await api("/api/teams/export", { method: "POST", body: "{}" }).catch((cause: unknown) => cause);
+    expect(error).toBeInstanceOf(ApiError);
+    expect(error).toMatchObject({ message: refusal.error, status: 400, body: refusal });
+  });
+});
+
+describe("partial profile save responses", () => {
+  it.each([true, false])("preserves independently saved fields with about-me response first: %s", aboutFirst => {
+    const config = { ...initialState.config, profile: { name: "Old", email: "old@example.invalid", aboutMe: "Old biography" } } as NonNullable<AppState["config"]>;
+    const about: Action = { type: "profileSaved", profile: { aboutMe: "New biography" } };
+    const identity: Action = { type: "profileSaved", profile: { name: "New", email: "new@example.invalid" } };
+    const first = reducer({ ...initialState, config }, aboutFirst ? about : identity);
+    const last = reducer(first, aboutFirst ? identity : about);
+    expect(last.config?.profile).toEqual({ name: "New", email: "new@example.invalid", aboutMe: "New biography" });
+    expect(reducer(last, { type: "profileSaved", profile: { aboutMe: "" } }).config?.profile)
+      .toEqual({ name: "New", email: "new@example.invalid", aboutMe: "" });
+  });
+});
 
 describe("screen frame ownership", () => {
   it("retains the source thread so a sibling's frame cannot masquerade as the selected screen", () => {
@@ -307,6 +339,20 @@ describe("independent bot threads", () => {
     expect(ungrouped.bots[0]?.tasks?.[1]).toEqual({ ...bot.tasks?.[1], projectId: undefined });
     expect(ungrouped.bots[0]?.tasks?.[0]).toEqual(bot.tasks?.[0]);
   });
+
+  it("drops the machine's mark the moment the person pins or unpins a thread's place", () => {
+    const autoPinned = { ...start(), bots: [{ ...bot, tasks: bot.tasks?.map((task) =>
+      task.threadId === "first" ? { ...task, surface: "browser" as const, surfaceAuto: true as const } : task) }] };
+    const pinned = reducer(autoPinned, { type: "updateTask", botId: bot.id, threadId: "first", patch: { surface: "cloud" } });
+    expect(pinned.bots[0]?.tasks?.[0]?.surface).toBe("cloud");
+    expect(pinned.bots[0]?.tasks?.[0]?.surfaceAuto).toBeUndefined();
+    const unpinned = reducer(autoPinned, { type: "updateTask", botId: bot.id, threadId: "first", patch: { surface: null } });
+    expect(unpinned.bots[0]?.tasks?.[0]?.surface).toBeUndefined();
+    expect(unpinned.bots[0]?.tasks?.[0]?.surfaceAuto).toBeUndefined();
+    // Any other thread edit leaves the machine's record as it is.
+    const listPinned = reducer(autoPinned, { type: "updateTask", botId: bot.id, threadId: "first", patch: { pinned: true } });
+    expect(listPinned.bots[0]?.tasks?.[0]).toMatchObject({ surface: "browser", surfaceAuto: true });
+  });
 });
 
 describe("keyboard shortcuts dialog state", () => {
@@ -321,6 +367,67 @@ describe("keyboard shortcuts dialog state", () => {
     const closed = reducer(opened, { type: "toggleShortcuts" });
     expect(closed.shortcutsOpen).toBe(false);
     expect(closed.botSettingsSection).toBe("soul");
+  });
+});
+
+describe("Settings opened by the Cloud link", () => {
+  it("marks only the link's own opening, counts each link, and clears on any other Settings navigation", () => {
+    expect(initialState.appSettingsCloudLink).toBe(0);
+    const link = CLOUD_LINK_SETTINGS;
+    const opened = reducer(initialState, link);
+    expect(opened).toMatchObject({ appSettingsOpen: true, appSettingsSection: "cloudAccount", appSettingsCloudLink: 1 });
+    expect(reducer(opened, link).appSettingsCloudLink).toBe(2);
+    expect(reducer(opened, { type: "toggleAppSettings", open: true, section: "cloudAccount" }).appSettingsCloudLink).toBe(0);
+    expect(reducer(opened, { type: "toggleAppSettings", open: true, section: "general" }).appSettingsCloudLink).toBe(0);
+    expect(reducer(opened, { type: "toggleAppSettings", open: false })).toMatchObject({ appSettingsOpen: false, appSettingsCloudLink: 0 });
+    expect(reducer(opened, { type: "toggleAppSettings" }).appSettingsCloudLink).toBe(0);
+    expect(reducer(initialState, { ...link, open: false }).appSettingsCloudLink).toBe(0);
+  });
+});
+
+describe("Settings opened on the phone pairing", () => {
+  it("counts each request, and clears on any other Settings navigation", () => {
+    expect(initialState.appSettingsPhonePairing).toBe(0);
+    const phone = { type: "toggleAppSettings", open: true, section: "companion", phonePairing: true } as const;
+    const opened = reducer(initialState, phone);
+    expect(opened).toMatchObject({ appSettingsOpen: true, appSettingsSection: "companion", appSettingsPhonePairing: 1 });
+    expect(reducer(opened, phone).appSettingsPhonePairing).toBe(2);
+    expect(reducer(opened, { type: "toggleAppSettings", open: true, section: "companion" }).appSettingsPhonePairing).toBe(0);
+    expect(reducer(opened, { type: "toggleAppSettings", open: false }).appSettingsPhonePairing).toBe(0);
+    expect(reducer(initialState, { ...phone, open: false }).appSettingsPhonePairing).toBe(0);
+  });
+});
+
+describe("connector grants persistence", () => {
+  const announcement = () => ({
+    id: "bot-1",
+    threadId: "thread-1",
+    name: "Maus",
+    title: "Helper",
+    description: "",
+    notifications: true,
+    color: "green" as const,
+    unread: false,
+    modelSelection: { instanceId: "codex", model: "gpt-5.6-sol" },
+    approvalMode: "ask" as const,
+  });
+
+  it("PATCHes the exact explicit tool set the editor saved", async () => {
+    const request = vi.fn(async (_path: string, _init?: RequestInit) => ({ bot: announcement() }));
+    const grants: Record<string, ConnectorToolGrant> = {
+      gmail: { tools: ["GMAIL_FETCH_EMAILS", "GMAIL_SEND_EMAIL"] },
+      slack: { tools: "*" },
+    };
+    await persistBotUpdate("bot-1", { connectorTools: grants }, new AbortController().signal, request);
+    // Exact-set semantics: the wire body is the record verbatim, so a
+    // reload of what the server stored equals what the person picked.
+    expect(JSON.parse(String(request.mock.calls[0]?.[1]?.body))).toEqual({ connectorTools: grants });
+  });
+
+  it("sends null to drop the record and return to the legacy boolean", async () => {
+    const request = vi.fn(async (_path: string, _init?: RequestInit) => ({ bot: announcement() }));
+    await persistBotUpdate("bot-1", { connectorTools: null }, new AbortController().signal, request);
+    expect(JSON.parse(String(request.mock.calls[0]?.[1]?.body))).toEqual({ connectorTools: null });
   });
 });
 
@@ -826,6 +933,17 @@ describe("notification routing", () => {
 });
 
 describe("config status frames", () => {
+  it("keeps each provider's own key flag through a live config update", () => {
+    const status = configStatusFromFrame({
+      openai: { configured: true },
+      openrouter: { configured: false },
+      anthropic: { configured: true, everyClaudeBot: false },
+    } as ConfigStatusFrame);
+    expect(status.openai).toEqual({ configured: true });
+    expect(status.openrouter).toEqual({ configured: false });
+    expect(status.anthropic).toEqual({ configured: true, everyClaudeBot: false });
+  });
+
   it("keeps thread capacity and room timeout with the existing config fields", () => {
     expect(
       configStatusFromFrame({
@@ -1063,6 +1181,51 @@ describe("optimistic sent messages", () => {
     expect(removed.bots[0]?.activeLeafId).toBe(root.id);
   });
 
+  describe("edits", () => {
+    const question: Message = { id: "q1", role: "user", kind: "text", text: "first try", at: 2, parentId: root.id };
+    const answer: Message = { id: "a1", role: "bot", kind: "text", text: "old answer", at: 3, parentId: question.id };
+    const conversation = (): AppState => ({
+      ...initialState,
+      bots: [{ ...bot, messages: [root, question, answer], activeLeafId: answer.id }],
+    });
+
+    it("swaps the edited question in immediately and hides the old answer", () => {
+      const edited = reducer(conversation(), {
+        type: "editMessage", botId: bot.id, threadId: bot.threadId, messageId: question.id, text: " second try ", sendId: "edit-1",
+      });
+      const visible = visibleMessages(edited.bots[0]!);
+      expect(visible.map((message) => message.text)).toEqual(["Ready", "second try"]);
+      expect(edited.bots[0]?.activeLeafId).toBe("optimistic-edit-1");
+      expect(messageVersions(edited.bots[0]!, question).map((message) => message.id)).toEqual([question.id, "optimistic-edit-1"]);
+    });
+
+    it("hands the swap to the server fork and keeps its reply visible", () => {
+      const edited = reducer(conversation(), {
+        type: "editMessage", botId: bot.id, threadId: bot.threadId, messageId: question.id, text: "second try", sendId: "edit-2",
+      });
+      const fork: Message = { id: "q2", role: "user", kind: "text", text: "second try", at: 4, parentId: root.id, sendId: "edit-2" };
+      const reconciled = reducer(edited, { type: "messageAdded", threadId: bot.threadId, message: fork });
+      const confirmed = reducer(reconciled, { type: "threadActive", threadId: bot.threadId, activeLeafId: fork.id });
+      const reply: Message = { id: "a2", role: "bot", kind: "text", text: "new answer", at: 5, parentId: fork.id };
+      const answered = reducer(confirmed, { type: "messageAdded", threadId: bot.threadId, message: reply });
+      // the POST response for the same fork arrives last and must not rewind
+      const late = reducer(answered, { type: "messageAdded", threadId: bot.threadId, message: fork });
+      expect(visibleMessages(late.bots[0]!).map((message) => message.text)).toEqual(["Ready", "second try", "new answer"]);
+      expect(late.bots[0]?.messages.some((message) => message.id.startsWith("optimistic-"))).toBe(false);
+    });
+
+    it("puts the old question and answer back when the edit fails", () => {
+      const edited = reducer(conversation(), {
+        type: "editMessage", botId: bot.id, threadId: bot.threadId, messageId: question.id, text: "second try", sendId: "edit-3",
+      });
+      const restored = reducer(edited, {
+        type: "optimisticMessageRemoved", threadId: bot.threadId, sendId: "edit-3", restoreLeafId: answer.id,
+      });
+      expect(visibleMessages(restored.bots[0]!).map((message) => message.text)).toEqual(["Ready", "first try", "old answer"]);
+      expect(restored.bots[0]?.messages).toEqual([root, question, answer]);
+    });
+  });
+
   it("uses the same immediate reconciliation for a channel", () => {
     const group: Group = {
       id: "preview-room",
@@ -1280,6 +1443,53 @@ describe("computer destination announcements", () => {
   });
 });
 
+describe("tool selection announcements", () => {
+  it.each(["botPatched", "taskSwitched", "botPatchedSwitch"] as const)("clears the saved restriction when the server returns to all tools via %s", kind => {
+    const bot: Bot = { id: "scoped", threadId: "old", name: "Scope fixture", title: "", description: "",
+      notifications: false, color: "green", unread: false, modelSelection: { instanceId: "pi", model: "local" },
+      toolScope: { allow: [] }, messages: [] };
+    const { toolScope: _scope, ...announcement } = bot;
+    const next = reducer({ ...initialState, bots: [bot] }, {
+      type: kind === "taskSwitched" ? "taskSwitched" : "botPatched",
+      bot: { ...announcement, threadId: kind === "botPatchedSwitch" ? "new" : bot.threadId },
+    });
+    expect(next.bots[0]?.toolScope).toBeUndefined();
+  });
+});
+
+describe("teammate wait announcements", () => {
+  const waiting: Bot = {
+    id: "wait-bot", threadId: "wait-thread", name: "Scooter", title: "", description: "",
+    notifications: true, color: "green", unread: false,
+    modelSelection: { instanceId: "codex", model: "default" }, busy: true, activity: "working", waitingForTeammates: true,
+    messages: [{ id: "message", role: "user", kind: "text", at: 1, text: "Keep this conversation" }],
+  };
+  // The existing wire explicitly clears the coordination wait on settlement.
+  it.each(["botPatched", "taskSwitched", "botPatchedSwitch"] as const)("clears the wait when a working frame reports settlement via %s", (kind) => {
+    const announcement = { ...waiting, waitingForTeammates: false };
+    const next = reducer({ ...initialState, bots: [waiting] }, {
+      type: kind === "taskSwitched" ? "taskSwitched" : "botPatched",
+      bot: { ...announcement, threadId: kind === "botPatchedSwitch" ? "replacement-thread" : waiting.threadId },
+    });
+    expect(next.bots[0]?.waitingForTeammates).toBe(false);
+    expect(next.bots[0]?.messages).toEqual(waiting.messages);
+  });
+
+  it("clears the wait on an idle frame too, not only a working one", () => {
+    const announcement = { ...waiting, waitingForTeammates: false };
+    const next = reducer({ ...initialState, bots: [waiting] }, { type: "botPatched", bot: { ...announcement, busy: false, activity: "idle" } });
+    expect(next.bots[0]?.waitingForTeammates).toBe(false);
+    expect(next.bots[0]?.busy).toBe(false);
+  });
+
+  it("keeps the wait painted while the frame still carries it", () => {
+    const { messages, ...rest } = waiting;
+    const next = reducer({ ...initialState, bots: [waiting] }, { type: "botPatched", bot: rest });
+    expect(next.bots[0]?.waitingForTeammates).toBe(true);
+    expect(next.bots[0]?.messages).toBe(messages);
+  });
+});
+
 describe("browser profile announcements", () => {
   it.each([undefined, null, "guest", "another-profile"])("replaces an old shared profile with %s without losing chat", (profile) => {
     const bot: Bot = {
@@ -1310,6 +1520,19 @@ describe("section Chiefs", () => {
     modelSelection: { instanceId: "codex", model: "default" },
     section,
     chiefOfStaff,
+  });
+
+  it("atomically removes a deleted team and its assignments before SSE arrives", () => {
+    const member = { ...bot("member", "Delivery"), messages: [] };
+    const other = { ...bot("other", "Personal"), messages: [] };
+    const group = { id: "group", threadId: "thread", section: "Delivery", name: "Review", memberIds: [], defaultResponder: { kind: "mentions" }, createdAt: 1, bulletin: "", messages: [], unread: false } satisfies Group;
+    const next = reducer({ ...initialState, bots: [member, other], groups: [group], sections: ["Delivery", "Personal"] },
+      { type: "sectionDeleted", section: "Delivery", sections: ["Personal"] });
+    expect(next.sections).toEqual(["Personal"]);
+    expect(next.bots[0].section).toBeUndefined();
+    expect(next.groups[0].section).toBeUndefined();
+    expect(next.bots[0].messages).toBe(member.messages);
+    expect(next.bots[1]).toBe(other);
   });
 
   it("clears previous membership when a complete bot frame moves it to General", () => {
@@ -1987,6 +2210,17 @@ describe("live config frames", () => {
     localVm: { mode: "shared", maxInstances: 1 },
   };
 
+  it("keeps automatic recovery and its backup through live config refreshes", () => {
+    const automaticRecovery = { enabled: true, backup: { instanceId: "backup", model: "fixture-model" } };
+    expect(configStatusFromFrame({ ...baseFrame, automaticRecovery }).automaticRecovery).toEqual(automaticRecovery);
+    expect(configStatusFromFrame({ ...baseFrame, automaticRecovery: { enabled: false } }).automaticRecovery).toEqual({ enabled: false });
+  });
+
+  it("keeps an OMB Cloud home's flag through live config refreshes, and adds none elsewhere", () => {
+    expect(configStatusFromFrame({ ...baseFrame, cloudHome: true }).cloudHome).toBe(true);
+    expect(configStatusFromFrame(baseFrame)).not.toHaveProperty("cloudHome");
+  });
+
   it("preserves edition, budgets and billing through configStatusFromFrame", () => {
     const frame: ConfigStatusFrame = {
       ...baseFrame,
@@ -1998,6 +2232,34 @@ describe("live config frames", () => {
     expect(status.edition).toEqual(frame.edition);
     expect(status.budgets).toEqual(frame.budgets);
     expect(status.billing).toEqual(frame.billing);
+  });
+
+  it("keeps saved provider keys and the fleet flag after a config SSE frame lands after a save's own response", () => {
+    const saved = reducer(initialState, {
+      type: "configStatus",
+      config: configStatusFromFrame({ ...baseFrame, openaiCompat: { configured: true, url: "http://127.0.0.1:1/v1" } }),
+    });
+    const frame: ConfigStatusFrame = {
+      ...baseFrame,
+      anthropic: { configured: true },
+      mistral: { configured: true },
+      openaiCompat: { configured: true, url: "http://127.0.0.1:1/v1" },
+      fleet: { available: true },
+    };
+    const state = reducer(saved, { type: "configStatus", config: configStatusFromFrame(frame) });
+    expect(state.config).toMatchObject({
+      anthropic: { configured: true },
+      mistral: { configured: true },
+      openaiCompat: { configured: true, url: "http://127.0.0.1:1/v1" },
+      fleet: { available: true },
+    });
+  });
+
+  it("carries the organisation's read-only desktop policy through a config frame", () => {
+    const managedPolicy = { organizationName: "Fixture Agency", version: 2, companyModelsOnly: true, allowedEngines: ["codex"],
+      mcp: { allowCustom: false, allowlist: ["github"] }, computers: { thisComputer: false, localVm: true, box: true, vps: true }, remoteAccess: false };
+    expect(configStatusFromFrame({ ...baseFrame, managedPolicy }).managedPolicy).toEqual(managedPolicy);
+    expect(configStatusFromFrame({ ...baseFrame, managedPolicy: null }).managedPolicy).toBeNull();
   });
 
   it("keeps edition, budgets and billing in state.config after a config SSE frame lands", () => {
@@ -2013,6 +2275,14 @@ describe("live config frames", () => {
       budgets: { monthlyUsd: 10, warnAtPercent: 80 },
       billing: { currency: "USD" },
     });
+  });
+
+  it("keeps live settings when a config frame arrives", () => {
+    const live = { configured: true, voice: "sol", readTypedReplies: false, idleMinutes: 7 };
+    const config = configStatusFromFrame({ ...baseFrame, live });
+    expect(config.live).toEqual(live);
+    const state = reducer(initialState, { type: "configStatus", config });
+    expect(state.config?.live).toEqual(live);
   });
 });
 
@@ -2094,5 +2364,50 @@ describe("conversation model variant discoveries", () => {
     state = reducer(state, { type: "hydrate", bots: [owner], groups: [], computerControl: {} });
     expect(state.modelVariantSessions).toEqual({});
     expect(state.bots[0].tasks![0].modelSelection?.variant).toBe("minimal");
+  });
+});
+
+describe("live call state", () => {
+  const call = { callId: "c1", botId: "b1", threadId: "t1", client: "ios", voice: "marin", startedAt: 1, status: "live" } as const;
+  it("starts empty and follows live.call frames", () => {
+    expect(initialState.liveCall).toBeNull();
+    const live = reducer(initialState, { type: "liveCall", call });
+    expect(live.liveCall).toEqual(call);
+    const ended = reducer(live, { type: "liveCall", call: { ...call, status: "ended", endReason: "idle" } });
+    expect(ended.liveCall?.status).toBe("ended");
+    expect(reducer(ended, { type: "liveCall", call: null }).liveCall).toBeNull();
+  });
+
+  // GET /api/live/call races the event stream: an answer that left before a
+  // newer live.call frame landed must not put back an older line (a phantom
+  // bar for a call that has ended, or no bar for one that just began).
+  it("takes a lookup of the line only if no newer frame landed while it was out", () => {
+    const since = initialState.liveCallVersion;
+    const framed = reducer(initialState, { type: "liveCall", call });
+    expect(reducer(framed, { type: "liveCallLookup", call: null, since, seq: 1 })).toBe(framed);
+    const fresh = reducer(framed, { type: "liveCallLookup", call: { ...call, status: "ended", endReason: "idle" }, since: framed.liveCallVersion, seq: 2 });
+    expect(fresh.liveCall?.status).toBe("ended");
+    // a lookup is not newer news than the next lookup
+    expect(fresh.liveCallVersion).toBe(framed.liveCallVersion);
+  });
+
+  // Two snapshots can overlap (a reconnect while the first one is out):
+  // both lookups leave at the same version, and the answers can come back
+  // in either order.
+  it("never lets an earlier lookup's answer replace a later one's", () => {
+    const since = initialState.liveCallVersion;
+    const later = reducer(initialState, { type: "liveCallLookup", call, since, seq: 2 });
+    expect(later.liveCall).toEqual(call);
+    expect(reducer(later, { type: "liveCallLookup", call: null, since, seq: 1 })).toBe(later);
+    const inOrder = reducer(reducer(initialState, { type: "liveCallLookup", call: null, since, seq: 1 }), { type: "liveCallLookup", call, since, seq: 2 });
+    expect(inOrder.liveCall).toEqual(call);
+  });
+
+  it("reads a live.call frame's call, and ignores a frame without one", () => {
+    expect(liveCallFromFrame({ kind: "live.call", botId: "b1", threadId: "t1", call })).toEqual({ call });
+    expect(liveCallFromFrame({ kind: "live.call", botId: "b1", threadId: "t1", call: null })).toEqual({ call: null });
+    expect(liveCallFromFrame({ kind: "live.call", botId: "b1", threadId: "t1" })).toBeNull();
+    expect(liveCallFromFrame({ kind: "live.call", call: "c1" })).toBeNull();
+    expect(liveCallFromFrame({ kind: "live.call", call: { status: "live" } })).toBeNull();
   });
 });

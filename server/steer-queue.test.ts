@@ -23,7 +23,9 @@ import {
   drainSteeredMessages,
   hasQueuedSteeredMessages,
   holdSteeredQueue,
+  isSteeredMessageQueued,
   onSteeredQueueChange,
+  queuedThreadPosition,
   queuedSteerSnapshot,
   queuedSteeredMessage,
   queueSteeredMessage,
@@ -79,7 +81,22 @@ function fakeStore(bots: BotRecord[]): SteerStore & { messages: Message[] } {
 }
 
 describe("steer-queue module", () => {
-  it.each([undefined, "capacity"] as const)("detects an exact owner's queued correction with reason %s", (reason) => {
+  it("keeps readable citation prompts byte-for-byte through queue, hold, and drain", () => {
+    const bot = fakeBot("bot-citation-queue", "thread-citation-queue", true);
+    const store = fakeStore([bot]);
+    const prompt = '<!--omb-citation-v1:fixture-->\n> Quoted message:\n> const café = "🐭";\n\nComment:\nExplain this';
+    const queued = queueSteeredMessage(bot.id, bot.threadId, prompt);
+    const held = holdSteeredQueue(bot.id, bot.threadId, queued.id)!;
+    expect(held.items[0]).toMatchObject({ text: prompt, prompt });
+    restoreHeldSteeredQueue(held);
+    bot.busy = false;
+    const run = vi.fn();
+    drainSteeredMessages(store, run);
+    expect(run.mock.calls[0][2]).toBe(prompt);
+    expect(store.messages[0].text).toBe(prompt);
+  });
+
+  it.each([undefined, "capacity", "group-turn"] as const)("detects an exact owner's queued correction with reason %s", (reason) => {
     const botId = `correction-${reason ?? "busy"}`;
     const threadId = `${botId}-thread`;
     expect(hasQueuedSteeredMessages(botId, threadId)).toBe(false);
@@ -89,6 +106,19 @@ describe("steer-queue module", () => {
     expect(hasQueuedSteeredMessages(botId, "other-thread")).toBe(false);
     expect(cancelSteeredMessage(botId, queued.id, threadId)).toBe(true);
     expect(hasQueuedSteeredMessages(botId, threadId)).toBe(false);
+  });
+
+  it("places a thread in line whether it waits on a slot or a room turn, not on its own turn", () => {
+    const botId = "bot-position-reasons";
+    queueSteeredMessage(botId, "thread-slot", "waiting for a slot", { reason: "capacity" });
+    queueSteeredMessage(botId, "thread-room", "waiting for the room", { reason: "group-turn" });
+    expect(queuedThreadPosition(botId, "thread-slot")).toBe(1);
+    expect(queuedThreadPosition(botId, "thread-room")).toBe(2);
+    // a correction held only by its own thread's turn is not in the bot-wide
+    // line: the thread is busy, not queued behind a sibling
+    queueSteeredMessage(botId, "thread-own", "waiting on its own turn");
+    expect(queuedThreadPosition(botId, "thread-own")).toBeNull();
+    expect(queuedThreadPosition("other-bot", "thread-slot")).toBeNull();
   });
 
   it("preserves self-opened request provenance through persistence and a capacity wait", () => {
@@ -126,12 +156,37 @@ describe("steer-queue module", () => {
     queueSteeredMessage(bot.id, bot.threadId, "from the paired person", { sender: { name: "Priya" } });
     bot.busy = false;
     drainSteeredMessages(store, run);
+    // M2: different senders never coalesce — the owner's turn runs first
+    // and Priya's words wait for the next settle.
+    expect(store.messages.map((message) => [message.text, message.sender])).toEqual([
+      ["from the owner", undefined],
+    ]);
+    drainSteeredMessages(store, run);
     expect(store.messages.map((message) => [message.text, message.sender])).toEqual([
       ["from the owner", undefined],
       ["from the paired person", { name: "Priya" }],
     ]);
-    // the line handed to the turn is the stamped one, not a copy without it
-    expect(run.mock.calls[0][3].sender).toEqual({ name: "Priya" });
+    // the line handed to each turn is the stamped one, not a copy without it
+    expect(run).toHaveBeenCalledTimes(2);
+    expect(run.mock.calls[1][3].sender).toEqual({ name: "Priya" });
+    expect(run.mock.calls[0][3].sender).toBeUndefined();
+  });
+
+  it("keeps a call's via on the message it drains", () => {
+    const bot = fakeBot("bot-via-drain", "thread-via-drain", true);
+    const store = fakeStore([bot]);
+    const run = vi.fn();
+    queueSteeredMessage(bot.id, bot.threadId, "typed while the bot worked");
+    queueSteeredMessage(bot.id, bot.threadId, "what is on my calendar", { via: "call" });
+    restoreSteeredMessages(); // a restart reads via back from the durable row
+    bot.busy = false;
+    drainSteeredMessages(store, run);
+    expect(store.messages.map((message) => [message.text, message.via])).toEqual([
+      ["typed while the bot worked", undefined],
+      ["what is on my calendar", "call"],
+    ]);
+    expect("via" in store.messages[0]).toBe(false);
+    expect(run.mock.calls[0][3].via).toBe("call");
   });
 
   it("still loads and drains a durable row written before senders were kept", () => {
@@ -384,6 +439,27 @@ describe("steer-queue module", () => {
     expect(run).toHaveBeenCalledTimes(1);
   });
 
+  // A Live call waits for a spoken request it saw queued; it asks here
+  // whether that one send still waits, since an edit or cancel removes it
+  // without ever delivering it.
+  it("tells whether one send still waits in its thread's queue", () => {
+    const bot = fakeBot("bot-waiting", "thread-waiting", true);
+    const store = fakeStore([bot]);
+    const kept = queueSteeredMessage(bot.id, bot.threadId, "keep waiting");
+    const edited = queueSteeredMessage(bot.id, bot.threadId, "edited away");
+    expect(isSteeredMessageQueued(bot.id, bot.threadId, kept.id)).toBe(true);
+    expect(isSteeredMessageQueued("other-bot", bot.threadId, kept.id)).toBe(false);
+    expect(isSteeredMessageQueued(bot.id, "other-thread", kept.id)).toBe(false);
+    // editing a queued line cancels it first
+    expect(cancelSteeredMessage(bot.id, edited.id, bot.threadId)).toBe(true);
+    expect(isSteeredMessageQueued(bot.id, bot.threadId, edited.id)).toBe(false);
+    expect(isSteeredMessageQueued(bot.id, bot.threadId, kept.id)).toBe(true);
+    bot.busy = false;
+    drainSteeredMessages(store, vi.fn());
+    expect(store.messages.map((m) => m.queueId)).toEqual([kept.id]);
+    expect(isSteeredMessageQueued(bot.id, bot.threadId, kept.id)).toBe(false);
+  });
+
   it("drops a cancelled message so drain does not send it", () => {
     const bot = fakeBot("bot-cancel", "thread-cancel", true);
     const store = fakeStore([bot]);
@@ -491,11 +567,19 @@ describe("steer-queue e2e (fake ACP fleet)", () => {
   let earlyGate: string;
   let receiptGate: string;
   let dispatchGate: string;
+  let roomGate: string;
   const evidence: unknown[] = [];
   let evidencePath: string;
 
   /** the flat command payloads these tests POST/PATCH */
-  type ApiBody = Record<string, string | boolean | { instanceId: string; model: string }>;
+  type ApiBody = Record<
+    string,
+    | string
+    | boolean
+    | string[]
+    | { instanceId: string; model: string }
+    | { bulletin: string; defaultResponder: { kind: string; botId: string } }
+  >;
 
   const api = async (method: string, path: string, body?: ApiBody): Promise<{ status: number; body: any }> => {
     const res = await fetch(`${BASE}${path}`, {
@@ -510,6 +594,9 @@ describe("steer-queue e2e (fake ACP fleet)", () => {
 
   const botById = async (id: string) =>
     (await api("GET", "/api/bots")).body.bots.find((b: any) => b.id === id);
+
+  const groupById = async (id: string) =>
+    (await api("GET", "/api/bots?messages=0")).body.groups.find((g: any) => g.id === id);
 
   const echoes = (bot: any): any[] =>
     bot.messages.filter((m: any) => m.role === "bot" && m.kind === "text" && m.text?.startsWith("echo: "));
@@ -538,6 +625,7 @@ describe("steer-queue e2e (fake ACP fleet)", () => {
     earlyGate = join(home, "gates", "early-provider.gate");
     receiptGate = join(home, "gates", "receipt-provider.gate");
     dispatchGate = join(home, "gates", "early-dispatch.gate");
+    roomGate = join(home, "gates", "room.gate");
     evidencePath = join(tmpdir(), `omb-steer-evidence-${Date.now()}-${process.pid}.json`);
     // The CLI and harness remain real. Delay only the adapter's returned
     // acknowledgment, reproducing completion before sendTurn resolves.
@@ -613,6 +701,13 @@ describe("steer-queue e2e (fake ACP fleet)", () => {
               FAKE_ACP_GATE_FILE: stopGate,
               FAKE_ACP_RPC_DUMP: stopRpcDump,
             },
+            config: { cli: FAKE_CLI, fullAuto: true },
+          },
+          // a room turn for the group-turn queue test: one gate holds the
+          // room's turn open while a 1:1 message arrives
+          steerRoom: {
+            driver: "grokAgent",
+            environment: { FAKE_ACP_MODE: "echo-gated", FAKE_ACP_GATE_FILE: roomGate },
             config: { cli: FAKE_CLI, fullAuto: true },
           },
         },
@@ -808,6 +903,48 @@ describe("steer-queue e2e (fake ACP fleet)", () => {
       const replies = echoes(snapshot);
       expect(replies).toHaveLength(1);
       expect(replies[0].text).toContain("after stop please");
+    },
+    60_000,
+  );
+
+  it(
+    "queues a person's 1:1 message behind the bot's room turn instead of bouncing it",
+    async () => {
+      const bot = await newBot("steerRoom", "RoomBusy");
+
+      // a one-member room whose message starts the room turn; the turn
+      // stays open until the gate exists, so the room holds the bot
+      const room = (await api("POST", "/api/groups", {
+        name: "Ops Room",
+        memberIds: [bot.id],
+        setup: { bulletin: "", defaultResponder: { kind: "member", botId: bot.id } },
+      })).body.group;
+      expect((await api("POST", `/api/groups/${room.id}/messages`, { text: "room work" })).status).toBe(202);
+      await until(async () => (await groupById(room.id))?.working === true, "the room turn to start");
+
+      // the person's 1:1 words arrive mid-room-turn: queued with the real
+      // bound named, not bounced with 409 thread_busy
+      const direct = await api("POST", `/api/bots/${bot.id}/messages`, { text: "meanwhile, direct words" });
+      expect(direct.status).toBe(202);
+      expect(direct.body).toMatchObject({ ok: true, queued: true, reason: "group-turn" });
+
+      // the queued words stay off the 1:1 transcript while the room runs
+      const during = await botById(bot.id);
+      expect(during.messages.filter((m: any) => m.role === "user").map((m: any) => m.text)).toEqual([]);
+
+      // the room turn ends: the drain runs the queued words as exactly one
+      // attended 1:1 turn
+      writeFileSync(roomGate, "open");
+      await until(async () => {
+        const after = await botById(bot.id);
+        return !after.busy && echoes(after).some((reply) => reply.text.includes("meanwhile, direct words"));
+      }, "the drained 1:1 turn");
+
+      const after = await botById(bot.id);
+      const directEchoes = echoes(after).filter((reply) => reply.text.includes("meanwhile, direct words"));
+      expect(directEchoes).toHaveLength(1);
+      expect((await groupById(room.id))?.working).toBe(false);
+      evidence.push({ groupTurnQueue: { direct, after } });
     },
     60_000,
   );

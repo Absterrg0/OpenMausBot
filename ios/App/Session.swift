@@ -7,6 +7,7 @@
 // backgrounds, it moves between wifi and cellular. So the stream is torn
 // down deliberately when the app leaves the screen, and on the way back the
 // server is asked what was missed rather than being asked for everything.
+import Combine
 import Foundation
 import OSLog
 import SwiftUI
@@ -58,6 +59,9 @@ final class Session: ObservableObject {
     /// `Connection.canAdminister`. Views hide owner-only controls when this
     /// is false rather than offer buttons the server would answer 403 to.
     var canAdminister: Bool { connection?.canAdminister ?? false }
+    /// Paired with a server directly rather than through the companion
+    /// sidecar: see `Connection.pairedWithServer`.
+    var pairedWithServer: Bool { connection?.pairedWithServer ?? false }
     @Published private(set) var status: Status = .unpaired
     /// Transient, user-facing failures from an action they just took.
     @Published var actionError: String?
@@ -81,7 +85,16 @@ final class Session: ObservableObject {
     /// NavigationStack after the exact detached task has been activated.
     @Published private(set) var notificationChat: Chat?
 
+    /// A chat a deep link asked for, consumed by the roster's
+    /// NavigationStack the same way a notification response is.
+    @Published private(set) var pendingChat: Chat?
+
     private var client: CompanionClient?
+    /// Sent just before the phone stops talking to the active computer (a
+    /// new pairing, a switch, forgetting it), while `client` and `state`
+    /// still belong to it. A Live call hangs up here, so its end request
+    /// reaches the computer that holds the call.
+    let leavingComputer = PassthroughSubject<Void, Never>()
     /// Ciphertext-only operations survive navigation and transient
     /// disconnects so a retry cannot accidentally reseal the same value with
     /// a different HPKE operation id. Nothing here is persisted to disk.
@@ -121,6 +134,17 @@ final class Session: ObservableObject {
     /// for the same attachment path.
     private var avatarFetches: [String: (id: UUID, task: Task<Data?, Never>)] = [:]
     private var avatarCacheGeneration = 0
+    /// Voice-note bytes for the transcript bubbles. Clips are short but a
+    /// busy thread can carry several; a small cost-bounded window keeps
+    /// replay from refetching without pinning the whole transcript.
+    private let voiceNoteCache: NSCache<NSString, NSData> = {
+        let cache = NSCache<NSString, NSData>()
+        cache.countLimit = 32
+        cache.totalCostLimit = 32 * 1_024 * 1_024
+        return cache
+    }()
+    private var voiceNoteFetches: [String: (id: UUID, task: Task<Data?, Never>)] = [:]
+    private var voiceNoteCacheGeneration = 0
     /// Full image bytes are already fetched to draw a thumbnail. Keep a small,
     /// cost-bounded window so tapping that thumbnail opens immediately instead
     /// of downloading the same image twice.
@@ -167,7 +191,7 @@ final class Session: ObservableObject {
         let arguments = ProcessInfo.processInfo.arguments
         if (arguments.contains("-store-preview") || arguments.contains("-computer-switcher-preview")),
            let url = Bundle.main.url(
-               forResource: arguments.contains("-images-preview") ? "ImagePreview" : (arguments.contains("-threads-preview") ? "ThreadPreview" : "StorePreview"),
+               forResource: arguments.contains("-images-preview") ? "ImagePreview" : arguments.contains("-chat-update-preview") ? "ChatUpdatePreview" : arguments.contains("-chat-presentation-preview") ? "ChatPresentationPreview" : arguments.contains("-roster-preview") ? "RosterPreview" : arguments.contains("-threads-preview") ? "ThreadPreview" : "StorePreview",
                withExtension: "json"
            ),
            let data = try? Data(contentsOf: url),
@@ -199,13 +223,95 @@ final class Session: ObservableObject {
                 config.protocolClasses = [ImagePreviewProtocol.self]
                 client = CompanionClient(connection: preview, token: "image-fixture-token", session: URLSession(configuration: config))
             }
+            if arguments.contains("-voice-preview") {
+                let config = URLSessionConfiguration.ephemeral
+                config.protocolClasses = [VoicePreviewProtocol.self]
+                client = CompanionClient(connection: preview, token: "voice-fixture-token", session: URLSession(configuration: config))
+            }
+            if arguments.contains("-live-call-preview") {
+                let config = URLSessionConfiguration.ephemeral
+                config.protocolClasses = [LiveCallPreviewProtocol.self]
+                client = CompanionClient(connection: preview, token: "live-call-fixture-token", session: URLSession(configuration: config))
+            }
+            var fleet = fleet
+            if arguments.contains("-live-call-long-name-preview"),
+               let pepper = fleet.bots.firstIndex(where: { $0.id == "preview-pepper" }) {
+                // Forty characters, too long for the call bar's line: the
+                // name gives way there, the clock does not.
+                fleet.bots[pepper].name = "Pepper, the Quarterly Planning Assistant"
+            }
             state.hydrate(fleet)
+            if arguments.contains("-live-call-room-preview"),
+               let room = try? JSONDecoder().decode(Room.self, from: Data(LiveCallPreviewProtocol.room.utf8)) {
+                // A room beside Pepper, to show the call banner in.
+                state.rooms.append(room)
+                state.messages[room.threadId] = []
+            }
+            if arguments.contains("-live-call-remote-preview") {
+                // The Mac on a call with Pepper's Gmail thread, a minute in:
+                // what the remote bar shows and counts up from.
+                state.liveCall = LiveCallPreviewProtocol.remoteCall(startedAt: Date().addingTimeInterval(-65))
+            }
+            if arguments.contains("-chat-focus-preview") {
+                // Put the requested reply several screens inside the fold.
+                var messages = state.messages["preview-gmail"] ?? []
+                if let index = messages.firstIndex(where: { $0.id == "progress2" }) {
+                    var parent = "progress"
+                    let narration = (1...12).map { number -> Message in
+                        var step = messages[index]
+                        step.id = "preview-long-\(number)"
+                        step.at = 1789088401000 + Double(number)
+                        step.text = String(repeating: "Inspecting the dependency graph for step \(number). ", count: 8)
+                        step.turnId = "preview-turn"
+                        step.parentId = parent
+                        parent = step.id
+                        return step
+                    }
+                    messages[index].parentId = parent
+                    messages.insert(contentsOf: narration, at: index)
+                    state.messages["preview-gmail"] = messages
+                }
+                focusedMessageId = "progress2"
+            }
+            if arguments.contains("-chat-compaction-preview"),
+               var receipt = state.messages["preview-gmail"]?.last {
+                receipt.id = "preview-compaction"
+                receipt.kind = .compaction
+                receipt.at = 1789088405000
+                receipt.turnId = nil
+                receipt.turnTerminal = nil
+                receipt.parentId = "answer"
+                receipt.compaction = Compaction(summary: "Earlier context preserved for the next turn.", tokensBefore: 12345)
+                state.apply(.message(threadId: "preview-gmail", message: receipt))
+                var digest = receipt
+                digest.id = "preview-digest"
+                digest.kind = .digest
+                digest.compaction = nil
+                digest.at = 1789088406000
+                digest.parentId = receipt.id
+                // The raw receipt never reaches the screen: it becomes a chip,
+                // and the reply part — this sentence — is dropped from its sheet.
+                digest.text = "[digest] · tools: shell ×2 · reply: Digest must stay hidden"
+                state.apply(.message(threadId: "preview-gmail", message: digest))
+            }
+            if arguments.contains("-chat-reasoning-preview"),
+               let frameURL = Bundle.main.url(forResource: "ChatReasoningPreview", withExtension: "json"),
+               let frameData = try? Data(contentsOf: frameURL),
+               let frame = try? JSONDecoder().decode(Frame.self, from: frameData) {
+                state.apply(frame)
+            }
             if arguments.contains("-threads-preview"),
                let pagesURL = Bundle.main.url(forResource: "ThreadPreviewPages", withExtension: "json"),
                let pagesData = try? Data(contentsOf: pagesURL),
                let pages = try? JSONDecoder().decode([String: ThreadPage].self, from: pagesData) {
                 for (threadID, page) in pages { state.merge(page, intoThread: threadID) }
             }
+            if arguments.contains("-reset-list-density") {
+                // The fresh-install default is checked in UI tests; an
+                // earlier run on the same simulator may have saved a choice.
+                UserDefaults.standard.removeObject(forKey: PrefKey.rosterDensity)
+            }
+            if arguments.contains("-busy-fleet-preview") { startBusyFleetPreview() }
             status = .live
             return
         }
@@ -213,6 +319,67 @@ final class Session: ObservableObject {
         restore()
         Task { await refreshNotificationAuthorization() }
     }
+
+#if DEBUG
+    /// Ordinary chat under synthetic fleet traffic: no client, pairing,
+    /// microphone or provider. Uses the same delivery/fold as the live stream.
+    private func startBusyFleetPreview() {
+        guard let template = state.bots.first,
+              let messageTemplate = state.transcript(forThread: template.threadId).first,
+              let event = try? JSONDecoder().decode(RuntimeEvent.self, from: Data(
+                #"{"type":"content.delta","threadId":"fixture","delta":"busy ","streamKind":"assistant_text"}"#.utf8
+              )) else { return }
+        var fleet = state
+        fleet.resetCursor("busy-preview:0")
+        for number in 0..<20 {
+            var bot = template
+            bot.id = "busy-preview-\(number)"
+            bot.threadId = "busy-thread-\(number)"
+            bot.name = "Busy fixture \(number)"
+            bot.tasks = nil
+            bot.projects = nil
+            bot.unread = false
+            bot.messages = (0..<50).map { index in
+                var message = messageTemplate
+                message.id = "busy-\(number)-\(index)"
+                message.role = .bot
+                message.kind = .text
+                message.at = Double(index)
+                message.parentId = nil
+                message.attachments = nil
+                message.card = nil
+                message.text = "Synthetic completed message \(index)."
+                return message
+            }
+            bot.activeLeafId = bot.messages?.last?.id
+            fleet.apply(.bot(bot))
+        }
+        state = fleet
+        streamTask = Task { [weak self] in
+            let events = AsyncThrowingStream<StreamFrame, Error> { continuation in
+                let producer = Task.detached {
+                    for sequence in 1...36_000 {
+                        if Task.isCancelled { break }
+                        var next = event
+                        next.threadId = "busy-thread-\(sequence % 20)"
+                        continuation.yield(StreamFrame(frame: .runtime(next), seq: sequence))
+                        if sequence % 20 == 0 {
+                            do { try await Task.sleep(nanoseconds: 50_000_000) } catch { break }
+                        }
+                    }
+                    continuation.finish()
+                }
+                continuation.onTermination = { _ in producer.cancel() }
+            }
+            do {
+                for try await batch in eventBatches(events) {
+                    guard !Task.isCancelled, let self else { return }
+                    self.applyStreamBatch(batch)
+                }
+            } catch { /* offline fixture cancellation */ }
+        }
+    }
+#endif
 
     /// Rebuild the selected connection at launch, migrating the previous
     /// single-computer record the first time a multi-computer build runs.
@@ -420,16 +587,33 @@ final class Session: ObservableObject {
         }
     }
 
-    func receivePairingURL(_ url: URL) {
-        guard let invite = PairingInvite.parse(url) else {
+    func receiveURL(_ url: URL) {
+        guard let link = CompanionDeepLink.parse(url) else {
             actionError = "That pairing invitation is not valid. Start pairing again on your computer."
             return
         }
-        pairingInvite = CompanionPairingInvitePolicy.nextInvite(
-            current: pairingInvite,
-            after: .received(invite)
-        )
-        pairingRequested = true
+        switch link {
+        case let .pairing(invite):
+            pairingInvite = CompanionPairingInvitePolicy.nextInvite(
+                current: pairingInvite,
+                after: .received(invite)
+            )
+            pairingRequested = true
+        case let .chat(threadId):
+            openChat(threadId: threadId)
+        }
+    }
+
+    /// A deep link that names a chat. An id this phone does not know — a
+    /// stale widget row, a thread deleted since — lands on the roster
+    /// silently: it is not the person's mistake, so it is not worth a banner.
+    func openChat(threadId: String) {
+        guard let chat = state.chat(forThread: threadId) else { return }
+        pendingChat = chat
+    }
+
+    func consumePendingChat() {
+        pendingChat = nil
     }
 
     func beginPairing() {
@@ -559,6 +743,7 @@ final class Session: ObservableObject {
     }
 
     private func stopActiveRuntime() {
+        leavingComputer.send()
         resetCredentialEntry()
         streamGeneration += 1
         streamTask?.cancel()
@@ -743,11 +928,12 @@ final class Session: ObservableObject {
                 // breaking out here instead would fall through to the "the
                 // harness went away" path and flash a lost-connection banner
                 // on what is actually a deliberate reconnect.
-                for try await frame in try client.events(since: state.cursor, screens: screenWatchers > 0) {
+                let events = try client.events(since: state.cursor, screens: screenWatchers > 0)
+                for try await batch in eventBatches(events) {
                     if Task.isCancelled { return }
                     reconnectDelay = 0
 
-                    if case let .hello(cursor, resumed) = frame.frame {
+                    if let first = batch.first, case let .hello(cursor, resumed) = first.frame {
                         log.info("stream live, resumed=\(resumed, privacy: .public)")
                         // false means the server could not replay the gap —
                         // the one case that costs a full hydrate. Commit the
@@ -766,12 +952,7 @@ final class Session: ObservableObject {
                         refreshConnectionMetadata(using: client)
                         continue
                     }
-                    state.apply(frame)
-                    if case let .notify(notification) = frame.frame {
-                        NotificationCoordinator.shared.deliver(notification, sequence: frame.seq)
-                    }
-                    NotificationCoordinator.shared.setBadge(state.unreadCount)
-                    state.advance(to: frame.seq)
+                    applyStreamBatch(batch)
                 }
                 // the stream ended without an error — the harness went away
                 log.notice("stream ended without an error")
@@ -799,6 +980,18 @@ final class Session: ObservableObject {
         }
     }
 
+    private func applyStreamBatch(_ batch: [StreamFrame]) {
+        var updated = state
+        updated.applyBatch(batch)
+        state = updated
+        for frame in batch {
+            if case let .notify(notification) = frame.frame {
+                NotificationCoordinator.shared.deliver(notification, sequence: frame.seq)
+            }
+        }
+        NotificationCoordinator.shared.setBadge(state.unreadCount)
+    }
+
     private func hydrate(using client: CompanionClient) async throws {
         let generation = streamGeneration
         // Notification navigation can refresh while run() continues folding
@@ -814,6 +1007,7 @@ final class Session: ObservableObject {
                                 ifCursorMatches: expectedCursor) else { continue }
             log.info("hydrated \(snapshot.fleet.bots.count, privacy: .public) bots, \(snapshot.fleet.groups.count, privacy: .public) rooms")
             NotificationCoordinator.shared.setBadge(state.unreadCount)
+            await refreshLiveCall(using: client)
             return
         }
         throw APIError.status(code: 409, message: "Conversations changed while loading. Please try opening this notification again.")
@@ -1080,7 +1274,10 @@ final class Session: ObservableObject {
 
     /// Take back a held message. The row only goes when the computer agrees;
     /// an entry that already drained counts as agreement.
-    func cancelQueued(_ send: QueuedSend, threadId: String, in chat: Chat) async {
+    /// True only when the computer confirmed cancellation, so an
+    /// edit never hands back words that already joined a turn.
+    @discardableResult
+    func cancelQueued(_ send: QueuedSend, threadId: String, in chat: Chat) async -> Bool {
         let connectionID = client?.connection.id
         let destination: MessageDestination
         switch chat {
@@ -1088,15 +1285,30 @@ final class Session: ObservableObject {
         case let .room(room): destination = .room(id: room.id, threadId: threadId)
         }
         var agreed = false
+        var cancelled = false
         await perform {
-            try await $0.cancelQueued(queueId: send.queueId, to: destination)
+            cancelled = try await $0.cancelQueued(queueId: send.queueId, to: destination)
             agreed = true
         }
         // The cancel landed on the computer that owned the row. One selected
         // mid-request has already reset state; its rows are not this cancel's
         // to retire.
-        if agreed, client?.connection.id == connectionID {
-            state.cancelQueued(queueId: send.queueId, threadId: threadId)
+        guard agreed, client?.connection.id == connectionID else { return false }
+        state.cancelQueued(queueId: send.queueId, threadId: threadId)
+        return cancelled
+    }
+
+    /// Run Claude Code's updater for one engine instance on the computer.
+    /// Returns the version it now reports. Throws with the harness's own
+    /// message (already written for people) so the card can show it; an
+    /// unpaired device is flagged the same way `perform` does.
+    func updateClaude(instanceId: String) async throws -> String {
+        guard let client else { throw APIError.transport("Not connected to a computer.") }
+        do {
+            return try await client.updateClaude(instanceId: instanceId)
+        } catch let error as APIError where error.isUnauthorized {
+            status = .unauthorized
+            throw error
         }
     }
 
@@ -1337,6 +1549,11 @@ final class Session: ObservableObject {
         if let prepared = preparedPhoneCredentials[requestIdentity] {
             return prepared
         }
+        guard #available(iOS 17.0, *) else {
+            // HPKE, which seals the credential end to end, is iOS 17 and up.
+            // There is no weaker path worth offering for a secret.
+            throw PhoneSecretError.requiresNewerOS
+        }
         let envelope = try PhoneSecretCrypto.encrypt(
             value,
             publicKey: publicKey,
@@ -1549,6 +1766,108 @@ final class Session: ObservableObject {
         }
     }
 
+    /// Run one call against the active computer, marking the pairing
+    /// unauthorized when the computer says so.
+    private func withClient<T>(_ call: (CompanionClient) async throws -> T) async throws -> T {
+        guard let client else { throw APIError.transport("This computer is offline.") }
+        return try await withClient(client, call: call)
+    }
+
+    /// Run one call against a particular computer. Local VM control holds on
+    /// to the client that granted its lease, so joining the desktop and
+    /// handing back reach that computer even after the phone has switched
+    /// to another one in Settings. While that computer is still the active
+    /// one, the call goes down its current route: a lease must not be
+    /// released through an address the session has since moved away from.
+    private func withClient<T>(_ client: CompanionClient, call: (CompanionClient) async throws -> T) async throws -> T {
+        let client = self.client?.connection.id == client.connection.id ? self.client ?? client : client
+        do {
+            return try await call(client)
+        } catch let error as APIError where error.isUnauthorized {
+            // As for screenshots: a call answered by the computer the phone
+            // has since switched away from must not evict the new session.
+            guard !Task.isCancelled, self.client?.connection.id == client.connection.id else {
+                throw CancellationError()
+            }
+            status = .unauthorized
+            throw error
+        }
+    }
+
+    /// The control lease this phone uses for one bot on one computer. Kept
+    /// across launches, so a session the app never got to hand back (it was
+    /// killed while driving) can be taken again and released, rather than
+    /// leaving the bot locked behind a lease nobody remembers.
+    private func localVmLease(for bot: Bot, on client: CompanionClient) -> String {
+        let key = "localVmControlLease.\(client.connection.id).\(bot.id)"
+        if let saved = UserDefaults.standard.string(forKey: key) { return saved }
+        let lease = "phone-" + UUID().uuidString
+        UserDefaults.standard.set(lease, forKey: key)
+        return lease
+    }
+
+    /// Take the bot's computer under this phone's lease and open its Local
+    /// VM's relayed desktop. Any failure after asking hands the computer
+    /// straight back, so a failed attempt never leaves the bot locked out —
+    /// except when someone else holds it: then there is nothing of ours to
+    /// release, and closing viewers could disturb theirs.
+    ///
+    /// The client that answered the take comes back with the lease: the
+    /// caller hands back through it, so a computer switched away from in
+    /// Settings is still released rather than left paused under our lease.
+    func takeLocalVm(for bot: Bot) async throws -> (request: URLRequest, password: String?, leaseId: String, client: CompanionClient) {
+        guard let client else { throw APIError.transport("This computer is offline.") }
+        let leaseId = localVmLease(for: bot, on: client)
+        var handBackOnFailure = true
+        do {
+            let state = try await withClient(client) { try await $0.computerControl(botId: bot.id, take: true, leaseId: leaseId) }
+            if state.held, state.owned == false {
+                handBackOnFailure = false
+                throw APIError.transport("Someone else is already controlling this computer.")
+            }
+            guard state.held else { throw APIError.transport("The computer could not be taken. Try again.") }
+            return try await withClient(client) { client in
+                let viewer = try await client.localVmViewer(botId: bot.id, threadId: bot.threadId, leaseId: leaseId)
+                return (try client.viewerSocketRequest(viewer), viewer.password, leaseId, client)
+            }
+        } catch {
+            if handBackOnFailure { await handBackDetached(bot: bot, leaseId: leaseId, client: client) }
+            throw error
+        }
+    }
+
+    /// Hand back from a task of its own, so cancelling whatever asked (the
+    /// person left mid-take) cannot cancel the release with it.
+    func handBackDetached(bot: Bot, leaseId: String, client: CompanionClient) async {
+        await Task { await self.handBackLocalVm(for: bot, leaseId: leaseId, client: client) }.value
+    }
+
+    /// Close this device's viewer and release the lease on the computer that
+    /// granted it, finishing even if the app is on its way to the background.
+    /// Best effort: releasing a lease that no longer holds anything is a
+    /// no-op on the harness.
+    func handBackLocalVm(for bot: Bot, leaseId: String, client: CompanionClient) async {
+        let task = UIApplication.shared.beginBackgroundTask(withName: "Hand back the Local VM")
+        defer { if task != .invalid { UIApplication.shared.endBackgroundTask(task) } }
+        _ = try? await withClient(client) { try await $0.closeViewer(botId: bot.id) }
+        _ = try? await withClient(client) { try await $0.computerControl(botId: bot.id, take: false, leaseId: leaseId) }
+    }
+
+    func localVmScreenshot(for bot: Bot) async throws -> LocalVmScreenshot {
+        guard let client else { throw APIError.transport("This computer is offline.") }
+        do {
+            return try await client.localVmScreenshot(botId: bot.id, threadId: bot.threadId)
+        } catch let error as APIError where error.isUnauthorized {
+            // A poll still in flight when the phone switched computers must
+            // not evict the new session with the old token's 401.
+            guard !Task.isCancelled, self.client?.connection.id == client.connection.id else {
+                throw CancellationError()
+            }
+            status = .unauthorized
+            throw error
+        }
+    }
+
     func markRead(_ chat: Chat) async {
         await perform(quietly: true) {
             switch chat {
@@ -1654,6 +1973,17 @@ final class Session: ObservableObject {
         guard let client else { return false }
         do {
             try await client.renameTask(botId: bot.id, threadId: task.threadId, title: title)
+            await refresh()
+            return true
+        } catch { actionError = error.localizedDescription; return false }
+    }
+
+    /// Snooze or wake a bot thread. Desktop parity: bots only — group
+    /// threads have no snooze on the wire either.
+    func snoozeTask(_ task: BotTask, for bot: Bot, snoozedUntil: Double?) async -> Bool {
+        guard let client else { return false }
+        do {
+            try await client.snoozeTask(botId: bot.id, threadId: task.threadId, snoozedUntil: snoozedUntil)
             await refresh()
             return true
         } catch { actionError = error.localizedDescription; return false }
@@ -1866,12 +2196,41 @@ final class Session: ObservableObject {
         for fetch in avatarFetches.values { fetch.task.cancel() }
         avatarFetches.removeAll()
         avatarCache.removeAllObjects()
+        voiceNoteCacheGeneration += 1
+        for fetch in voiceNoteFetches.values { fetch.task.cancel() }
+        voiceNoteFetches.removeAll()
+        voiceNoteCache.removeAllObjects()
     }
 
     func voiceOptions() async -> [Voice] {
         guard let client else { return [] }
         do { return try await client.voices() }
         catch { actionError = error.localizedDescription; return [] }
+    }
+
+    /// Cached voice-note bytes for the transcript bubble, shaped like
+    /// avatarData so replay and scroll-back never refetch the same clip.
+    func voiceNoteData(for note: MessageVoiceNote) async -> Data? {
+        guard let client else { return nil }
+        let key = note.path as NSString
+        if let cached = voiceNoteCache.object(forKey: key) { return cached as Data }
+        let generation = voiceNoteCacheGeneration
+        let fetch: (id: UUID, task: Task<Data?, Never>)
+        if let pending = voiceNoteFetches[note.path] {
+            fetch = pending
+        } else {
+            let pending = (
+                id: UUID(),
+                task: Task<Data?, Never> { try? await client.voiceNote(path: note.path) }
+            )
+            voiceNoteFetches[note.path] = pending
+            fetch = pending
+        }
+        let data = await fetch.task.value
+        if voiceNoteFetches[note.path]?.id == fetch.id { voiceNoteFetches.removeValue(forKey: note.path) }
+        guard !Task.isCancelled, generation == voiceNoteCacheGeneration, let data else { return nil }
+        voiceNoteCache.setObject(data as NSData, forKey: key, cost: data.count)
+        return data
     }
 
     /// Switch the workspace's voice engine. The fresh status comes back so
@@ -1904,6 +2263,138 @@ final class Session: ObservableObject {
     func configStatus() async -> ConfigStatus? {
         guard let client else { return nil }
         return try? await client.config()
+    }
+
+    // MARK: - Live calls
+
+    /// Start a Live call on the Mac with this phone's SDP offer. Throws so
+    /// LiveCallController can tell a missing key from a busy line from a
+    /// dead network; it turns each into words. A revoked token still goes
+    /// back to pairing first, as it does from every other action.
+    func startLiveCall(botId: String, threadId: String, sdp: String) async throws -> (
+        start: LiveCallStart, end: @MainActor () -> Task<LiveCallState?, Never>
+    ) {
+        guard let client else { throw APIError.transport("This computer is offline.") }
+        do {
+            let answer = try await client.startLiveCall(botId: botId, threadId: threadId, sdp: sdp)
+            guard self.client?.connection.id == client.connection.id else {
+                _ = try? await Task { try await client.endLiveCall(callId: answer.call.callId) }.value
+                throw APIError.transport("The computer changed while the call was starting.")
+            }
+            // The controller may be suspended applying the answer when the
+            // computer changes. Its abandoned-start cleanup still belongs here.
+            return (answer, { self.endLiveCall(callId: answer.call.callId, using: client) })
+        } catch let error as APIError where error.isUnauthorized {
+            // A computer this phone just left does not speak for the next one.
+            if self.client?.connection.id == client.connection.id { status = .unauthorized }
+            throw error
+        }
+    }
+
+    /// Hang up on the Mac. Nothing to show on failure: the bar is already
+    /// closing, and the Mac's idle timer ends a call a dead network kept.
+    /// This is the controller's end, for this phone's own call; the remote
+    /// bar's hang-up is `hangUpRemoteLiveCall`, which does show.
+    ///
+    /// The request goes to the computer connected when this is called, not
+    /// when it is sent: changing computers hangs up first
+    /// (`leavingComputer`), then replaces `client` before the task runs.
+    @discardableResult
+    func endLiveCall(callId: String) -> Task<LiveCallState?, Never> {
+        endLiveCall(callId: callId, using: client)
+    }
+
+    private func endLiveCall(callId: String, using client: CompanionClient?) -> Task<LiveCallState?, Never> {
+        return Task {
+            guard let client else { return nil }
+            let current = { self.client?.connection.id == client.connection.id }
+            do {
+                let answer = try await client.endLiveCall(callId: callId)
+                // The answer is the Mac's word that the call ended: apply it
+                // now, as the remote bar's hang-up does, rather than leave the
+                // line reading as this call until the frame that follows it.
+                guard current() else { return answer }
+                if state.applyLiveCallEnd(callId: callId, answer: answer) {
+                    await refreshLiveCall(using: client)
+                }
+                return answer
+            } catch let error as APIError where error.isUnauthorized {
+                // A computer this phone just left does not speak for the next one.
+                if current() { status = .unauthorized }
+                return nil
+            } catch {
+                log.error("live call end failed: \(error.localizedDescription, privacy: .public)")
+                return nil
+            }
+        }
+    }
+
+    /// Hang up a call another device holds, from this chat's remote bar.
+    /// Unlike the controller's end, nothing else is closing here: the bar
+    /// stays until the Mac says so. A failure shows the Mac's (or the
+    /// sidecar's) own words in the usual alert, and the Mac's answer takes
+    /// the bar down now instead of on the frame that follows it.
+    func hangUpRemoteLiveCall(callId: String) async {
+        guard let client else {
+            actionError = String(localized: "This computer is offline.")
+            return
+        }
+        let current = { self.client?.connection.id == client.connection.id }
+        do {
+            let answer = try await client.endLiveCall(callId: callId)
+            guard current() else { return }
+            if state.applyLiveCallEnd(callId: callId, answer: answer) {
+                await refreshLiveCall(using: client)
+            }
+        } catch let error as APIError where error.isUnauthorized {
+            // A computer this phone just left does not speak for the next one.
+            if current() { status = .unauthorized }
+        } catch {
+            if current() { actionError = error.localizedDescription }
+        }
+    }
+
+    /// Nil when the change did not reach the Mac; `actionError` then says
+    /// why, so the settings sheet never shows an unsaved change as saved.
+    func updateLiveSettings(_ patch: LiveSettingsPatch) async -> LiveSettings? {
+        guard let client else {
+            actionError = String(localized: "This computer is offline.")
+            return nil
+        }
+        let current = { self.client?.connection.id == client.connection.id }
+        do {
+            return try await client.updateLiveSettings(patch)
+        } catch let error as APIError where error.isUnauthorized {
+            // A computer this phone just left does not speak for the next one.
+            if current() { status = .unauthorized }
+            return nil
+        } catch {
+            if current() { actionError = error.localizedDescription }
+            return nil
+        }
+    }
+
+    /// A phone that connects mid-call must learn about it: hydrate carries
+    /// the fleet, not the line. Resumed streams replay the frame instead.
+    /// An older computer has no such route; the stream will say if a call
+    /// starts, so that failure is only logged.
+    ///
+    /// The stream keeps running while the lookup is out. A `live.call` frame
+    /// (or a hang-up's answer) that lands meanwhile is newer than the
+    /// lookup, so the answer is applied only if the line and the cursor
+    /// are still where they were — the same guard `hydrate` uses.
+    private func refreshLiveCall(using client: CompanionClient) async {
+        let expectedCursor = state.cursor
+        let expectedLine = state.liveCall
+        do {
+            let call = try await client.liveCall()
+            guard self.client?.connection.id == client.connection.id else { return }
+            if !state.applyLiveCallLookup(call, ifCursorMatches: expectedCursor, lineWas: expectedLine) {
+                log.info("live call lookup dropped: the stream moved on while it was out")
+            }
+        } catch {
+            log.info("live call lookup skipped: \(error.localizedDescription, privacy: .public)")
+        }
     }
 
     func botOverview(for bot: Bot) async -> BotOverview? {
@@ -2090,8 +2581,31 @@ final class Session: ObservableObject {
         } catch { actionError = error.localizedDescription }
     }
 
+    /// Edit and retry. The edited text replaces the old message on screen
+    /// the moment it is sent, hiding the old answer, and the computer's fork
+    /// takes over as soon as either its response or its stream frames land.
+    /// A failed edit simply drops the stand-in, so the old branch returns.
     func edit(_ message: Message, for bot: Bot, text: String) async {
-        await perform { try await $0.edit(botId: bot.id, messageId: message.id, text: text, threadId: bot.threadId) }
+        guard client != nil else { return }
+        let threadId = bot.threadId
+        let connectionId = connection?.id
+        let pending = PendingEdit(sourceId: message.id, text: text, baseLeafId: state.bot(forThread: threadId)?.activeLeafId)
+        state.pendingEdits[threadId] = pending
+        defer {
+            if state.pendingEdits[threadId] == pending { state.pendingEdits[threadId] = nil }
+        }
+        await perform {
+            let fork = try await $0.edit(
+                botId: bot.id,
+                messageId: message.id,
+                text: text,
+                threadId: threadId,
+                sendId: pending.requestId
+            )
+            if let fork, self.connection?.id == connectionId {
+                self.state.adoptEdit(fork, inThread: threadId, expectedPending: pending)
+            }
+        }
     }
 
     func switchVersion(to message: Message, for bot: Bot) async {

@@ -5,11 +5,16 @@ import type {
   RuntimeEvent,
   RuntimeEventListener,
   SendTurnInput,
+  TextGenerationOptions,
 } from "../contracts.ts";
 import { newEventId, newId } from "../contracts.ts";
+import { ASK_USER_TOOL, ASK_USER_TOOL_DEFINITION, askQuestionSummary, parseAskQuestions, questionChoices } from "../../shared/ask-question.ts";
+import { allowsTool, parseToolScope } from "../../shared/tool-scope.ts";
 import { redactSecretsInText } from "../redact.ts";
 import { toolDetailPreview } from "../tool-summary.ts";
-import { ChatToolSessionError, mountChatTools, type ChatToolDefinition, type ChatToolSession } from "./chat-mcp-tools.ts";
+import { ChatToolSessionError, mountChatTools, type ChatToolDefinition, type ChatToolSession, type ChatToolResult } from "./chat-mcp-tools.ts";
+import { assertImageTransport, chatImageBudget, chatToolImages, chatUserContent, type ChatContentPart } from "./chat-images.ts";
+import { promptHalves, volatileContextNote, withContextNote } from "./prompt-split.ts";
 import { createChatToolApproval } from "./chat-tool-approval.ts";
 import { ChatProtocolError, ChatReasoningDetails, ChatToolCalls, MAX_CHAT_TOOL_CALLS, object, type ChatToolCall } from "./openai-chat-protocol.ts";
 import { appendNative } from "./native.ts";
@@ -17,10 +22,11 @@ import { classifyError, computeBackoff, interruptibleDelay, RETRY_MAX_ATTEMPTS }
 
 export interface OpenAIChatMessage {
   role: "system" | "user" | "assistant" | "tool";
-  content: string | null;
+  content: string | ChatContentPart[] | null;
   tool_calls?: ChatToolCall[];
   tool_call_id?: string;
   reasoning_content?: string;
+  reasoning?: string;
   reasoning_details?: Record<string, unknown>[];
 }
 
@@ -40,6 +46,7 @@ interface Completion {
 }
 
 interface CompletionJson {
+  model?: string;
   choices?: Array<{
     index?: number;
     message?: { content?: unknown; reasoning_content?: unknown; reasoning?: unknown; reasoning_details?: unknown; tool_calls?: unknown; function_call?: unknown };
@@ -48,7 +55,7 @@ interface CompletionJson {
   }>;
   error?: unknown;
   base_resp?: { status_code?: unknown; status_msg?: unknown };
-  usage?: { prompt_tokens?: number; completion_tokens?: number };
+  usage?: { prompt_tokens?: number; completion_tokens?: number; prompt_tokens_details?: { cached_tokens?: number }; cost?: number };
 }
 
 /** The message of a JSON error body a provider returned with HTTP 200.
@@ -67,7 +74,7 @@ function providerError(json: CompletionJson): string | null {
 
 interface NativeLog {
   source: string;
-  outgoing(turn: SendTurnInput, messages: OpenAIChatMessage[], model: string): unknown;
+  outgoing(turn: SendTurnInput, messages: OpenAIChatMessage[], model: string, tools: ChatToolDefinition[]): unknown;
   incoming(completion: Completion): unknown;
 }
 
@@ -86,12 +93,26 @@ interface RuntimeOptions<Config> {
   refreshModels?: () => Promise<void>;
   generateModel?: () => string;
   reasoning?: boolean;
+  /** Field the provider reads replayed reasoning from; Cerebras rejects
+   * `reasoning_content` and takes `reasoning`. */
+  reasoningReplayField?: "reasoning_content" | "reasoning";
+  contentText?: (content: unknown) => string;
   billing?: "metered";
   includeUsageInCompleted?: boolean;
   noBodyError?: string;
   retryScale?: number;
   /** Explicit text-only mode for endpoints/models that cannot accept tools. */
   tools?: boolean;
+  /** Opt-in structured images and harness-authorized computer/browser MCP. */
+  computerUse?: boolean;
+  /** Whether a model accepts image parts (default: every model does). A
+   * text-only model keeps the computer and browser tools, whose snapshots
+   * and page reads are text, but never receives a screenshot or attachment. */
+  imageInput?: (model: string) => boolean;
+  /** Smaller models sometimes announce a step ("Checking the page first —")
+   * and end the turn without calling a tool. When set, such a reply gets one
+   * nudge per turn to act; a question, or anything longer, ends the turn. */
+  nudgeAnnouncedAction?: boolean;
 }
 
 const usageFrom = (usage: CompletionJson["usage"]): Usage | null =>
@@ -102,6 +123,48 @@ const usageFrom = (usage: CompletionJson["usage"]): Usage | null =>
 const asError = (value: unknown): Error =>
   value instanceof Error ? value : new Error(String(value));
 
+class UnsupportedChatToolsError extends Error {}
+
+const NUDGE_ANNOUNCED_ACTION = "You said what you would do next but called no tool. Do it now with your tools, or reply with your final answer if nothing is left to do.";
+
+/** A short reply that only announces a next step, with nothing to answer. */
+export function announcesAction(text: string): boolean {
+  const reply = text.trim();
+  if (!reply || reply.length > 400 || reply.includes("?")) return false;
+  return /(?:[:\u2014\u2013]|\.\.\.|\u2026)$/.test(reply) ||
+    /^(?:checking|let me|i'll|i will|i'm going to|i am going to|opening|pulling|looking|searching|navigating|reading|fetching|loading|now (?:i'll|let me|opening|checking|pulling|reading))\b/i.test(reply);
+}
+
+const TEXT_ONLY_ATTACHMENT_NOTE = "[The person attached image(s), but this model cannot see images. Say so if the request depends on them.]";
+const TEXT_ONLY_SCREENSHOT_NOTE = "[Screenshot not shown: this model cannot see images. Read the page with a snapshot or a text tool instead.]";
+
+function rejectsToolsParameter(status: number, body: string): boolean {
+  if (status !== 400 && status !== 422) return false;
+  let envelope: Record<string, unknown> | undefined;
+  try { envelope = object(JSON.parse(body)); } catch { return false; }
+  const error = object(envelope?.error);
+  if (error?.param === "tools" && error.code === "unsupported_parameter") return true;
+  const message = error?.message ?? envelope?.error;
+  return typeof message === "string" && (
+    /\bdoes not support (?:tools|tool calling|function calling)(?:[.!]?$|[.!]?\s)/i.test(message) ||
+    /\b(?:tools|tool calling|function calling) (?:is|are) not supported\b/i.test(message) ||
+    /^(?:unsupported|unknown|unrecognized) (?:parameter|field):?\s*['"]?tools['"]?[.!]?$/i.test(message.trim())
+  );
+}
+
+class UnsupportedReasoningReplayError extends Error {}
+
+/** DeepSeek-style providers need `reasoning_content` echoed on a tool-call
+ *  assistant message; strict endpoints such as Groq reject the property. */
+function rejectsReasoningReplay(status: number, body: string): boolean {
+  if (status !== 400 && status !== 422) return false;
+  let envelope: Record<string, unknown> | undefined;
+  try { envelope = object(JSON.parse(body)); } catch { return false; }
+  const message = object(envelope?.error)?.message ?? envelope?.error;
+  return typeof message === "string" && /\breasoning_content\b/.test(message) &&
+    /\b(?:unsupported|not supported|unknown|unrecognized|unexpected|not permitted|not allowed)\b/i.test(message);
+}
+
 /** Shared runtime for the three providers that speak OpenAI chat completions. */
 export function createOpenAIChatRuntime<Config>(options: RuntimeOptions<Config>): ProviderInstance {
   const { input } = options;
@@ -111,7 +174,16 @@ export function createOpenAIChatRuntime<Config>(options: RuntimeOptions<Config>)
     turnId: string;
     done: Promise<void>;
     approval: ReturnType<typeof createChatToolApproval>;
+    /** Mid-turn user input parked by adapter.steer. Spliced into the
+     * request array at the top of the next loop round — the one place the
+     * array is between rounds, never mid-tool-batch — so the model reads
+     * it before its next completion. Kept out of messages[] until then:
+     * a parked item must never look like delivered input. */
+    asides: string[];
   }>();
+  /** Models whose endpoint rejected an echoed `reasoning_content`. In memory
+   * only: later rounds and turns omit the field instead of failing again. */
+  const reasoningReplayRejected = new Set<string>();
 
   const emit = (event: RuntimeEvent) => {
     for (const listener of Array.from(listeners)) listener(event);
@@ -131,6 +203,7 @@ export function createOpenAIChatRuntime<Config>(options: RuntimeOptions<Config>)
     signal?: AbortSignal,
     onDelta?: (delta: string, kind: "assistant_text" | "reasoning_text") => void,
     tools: ChatToolDefinition[] = [],
+    onUsage?: TextGenerationOptions["onUsage"],
   ): Promise<Completion> => {
     // Idle timer that is renewed on every received chunk during streaming
     const timeoutController = new AbortController();
@@ -151,6 +224,7 @@ export function createOpenAIChatRuntime<Config>(options: RuntimeOptions<Config>)
 
       const response = await fetch(`${options.apiUrl}/chat/completions`, {
         method: "POST",
+        ...(messages.some(message => Array.isArray(message.content) && message.content.some(part => part.type === "image_url")) ? { redirect: "error" as const } : {}),
         headers: { authorization: `Bearer ${options.apiKey}`, "content-type": "application/json" },
         body: JSON.stringify({
           ...options.requestBody(model, messages, stream),
@@ -160,11 +234,27 @@ export function createOpenAIChatRuntime<Config>(options: RuntimeOptions<Config>)
       });
       if (!response.ok) {
         const body = await response.text().catch(() => "");
-        throw new Error(`${options.httpErrorLabel} HTTP ${response.status}${body ? `: ${body.slice(0, 200)}` : ""}`);
+        const message = `${options.httpErrorLabel} HTTP ${response.status}${body ? `: ${body.slice(0, 200)}` : ""}`;
+        if (rejectsToolsParameter(response.status, body)) throw new UnsupportedChatToolsError(message);
+        if (messages.some((entry) => entry.reasoning_content !== undefined) && rejectsReasoningReplay(response.status, body)) {
+          throw new UnsupportedReasoningReplayError(message);
+        }
+        throw new Error(message);
       }
 
       if (!stream || response.headers.get("content-type")?.includes("application/json")) {
         const json = await response.json() as CompletionJson;
+        if (onUsage) {
+          activeSignal.throwIfAborted();
+          const count = (value: unknown) => typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
+          onUsage({
+            model: typeof json.model === "string" && json.model.trim() ? json.model : model,
+            input: count(json.usage?.prompt_tokens),
+            output: count(json.usage?.completion_tokens),
+            cachedInput: count(json.usage?.prompt_tokens_details?.cached_tokens),
+            costUsd: count(json.usage?.cost),
+          });
+        }
         const bodyError = providerError(json);
         if (bodyError) throw new ChatProtocolError(`provider returned a completion error: ${bodyError.slice(0, 200)}`);
         const message = json.choices?.[0]?.message;
@@ -180,7 +270,7 @@ export function createOpenAIChatRuntime<Config>(options: RuntimeOptions<Config>)
         const finishReason = json.choices?.[0]?.finish_reason ?? null;
         activeSignal.throwIfAborted();
         return {
-          text: typeof message?.content === "string" ? message.content : "",
+          text: options.contentText ? options.contentText(message?.content) : typeof message?.content === "string" ? message.content : "",
           reasoning: options.reasoning && typeof reasoning === "string"
             ? reasoning
             : "",
@@ -238,7 +328,7 @@ export function createOpenAIChatRuntime<Config>(options: RuntimeOptions<Config>)
         const reasoningDelta = options.reasoning && typeof reasoningPart === "string"
           ? reasoningPart
           : "";
-        const contentDelta = typeof delta?.content === "string" ? delta.content : "";
+        const contentDelta = options.contentText ? options.contentText(delta?.content) : typeof delta?.content === "string" ? delta.content : "";
         if (reasoningDelta) {
           reasoning += reasoningDelta;
           onDelta?.(reasoningDelta, "reasoning_text");
@@ -289,24 +379,46 @@ export function createOpenAIChatRuntime<Config>(options: RuntimeOptions<Config>)
     }
   };
 
-  const messagesFor = (turn: SendTurnInput): OpenAIChatMessage[] => [
-    ...(turn.system ? [{ role: "system" as const, content: turn.system }] : []),
-    ...(turn.transcript ?? []).map((message) => ({
-      role: message.role,
-      content: message.text,
-    })),
-    { role: "user", content: turn.text },
-  ];
+  const seesImages = (turn: SendTurnInput) =>
+    options.imageInput?.(turn.model || options.models().default) ?? true;
+  const messagesFor = (turn: SendTurnInput): OpenAIChatMessage[] => {
+    // The system message is the head of the resent prefix, so only the
+    // stable half belongs there: a volatile edit must not re-price the
+    // tools, instructions and transcript the provider already cached.
+    // The volatile half rides the newest user message instead, every
+    // turn. Unlike a CLI session, this request is rebuilt from the stored
+    // transcript, which never contains the delivered notes, so tracking a
+    // digest and delivering only on change would leave the model without
+    // its memory on unchanged turns. The newest message is fresh input
+    // on every request anyway.
+    const halves = promptHalves(turn);
+    const note = halves.stable !== null ? volatileContextNote(halves.volatile, false) : "";
+    const userTurn = note ? { ...turn, text: withContextNote(note, turn.text) } : turn;
+    const system = halves.stable ?? turn.system;
+    return [
+      ...(system ? [{ role: "system" as const, content: system }] : []),
+      ...(turn.transcript ?? []).map((message) => ({
+        role: message.role,
+        content: message.text,
+      })),
+      { role: "user", content: !options.computerUse ? userTurn.text
+        : seesImages(turn) ? chatUserContent(userTurn)
+        : userTurn.images?.length ? `${userTurn.text}\n\n${TEXT_ONLY_ATTACHMENT_NOTE}` : userTurn.text },
+    ];
+  };
 
   const sendTurn = async (turn: SendTurnInput) => {
     if (!options.apiKey) throw new Error(options.missingKeyError);
     if (active.has(turn.threadId)) throw new Error("a turn is already running on this thread");
+    if (options.computerUse && (turn.images?.length || turn.integrations?.computer || turn.integrations?.localComputer || turn.integrations?.browser)) assertImageTransport(options.apiUrl);
 
     const turnId = newId();
     const abort = new AbortController();
     const messages = messagesFor(turn);
+    const retainImages = chatImageBudget();
+    for (const message of messages) retainImages(message.content);
     const model = turn.model || options.models().default;
-    const secrets = [options.apiKey];
+    const secrets = [options.apiKey, turn.integrations?.computer?.token, turn.integrations?.computer?.control?.token].filter((value): value is string => Boolean(value));
     for (const integration of Object.values(turn.integrations ?? {})) {
       const entries = object(integration);
       const specs = entries && "command" in entries ? [entries] : Object.values(entries ?? {}).map(object);
@@ -337,10 +449,23 @@ export function createOpenAIChatRuntime<Config>(options: RuntimeOptions<Config>)
         ...base(turn.threadId, turnId), type: "request.resolved", requestId: ask.id,
         behavior: allowed ? "allow" : "deny", source,
       }),
+      openQuestion: (ask, questions) => {
+        const choices = questionChoices(questions);
+        emit({
+          ...base(turn.threadId, turnId), type: "request.opened", requestType: "question",
+          requestId: ask.id, tool: ask.tool, summary: ask.summary,
+          questions, ...(choices ? { choices } : {}),
+        });
+      },
+      resolvedQuestion: (ask, answered, source) => emit({
+        ...base(turn.threadId, turnId), type: "request.resolved", requestId: ask.id,
+        behavior: answered ? "answer" : "deny", source,
+      }),
     });
     let resolveDone!: () => void;
     const done = new Promise<void>((resolve) => { resolveDone = resolve; });
-    active.set(turn.threadId, { abort, turnId, done, approval });
+    const turnEntry = { abort, turnId, done, approval, asides: [] as string[] };
+    active.set(turn.threadId, turnEntry);
     emit({ ...base(turn.threadId, turnId), type: "turn.started" });
     emit({ ...base(turn.threadId, turnId), type: "session.started", sessionId: null, model });
 
@@ -354,11 +479,31 @@ export function createOpenAIChatRuntime<Config>(options: RuntimeOptions<Config>)
       let toolFailed = false;
       const denials: string[] = [];
       const seenCalls = new Set<string>();
+      let nudged = false;
       try {
-        tools = await mountChatTools(options.tools === false ? undefined : turn.integrations, abort.signal);
+        const parsed = parseToolScope(turn.toolScope);
+        if (!parsed.ok) throw new Error(parsed.error);
+        const scope = parsed.scope;
+        tools = await mountChatTools(options.tools === false ? undefined : turn.integrations, abort.signal, options.computerUse, scope);
+        const questionAllowed = options.tools !== false && allowsTool(scope, { kind: "native", name: ASK_USER_TOOL });
+        let optionalQuestionOnly = questionAllowed && tools.definitions.length === 0;
+        // The runtime's one built-in tool rides the same list: ask_user is
+        // how a chat-completions engine reaches a person. An MCP server that
+        // squats the name cannot shadow it — dispatch intercepts the name
+        // before validate — but the definition is then skipped so the list
+        // never advertises two.
+        if (questionAllowed && !tools.definitions.some((definition) => definition.function.name === ASK_USER_TOOL)) {
+          tools.definitions.push(ASK_USER_TOOL_DEFINITION);
+        }
         for (let round = 0; round < 16; round++) {
           abort.signal.throwIfAborted();
-          native("out", options.nativeLog.outgoing(turn, messages, model));
+          // Drain parked mid-turn input here, before the next completion
+          // request: the previous round's tool results are complete, so a
+          // user message lands on a consistent array (never inside a tool
+          // batch) and the provider sees it as the newest input.
+          const parked = turnEntry.asides.splice(0);
+          if (parked.length) messages.push({ role: "user", content: parked.join("\n\n") });
+          native("out", options.nativeLog.outgoing(turn, messages, model, tools.definitions));
           let attempt = 0;
           let completion: Completion;
           for (;;) {
@@ -392,6 +537,24 @@ export function createOpenAIChatRuntime<Config>(options: RuntimeOptions<Config>)
             } catch (value) {
               const error = asError(value);
               const verdict = classifyError(error);
+              // A schema rejection of the echoed reasoning executed nothing
+              // upstream, so the same transcript without that one property
+              // repeats no operation. The error needs the field in the
+              // request, so the stripped resend cannot loop.
+              if (error instanceof UnsupportedReasoningReplayError && !streamed && !abort.signal.aborted) {
+                reasoningReplayRejected.add(model);
+                for (const message of messages) delete message.reasoning_content;
+                continue;
+              }
+              // Only our optional question changed a previously plain request.
+              // A structured parameter rejection has executed nothing; never
+              // downgrade mounted tools, streamed output or a handled call.
+              if (optionalQuestionOnly && round === 0 && !streamed && !seenCalls.size && !abort.signal.aborted &&
+                  error instanceof UnsupportedChatToolsError && verdict.reason === "invalid_request") {
+                optionalQuestionOnly = false;
+                tools.definitions.length = 0;
+                continue;
+              }
               // Once a call has been handled, never replay it through a turn retry.
               if (options.retryScale === undefined || abort.signal.aborted || streamed || seenCalls.size ||
                   error instanceof ChatProtocolError || !verdict.transient || attempt >= RETRY_MAX_ATTEMPTS - 1) throw error;
@@ -417,6 +580,11 @@ export function createOpenAIChatRuntime<Config>(options: RuntimeOptions<Config>)
             if (completion.finishReason && completion.finishReason !== "stop") {
               throw new ChatProtocolError(`provider did not finish the response (${completion.finishReason})`);
             }
+            if (options.nudgeAnnouncedAction && !nudged && tools.definitions.length && announcesAction(completion.text)) {
+              nudged = true;
+              messages.push({ role: "assistant", content: completion.text }, { role: "user", content: NUDGE_ANNOUNCED_ACTION });
+              continue;
+            }
             if (toolFailed) {
               stopReason = "tool_error";
               throw new ChatProtocolError("One or more tool operations failed or were denied. See the tool results; the final response is not an execution receipt.");
@@ -432,12 +600,13 @@ export function createOpenAIChatRuntime<Config>(options: RuntimeOptions<Config>)
           }
           if (seenCalls.size > MAX_CHAT_TOOL_CALLS) throw new ChatProtocolError("tool-call limit reached");
           messages.push({ role: "assistant", content: completion.text || null, tool_calls: completion.toolCalls,
-            ...(completion.protocolReasoning ? { reasoning_content: completion.protocolReasoning } : {}),
+            ...(completion.protocolReasoning && !reasoningReplayRejected.has(model) ? { [options.reasoningReplayField ?? "reasoning_content"]: completion.protocolReasoning } : {}),
             ...(completion.protocolReasoningDetails.length ? { reasoning_details: completion.protocolReasoningDetails } : {}),
           });
+          const screenshotParts: ChatContentPart[] = [];
           for (const call of completion.toolCalls) {
             abort.signal.throwIfAborted();
-            let result: { text: string; ok: boolean };
+            let result: ChatToolResult;
             let started = false;
             let fatal: Error | undefined;
             try {
@@ -445,25 +614,66 @@ export function createOpenAIChatRuntime<Config>(options: RuntimeOptions<Config>)
               try { args = JSON.parse(call.function.arguments); }
               catch { throw new ChatProtocolError("tool arguments are not complete JSON"); }
               if (!object(args)) throw new ChatProtocolError("tool arguments must be a JSON object");
-              tools.validate(call.function.name, args);
               const inputPreview = preview(args);
-              // Full access is the person's explicit grant to answer every
-              // prompt. This runtime has no provider reviewer to hand it to,
-              // so it is honoured here: without it every single tool call on
-              // an OpenAI-compatible engine stops for a card, and a Chief's
-              // delegated Full access cannot help either.
-              const allowed = turn.approvalMode === "full"
-                || await approval.ask(call.function.name, inputPreview ?? "This tool has no arguments.");
-              abort.signal.throwIfAborted();
-              emit({ ...base(turn.threadId, turnId), type: "item.started", itemType: "tool", itemId: call.id,
-                title: call.function.name, ...(inputPreview ? { input: inputPreview } : {}),
-              });
-              started = true;
-              if (allowed) {
-                result = await tools.execute(call.function.name, args as Record<string, unknown>, abort.signal);
+              if (call.function.name === ASK_USER_TOOL) {
+                if (!questionAllowed || !allowsTool(scope, { kind: "native", name: ASK_USER_TOOL })) throw new Error("Tool selection excludes this tool");
+                // A question is the person's card, not a permission, so it is
+                // handled before the gate below: under Full access that gate
+                // would auto-run an unanswered ask, and under Ask it would
+                // render Allow/Deny over a question nobody can answer that way.
+                const questions = parseAskQuestions(args);
+                abort.signal.throwIfAborted();
+                emit({ ...base(turn.threadId, turnId), type: "item.started", itemType: "tool", itemId: call.id,
+                  title: call.function.name, ...(inputPreview ? { input: inputPreview } : {}),
+                });
+                started = true;
+                if (!questions) {
+                  denials.push(ASK_USER_TOOL);
+                  result = { ok: false, text: "The ask_user arguments are malformed: pass a JSON object with a questions array of one to six questions, each with a question string and at most twelve options carrying a label. Ask again with valid arguments." };
+                } else {
+                  // The tool result is the card's Q:/A: reply verbatim — never
+                  // a summary, and never words the person did not send.
+                  const answer = await approval.question(ASK_USER_TOOL, askQuestionSummary(questions), questions);
+                  abort.signal.throwIfAborted();
+                  if (answer === null) {
+                    denials.push(ASK_USER_TOOL);
+                    result = { ok: false, text: "The person did not answer this question. Do not guess an answer; ask again later or proceed without it." };
+                  } else {
+                    result = { ok: true, text: answer };
+                  }
+                }
               } else {
-                denials.push(call.function.name);
-                result = { ok: false, text: "Permission denied or expired; the tool was not executed." };
+                tools.validate(call.function.name, args);
+                // Full access is the person's explicit grant to answer every
+                // prompt. This runtime has no provider reviewer to hand it to,
+                // so it is honoured here: without it every single tool call on
+                // an OpenAI-compatible engine stops for a card, and a Chief's
+                // delegated Full access cannot help either.
+                const allowed = turn.approvalMode === "full"
+                  || await approval.ask(call.function.name, inputPreview ?? "This tool has no arguments.");
+                abort.signal.throwIfAborted();
+                emit({ ...base(turn.threadId, turnId), type: "item.started", itemType: "tool", itemId: call.id,
+                  title: call.function.name, ...(inputPreview ? { input: inputPreview } : {}),
+                });
+                started = true;
+                if (allowed) {
+                  result = await tools.execute(call.function.name, args as Record<string, unknown>, abort.signal);
+                  if (result.images?.length && !seesImages(turn)) {
+                    const { images: _dropped, ...rest } = result;
+                    result = { ...rest, text: `${rest.text}\n${TEXT_ONLY_SCREENSHOT_NOTE}` };
+                  }
+                  if (result.images?.length) {
+                    try {
+                      assertImageTransport(options.apiUrl);
+                      retainImages(result.images);
+                    } catch (error) {
+                      throw new ChatToolSessionError(asError(error).message);
+                    }
+                  }
+                } else {
+                  denials.push(call.function.name);
+                  result = { ok: false, text: "Permission denied or expired; the tool was not executed." };
+                }
               }
             } catch (error) {
               if (error instanceof ChatToolSessionError) fatal = error;
@@ -477,9 +687,11 @@ export function createOpenAIChatRuntime<Config>(options: RuntimeOptions<Config>)
             emit({ ...base(turn.threadId, turnId), type: "item.completed", itemType: "tool", itemId: call.id, ok: result.ok, output });
             if (!result.ok) toolFailed = true;
             messages.push({ role: "tool", tool_call_id: call.id, content: JSON.stringify({ ok: result.ok, result: text }) });
+            screenshotParts.push(...chatToolImages(call.id, result.images));
             abort.signal.throwIfAborted();
             if (fatal) throw fatal;
           }
+          if (screenshotParts.length) messages.push({ role: "user", content: screenshotParts });
         }
         if (!ok) throw new ChatProtocolError("model-call limit reached before a final response");
       } catch (value) {
@@ -524,7 +736,20 @@ export function createOpenAIChatRuntime<Config>(options: RuntimeOptions<Config>)
       : { state: "unavailable", reason: options.unavailableReason },
     adapter: {
       provider: options.driverKind,
-      capabilities: { sessionModelSwitch: "in-session", customMcp: options.tools !== false, agentsMcp: options.tools !== false, composioMcp: options.tools !== false },
+      capabilities: { ...(options.computerUse ? { computerMcp: options.tools !== false,
+        // Same gate as cloudComputerMcp: with tools off the runtime cannot
+        // mount the leased Boat descriptor either. The fleet invariant test
+        // pins usesCloudComputer === (remoteAgent || cloudComputerMcp).
+        usesCloudComputer: options.tools !== false, cloudComputerMcp: options.tools !== false, localComputerMcp: options.tools !== false,
+        browserMcp: options.tools !== false, nativeImageInput: true, images: true } : {}),
+        sessionModelSwitch: "in-session", customMcp: options.tools !== false, agentsMcp: options.tools !== false, composioMcp: options.tools !== false,
+        // The runtime owns the whole tool loop, so it can always take a
+        // user message mid-turn: park it, deliver before the next completion.
+        queueing: true,
+        // No shell and no file tool on the host at all: only MCP tools, each
+        // call a card in Ask (the Boat's `exec` runs on the Boat). A guest's
+        // turn is as confined as it gets.
+        guestTurns: "confined" },
       sendTurn,
       interruptTurn: async (threadId, turnId) => {
         const turn = active.get(threadId);
@@ -533,7 +758,19 @@ export function createOpenAIChatRuntime<Config>(options: RuntimeOptions<Config>)
         await turn.done;
       },
       respondToRequest: async (threadId, requestId, decision) =>
-        active.get(threadId)?.approval.answer(requestId, decision.behavior) ?? "unavailable",
+        active.get(threadId)?.approval.answer(requestId, decision.behavior, decision.message) ?? "unavailable",
+      steer: async (threadId, text) => {
+        // This engine has no external session to respect — parking the
+        // words in the live turn's entry IS delivery into the loop, so a
+        // successful park is "steered" and a missing turn is the only
+        // refusal. The words ride the array at the next round boundary;
+        // if the turn settles first, the harness's transcript record
+        // keeps them for the next turn (they are never re-sent here).
+        const running = active.get(threadId);
+        if (!running) return "refused";
+        running.asides.push(text);
+        return "steered";
+      },
       hasSession: (threadId) => active.has(threadId),
       stopAll: async () => {
         const turns = [...active.values()];
@@ -545,9 +782,9 @@ export function createOpenAIChatRuntime<Config>(options: RuntimeOptions<Config>)
         return () => listeners.delete(listener);
       },
     },
-    generateText: async (prompt, { signal } = {}) => {
+    generateText: async (prompt, { signal, onUsage } = {}) => {
       const model = options.generateModel?.() ?? options.models().default;
-      const { text, reasoning, toolCalls } = await complete([{ role: "user", content: prompt }], model, false, signal);
+      const { text, reasoning, toolCalls } = await complete([{ role: "user", content: prompt }], model, false, signal, undefined, [], onUsage);
       if (toolCalls.length) throw new ChatProtocolError("provider returned tool calls to a text-only helper");
       return text.trim() ? text : reasoning;
     },
