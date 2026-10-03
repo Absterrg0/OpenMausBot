@@ -146,6 +146,7 @@ import {
 } from "./container-computer.ts";
 import { attachForTurn, saveBotAttachment } from "./bot-attachment.ts";
 import {
+  cacheUntilConfigChanges,
   ensureDirs,
   instanceConfigs,
   loadConfig,
@@ -674,10 +675,12 @@ const workspaceMaintenance = new WorkspaceBackupMaintenance();
 // Remote clients (server/request-auth.ts, server/sessions.ts): a stable identity
 // for this server, the paired sessions, and the cookie the served UI uses.
 const ENVIRONMENT_ID = loadEnvironmentId(DATA_DIR);
-function signInAllowList() {
-  const current = loadConfig().signIn;
-  return { admins: parseAllowList(current?.admins?.join(",")), members: parseAllowList(current?.members?.join(",")) };
-}
+// Every stream frame and request rechecks email sessions against this list,
+// so config.json is parsed again only when the file changes.
+const signInAllowList = cacheUntilConfigChanges((config) => ({
+  admins: parseAllowList(config.signIn?.admins?.join(",")),
+  members: parseAllowList(config.signIn?.members?.join(",")),
+}));
 const sessions = new SessionRegistry({
   file: join(DATA_DIR, "sessions.json"),
   emailScopesSnapshot: () => {
