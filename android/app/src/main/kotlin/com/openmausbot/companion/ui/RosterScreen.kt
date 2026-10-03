@@ -34,6 +34,7 @@ import androidx.compose.material.icons.filled.Create
 import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.DateRange
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -299,6 +300,7 @@ fun RosterScreen(navigator: CompanionNavigator) {
                 name = connection?.name,
                 status = status,
                 onSettings = { navigator.push(Destination.Settings) },
+                onCalendar = { navigator.push(Destination.Calendar) },
             )
             StatusBanner()
 
@@ -624,7 +626,7 @@ private val StringSetSaver = listSaver<Set<String>, String>(
  * they live in the bar at the bottom and at the end of the groups strip.
  */
 @Composable
-private fun RosterHeader(name: String?, status: Session.Status, onSettings: () -> Unit) {
+private fun RosterHeader(name: String?, status: Session.Status, onSettings: () -> Unit, onCalendar: () -> Unit) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -659,6 +661,14 @@ private fun RosterHeader(name: String?, status: Session.Status, onSettings: () -
             )
         }
 
+        // Routines on a calendar, a tap from Home rather than buried in
+        // Settings (MOCA-191).
+        ChromeButton(
+            icon = Icons.Filled.DateRange,
+            contentDescription = stringResource(R.string.mobile_calendar_open),
+            onClick = onCalendar,
+            modifier = Modifier.testTag("open-calendar"),
+        )
         ChromeButton(
             icon = Icons.Filled.Settings,
             contentDescription = stringResource(R.string.mobile_settings_c7f73bb5),

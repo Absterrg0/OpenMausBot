@@ -32,6 +32,9 @@ sealed interface Destination {
     /** Settings → Workspace → Tasks & Routines. */
     data object Routines : Destination
 
+    /** Home → the routine calendar (MOCA-191). */
+    data object Calendar : Destination
+
     /** Settings → Workspace → Connected Apps. */
     data object ConnectedApps : Destination
 
@@ -143,6 +146,7 @@ class CompanionNavigator(initial: List<Destination> = listOf(Destination.Roster)
         private const val ROSTER = "roster"
         private const val SETTINGS = "settings"
         private const val ROUTINES = "routines"
+        private const val CALENDAR = "calendar"
         private const val CONNECTED_APPS = "connected-apps"
         private const val THREAD = "thread:"
         private const val COMPUTER = "computer:"
@@ -156,6 +160,7 @@ class CompanionNavigator(initial: List<Destination> = listOf(Destination.Roster)
                 Destination.Roster -> ROSTER
                 Destination.Settings -> SETTINGS
                 Destination.Routines -> ROUTINES
+                Destination.Calendar -> CALENDAR
                 Destination.ConnectedApps -> CONNECTED_APPS
                 is Destination.Thread -> THREAD + it.threadId
                 is Destination.Computer -> COMPUTER + it.botId
@@ -173,6 +178,7 @@ class CompanionNavigator(initial: List<Destination> = listOf(Destination.Roster)
                 it == ROSTER -> Destination.Roster
                 it == SETTINGS -> Destination.Settings
                 it == ROUTINES -> Destination.Routines
+                it == CALENDAR -> Destination.Calendar
                 it == CONNECTED_APPS -> Destination.ConnectedApps
                 it.startsWith(THREAD) -> Destination.Thread(it.removePrefix(THREAD))
                 it.startsWith(COMPUTER) -> Destination.Computer(it.removePrefix(COMPUTER))

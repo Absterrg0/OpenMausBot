@@ -536,7 +536,7 @@ private fun RoutineRunRow(
 }
 
 @Composable
-private fun RunStatusIcon(status: RoutineRules.RunStatus, tint: Color) {
+internal fun RunStatusIcon(status: RoutineRules.RunStatus, tint: Color) {
     val size = Modifier.size(20.dp)
     when (status) {
         RoutineRules.RunStatus.RUNNING -> Icon(
@@ -584,7 +584,7 @@ private fun RunStatusIcon(status: RoutineRules.RunStatus, tint: Color) {
  * theme does not name, and `error` is the red every other screen uses.
  */
 @Composable
-private fun runStatusTint(status: RoutineRules.RunStatus): Color = when (status) {
+internal fun runStatusTint(status: RoutineRules.RunStatus): Color = when (status) {
     RoutineRules.RunStatus.COMPLETED -> MaterialTheme.colorScheme.primary
     RoutineRules.RunStatus.WAITING -> attentionTint
     RoutineRules.RunStatus.FAILED -> MaterialTheme.colorScheme.error

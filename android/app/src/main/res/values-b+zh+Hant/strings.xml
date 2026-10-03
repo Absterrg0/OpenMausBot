@@ -133,6 +133,14 @@
     <string name="mobile_new_group_f9850c0b">新增群組</string>
     <string name="mobile_new_quick_reply_c5c6238d">新增快速回復</string>
     <string name="mobile_new_routine_32809dc6">新增例行工作</string>
+    <string name="mobile_calendar_open">例行工作行事曆</string>
+    <string name="mobile_calendar_empty_title">沒有安排</string>
+    <string name="mobile_calendar_empty_body">當天執行的例行工作會顯示在這裡。</string>
+    <string name="mobile_calendar_today">今天</string>
+    <string name="mobile_calendar_previous_week">上一週</string>
+    <string name="mobile_calendar_next_week">下一週</string>
+    <string name="mobile_calendar_scheduled">已排程</string>
+    <string name="mobile_calendar_day_runs">%1$d 次執行</string>
     <string name="mobile_new_thread_02057e28">新增對話</string>
     <string name="mobile_new_thread_with_bot_name_80fb4510">與 %1$s 建立新對話</string>
     <string name="mobile_newer_schedule_c56a41aa">較新的排程</string>

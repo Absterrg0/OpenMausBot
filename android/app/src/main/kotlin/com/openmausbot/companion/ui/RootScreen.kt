@@ -384,6 +384,11 @@ private fun PairedScreen(
                     // iOS appends it to the same navigation path.
                     onOpenChat = navigator::open,
                 )
+                Destination.Calendar -> RoutineCalendarScreen(
+                    onBack = navigator::pop,
+                    // A run opens the chat its results went to, above the calendar.
+                    onOpenChat = navigator::open,
+                )
                 Destination.ConnectedApps -> ConnectedAppsScreen(onBack = navigator::pop)
                 // One branch for both shapes of chat address, so a notification's thread
                 // becoming an addressed chat re-reads the same screen instead of

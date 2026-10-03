@@ -133,6 +133,14 @@
     <string name="mobile_new_group_f9850c0b">添加群组</string>
     <string name="mobile_new_quick_reply_c5c6238d">添加快速回复</string>
     <string name="mobile_new_routine_32809dc6">添加例行工作</string>
+    <string name="mobile_calendar_open">例行工作日历</string>
+    <string name="mobile_calendar_empty_title">没有安排</string>
+    <string name="mobile_calendar_empty_body">当天运行的例行工作会显示在这里。</string>
+    <string name="mobile_calendar_today">今天</string>
+    <string name="mobile_calendar_previous_week">上一周</string>
+    <string name="mobile_calendar_next_week">下一周</string>
+    <string name="mobile_calendar_scheduled">已安排</string>
+    <string name="mobile_calendar_day_runs">%1$d 次运行</string>
     <string name="mobile_new_thread_02057e28">新建对话</string>
     <string name="mobile_new_thread_with_bot_name_80fb4510">与 %1$s 创建新对话</string>
     <string name="mobile_newer_schedule_c56a41aa">较新的调度</string>

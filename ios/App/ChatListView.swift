@@ -23,6 +23,7 @@ struct ChatListView: View {
     @State private var searching = false
     @State private var searchOpen = false
     @State private var showingUpdates = false
+    @State private var showingCalendar = false
     @State private var showingWalkie = false
     @State private var showingNewGroup = false
     @State private var showingNewSection = false
@@ -165,6 +166,10 @@ struct ChatListView: View {
                 }
             }
 #endif
+            .sheet(isPresented: $showingCalendar) {
+                RoutineCalendarView()
+                    .environmentObject(session)
+            }
             .sheet(isPresented: $showingUpdates) {
                 UpdatesSheet { chat in
                     showingUpdates = false
@@ -216,9 +221,9 @@ struct ChatListView: View {
 
     // MARK: - Header
 
-    /// The paired computer's profile on the left, one settings action on the
-    /// right, and where you are in between. The avatar is identity, not a
-    /// second hidden route to the same screen.
+    /// The paired computer's profile on the left; the routine calendar and
+    /// settings on the right, and where you are in between. The avatar is
+    /// identity, not a second hidden route to the same screen.
     private var header: some View {
         HStack(alignment: .center) {
             ProfileAvatar(name: session.connection?.name ?? "You", size: 30)
@@ -229,6 +234,33 @@ struct ChatListView: View {
 
             Spacer(minLength: 8)
 
+            HStack(spacing: 8) {
+                // Routines on a calendar, a tap from Home rather than buried
+                // in Settings (MOCA-191).
+                Button { showingCalendar = true } label: {
+                    Image(systemName: "calendar")
+                        .font(.system(size: 18, weight: .medium))
+                        .foregroundStyle(Color.primary)
+                        .frame(width: 44, height: 44)
+                }
+                .buttonStyle(.plain)
+                .glassCapsule()
+                .accessibilityLabel("Routine calendar")
+                .accessibilityIdentifier("open-calendar")
+
+                NavigationLink { SettingsView() } label: {
+                    Image(systemName: "gearshape")
+                        .font(.system(size: 18, weight: .medium))
+                        .foregroundStyle(Color.primary)
+                        .frame(width: 44, height: 44)
+                }
+                .buttonStyle(.plain)
+                .glassCapsule()
+                .accessibilityLabel("Settings")
+            }
+        }
+        // Centred on the screen, not between the uneven sides.
+        .overlay {
             VStack(spacing: 2) {
                 Text("Threads")
                     .font(.system(size: 17, weight: .semibold))
@@ -238,18 +270,7 @@ struct ChatListView: View {
                     .foregroundStyle(Color.secondary)
                     .lineLimit(1)
             }
-
-            Spacer(minLength: 8)
-
-            NavigationLink { SettingsView() } label: {
-                Image(systemName: "gearshape")
-                    .font(.system(size: 18, weight: .medium))
-                    .foregroundStyle(Color.primary)
-                    .frame(width: 44, height: 44)
-            }
-            .buttonStyle(.plain)
-            .glassCapsule()
-            .accessibilityLabel("Settings")
+            .padding(.horizontal, 104)
         }
         .padding(.horizontal, 16)
         .padding(.top, 4)

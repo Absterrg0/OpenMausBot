@@ -11196,6 +11196,86 @@
           }
         }
       }
+    },
+    "Nothing scheduled": {
+      "localizations": {
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nada agendado"
+          }
+        }
+      }
+    },
+    "Routines that run on this day appear here.": {
+      "localizations": {
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "As rotinas que rodam neste dia aparecem aqui."
+          }
+        }
+      }
+    },
+    "Previous week": {
+      "localizations": {
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Semana anterior"
+          }
+        }
+      }
+    },
+    "Next week": {
+      "localizations": {
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Próxima semana"
+          }
+        }
+      }
+    },
+    "Today": {
+      "localizations": {
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hoje"
+          }
+        }
+      }
+    },
+    "Scheduled": {
+      "localizations": {
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Agendada"
+          }
+        }
+      }
+    },
+    "Routine calendar": {
+      "localizations": {
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Calendário de rotinas"
+          }
+        }
+      }
+    },
+    "%lld runs": {
+      "localizations": {
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld execuções"
+          }
+        }
+      }
     }
   },
   "version": "1.0"
