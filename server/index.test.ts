@@ -11068,6 +11068,52 @@ describe("harness HTTP API", () => {
     }
   });
 
+  it("retries abandoned connector OAuth through Settings and in-chat cards without replacing an active account", async () => {
+    expect((await api("PUT", "/api/config", { composio: { apiKey: "ak_good" } })).status).toBe(200);
+    const bot = (await api("POST", "/api/bots")).body.bot;
+    connectorAccounts = [
+      { id: "ca_abandoned", alias: "original", status: "INITIALIZING", toolkit: { slug: "slack" } },
+      { id: "ca_expired", alias: "expired", status: "EXPIRED", toolkit: { slug: "slack" } },
+    ];
+    try {
+      const token = await mintTestCapability(BASE, bot.id, bot.threadId, { kind: "connectors" });
+      const response = await fetch(`${BASE}/api/internal/connectors/request`, {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
+        body: JSON.stringify({ botId: bot.id, threadId: bot.threadId, resumeKey: "retry-oauth-fixture", items: [{ slug: "slack" }] }),
+      });
+      expect(response.status).toBe(200);
+      const { messageIds } = await response.json() as { messageIds: string[] };
+      const card = `/api/bots/${bot.id}/connector-cards/${messageIds[0]}/authorize`;
+      const paths = ["/api/connectors/slack/authorize", card, card];
+      const before = connectorLinkRequests.length;
+      for (const path of paths) {
+        const linked = await api("POST", path, { threadId: bot.threadId });
+        expect(linked.status).toBe(200);
+        expect(linked.body.url).toBe("https://connect.composio.dev/fixture-only");
+      }
+      const requests = connectorLinkRequests.slice(before);
+      expect(requests).toHaveLength(3);
+      for (const request of requests) expect(request).toEqual({ toolkit: "slack", alias: expect.stringMatching(/^omb-retry-[0-9a-f-]{36}$/) });
+      expect(new Set(requests.map((request) => request.alias)).size).toBe(3);
+      expect(connectorAccounts.map((account) => account.alias)).toEqual(["original", "expired"]);
+
+      connectorAccounts.push({ id: "ca_active", alias: "work", status: "ACTIVE", toolkit: { slug: "slack" } });
+      for (const path of paths.slice(0, 2)) {
+        const refused = await api("POST", path, { threadId: bot.threadId });
+        expect(refused.status).toBe(400);
+        expect(refused.body.error).toMatch(/add an account alias/i);
+      }
+      expect(connectorLinkRequests).toHaveLength(before + 3);
+      expect((await api("POST", card, { threadId: "wrong-thread" })).status).toBe(404);
+      expect(connectorLinkRequests).toHaveLength(before + 3);
+    } finally {
+      connectorAccounts = [];
+      await api("DELETE", `/api/bots/${bot.id}`);
+      await api("PUT", "/api/config", { composio: { apiKey: "" } });
+    }
+  });
+
   it("does not relay a slow connector request after Connected Apps is disabled", async () => {
     const bot = (await api("POST", "/api/bots")).body.bot;
     let held: Awaited<ReturnType<typeof delayedJsonBody>> | undefined;

@@ -2797,6 +2797,8 @@
   "connectors.empty.noneTitle": "No connected apps yet",
   "connectors.empty.noneDesc": "Connect an app from Marketplace and it will appear here.",
   "connectors.popupBlockedContinue": "Your browser blocked the connection page. Click Continue to open it.",
+  "connectors.openAuthorizationPage": "Open authorization page",
+  "connectors.invalidAuthorizationUrl": "The connection service returned an invalid authorization link.",
   "connectors.aliasNeeded": "This app already has an account. Add a label such as work or personal to connect another.",
   "connectors.title": "Plugins",
   "connectors.subtitle": "Connect apps and your own MCP tools.",
