@@ -22,6 +22,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
@@ -1661,6 +1662,80 @@ class SessionTest {
         assertEquals(listOf(primary.url), dialed)
         assertEquals(listOf(null, "s:4"), cursors)
         assertEquals(Session.Status.Live, session.status.value)
+    }
+
+    @Test
+    fun resumesThatCloseRightAfterHelloStartOverWithoutTheCursor() = runTest {
+        // MOCA-179: the frame after the cursor is one the route cannot carry, so
+        // every resume is hello and then a clean close, forever, until the
+        // process dies. Two of those in a row start fresh instead.
+        val cursors = mutableListOf<String?>()
+        var hydrations = 0
+        val session = session(
+            connectionStore = FakeConnectionStore(
+                Connection(id = "c1", name = "Mac", host = "127.0.0.1", port = 8810),
+            ),
+            tokenStore = FakeTokenStore().apply { saved["c1"] = "tok" },
+            hydrate = {
+                hydrations++
+                Fleet(emptyList(), emptyList())
+            },
+            events = { since, _ ->
+                cursors += since
+                flow {
+                    when {
+                        cursors.size == 1 -> {
+                            emit(StreamFrame(Frame.Hello(cursor = "s:9", resumed = false), seq = 9))
+                            emit(StreamFrame(Frame.Unknown("x"), seq = 10))
+                        }
+                        since != null -> emit(StreamFrame(Frame.Hello(cursor = "s:12", resumed = true), seq = 12))
+                        else -> {
+                            emit(StreamFrame(Frame.Hello(cursor = "s:20", resumed = false), seq = 20))
+                            awaitCancellation()
+                        }
+                    }
+                }
+            },
+        )
+        session.awaitRestored()
+        session.connect()
+        runCurrent()
+        advanceTimeBy(120_000)
+        runCurrent()
+
+        assertEquals(listOf(null, "s:10", "s:10", null), cursors)
+        assertEquals(2, hydrations)
+        assertEquals(Session.Status.Live, session.status.value)
+    }
+
+    @Test
+    fun aStreamThatClosesRightAfterHelloStillBacksOff() = runTest {
+        // Resetting the backoff on hello alone reconnected a hello-then-close
+        // stream every second.
+        var opens = 0
+        val session = session(
+            connectionStore = FakeConnectionStore(
+                Connection(id = "c1", name = "Mac", host = "127.0.0.1", port = 8810),
+            ),
+            tokenStore = FakeTokenStore().apply { saved["c1"] = "tok" },
+            events = { _, _ ->
+                opens++
+                flowOf(StreamFrame(Frame.Hello(cursor = "s:1", resumed = true), seq = 1))
+            },
+        )
+        session.awaitRestored()
+        session.connect()
+        runCurrent()
+        assertEquals(1, opens)
+        advanceTimeBy(1_000)
+        runCurrent()
+        assertEquals(2, opens)
+        advanceTimeBy(1_000)
+        runCurrent()
+        assertEquals(2, opens)
+        advanceTimeBy(1_000)
+        runCurrent()
+        assertEquals(3, opens)
     }
 
     @Test

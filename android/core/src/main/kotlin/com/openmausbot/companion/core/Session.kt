@@ -152,6 +152,8 @@ class Session(
     private var endpointRefreshJob: Job? = null
     private var streamGeneration = 0
     private var reconnectDelaySeconds: Long = 0
+    /** Resumed streams in a row that closed with nothing after their hello. */
+    private var emptyResumes = 0
     private var screenWatchers = 0
     private val gate = Mutex()
     private val notificationGate = Mutex()
@@ -651,6 +653,7 @@ class Session(
         endpointRefreshJob?.cancel()
         endpointRefreshJob = null
         reconnectDelaySeconds = 0
+        emptyResumes = 0
         screenWatchers = 0
         client = null
         token = null
@@ -917,6 +920,14 @@ class Session(
             val activeClient = client ?: return
             _status.value = Status.Connecting
             var receivedHello = false
+            var framesAfterHello = 0
+            // Resuming from the cursor replays whatever followed it. When that is
+            // a frame the route cannot carry (one past the sidecar's event
+            // ceiling ends the stream cleanly), every resume is hello and then
+            // nothing, forever, until the process dies (MOCA-179). After two of
+            // those in a row, start fresh: no cursor, a full reload, a new one.
+            val cursor = if (emptyResumes >= EMPTY_RESUMES_BEFORE_FRESH_START) null else _state.value.cursor
+            if (cursor == null) emptyResumes = 0
             try {
                 activeClient.connection.serverEnvironmentId?.let { expected ->
                     // Fail closed before sending the bearer if the address serves a new workspace.
@@ -925,10 +936,9 @@ class Session(
                         return
                     }
                 }
-                eventsFn(activeClient, _state.value.cursor, screenWatchers > 0)
+                eventsFn(activeClient, cursor, screenWatchers > 0)
                     .collect { frame ->
                         currentCoroutineContext().ensureActive()
-                        reconnectDelaySeconds = 0
 
                         when (val payload = frame.frame) {
                             is Frame.Hello -> {
@@ -942,6 +952,10 @@ class Session(
                                 refreshConnectionMetadata(activeClient)
                             }
                             else -> {
+                                // A frame after hello is the stream working. Only that
+                                // resets the backoff, so hello-then-close slows down.
+                                reconnectDelaySeconds = 0
+                                framesAfterHello += 1
                                 _state.update { it.apply(frame) }
                                 if (payload is Frame.Notify) {
                                     notificationSink.deliver(payload.notification, frame.seq)
@@ -955,6 +969,7 @@ class Session(
                 // An empty/comment-only response never connected: retrying it forever would
                 // strand the phone even when another advertised route can reach the computer.
                 if (!receivedHello) throw MissingStreamHelloException()
+                emptyResumes = if (framesAfterHello == 0) emptyResumes + 1 else 0
                 _status.value = Status.Offline("Lost the connection.")
             } catch (error: Throwable) {
                 if (!currentCoroutineContext().isActive || error is kotlinx.coroutines.CancellationException) {
@@ -2425,6 +2440,9 @@ class Session(
             "That pairing invitation is not valid. Start pairing again on your computer."
         const val THREAD_GONE_MESSAGE = "That thread is no longer on your computer."
         const val OFFLINE_MESSAGE = "This computer is offline."
+
+        /** Empty resumes in a row before the stream starts over without a cursor. */
+        internal const val EMPTY_RESUMES_BEFORE_FRESH_START = 2
 
         /** High-entropy QR token — distinct from a retryable six-digit code. */
         fun isQrCredential(credential: String): Boolean =

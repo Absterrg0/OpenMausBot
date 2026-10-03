@@ -11033,7 +11033,20 @@ routines = new RoutineManager({
     // nobody's is confined to a folder of its own, never the bot's project.
     if (task && CLOUD_HOME && routineId) threadStarters.set(task.threadId, routineOpener(routineId));
     const bot = store.bot(botId);
-    if (task && bot) broadcast({ kind: "bot", bot: publicBot(bot) });
+    // A run's task that stays in the background changes the bot's task list,
+    // not the conversation on screen, so the frame carries no transcript.
+    // publicBot() here sent the whole active thread on every scheduled run;
+    // past the phone sidecar's 4 MiB event ceiling that ended the stream, and
+    // the resume cursor replayed the same frame on every reconnect: "loses
+    // connection about once an hour" on a phone with an hourly routine
+    // (MOCA-179). Every client keeps its transcript when a bot frame has
+    // none. An activated task is a fresh, short thread the client must show.
+    if (task && bot) {
+      broadcast({
+        kind: "bot",
+        bot: activate ? publicBot(bot) : { ...wireBot(bot), tasks: store.tasks(bot.id).map(wireTask) },
+      });
+    }
     return task;
   },
   joinConversation: (run) => {
