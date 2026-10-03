@@ -737,10 +737,7 @@ export function createOpenAIChatRuntime<Config>(options: RuntimeOptions<Config>)
     adapter: {
       provider: options.driverKind,
       capabilities: { ...(options.computerUse ? { computerMcp: options.tools !== false,
-        // The cloud computer is one more stdio computer server, so it goes
-        // wherever the computer tools go. The fleet invariant test pins
-        // usesCloudComputer === (remoteAgent || computerMcp).
-        usesCloudComputer: options.tools !== false, localComputerMcp: options.tools !== false,
+        localComputerMcp: options.tools !== false,
         browserMcp: options.tools !== false, nativeImageInput: true, images: true } : {}),
         sessionModelSwitch: "in-session", customMcp: options.tools !== false, agentsMcp: options.tools !== false, composioMcp: options.tools !== false,
         // The runtime owns the whole tool loop, so it can always take a

@@ -1215,8 +1215,7 @@ describe("ClaudeDriver turns (fake CLI)", () => {
 
   it("refreshes a resumed session's recorded prompt on every turn when the CLI supports it", async () => {
     await create(undefined, { FAKE_CLAUDE_DUMP: join(scratch, "coordination-snapshot.json"), FAKE_CLAUDE_VERSION: "2.1.267" });
-    // Read the version first, so the floor is what admits the flag here —
-    // without this the driver sees a null version and would push it for any CLI.
+    // After an Engines snapshot, the cached version is what admits the flag.
     await instance.snapshot();
     await instance.adapter.sendTurn({
       threadId: "t-coordinated-resume",
@@ -1552,7 +1551,8 @@ describe("ClaudeDriver turns (fake CLI)", () => {
     expect(claudeCliUpdate(null, "claude")).toBeUndefined();
     const olderSnapshot = claudeCliUpdate("2.1.232 (Claude Code)", "claude");
     expect(olderSnapshot?.message).toContain("--system-prompt-snapshot");
-    expect(olderSnapshot?.message).toContain("coordinated resumed turns cannot refresh stale system prompts");
+    expect(olderSnapshot?.message).toContain("resumed turns cannot refresh stale system prompts");
+    expect(olderSnapshot?.message).not.toContain("coordinated");
     expect(olderSnapshot?.message).not.toContain("no compaction window");
     expect(claudeCliUpdate("2.1.121 (Claude Code)", "claude")).toMatchObject({
       command: "claude update",

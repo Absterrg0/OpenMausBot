@@ -177,11 +177,6 @@ export interface SendTurnInput {
    * systemVolatile describes this turn even when its text is unchanged from
    * the previous turn, so digest-based delivery must not suppress the note. */
   mentionTurn?: boolean;
-  /** Coordinated teammate turns may resume a Claude conversation whose
-   * earlier system prompt contained a different assignment. Refresh that
-   * prompt when the provider supports it; the current brief also arrives
-   * in this turn's text. */
-  refreshSystemPrompt?: boolean;
   /** Per-bot integrations the driver may hand to the agent as tools. */
   integrations?: {
     /** A local stdio bridge owns the remote Composio transport. Keeping the
@@ -287,12 +282,6 @@ export interface ProviderAdapter {
      * with screenIsTheWork). Implies a cloud-computer turn even though the
      * driver mounts no computer tools. */
     remoteAgent?: boolean;
-    /** True when this driver's turn can run against a cloud computer — natively
-     * (remoteAgent) or through its computer tools (computerMcp), where the
-     * cloud computer is one more stdio server. The one rule for Hosted
-     * desktop: every cloud attach path refuses an engine without it before
-     * anything is provisioned (cloudPlaceDriverError). */
-    usesCloudComputer?: boolean;
     /** True when the driver mounts turn.integrations.composio (the user's
      * connected apps). Same rule again: a key in the config says the user
      * HAS those connections, not that this driver can reach them. */
@@ -599,6 +588,16 @@ export interface ProviderDriver<Config = unknown> {
 }
 
 export type AnyProviderDriver = ProviderDriver<any>;
+
+/** True when this driver's turn can run against a cloud computer — natively
+ * (remoteAgent) or through its computer tools (computerMcp), where the cloud
+ * computer is one more stdio server. The one rule for Hosted desktop: every
+ * cloud attach path refuses an engine without it before anything is
+ * provisioned (cloudPlaceDriverError). Derived, so no driver can declare it
+ * out of step with the two fields it reads. */
+export function usesCloudComputer(capabilities: Pick<ProviderAdapter["capabilities"], "remoteAgent" | "computerMcp">): boolean {
+  return capabilities.remoteAgent === true || capabilities.computerMcp === true;
+}
 
 let eventCounter = 0;
 export const newEventId = () => `ev-${Date.now().toString(36)}-${(eventCounter++).toString(36)}`;

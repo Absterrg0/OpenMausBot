@@ -399,7 +399,7 @@ export function claudeCliUpdate(version: string | null, cli: string): ProviderSn
   const effects = [
     ...(missing.includes("--autocompact") ? ["no compaction window picked by OpenMausBot"] : []),
     ...(missing.includes("--setting-sources") ? ["bots still see this machine's own Claude Code setup"] : []),
-    ...(missing.includes("--system-prompt-snapshot") ? ["coordinated resumed turns cannot refresh stale system prompts"] : []),
+    ...(missing.includes("--system-prompt-snapshot") ? ["resumed turns cannot refresh stale system prompts"] : []),
   ];
   return {
     title: "Update Claude Code for context controls",
@@ -1180,10 +1180,11 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
     // harness snapshots every instance whenever it describes them — app
     // load, the Engines page, and right after `claude update`, which is
     // exactly when the answer changes — so a turn normally finds it filled.
-    // Most flags before any snapshot assume a current CLI; autocompact
-    // requires confirmed help support. A coordinated turn checks first
-    // because the snapshot-refresh flag is newer than the
-    // other context controls and an unknown flag would reject that request.
+    // A turn that finds it empty reads the version itself first: the
+    // snapshot-refresh flag every turn passes is newer than the other context
+    // controls, and an unknown flag would reject the turn. If that read
+    // fails, most flags assume a current CLI; the snapshot flag needs a
+    // confirmed version and autocompact a confirmed help listing.
     let cliVersion: ClaudeCliVersion | null = null;
     let cliVersionChecked = false;
     // Whether `claude --help` lists --autocompact, read once per CLI version
@@ -2583,8 +2584,6 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
           agentsMcp: true,
         customMcp: true,
           computerMcp: true,
-          // The cloud computer mounts as one more stdio computer server.
-          usesCloudComputer: true,
           composioMcp: true,
           phoneMcp: true,
           browserMcp: true,

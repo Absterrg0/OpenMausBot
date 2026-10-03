@@ -9,7 +9,7 @@
 /** A place a bot can act. `cloud` covers both the Boat and VPS backends —
  * from the person's seat they are the same "cloud computer" panel. */
 import type { Surface } from "../shared/wire.ts";
-import type { ProviderAdapter } from "./contracts.ts";
+import { usesCloudComputer, type ProviderAdapter } from "./contracts.ts";
 export type { Surface };
 
 /** The bot's "Works on" setting; undefined = Auto. */
@@ -142,12 +142,12 @@ const PLACE_ACTION: Record<PlaceSource, { sentence: string; clause: string }> = 
  * Boat. Checked before anything is provisioned, so a turn that cannot run
  * never creates or wakes a machine. */
 export function cloudPlaceDriverError(
-  capabilities: Pick<ProviderAdapter["capabilities"], "usesCloudComputer" | "remoteAgent">,
+  capabilities: Pick<ProviderAdapter["capabilities"], "computerMcp" | "remoteAgent">,
   backend: "box" | "vps",
   source: PlaceSource = "works-on",
 ): string | null {
   const next = `Choose another model, or ${PLACE_ACTION[source].clause}.`;
-  if (capabilities.usesCloudComputer !== true) return `This model can't use a computer. ${next}`;
+  if (!usesCloudComputer(capabilities)) return `This model can't use a computer. ${next}`;
   if (backend === "vps" && capabilities.remoteAgent === true) return `The Computer engine runs on Boat and can't use a self-hosted VPS. ${next}`;
   return null;
 }
