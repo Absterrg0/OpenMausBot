@@ -9,7 +9,7 @@ import {
   withoutIgnoredCloudKeys,
 } from "./cloud-home.ts";
 import { cloudHomeChildEnvironments, codeTrustProblem, passwdIds, spawnWithSecrets } from "./cloud-home-start.ts";
-import { RESTART_EXIT_CODE, serverExitAction } from "./restart.ts";
+import { RESTART_EXIT_CODE, restartPolicy } from "./restart.ts";
 import { hostedModelPolicy } from "./hosted-models.ts";
 import { resolveRequestAuth } from "./request-auth.ts";
 import { SessionRegistry } from "./sessions.ts";
@@ -372,13 +372,13 @@ it("ships an edge and a Fly template that keep the server private", () => {
 
 it("the Cloud launcher starts the server again only when it asks to after a restore, and only a few times in a row", () => {
   const launcher = readFileSync(join(import.meta.dirname, "cloud-home-start.ts"), "utf8");
-  expect(launcher).toContain("serverExitAction(code, stopping, restarts)");
-  expect(serverExitAction(RESTART_EXIT_CODE, false, 0)).toBe("restart");
-  expect(serverExitAction(RESTART_EXIT_CODE, false, 4)).toBe("restart");
-  for (const code of [0, 1, null]) expect(serverExitAction(code, false, 0)).toBe("stop");
+  expect(launcher).toContain("const policy = restartPolicy();");
+  expect(launcher).toContain("if (!policy.again(code, stopping)) return false;");
+  for (const code of [0, 1, null]) expect(restartPolicy().again(code)).toBe(false);
   // Stopping for good (Fly asked, or the edge died), or restarting in a loop.
-  expect(serverExitAction(RESTART_EXIT_CODE, true, 0)).toBe("stop");
-  expect(serverExitAction(RESTART_EXIT_CODE, false, 5)).toBe("stop");
+  expect(restartPolicy().again(RESTART_EXIT_CODE, true)).toBe(false);
+  const policy = restartPolicy(() => 0);
+  expect([1, 2, 3, 4, 5, 6].map(() => policy.again(RESTART_EXIT_CODE, false))).toEqual([true, true, true, true, true, false]);
 });
 
 it("records the first finished bot turn once, on a Cloud home only, and a moved workspace never brings its own", () => {

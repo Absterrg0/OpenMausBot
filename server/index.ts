@@ -314,7 +314,7 @@ import {
   createCloudPairing, firstCloudTurnPatch, readSignedBody,
 } from "./cloud-home.ts";
 import { CLOUD_PERSONAL_REFUSAL, settleCloudOwnership, type CloudOwnership } from "./cloud-owner.ts";
-import { createCloudMoveRoutes } from "./cloud-move-http.ts";
+import { createCloudMoveRoutes, workspaceShared } from "./cloud-move-http.ts";
 import { RESTART_EXIT_CODE } from "./restart.ts";
 import { holdIncludedServices } from "./included-services.ts";
 import type { ProviderInstance } from "./contracts.ts";
@@ -15539,8 +15539,9 @@ const workspaceBackupRoutes = createWorkspaceBackupRoutes({
 // Copy this computer here (server/cloud-move-http.ts, docs/copy-workspace.md):
 // every server sizes its own workspace for its desktop, and every server the
 // person owns receives one, a Cloud home included. A workspace shared with
-// other people never does: a hosted organisation workspace, or a server
-// whose email sign-in lets others in. After the restore commits, the server
+// other people never does (workspaceShared): a hosted organisation
+// workspace, or a server whose email sign-in lets someone besides its owner
+// in. After the restore commits, the server
 // exits with RESTART_EXIT_CODE and its launcher starts it again, so startup
 // installs it (server/restart.ts).
 let restartRequested = false;
@@ -15548,7 +15549,7 @@ const cloudMoveRoutes = createCloudMoveRoutes({
   dataDir: DATA_DIR,
   appVersion: serverVersion(),
   environmentId: ENVIRONMENT_ID,
-  sharedWorkspace: () => HOSTED_WORKSPACE || (!CLOUD_HOME && emailSignIn.enabled()),
+  sharedWorkspace: () => workspaceShared({ hosted: HOSTED_WORKSPACE, cloudHome: Boolean(CLOUD_HOME), signIn: signInAllowList() }),
   readBody,
   restored: workspaceRestore,
   ...workspaceBackupAccess,

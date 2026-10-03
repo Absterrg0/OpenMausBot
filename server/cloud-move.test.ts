@@ -15,7 +15,7 @@ import {
   prepareNextPreviousCloud, previousCloud, stagePreviousCloud, tidyCloudMoveStorage, uploadStatus, validUploadDeclaration, workspaceContents,
   workspaceMoveSize, writeUploadPart,
 } from "./cloud-move.ts";
-import { createCloudMoveRoutes } from "./cloud-move-http.ts";
+import { createCloudMoveRoutes, workspaceShared } from "./cloud-move-http.ts";
 import { readBody } from "./harness/http.ts";
 import { resolveRequestAuth, type RequestAuth } from "./request-auth.ts";
 import { SessionRegistry } from "./sessions.ts";
@@ -248,6 +248,21 @@ it("a workspace shared with other people never receives one, and says why", asyn
   expect(shared.restarts).toEqual([]);
   // It still sizes its own workspace, for its own desktop.
   expect((await shared.call("GET", "/api/cloud-move/estimate", shared.owner)).status).toBe(200);
+});
+
+it("a server is shared only when someone besides its owner can sign in: the owner's own email alone is not", () => {
+  const lists = (admins: string[], members: string[] = []) => ({ hosted: false, cloudHome: false, signIn: { admins, members } });
+  // `openmausbot access add me@example.test`: the owner signs in from a browser.
+  expect(workspaceShared(lists(["me@example.test"]))).toBe(false);
+  expect(workspaceShared(lists([]))).toBe(false);
+  // Anyone else: a member, a second admin, a whole domain.
+  expect(workspaceShared(lists(["me@example.test"], ["colleague@example.test"]))).toBe(true);
+  expect(workspaceShared(lists(["me@example.test", "cto@example.test"]))).toBe(true);
+  expect(workspaceShared(lists(["@example.test"]))).toBe(true);
+  expect(workspaceShared(lists([], ["@example.test"]))).toBe(true);
+  // A hosted organisation workspace always is; a Cloud home's sign-in is its owner's account.
+  expect(workspaceShared({ ...lists([]), hosted: true })).toBe(true);
+  expect(workspaceShared({ ...lists(["me@example.test"], ["colleague@example.test"]), cloudHome: true })).toBe(false);
 });
 
 it("says which version and which machine it is, so the app refuses an older server or this computer's own before exporting", async () => {

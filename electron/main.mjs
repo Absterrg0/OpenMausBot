@@ -1987,13 +1987,17 @@ async function openCloudEntry() {
   return true;
 }
 
-function openWorkspaceSettings(computerId) {
+/** Settings → Servers on this computer's own page; with a saved server's id,
+ * open on its Computer access panel, or (`panel: "copy"`) on its Copy this
+ * computer here panel. */
+function openWorkspaceSettings(computerId, panel = "computer") {
   if (!mainWindow || mainWindow.isDestroyed()) return;
+  const id = typeof computerId === "string" ? computerId : null, copy = panel === "copy";
   if (senderIsLocal({ sender: mainWindow.webContents })) {
-    mainWindow.webContents.send("workspaces:open-settings", typeof computerId === "string" ? computerId : null);
+    mainWindow.webContents.send("workspaces:open-settings", id, ...(copy ? ["copy"] : []));
   } else {
     persistEnvironments(withActive(environmentsState, LOCAL_ID));
-    navigateMainWindow(`${rendererOrigin()}/?desktop-settings=workspaces${typeof computerId === "string" ? `&share-computer=${encodeURIComponent(computerId)}` : ""}`);
+    navigateMainWindow(`${rendererOrigin()}/?desktop-settings=workspaces${id ? `&${copy ? "copy-to" : "share-computer"}=${encodeURIComponent(id)}` : ""}`);
   }
 }
 
@@ -2838,10 +2842,12 @@ ipcMain.handle("company-backups:restore", localWorkspaceOnly("company-backups:re
 
 // ── Copy this computer here (electron/cloud-move.mjs, docs/copy-workspace.md) ──
 // This computer's workspace to a server the person owns and added here, their
-// OMB Cloud included: from Settings → Servers, Settings → OMB Cloud, or that
-// empty server's own page (its card, its Settings → Backups). Where it goes
-// comes only from main (moveSenderDestination): this computer's own page names
-// a saved server, a server's own page gets only itself.
+// OMB Cloud included: started from Settings → Servers or Settings → OMB Cloud
+// on this computer's own page. Where it goes comes only from main
+// (moveSenderDestination): this computer's own page names a saved server, a
+// server's own page (its card, its Settings → Backups) gets only itself, and
+// only the verified Cloud starts a copy from its own page; any other server's
+// Copy opens this computer's Settings on that server's copy.
 let cloudMove = null;
 const CLOUD_MOVE_LOCAL_ROUTES = /^\/api\/(?:workspace-backup\/(?:status|export|download\/[a-f\d-]{36})|cloud-move\/estimate)$/;
 
@@ -2968,10 +2974,20 @@ const afterCloudMove = dest => async result => {
   return result;
 };
 ipcMain.handle("cloud-move:state", (event, id) => { const asked = moveSender("cloud-move:state", event, id); return cloudMoveOverview(asked.dest, asked.remote); });
-// A server's own page may fill only itself, and only while it is empty
-// (requireEmpty); replacing work, and Swap back, stay in this computer's Settings.
+// Everything a server says about itself (admin session, empty, version) is
+// its own word, so a server's own page cannot send this computer's work to
+// it. Only the Cloud this app verified through the Admin starts its copy from
+// its own page, and only while it is empty (requireEmpty). Any other server's
+// Copy opens this computer's Settings → Servers on that server's copy, where
+// the person starts it. Replacing work, and Swap back, stay there too.
 ipcMain.handle("cloud-move:start", (event, id) => {
   const asked = moveSender("cloud-move:start", event, id), dest = named(asked.dest);
+  if (asked.remote) {
+    const contents = mainWindow && !mainWindow.isDestroyed() ? mainWindow.webContents : null;
+    const verifiedCloud = dest.kind === "cloud" && !desktopRemoteAccess &&
+      cloudPageSenderAllowed(event, { contents, homeOrigin: cloudAccount?.homeTarget()?.origin ?? null, activeOrigin: activeEnvironment(environmentsState)?.origin });
+    if (!verifiedCloud) { openWorkspaceSettings(dest.id, "copy"); return { phase: "idle" }; }
+  }
   return ensureCloudMove().move(dest, { requireEmpty: asked.remote }).then(afterCloudMove(dest));
 });
 // A server's page stops only a copy to itself.

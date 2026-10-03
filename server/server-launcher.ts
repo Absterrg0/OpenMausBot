@@ -10,23 +10,21 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { realpathSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { restartsAfter, serverExitAction } from "./restart.ts";
+import { restartPolicy } from "./restart.ts";
 
 export function superviseServer(start: () => ChildProcess, options: { signals?: Pick<NodeJS.Process, "on" | "off">; now?: () => number } = {}): Promise<number> {
   const signals = options.signals ?? process, now = options.now ?? Date.now;
   return new Promise((done) => {
-    let child: ChildProcess, stopping = false, restarts = 0;
+    let child: ChildProcess, stopping = false;
+    const policy = restartPolicy(now);
     const pass = (signal: NodeJS.Signals) => () => { stopping = true; child.kill(signal); };
     const onTerm = pass("SIGTERM"), onInt = pass("SIGINT");
     const finish = (code: number) => { signals.off("SIGTERM", onTerm); signals.off("SIGINT", onInt); done(code); };
     const run = () => {
-      const startedAt = now();
       child = start();
       child.once("error", () => finish(1));
       child.once("exit", (code, signal) => {
-        restarts = restartsAfter(restarts, now() - startedAt);
-        if (serverExitAction(code, stopping, restarts) === "restart") {
-          restarts++;
+        if (policy.again(code, stopping)) {
           console.log("OpenMausBot is starting again to finish installing a copy from the desktop app…");
           run();
           return;

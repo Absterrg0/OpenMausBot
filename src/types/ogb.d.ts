@@ -117,7 +117,8 @@ const __APP_VERSION__: string;
       organization?: import("../../electron/managed-desktop.mjs").ManagedDesktopBridge;
       cloudAccount?: import("../../electron/cloud-account.mjs").CloudAccountBridge;
       /** Copy this computer here: this computer's page names a saved server (or
-       * "cloud"); a server's own page is answered about itself only. */
+       * "cloud"); a server's own page is answered about itself only, and its
+       * Copy opens this computer's Settings on that copy (the verified Cloud's starts it). */
       cloudMove?: import("../../electron/cloud-move.mjs").CloudMoveBridge;
       /** The Cloud's setup checklist: shows the lending switch in this app's
        * own Settings → OMB Cloud (leaving the Cloud's page). */
@@ -151,7 +152,8 @@ const __APP_VERSION__: string;
         switch: (id: string) => Promise<void>;
         addFromLink: (link: string, name?: string) => Promise<boolean | void>;
         forget: (id: string) => Promise<void>;
-        onOpenSettings?: (callback: (computerId?: string | null) => void) => () => void;
+        /** `panel` "copy": that server's Copy this computer here panel; otherwise its Computer access. */
+        onOpenSettings?: (callback: (computerId?: string | null, panel?: "copy") => void) => () => void;
       };
       /** Local main-window only. Hosted renderers cannot grant themselves access. */
       computerSharing?: {

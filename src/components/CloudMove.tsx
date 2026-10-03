@@ -6,10 +6,12 @@ import { Card } from "./SettingsPrimitives";
 
 // Copy this computer here (electron/cloud-move.mjs, docs/copy-workspace.md):
 // this computer's workspace to a server the person added, their Cloud
-// included. It shows in Settings → Servers and Settings → OMB Cloud (this
-// computer's own page names the server), and on an empty server's own page:
-// its card, the Cloud's setup checklist, and its Settings → Backups. Every
-// one reads main's snapshot through one mapping, moveView, and calls the bridge.
+// included. It runs from Settings → Servers and Settings → OMB Cloud (this
+// computer's own page names the server). A server's own page offers it (its
+// card while empty, the Cloud's setup checklist, its Settings → Backups), and
+// its Copy brings the person to that panel; only the verified Cloud's starts
+// the copy itself. Every one reads main's snapshot through one mapping,
+// moveView, and calls the bridge.
 
 const RUNNING = new Set<CloudMoveState["phase"]>(["preparing", "growing", "exporting", "uploading", "checking", "replacing", "restarting"]);
 // Until the destination starts replacing its workspace, a copy can still stop.
@@ -18,23 +20,30 @@ const PHASE: Record<string, LocaleKey> = {
   preparing: "cloudMove.phase.preparing", growing: "cloudMove.phase.growing", exporting: "cloudMove.phase.exporting", uploading: "cloudMove.phase.uploading",
   checking: "cloudMove.phase.checking", replacing: "cloudMove.phase.replacing", restarting: "cloudMove.phase.restarting",
 };
+// One vocabulary: a reason a copy cannot start (moveBlocked) and a failed
+// copy's code share these, so each reads and acts the same wherever it shows.
 const ERROR: Record<string, LocaleKey> = {
   busy: "cloudMove.error.busy", cloud_busy: "cloudMove.error.cloudBusy", too_large: "cloudMove.error.tooLarge",
   local_full: "cloudMove.error.localFull", upload_failed: "cloudMove.error.network", network: "cloudMove.error.network",
   access_changed: "cloudMove.error.accessChanged", cloud_unavailable: "cloudMove.error.cloudUnavailable",
   cancelled: "cloudMove.error.cancelled", no_previous: "cloudMove.error.noPrevious",
   owner_needed: "cloudMove.error.ownerNeeded", shared_workspace: "cloudMove.error.sharedWorkspace", same_computer: "cloudMove.error.sameComputer",
-  not_empty: "cloudMove.error.notEmpty", unreachable: "cloudMove.error.unreachable",
+  not_empty: "cloudMove.error.notEmpty", unreachable: "cloudMove.error.unreachable", busy_elsewhere: "cloudMove.error.busyElsewhere",
 };
-// Nothing to try again here: the next step is somewhere else.
-const NO_RETRY = new Set(["shared_workspace", "same_computer", "not_empty", "cloud_grow_unsupported", "too_large"]);
+// Nothing to try again here: the next step is somewhere else, or later.
+const NO_RETRY = new Set(["shared_workspace", "same_computer", "not_empty", "cloud_grow_unsupported", "too_large", "busy_elsewhere"]);
 // The next step is the server itself: open it in this window.
 const OPEN = new Set(["restart_timeout", "owner_needed", "access_changed"]);
+// The server has to change first (update, start): ask it again.
+const CHECK = new Set(["outdated", "unreachable"]);
 
 export const formatMoveBytes = (value: number) => {
   const power = value >= 1024 ** 3 ? 3 : value >= 1024 ** 2 ? 2 : 1;
   return `${new Intl.NumberFormat(activeLocale(), { maximumFractionDigits: power === 3 ? 1 : 0 }).format(value / 1024 ** power)} ${["", "KB", "MB", "GB"][power]}`;
 };
+
+/** When the workspace Swap back puts back was saved. */
+const savedAt = (iso: string) => new Intl.DateTimeFormat(activeLocale(), { dateStyle: "medium", timeStyle: "short" }).format(new Date(iso));
 
 type Destination = NonNullable<CloudMoveState["destination"]>;
 export type MoveActionKind = "start" | "cancel" | "open" | "check" | "dismiss";
@@ -77,14 +86,24 @@ function errorText(error: NonNullable<CloudMoveState["error"]>, server: string, 
     return error.maxBytes !== undefined ? t("cloudMove.error.growUnavailable", { max: formatMoveBytes(error.maxBytes) }) : t("cloudMove.error.cloudFullPlain", { server });
   }
   if (error.code === "restore_failed") return t("cloudMove.error.notReplaced", { server, detail: error.message });
-  if (error.code === "cloud_outdated") return outdatedText(server, cloud, error.destVersion, error.localVersion);
+  if (error.code === "outdated") {
+    if (cloud) return t("cloudMove.error.cloudOutdated");
+    return error.destVersion && error.localVersion ? t("cloudMove.error.serverOutdated", { server, dest: error.destVersion, local: error.localVersion })
+      : t("cloudMove.error.serverOutdatedPlain", { server });
+  }
   if (error.code === "restart_timeout") return t(cloud ? "cloudMove.error.restartTimeout" : "cloudMove.error.restartTimeoutServer", { server });
+  // A proxy in front of the server refused even the smallest part.
+  if (error.code === "proxy_limit") return t("cloudMove.error.proxyLimit", { server, size: formatMoveBytes(error.partBytes ?? 512 * 1024) });
   const key = ERROR[error.code];
-  return key ? t(key, { server }) : t("cloudMove.error.other", { detail: error.message });
+  return key ? t(key, { server, other: error.other || t("cloudMove.thisServer") }) : t("cloudMove.error.other", { detail: error.message });
 }
-function outdatedText(server: string, cloud: boolean, dest?: string | null, local?: string | null): string {
-  if (cloud) return t("cloudMove.error.cloudOutdated");
-  return dest && local ? t("cloudMove.error.serverOutdated", { server, dest, local }) : t("cloudMove.error.serverOutdatedPlain", { server });
+/** A code's one next step: `failed`, after a copy that did not finish (it
+ * can be tried again); otherwise a reason one cannot start yet. */
+function actionFor(code: string, failed: boolean, server: string, resumable = false): MoveView["action"] {
+  if (OPEN.has(code)) return { kind: "open", label: t("cloudMove.open", { server }) };
+  if (NO_RETRY.has(code)) return null;
+  if (CHECK.has(code)) return { kind: "check", label: t("cloudMove.check") };
+  return failed ? { kind: "start", label: resumable ? t("cloudMove.resume") : t("cloudMove.retry") } : null;
 }
 
 /** Before a copy that cannot fit even at the plan's largest disk: say so now. */
@@ -104,13 +123,13 @@ export function moveNextSteps(state: CloudMoveState): string[] {
 
 /** The only state → view mapping. `overview` is main's snapshot about one
  * destination, `state` the copy's live state. `onServerPage`: shown on the
- * destination's own page, which may start a copy only while it is empty. */
+ * destination's own page, whose Copy opens this computer's Settings on it
+ * (the verified Cloud's starts the copy, only while it is empty). */
 export function moveView(overview: CloudMoveOverview | null, state: CloudMoveState, { onServerPage = false }: { onServerPage?: boolean } = {}): MoveView {
   const destination: Destination | null | undefined = overview?.destination ?? state.destination;
   const server = destination?.name || t("cloudMove.thisServer"), cloud = destination?.kind === "cloud";
   const view = (message: MoveView["message"], action: MoveView["action"], extra: Partial<MoveView> = {}): MoveView =>
     ({ server, running: false, message, next: [], action, resumable: false, ...extra });
-  const open = { kind: "open" as const, label: t("cloudMove.open", { server }) };
   if (RUNNING.has(state.phase)) {
     const phase = state.action === "restore" && state.phase === "replacing" ? "cloudMove.phase.restoring" : PHASE[state.phase];
     return view(phase ? { text: t(phase, { server }), tone: "status" } : null,
@@ -121,26 +140,26 @@ export function moveView(overview: CloudMoveOverview | null, state: CloudMoveSta
     return view({ text, tone: "done" }, { kind: "dismiss", label: t("cloudMove.ok") }, { next: moveNextSteps(state) });
   }
   if (state.phase === "failed" && state.error) {
-    const code = state.error.code, resumable = state.resumable === true;
-    const action = OPEN.has(code) ? open : NO_RETRY.has(code) ? null
-      : { kind: "start" as const, label: resumable ? t("cloudMove.resume") : t("cloudMove.retry") };
-    return view({ text: errorText(state.error, server, cloud), tone: "error" }, action, { resumable });
+    const resumable = state.resumable === true;
+    return view({ text: errorText(state.error, server, cloud), tone: "error" }, actionFor(state.error.code, true, server, resumable), { resumable });
   }
-  // Nothing under way: why it cannot start, or the one way it can.
+  // Nothing under way: why it cannot start (the same words and step as a
+  // copy that failed for that reason), or the one way it can.
   const blocked = overview?.blocked;
   if (blocked) {
-    const text = blocked === "busy_elsewhere" ? t("cloudMove.error.busyElsewhere", { other: overview?.busyWith || t("cloudMove.thisServer") })
-      : blocked === "outdated" ? outdatedText(server, cloud, overview?.cloud?.appVersion, overview?.local?.appVersion)
-        : t(ERROR[blocked]!, { server });
-    const action = blocked === "owner_needed" ? open : blocked === "outdated" || blocked === "unreachable" ? { kind: "check" as const, label: t("cloudMove.check") } : null;
-    return view({ text, tone: "note" }, action);
+    const reason = { code: blocked, message: "", destVersion: overview?.cloud?.appVersion ?? undefined, localVersion: overview?.local?.appVersion ?? undefined, other: overview?.busyWith };
+    return view({ text: errorText(reason, server, cloud), tone: "note" }, actionFor(blocked, false, server));
   }
   const note = fitNote(overview, server, cloud);
   if (note) return view({ text: note, tone: "note" }, null);
-  const has = overview?.cloud && !overview.cloud.empty;
-  // A server's own page fills only an empty server; replacing work is this computer's Settings' to do.
-  if (onServerPage && has) return view({ text: t("cloudMove.error.notEmpty", { server }), tone: "note" }, null);
-  const label = onServerPage ? t("cloudMove.suggest.move") : has ? t("cloudMove.replace", { server }) : t("cloudMove.start", { server });
+  const has = overview?.cloud && !overview.cloud.empty, previous = overview?.cloud?.previous;
+  // On a server's own page, Copy opens this computer's Settings on that server
+  // (main), where Replace is; only the verified Cloud copies from its own
+  // page, and only while it is empty.
+  if (onServerPage && has && cloud) return view({ text: t("cloudMove.error.notEmpty", { server }), tone: "note" }, null);
+  // Swap back keeps one workspace: copying again deletes the one it keeps now.
+  const label = onServerPage ? t("cloudMove.suggest.move") : previous ? t("cloudMove.replaceAgain", { server, date: savedAt(previous.createdAt) })
+    : has ? t("cloudMove.replace", { server }) : t("cloudMove.start", { server });
   return view(null, { kind: "start", label });
 }
 
@@ -244,7 +263,7 @@ export function CloudMoveSettings({ destination, onClose }: { destination: strin
   const view = moveView(overview, state);
   const local = overview?.local, cloud = overview?.cloud, previous = cloud?.previous;
   const idle = !view.running && state.phase !== "done";
-  const date = previous ? new Intl.DateTimeFormat(activeLocale(), { dateStyle: "medium", timeStyle: "short" }).format(new Date(previous.createdAt)) : "";
+  const date = previous ? savedAt(previous.createdAt) : "";
   const ready = idle && !overview?.blocked;
   return <Card title={t("cloudMove.title")} subtitle={t("cloudMove.intro", { server: view.server })}>
     <div data-cloud-move={state.phase} className="flex flex-col items-start gap-3">
@@ -252,7 +271,10 @@ export function CloudMoveSettings({ destination, onClose }: { destination: strin
         ? t("cloudMove.size", { size: formatMoveBytes(local.bytes), bots: local.bots, chats: local.chats, rooms: local.rooms })
         : t("cloudMove.measuring")}</p>
       <p className="text-[12px] text-ink-secondary">{t("cloudMove.signIn", { server: view.server })}</p>
-      {ready && cloud && !cloud.empty && <p role="note" className="text-[13px] text-ink">{t("cloudMove.replaceWarning", { server: view.server, bots: cloud.contents.bots, chats: cloud.contents.chats })}</p>}
+      {ready && cloud && (previous || !cloud.empty) && <p role="note" className="text-[13px] text-ink">{previous
+        // Swap back keeps one workspace: this copy's backup takes the place of the one it keeps now.
+        ? t("cloudMove.replaceWarningPrevious", { server: view.server, bots: cloud.contents.bots, chats: cloud.contents.chats, date })
+        : t("cloudMove.replaceWarning", { server: view.server, bots: cloud.contents.bots, chats: cloud.contents.chats })}</p>}
       {ready && !cloud && <p className="text-[12px] text-ink-secondary">{t("cloudMove.replaceMaybe", { server: view.server })}</p>}
       {moveStatus(view, state)}
       <div className="flex flex-wrap gap-2">
@@ -268,15 +290,16 @@ export function CloudMoveSettings({ destination, onClose }: { destination: strin
 /** The offer on a server's own page, shared by its card, the Cloud's setup
  * checklist and its Settings → Backups: what comes and its size, that
  * sign-ins stay here, the one next step (and Not now where it is an offer),
- * then the copy's progress or what happened. Called as a function so each
- * keeps one element tree. */
+ * then the copy's progress or what happened. Its Copy opens this computer's
+ * Settings on this server, where the person starts the copy (main; the
+ * verified Cloud's starts it). Called as a function so each keeps one element tree. */
 export function cloudMoveOffer(move: CloudMoveHandle, on: { start?: () => void; notNow?: () => void } = {}) {
   const { overview, state, pending } = move;
   const view = moveView(overview, state, { onServerPage: true });
   const local = overview?.local;
   const offering = !view.running && state.phase === "idle" && !view.message;
   return <div className="flex flex-col items-start gap-1.5">
-    {offering && <p className="text-[13px] text-ink-secondary">{local
+    {offering && <p className="text-[13px] text-ink-secondary">{local && overview?.cloud?.empty
       ? t("cloudMove.suggest.body", { server: view.server, bots: local.bots, chats: local.chats, size: formatMoveBytes(local.bytes) })
       : t("cloudMove.intro", { server: view.server })}</p>}
     {offering && <p className="text-[12px] text-ink-secondary">{t("cloudMove.signIn", { server: view.server })}</p>}

@@ -24,7 +24,8 @@ export function ConnectedWorkspacesSettings() {
   const [computerId, setComputerId] = useState<string | null>(() => new URLSearchParams(window.location?.search ?? "").get("share-computer"));
   // Copy this computer here (docs/copy-workspace.md): this app's own window only.
   const copyOffered = Boolean(window.ogb?.cloudMove) && !window.ogb?.remoteClient?.active;
-  const [copyId, setCopyId] = useState<string | null>(null);
+  // A server's own Copy opens this page on its panel (`copy-to`): the person starts the copy here.
+  const [copyId, setCopyId] = useState<string | null>(() => new URLSearchParams(window.location?.search ?? "").get("copy-to"));
   const pending = useRef(false);
   const generation = useRef(0);
   useEffect(() => {
@@ -34,10 +35,11 @@ export function ConnectedWorkspacesSettings() {
     return () => { generation.current++; };
   }, [bridge]);
   useEffect(() => {
-    const consume = (id?: string | null) => {
-      if (id) setComputerId(id);
+    const consume = (id?: string | null, panel?: "copy") => {
+      if (id) (panel === "copy" ? setCopyId : setComputerId)(id);
       const url = new URL(window.location.href);
       url.searchParams.delete("share-computer");
+      url.searchParams.delete("copy-to");
       window.history.replaceState(null, "", `${url.pathname}${url.search}${url.hash}`);
     };
     consume();

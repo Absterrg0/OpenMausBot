@@ -418,16 +418,38 @@ it("a self-hosted server with work is replaced only from this computer's Setting
   expect((await botNames(server)).sort()).toEqual(["Server-only bot", ...desktopBots].sort());
   expect(readdirSync(join(server.dataDir, ".backups")).filter((name) => name.startsWith("safety-") || /^[0-9a-f-]{36}$/.test(name) || name === "cloud-previous.next")).toEqual([]);
   expect((await api(server, "GET", "/api/auth/session", { cookie: serverCookie })).body).toMatchObject({ kind: "session" });
-}, 300_000);
+
+  // Swap back keeps one workspace. Copy, then copy again: the second copy's
+  // backup takes the first one's place (the Replace panel says so, with its
+  // date, before it starts), so Swap back returns what the first copy put there.
+  const kept = async () => (await api(server, "GET", "/api/cloud-move", { cookie: serverCookie })).body.previous as { createdAt: string; bots: number };
+  expect(await mover().move(selfHosted), server.log.slice(-2000)).toMatchObject({ phase: "done", previous: true });
+  const first = await kept();
+  expect(first).toMatchObject({ bots: 3 });
+  expect(await mover().move(selfHosted), server.log.slice(-2000)).toMatchObject({ phase: "done", previous: true });
+  const second = await kept();
+  expect(second).toMatchObject({ bots: 2 });
+  expect(second.createdAt > first.createdAt).toBe(true);
+  expect(await mover().restorePrevious(selfHosted), server.log.slice(-2000)).toMatchObject({ phase: "done", action: "restore" });
+  expect((await botNames(server)).sort()).toEqual(desktopBots);
+  // Put the server-only bot back for the next test, as an owner would.
+  await newBot(server, "Server-only bot");
+}, 600_000);
 
 it("a self-hosted server whose email sign-in lets other people in never receives a copy, and says why before anything is exported", async () => {
+  const signIn = async (lists: { admins?: string[]; members?: string[] }) => {
+    server.closing = true;
+    await waitForExit(server.child, { signal: "SIGTERM" });
+    const config = JSON.parse(readFileSync(join(server.dataDir, "config.json"), "utf8"));
+    writeFileSync(join(server.dataDir, "config.json"), JSON.stringify({ ...config, signIn: lists }));
+    server.closing = false;
+    await boot(server);
+  };
+  // `openmausbot access add me@example.test`: only its owner signs in, from a browser too. Still theirs alone.
+  await signIn({ admins: ["me@example.test"] });
+  expect((await api(server, "GET", "/api/cloud-move", { cookie: serverCookie })).status).toBe(200);
   // `openmausbot access add` lets someone else sign in: the server is shared now.
-  server.closing = true;
-  await waitForExit(server.child, { signal: "SIGTERM" });
-  const config = JSON.parse(readFileSync(join(server.dataDir, "config.json"), "utf8"));
-  writeFileSync(join(server.dataDir, "config.json"), JSON.stringify({ ...config, signIn: { members: ["colleague@example.test"] } }));
-  server.closing = false;
-  await boot(server);
+  await signIn({ admins: ["me@example.test"], members: ["colleague@example.test"] });
   const refused = await api(server, "GET", "/api/cloud-move", { cookie: serverCookie });
   expect(refused).toMatchObject({ status: 403, body: { code: "shared_workspace" } });
   const exportsBefore = readdirSync(join(source.dataDir, ".backups")).length;

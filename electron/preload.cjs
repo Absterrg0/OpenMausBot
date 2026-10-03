@@ -37,8 +37,9 @@ const localOrigin = process.argv.find((arg) => arg.startsWith("--omb-local-origi
 const isLocalPage = !localOrigin || location.origin === localOrigin;
 // cloudMove: main answers a remote page about that page's own server only,
 // while it is this window's active server (Copy this computer here's card and
-// its Settings → Backups). cloudLending and cloudPlan: only the person's own
-// verified Cloud (the Cloud's setup checklist, and its Settings' plan line).
+// its Settings → Backups); its Copy opens this computer's Settings on that
+// server's copy, except on the person's own verified Cloud. cloudLending and
+// cloudPlan: only that verified Cloud (its setup checklist, its plan line).
 /** A saved server's id, forwarded only from this computer's own page. */
 const savedServer = id => isLocalPage && typeof id === "string" && /^[\w-]{1,64}$/.test(id) ? [id] : [];
 const REMOTE_SAFE = new Set(["platform", "getCapabilities", "onCapabilitiesChanged", "applySkin", "setUnreadCount", "permStatus", "workspaces", "cloudMove", "cloudLending", "cloudPlan"]);
@@ -290,8 +291,10 @@ const bridge = {
     switch: (id) => ipcRenderer.invoke("environments:switch", id),
     addFromLink: (link, name) => ipcRenderer.invoke("environments:add-from-link", link, name),
     forget: (id) => ipcRenderer.invoke("environments:forget", id),
+    /** Settings → Servers, on a saved server's Computer access panel, or
+     * ("copy") its Copy this computer here panel. */
     onOpenSettings: (cb) => {
-      const handler = (_event, computerId) => cb(computerId);
+      const handler = (_event, computerId, panel) => cb(computerId, panel === "copy" ? "copy" : undefined);
       ipcRenderer.on("workspaces:open-settings", handler);
       return () => ipcRenderer.removeListener("workspaces:open-settings", handler);
     },
@@ -323,8 +326,9 @@ const bridge = {
   /** Copy this computer here: this computer's workspace to a server the
    * person added (their Cloud included). Only this computer's own page names
    * where (a saved server's id, or "cloud"); a server's page names nothing,
-   * main answers it about itself, and it may start a copy only from the
-   * person's own click. */
+   * main answers it about itself, and its Copy (only from the person's own
+   * click) opens this computer's Settings on that copy, or, on the verified
+   * Cloud, starts it. */
   cloudMove: process.argv.includes("--omb-company-desktop=1") ? {
     state: id => ipcRenderer.invoke("cloud-move:state", ...savedServer(id)),
     start: id => isLocalPage ? ipcRenderer.invoke("cloud-move:start", ...savedServer(id))

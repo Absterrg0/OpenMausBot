@@ -44,7 +44,9 @@ export interface CloudMoveState {
   replacing?: boolean;
   /** `maxBytes`: the most the plan's disk holds, when the Admin says
    * (`largest`: the top plan); otherwise `volumeBytes`, the Cloud's disk now. */
-  error?: { code: string; message: string; freeBytes?: number; neededBytes?: number; maxBytes?: number; largest?: true; volumeBytes?: number; destVersion?: string; localVersion?: string };
+  error?: { code: string; message: string; freeBytes?: number; neededBytes?: number; maxBytes?: number; largest?: true; volumeBytes?: number; destVersion?: string; localVersion?: string;
+    /** busy_elsewhere: the server a copy is running to. */ other?: string;
+    /** proxy_limit: the smallest part a proxy on the way refused. */ partBytes?: number };
   /** A stopped upload keeps its archive; moving again continues it. */
   resumable?: boolean;
   moved?: MoveContents;

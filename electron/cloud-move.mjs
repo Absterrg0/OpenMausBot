@@ -33,6 +33,9 @@ const MIN_BYTES = MAGIC.length + 16 + 12 + 16;
 export const CLOUD_MOVE_MAX_BYTES = 10 * 1024 ** 3 + 256 * 1024 ** 2;
 const PART_BYTES = 16 * 1024 ** 2;
 const MAX_PART_BYTES = 64 * 1024 ** 2;
+// A proxy in front of a server (nginx allows 1 MB by default) answers 413 to
+// a part: parts halve down to this before the copy says so.
+const MIN_PART_BYTES = 512 * 1024;
 const SPACE_MARGIN = 256 * 1024 ** 2;
 const GB = 1024 ** 3;
 /** A Cloud whose disk grows does so in steps of this size (openmaus-cloud VOLUME_EXTEND). */
@@ -41,7 +44,7 @@ const DISK_STEP_GB = 10;
 const REUSE_MS = 30 * 60_000;
 const UUID = /^[a-f\d]{8}-[a-f\d]{4}-4[a-f\d]{3}-[89ab][a-f\d]{3}-[a-f\d]{12}$/;
 const LOCAL_ROUTES = /^\/api\/(?:workspace-backup\/(?:status|export|download\/[a-f\d-]{36})|cloud-move\/estimate)$/;
-const RESUMABLE = new Set(["upload_failed", "cloud_unavailable", "network", "cloud_busy", "cancelled"]);
+const RESUMABLE = new Set(["upload_failed", "cloud_unavailable", "network", "cloud_busy", "cancelled", "proxy_limit"]);
 /** The version rule a server stages a backup by (server/workspace-backup.ts). */
 const VERSION = /^(\d+)\.(\d+)\.(\d+)(?:[-+].*)?$/;
 
@@ -321,7 +324,7 @@ export function createCloudMove({ localRequest, fetchImpl = fetch, tempRoot, ava
   async function cloudStatus(session, signal) {
     // A server from before any server could receive a copy has no such route.
     const answer = await cloudJson(session, "GET", "/api/cloud-move", undefined, signal).catch(error => {
-      if (error?.code === "not_found") fail("cloud_outdated", `${There()} has not updated to a version that can receive a copy yet.`);
+      if (error?.code === "not_found") fail("outdated", `${There()} has not updated to a version that can receive a copy yet.`);
       throw error;
     });
     const status = parseCloudMoveStatus(answer);
@@ -378,6 +381,9 @@ export function createCloudMove({ localRequest, fetchImpl = fetch, tempRoot, ava
   }
 
   // ── Upload ────────────────────────────────────────────────────────────
+  /** Where the destination stands after this part, or null when the part was
+   * too large for the way there: the server itself never answers a part 413
+   * (it refuses a part over its limit with 411), so that is a proxy. */
   async function sendPart(session, sha256, offset, part, signal) {
     for (let attempt = 0; ; attempt++) {
       signal.throwIfAborted();
@@ -395,6 +401,7 @@ export function createCloudMove({ localRequest, fetchImpl = fetch, tempRoot, ava
       if (answer?.status === 200 && count(answer.body?.received)) return answer.body.received;
       // Another offset than ours: continue from where the destination stands.
       if (answer?.status === 409 && count(answer.body?.received) && answer.body.received !== offset) return answer.body.received;
+      if (answer?.status === 413) return null;
       if (answer && ![409, 408, 429, 500, 502, 503, 504].includes(answer.status)) cloudRefusal(answer.status, answer.body);
       if (attempt >= retryDelaysMs.length) fail("upload_failed", `The upload to ${there()} kept failing. Check your connection and try again; it continues where it stopped.`);
       await sleep(retryDelaysMs[attempt], signal);
@@ -403,7 +410,7 @@ export function createCloudMove({ localRequest, fetchImpl = fetch, tempRoot, ava
   async function upload(session, archived, signal) {
     const begun = await cloudJson(session, "POST", "/api/cloud-move/upload", { sha256: archived.sha256, bytes: archived.bytes, files: archived.summary.files }, signal);
     if (!count(begun.received) || begun.received > archived.bytes) fail("invalid_response", `${There()} gave an answer this app does not understand.`);
-    const partBytes = Number.isSafeInteger(begun.partBytes) && begun.partBytes > 0 && begun.partBytes <= MAX_PART_BYTES ? begun.partBytes : PART_BYTES;
+    let partBytes = Number.isSafeInteger(begun.partBytes) && begun.partBytes > 0 && begun.partBytes <= MAX_PART_BYTES ? begun.partBytes : PART_BYTES;
     let offset = begun.received, stalls = 0;
     progress("uploading", offset, archived.bytes);
     const handle = await open(archived.file, "r");
@@ -417,6 +424,12 @@ export function createCloudMove({ localRequest, fetchImpl = fetch, tempRoot, ava
           filled += bytesRead;
         }
         const received = await sendPart(session, archived.sha256, offset, part, signal);
+        if (received === null) {
+          // Refused for its size on the way: smaller parts, down to MIN_PART_BYTES.
+          if (part.length > MIN_PART_BYTES) { partBytes = Math.max(MIN_PART_BYTES, Math.floor(part.length / 2)); continue; }
+          fail("proxy_limit", `A proxy in front of ${there()} refused a ${Math.round(part.length / 1024)} KB upload. Raise its request size limit (nginx: client_max_body_size 64m), then copy again.`,
+            { partBytes: part.length });
+        }
         if (received > archived.bytes) fail("invalid_response", `${There()} gave an answer this app does not understand.`);
         stalls = received > offset ? 0 : stalls + 1;
         if (stalls > retryDelaysMs.length) fail("upload_failed", `The upload to ${there()} kept failing. Check your connection and try again; it continues where it stopped.`);
@@ -548,12 +561,13 @@ export function createCloudMove({ localRequest, fetchImpl = fetch, tempRoot, ava
      * fill a server that has no work of its own. */
     move: (dest, { requireEmpty = false } = {}) => run("move", dest, async (session, signal) => {
       const [cloud, local] = await Promise.all([cloudStatus(session, signal), estimate(signal)]);
-      // Refused before anything is exported: this computer itself, a server
-      // older than this one (it could not stage the backup), or a page asking
-      // to replace work it already has.
-      if (local.environmentId && cloud.environmentId === local.environmentId) fail("same_computer", `${There()} is this computer's own server.`);
-      if (olderVersion(cloud.appVersion, local.appVersion)) {
-        fail("cloud_outdated", `${There()} runs ${cloud.appVersion}; this computer runs ${local.appVersion}. Update it, then copy again.`, { destVersion: cloud.appVersion, localVersion: local.appVersion });
+      // Refused before anything is exported, by the rule Settings shows
+      // (moveBlocked): this computer itself, or a server older than this one
+      // (it could not stage the backup). Then a page asking to replace work it already has.
+      const why = moveBlocked({ kind: dest.kind, local, cloud });
+      if (why) {
+        fail(why, why === "outdated" ? `${There()} runs ${cloud.appVersion}; this computer runs ${local.appVersion}. Update it, then copy again.` : `${There()} can't receive this copy.`,
+          { destVersion: cloud.appVersion, localVersion: local.appVersion });
       }
       if (requireEmpty && !cloud.empty) fail("not_empty", `${There()} already has bots or chats of its own, so nothing was copied.`);
       if (cloud.pendingRestore || cloud.busy || cloud.job?.state === "running") fail("cloud_busy", `${There()} is busy. Try again in a minute.`);

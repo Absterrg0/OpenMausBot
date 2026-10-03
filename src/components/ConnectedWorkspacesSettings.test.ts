@@ -72,3 +72,29 @@ it("is not offered without the desktop app's copy, or to a companion connected t
   expect(copyButtons()).toHaveLength(0);
   expect(move.state).not.toHaveBeenCalled();
 });
+
+it("a server's own Copy brings the person here, on that server's copy, to start it themselves", async () => {
+  // The window switched to this computer at ?desktop-settings=workspaces&copy-to=vps.
+  const replaced: string[] = [];
+  stub({});
+  vi.stubGlobal("window", { ...window, location: { search: "?desktop-settings=workspaces&copy-to=vps", href: "http://127.0.0.1:1/?desktop-settings=workspaces&copy-to=vps" },
+    history: { replaceState: (_state: unknown, _title: string, url: string) => { replaced.push(url); } } });
+  await mount(); await mount();
+  expect(vi.mocked(move.state).mock.calls).toContainEqual(["vps"]);
+  expect(render().html).toContain("from this computer to VPS");
+  // The panel is open, and nothing started: the person starts it here.
+  expect(move.start).not.toHaveBeenCalled();
+  expect(replaced.at(-1)).toBe("/?desktop-settings=workspaces");
+  // Already on this page: main's message names the panel; Computer access stays its own.
+  f.values = [];
+  let listener: (id?: string | null, panel?: "copy") => void = () => {};
+  stub({});
+  (window.ogb!.environments as { onOpenSettings: unknown }).onOpenSettings = (callback: typeof listener) => { listener = callback; return () => {}; };
+  await mount();
+  expect(render().html).not.toContain("Copy this computer's bots and chats");
+  listener("vps");
+  expect(render().html).not.toContain("Copy this computer's bots and chats");
+  listener("vps", "copy");
+  await mount();
+  expect(render().html).toContain("from this computer to VPS");
+});

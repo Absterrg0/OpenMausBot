@@ -64,18 +64,35 @@ it("Settings → OMB Cloud: what comes and its size, that sign-ins stay here, an
 });
 
 it("Settings → Servers: a self-hosted server with work is replaced only after saying so, backed up first, and swaps back", async () => {
-  const previous = { createdAt: "2026-09-29T10:00:00.000Z", bots: 2, rooms: 0, chats: 5, bytes: 300 * 1024 ** 2 };
   const server = settings("vps");
-  await ready(server, overview({ destination: VPS, cloud: { ...emptyCloud, empty: false, contents: { bots: 3, rooms: 1, chats: 12 }, previous } }));
-  const { html } = render(server);
+  const has = { ...emptyCloud, empty: false, contents: { bots: 3, rooms: 1, chats: 12 } };
+  await ready(server, overview({ destination: VPS, cloud: has }));
+  let html = render(server).html;
   expect(bridge.state).toHaveBeenCalledWith("vps");
   expect(html).toContain("bots.example.test already has 3 bots and 12 chats. Copying replaces them. They are backed up on bots.example.test first, and Swap bots.example.test back puts them back.");
   expect(button(server, "Copy to bots.example.test")).toBeUndefined();
-  expect(html).toContain("2 bots, 5 chats, 300 MB kept on bots.example.test");
+  expect(button(server, "Swap bots.example.test back")).toBeUndefined();
   button(server, "Replace bots.example.test with this computer's bots and chats")!.props.onClick!(); await flush();
+  expect(vi.mocked(bridge.start).mock.calls).toEqual([["vps"]]);
+  // Swap back keeps one workspace: copying again says, in its one message and
+  // on its button, that the backup Swap back would put back now is deleted.
+  f.values = []; vi.mocked(bridge.start).mockClear();
+  const previous = { createdAt: "2026-09-29T10:00:00.000Z", bots: 2, rooms: 0, chats: 5, bytes: 300 * 1024 ** 2 };
+  await ready(server, overview({ destination: VPS, cloud: { ...has, previous } }));
+  html = render(server).html;
+  const date = new Intl.DateTimeFormat("en", { dateStyle: "medium", timeStyle: "short" }).format(new Date(previous.createdAt));
+  expect(html).toContain(`Copying again replaces bots.example.test's 3 bots and 12 chats. They are backed up on bots.example.test first, in place of its backup from ${date}: that backup is deleted, and Swap bots.example.test back then puts back what bots.example.test has now.`);
+  expect(html).not.toContain("already has 3 bots");
+  expect(html).toContain("2 bots, 5 chats, 300 MB kept on bots.example.test");
+  expect(button(server, "Replace bots.example.test with this computer's bots and chats")).toBeUndefined();
+  button(server, `Replace bots.example.test and delete its ${date} backup`)!.props.onClick!(); await flush();
   expect(vi.mocked(bridge.start).mock.calls).toEqual([["vps"]]);
   button(server, "Swap bots.example.test back")!.props.onClick!(); await flush();
   expect(vi.mocked(bridge.restorePrevious).mock.calls).toEqual([["vps"]]);
+  // Empty now, yet it keeps a backup: copying still deletes it, and says so.
+  f.values = [];
+  await ready(server, overview({ destination: VPS, cloud: { ...emptyCloud, previous } }));
+  expect(render(server).html).toContain(`in place of its backup from ${date}: that backup is deleted`);
 });
 
 it("without a session on the Cloud yet, still warns that anything there is replaced and backed up", async () => {
@@ -134,8 +151,11 @@ it("every state reads as one sentence and one next step, for the Cloud and any o
   // Ready.
   expect(view({}, { destination: VPS })).toMatchObject({ server: "bots.example.test", message: null, action: { kind: "start", label: "Copy to bots.example.test" } });
   expect(view({}, { destination: VPS }, { onServerPage: true }).action).toEqual({ kind: "start", label: "Copy" });
-  // A server's own page never replaces work: it says where that is done.
-  expect(view({}, { destination: VPS, cloud: { ...emptyCloud, empty: false } }, { onServerPage: true })).toMatchObject({
+  // A server's own page: its Copy opens this computer's Settings on it (main),
+  // where Replace is, whatever it holds. The Cloud's own page copies only
+  // into an empty Cloud, and says where replacing it is done.
+  expect(view({}, { destination: VPS, cloud: { ...emptyCloud, empty: false } }, { onServerPage: true })).toMatchObject({ message: null, action: { kind: "start", label: "Copy" } });
+  expect(view({}, { destination: CLOUD, cloud: { ...emptyCloud, empty: false } }, { onServerPage: true })).toMatchObject({
     action: null, message: { tone: "note", text: expect.stringContaining("open Settings → Servers in this computer's window and choose Copy this computer here") } });
   // Blocked before it starts.
   const blocked = (reason: CloudMoveOverview["blocked"], extra: Partial<CloudMoveOverview> = {}) => view({}, { destination: VPS, blocked: reason, ...extra });
@@ -152,7 +172,20 @@ it("every state reads as one sentence and one next step, for the Cloud and any o
     message: { tone: "error", text: "bots.example.test hasn't come back yet. If it doesn't start again on its own, start OpenMausBot there; it finishes installing the copy when it starts." },
     action: { kind: "open", label: "Open bots.example.test" } });
   expect(failed({ code: "restart_timeout", message: "" }).message?.text).toBe("My Cloud is taking longer than usual to restart. Check it again in a few minutes.");
-  expect(failed({ code: "cloud_outdated", message: "", destVersion: "0.1.95", localVersion: "0.1.96" }, VPS).message?.text).toBe("bots.example.test runs 0.1.95; this computer runs 0.1.96. Update bots.example.test, then copy again.");
+  expect(failed({ code: "outdated", message: "", destVersion: "0.1.95", localVersion: "0.1.96" }, VPS)).toMatchObject({
+    message: { text: "bots.example.test runs 0.1.95; this computer runs 0.1.96. Update bots.example.test, then copy again." }, action: { kind: "check", label: "Check again" } });
+  // One vocabulary: a reason shown before a copy and a copy that failed for it read and act the same.
+  for (const [code, extra] of [["owner_needed", {}], ["shared_workspace", {}], ["same_computer", {}], ["unreachable", {}],
+    ["outdated", { cloud: { ...emptyCloud, appVersion: "0.1.90" } }], ["busy_elsewhere", { busyWith: "My Cloud" }]] as const) {
+    const before = blocked(code, extra);
+    const after = failed({ code, message: "", destVersion: "0.1.90", localVersion: "0.1.96", other: "My Cloud" }, VPS);
+    expect(after.message?.text, code).toBe(before.message?.text);
+    expect(after.action, code).toEqual(before.action);
+  }
+  // A proxy in front of the server refused even small parts: what to change there, then copy again.
+  expect(failed({ code: "proxy_limit", message: "", partBytes: 512 * 1024 }, VPS, { resumable: true })).toMatchObject({
+    message: { text: "A proxy in front of bots.example.test refused a 512 KB upload. Raise its request size limit (nginx: client_max_body_size 64m), then copy again." },
+    action: { kind: "start", label: "Continue the copy" }, resumable: true });
   expect(failed({ code: "owner_needed", message: "" }, VPS).action?.kind).toBe("open");
   expect(failed({ code: "access_changed", message: "" }, VPS).action?.kind).toBe("open");
   for (const code of ["shared_workspace", "same_computer", "not_empty", "too_large", "cloud_grow_unsupported"]) expect(failed({ code, message: "" }, VPS).action, code).toBeNull();
@@ -282,9 +315,17 @@ it("Settings → Backups on a server: Import from this computer is the same copy
   expect(vi.mocked(bridge.start).mock.calls).toEqual([[undefined]]);
   push({ phase: "uploading", action: "move", destination: VPS, progress: { bytesTransferred: 1, totalBytes: 2 } });
   expect(render(backups).html).toContain("Uploading to bots.example.test…");
-  // A server with work: where replacing it is done, and no button that would fail.
-  f.values = [];
+  // A server with work: the same Copy (main opens this computer's Settings on
+  // it, where Replace is), never "is empty".
+  f.values = []; vi.mocked(bridge.start).mockClear();
   await ready(backups, overview({ destination: VPS, cloud: { ...emptyCloud, empty: false } }));
+  expect(render(backups).html).not.toContain("is empty");
+  expect(render(backups).html).toContain("from this computer to bots.example.test");
+  button(backups, "Copy")!.props.onClick!(); await flush();
+  expect(vi.mocked(bridge.start).mock.calls).toEqual([[undefined]]);
+  // The Cloud with work: its own page does not copy over it, and says where that is done.
+  f.values = [];
+  await ready(backups, overview({ destination: CLOUD, cloud: { ...emptyCloud, empty: false } }));
   expect(render(backups).html).toContain("open Settings → Servers in this computer's window");
   expect(button(backups, "Copy")).toBeUndefined();
   // No desktop bridge (a browser): nothing, and nothing asked.

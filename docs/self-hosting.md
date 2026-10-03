@@ -440,16 +440,22 @@ desktop driver. Microphone access is not included.
 
 **Bring this computer's bots and chats.** When the server you just connected
 is empty, its page shows **Bring your bots and chats from this computer**
-with **Copy** and **Not now**. Any time later, **Settings → Servers → Copy this
-computer here** on that server's row does the same, and replaces what the server
-has (backed up on the server first; **Swap {server} back** puts it back). On the
-server's own page, **Settings → Backups → Import from this computer** is the
-same copy. No file, no password: the app uploads the encrypted workspace
+with **Copy** and **Not now**; **Copy** takes you to this computer's
+**Settings → Servers → Copy this computer here** for that server, where you
+start it (a server's own page never starts a copy itself). Any time later, that
+button on the server's row replaces what the server has (backed up on the
+server first; **Swap {server} back** puts it back; copying again replaces that
+backup, and the panel says so). On the server's own page, **Settings → Backups
+→ Import from this computer** leads to the same place. No file, no password: the app uploads the encrypted workspace
 backup directly, continues where a dropped connection left it, and the server
 restarts itself to install it. API keys, engine sign-ins and paired devices
 stay where they are on both sides; routines arrive paused. The desktop app must
 be paired with an owner code (not `--client`), and a server whose email sign-in
-lets other people in (`openmausbot access add`) never receives one. How each
+lets someone besides you in (a member, a second admin or a whole `@domain`
+added with `openmausbot access add`) never receives one; your own address
+alone is fine. Behind a proxy, allow uploads of at least 1 MB
+(nginx: `client_max_body_size 64m`); smaller parts are tried before the copy
+says so. How each
 way of running the server restarts itself: `openmausbot serve` and
 `service install` start it again in the same process, the Docker and Podman
 images run `server-launcher.js`, which does the same inside the container; a

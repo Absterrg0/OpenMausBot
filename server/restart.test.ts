@@ -8,19 +8,26 @@ import type { ChildProcess } from "node:child_process";
 import { expect, it, vi } from "vitest";
 import type { CliOptions } from "./cli.ts";
 import { serveUntilStopped } from "./cli.ts";
-import { RESTART_EXIT_CODE, restartsAfter, serverExitAction, STABLE_RUN_MS } from "./restart.ts";
+import { RESTART_EXIT_CODE, restartPolicy, STABLE_RUN_MS } from "./restart.ts";
 import { superviseServer } from "./server-launcher.ts";
 
-it("starts the server again only when it asks to, and only a few times in a row", () => {
+it("one policy counts for every launcher: again only on 75, not while stopping, at most five in a row, and a run that stayed up starts the count again", () => {
   expect(RESTART_EXIT_CODE).toBe(75);
-  expect(serverExitAction(RESTART_EXIT_CODE, false, 0)).toBe("restart");
-  expect(serverExitAction(RESTART_EXIT_CODE, false, 4)).toBe("restart");
-  for (const code of [0, 1, 130, null]) expect(serverExitAction(code, false, 0)).toBe("stop");
-  expect(serverExitAction(RESTART_EXIT_CODE, true, 0)).toBe("stop");
-  expect(serverExitAction(RESTART_EXIT_CODE, false, 5)).toBe("stop");
-  // A run that stayed up is not a loop: the count starts again.
-  expect(restartsAfter(4, STABLE_RUN_MS)).toBe(0);
-  expect(restartsAfter(4, STABLE_RUN_MS - 1)).toBe(4);
+  let clock = 0;
+  const policy = restartPolicy(() => clock);
+  for (const code of [0, 1, 130, null]) expect(restartPolicy(() => clock).again(code)).toBe(false);
+  expect(restartPolicy(() => clock).again(RESTART_EXIT_CODE, true)).toBe(false);
+  for (let run = 0; run < 5; run++) expect(policy.again(RESTART_EXIT_CODE), `restart ${run + 1}`).toBe(true);
+  // A loop: the sixth in a row is refused, and stays refused until a run stays up.
+  expect(policy.again(RESTART_EXIT_CODE)).toBe(false);
+  clock += STABLE_RUN_MS - 1;
+  expect(policy.again(RESTART_EXIT_CODE)).toBe(false);
+  // Each "again" times the next run from that answer: one that stays up a minute is not a loop.
+  clock += 1;
+  expect(policy.again(RESTART_EXIT_CODE)).toBe(true);
+  clock += STABLE_RUN_MS - 1;
+  for (let run = 0; run < 4; run++) expect(policy.again(RESTART_EXIT_CODE)).toBe(true);
+  expect(policy.again(RESTART_EXIT_CODE)).toBe(false);
 });
 
 const options = { command: "serve", port: 8799, dataDir: "/tmp/omb", tailscale: false, tunnel: false, client: false, pair: true, json: false } as CliOptions;

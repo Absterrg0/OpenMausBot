@@ -43,7 +43,8 @@ function desktop({ bytes = 5000, busy = false, exportError = null, routines, ide
 }
 
 /** The destination: pairing, the upload slot, jobs, and a restart. */
-function cloudFake({ freeBytes = 1024 ** 4, volumeBytes, empty = true, failPut = () => false, dropAnswer = () => false, loseAt = 0, busyRestores = 0, storedPart = 0, previewBots = 3, identity = {}, refuse = null } = {}) {
+function cloudFake({ freeBytes = 1024 ** 4, volumeBytes, empty = true, failPut = () => false, dropAnswer = () => false, loseAt = 0, busyRestores = 0, storedPart = 0, previewBots = 3, identity = {}, refuse = null,
+  partBytes = 1024, proxyLimit = Infinity } = {}) {
   const state = { freeBytes, upload: storedPart ? { sha256: "e".repeat(64), bytes: storedPart } : null, received: Buffer.alloc(storedPart), job: null, lastRestoreId: null, restarting: 0,
       previous: null, contents: { bots: 1, rooms: 0, chats: 0 }, empty, discards: 0, restoreAsks: [] },
     log = [], tokens = new Set();
@@ -72,10 +73,13 @@ function cloudFake({ freeBytes = 1024 ** 4, volumeBytes, empty = true, failPut =
     if (pathname === "/api/cloud-move/upload") {
       if (3 * body.bytes > state.freeBytes + state.received.length) return json(507, { error: "full", freeBytes: state.freeBytes, neededBytes: 3 * body.bytes });
       if (state.upload?.sha256 !== body.sha256) { state.upload = { sha256: body.sha256, bytes: body.bytes }; state.received = Buffer.alloc(0); }
-      return json(200, { received: state.received.length, partBytes: 1024 });
+      return json(200, { received: state.received.length, partBytes });
     }
     if (pathname.startsWith("/api/cloud-move/upload/")) {
       const offset = Number(searchParams.get("offset")), part = Buffer.from(init.body);
+      state.puts = [...(state.puts ?? []), part.length];
+      // A proxy in front (nginx: client_max_body_size), before the server sees anything.
+      if (part.length > proxyLimit) return new Response("<html><body><h1>413 Request Entity Too Large</h1></body></html>", { status: 413, headers: { "content-type": "text/html" } });
       if (failPut(offset)) throw new TypeError("fetch failed");
       if (offset + part.length <= state.received.length) return json(200, { received: state.received.length });
       if (offset !== state.received.length) return json(409, { error: "elsewhere", received: state.received.length });
@@ -183,6 +187,41 @@ test("an upload that keeps failing stops resumable, and moving again continues i
     assert.equal(f.local.calls.filter(([, route]) => route === "/api/workspace-backup/export").length, 1);
     assert.ok(f.cloud.state.received.equals(f.local.archive));
   } finally { f.done(); }
+});
+
+test("a proxy that refuses large parts gets smaller ones; one that refuses even 512 KB is named, with what to change, and the copy continues later", async () => {
+  const MB = 1024 ** 2;
+  // nginx's default client_max_body_size, 1 MB, in front of a server that asks for 4 MB parts.
+  const behind = harness({ desktop: { bytes: 8 * MB + 5000 }, cloud: { partBytes: 4 * MB, proxyLimit: MB } });
+  try {
+    const result = await behind.move.move();
+    assert.equal(result.phase, "done", JSON.stringify(result.error));
+    assert.ok(behind.cloud.state.received.equals(behind.local.archive));
+    assert.deepEqual(behind.cloud.state.puts.slice(0, 3), [4 * MB, 2 * MB, MB]);
+    assert.ok(behind.cloud.state.puts.slice(2).every(size => size <= MB), "every later part fits");
+  } finally { behind.done(); }
+  // A proxy allowing 256 KB: parts halve to 512 KB at the least, then the copy says what refused it.
+  const tight = harness({ desktop: { bytes: 4 * MB }, cloud: { partBytes: 3 * MB, proxyLimit: 256 * 1024 } });
+  try {
+    const result = await tight.move.move();
+    assert.equal(result.phase, "failed");
+    assert.equal(result.error.code, "proxy_limit");
+    assert.equal(result.error.partBytes, 512 * 1024);
+    assert.match(result.error.message, /^A proxy in front of your Cloud refused a 512 KB upload\. Raise its request size limit \(nginx: client_max_body_size 64m\), then copy again\.$/);
+    assert.deepEqual(tight.cloud.state.puts, [3 * MB, 1.5 * MB, 768 * 1024, 512 * 1024]);
+    // Nothing was replaced, and the prepared archive waits: copying again (limit raised) continues without a second export.
+    assert.equal(result.resumable, true);
+    assert.equal(tight.cloud.state.restoreAsks.length, 0);
+    assert.equal(tight.cloud.tokens.size, 0);
+  } finally { tight.done(); }
+  // The server's own 413 to the declaration (over 10 GB) stays "too large".
+  const declared = harness({ cloud: { refuse: null } });
+  try {
+    const fetchImpl = declared.cloud.fetchImpl;
+    const big = createCloudMove({ localRequest: declared.local.request, tempRoot: join(declared.temp, "move"), availableBytes: async () => 1024 ** 4, sleep: async () => {}, pollMs: 0,
+      fetchImpl: (url, init) => new URL(url).pathname === "/api/cloud-move/upload" ? Promise.resolve(json(413, { error: "This workspace is larger than the 10 GB a copy can carry." })) : fetchImpl(url, init) });
+    assert.equal((await big.move(cloudDestination())).error.code, "too_large");
+  } finally { declared.done(); }
 });
 
 test("refuses a Cloud without room before anything is uploaded, saying how much it needs", async () => {
@@ -352,7 +391,7 @@ test("says a Cloud from before any server could receive a copy has to update fir
   });
   try {
     const result = await outdated.move(cloudDestination());
-    assert.equal(result.error.code, "cloud_outdated");
+    assert.equal(result.error.code, "outdated");
     assert.equal(f.local.calls.some(([, route]) => route === "/api/workspace-backup/export"), false);
   } finally { f.done(); }
 });
@@ -462,10 +501,10 @@ const exportsOf = f => f.local.calls.filter(([, route]) => route === "/api/works
 test("refuses before exporting anything: another origin's grant, an old server, a shared one, this computer itself, an older version, or work a page may not replace", async () => {
   const cases = [
     ["cloud_unavailable", { dest: { ...VPS_ENTRY, grant: async () => ({ origin: "https://elsewhere.example.test", code: "ABCD-EFGH-JKLM" }) } }],
-    ["cloud_outdated", { cloud: { refuse: { status: 404, body: { error: "Unknown" } } } }],
+    ["outdated", { cloud: { refuse: { status: 404, body: { error: "Unknown" } } } }],
     ["shared_workspace", { cloud: { refuse: { status: 403, body: { error: "This server is shared with other people.", code: "shared_workspace" } } } }],
     ["same_computer", { desktop: { identity: { environmentId: "env-1", appVersion: "0.1.96" } }, cloud: { identity: { environmentId: "env-1", appVersion: "0.1.96" } } }],
-    ["cloud_outdated", { desktop: { identity: { environmentId: "env-1", appVersion: "0.1.96" } }, cloud: { identity: { environmentId: "env-2", appVersion: "0.1.95" } } }],
+    ["outdated", { desktop: { identity: { environmentId: "env-1", appVersion: "0.1.96" } }, cloud: { identity: { environmentId: "env-2", appVersion: "0.1.95" } } }],
     ["not_empty", { cloud: { empty: false }, copy: { requireEmpty: true } }],
   ];
   for (const [code, options] of cases) {
@@ -591,15 +630,15 @@ test("only the verified Cloud, open as this window's active server, counts as th
 
 const LOCAL = "http://127.0.0.1:48993";
 function preload({ remote = false, activation = false } = {}) {
-  let bridge; const invoked = [];
+  let bridge; const invoked = [], listeners = new Map();
   vm.runInNewContext(readFileSync(new URL("./preload.cjs", import.meta.url), "utf8"), {
     process: { platform: "darwin", argv: [`--omb-local-origin=${LOCAL}`, "--omb-company-desktop=1"] },
     location: { origin: remote ? ORIGIN : LOCAL }, navigator: { userActivation: { isActive: activation } },
     TextEncoder, localStorage: { getItem: () => null },
     require: () => ({ webUtils: {}, contextBridge: { exposeInMainWorld: (_name, value) => { bridge = value; } },
-      ipcRenderer: { on() {}, removeListener() {}, send() {}, invoke: (...args) => { invoked.push(args); return Promise.resolve({ phase: "idle" }); } } }),
+      ipcRenderer: { on: (channel, handler) => listeners.set(channel, handler), removeListener() {}, send() {}, invoke: (...args) => { invoked.push(args); return Promise.resolve({ phase: "idle" }); } } }),
   });
-  return { bridge, invoked };
+  return { bridge, invoked, listeners };
 }
 test("the bridge forwards only a saved server's id, only from this computer's page; a server's page names nothing and starts a copy only from the person's click", async () => {
   const local = preload();
@@ -618,6 +657,11 @@ test("the bridge forwards only a saved server's id, only from this computer's pa
   const clicked = preload({ remote: true, activation: true });
   await clicked.bridge.cloudMove.start("cloud");
   assert.deepEqual(clicked.invoked, [["cloud-move:start"]]);
+  // Main opens Settings → Servers on a server's copy panel: only "copy" is a panel name.
+  const seen = [];
+  local.bridge.environments.onOpenSettings((id, panel) => seen.push([id, panel]));
+  for (const panel of ["copy", "evil", undefined]) local.listeners.get("workspaces:open-settings")({}, "vps", panel);
+  assert.deepEqual(seen, [["vps", "copy"], ["vps", undefined], ["vps", undefined]]);
 });
 
 /** main's copy IPC, run against fakes of what it calls. */
@@ -647,6 +691,7 @@ function mainIpc(extra = {}) {
     dismissCloudMove: origin => calls.push(["dismiss", origin]),
     connectCloudHome: async () => calls.push(["connectCloudHome"]), switchEnvironment: async id => calls.push(["switch", id]),
     navigateMainWindow: url => calls.push(["navigate", url]), slog: () => {},
+    openWorkspaceSettings: (id, panel) => calls.push(["openSettings", id, panel]),
     ...extra,
   });
   vm.runInContext(source.slice(start, end), context);
@@ -692,15 +737,35 @@ test("production IPC: the Cloud is the Cloud even before its address is known, a
   assert.throws(() => handlers.get("cloud-move:state")(local), /only available/);
 });
 
-test("production IPC: a server's own page gets only itself, may only fill itself while empty, and cannot swap back", async () => {
+test("production IPC: a server's own page gets only itself, never starts a copy to itself (only the verified Cloud's does, while empty), and cannot swap back", async () => {
   const { context, handlers, calls, setState } = mainIpc();
   context.mainWindow.webContents = vpsContents;
   context.environmentsState = { environments: SAVED, activeId: "vps" };
   const page = { sender: vpsContents, senderFrame: vpsFrame };
   await handlers.get("cloud-move:state")(page);
-  await handlers.get("cloud-move:start")(page);
+  // What it says about itself (owner, empty) is its own word: its Copy opens
+  // this computer's Settings → Servers on its copy, and sends nothing.
+  assert.deepEqual(JSON.parse(JSON.stringify(await handlers.get("cloud-move:start")(page))), { phase: "idle" });
   await handlers.get("cloud-move:dismiss")(page);
-  assert.deepEqual(calls, [["overview", VPS_DEST, true], ["move", VPS_DEST, { requireEmpty: true }], ["dismiss", VPS_DEST.origin], ["overview", VPS_DEST, true]]);
+  assert.deepEqual(calls, [["overview", VPS_DEST, true], ["openSettings", "vps", "copy"], ["dismiss", VPS_DEST.origin], ["overview", VPS_DEST, true]]);
+  // A server at the Cloud's address that this app has not verified (signed out of OMB Cloud): the same.
+  calls.length = 0;
+  context.mainWindow.webContents = cloudContents;
+  context.environmentsState = { environments: SAVED, activeId: "cloud-entry" };
+  context.cloudAccount = { homeTarget: () => null };
+  await handlers.get("cloud-move:start")({ sender: cloudContents, senderFrame: cloudFrame });
+  assert.deepEqual(calls, [["openSettings", "cloud-entry", "copy"]]);
+  context.cloudAccount = { homeTarget: () => ({ origin: ORIGIN }) };
+  // Even were a server taken for the Cloud, its page starts nothing unless it is the verified Cloud's page.
+  calls.length = 0;
+  context.mainWindow.webContents = vpsContents;
+  context.environmentsState = { environments: SAVED, activeId: "vps" };
+  context.isCloudHomeEntry = () => true;
+  await handlers.get("cloud-move:start")(page);
+  assert.deepEqual(calls, [["openSettings", "vps", "copy"]]);
+  context.isCloudHomeEntry = isCloudHomeEntry;
+  context.mainWindow.webContents = vpsContents;
+  context.environmentsState = { environments: SAVED, activeId: "vps" };
   // It names no destination, and never swaps back.
   assert.throws(() => handlers.get("cloud-move:start")(page, "cloud-entry"), /only available/);
   assert.throws(() => handlers.get("cloud-move:restore-previous")(page), /only available/);
@@ -733,15 +798,43 @@ test("production IPC: a finished copy opens the server it went to", async () => 
   // The Cloud without a saved entry yet: the Cloud's own connection adds and opens it.
   context.environmentsState = { environments: [SAVED[0]], activeId: "local" };
   await handlers.get("cloud-move:start")(local, "cloud");
-  // Already open: it reloads.
-  context.mainWindow.webContents = vpsContents;
-  context.environmentsState = { environments: SAVED, activeId: "vps" };
-  await handlers.get("cloud-move:start")({ sender: vpsContents, senderFrame: vpsFrame });
-  assert.deepEqual(calls.filter(([kind]) => kind !== "move"), [["switch", "vps"], ["connectCloudHome"], ["navigate", "https://bots.example.test"]]);
+  // Already open (the verified Cloud's own page started it): it reloads.
+  context.mainWindow.webContents = cloudContents;
+  context.environmentsState = { environments: SAVED, activeId: "cloud-entry" };
+  const cloudPage = { sender: cloudContents, senderFrame: cloudFrame };
+  await handlers.get("cloud-move:start")(cloudPage);
+  assert.deepEqual(calls.filter(([kind]) => kind !== "move"), [["switch", "vps"], ["connectCloudHome"], ["navigate", ORIGIN]]);
   calls.length = 0;
   context.result = { phase: "failed", error: { code: "network" } };
-  await handlers.get("cloud-move:start")({ sender: vpsContents, senderFrame: vpsFrame });
+  await handlers.get("cloud-move:start")(cloudPage);
   assert.deepEqual(calls.filter(([kind]) => kind !== "move"), []);
+});
+
+test("a server's Copy opens this computer's Settings → Servers on that server's copy, in this window or by switching it to this computer", () => {
+  const source = readFileSync(new URL("./main.mjs", import.meta.url), "utf8");
+  const start = source.indexOf("function openWorkspaceSettings("), end = source.indexOf("\n}\n", start) + 3;
+  assert.ok(start >= 0 && end > start);
+  const calls = [];
+  const context = vm.createContext({ LOCAL_ID: "local", rendererOrigin: () => LOCAL, environmentsState: { environments: SAVED, activeId: "vps" },
+    withActive: (state, id) => ({ ...state, activeId: id }), persistEnvironments: state => calls.push(["persist", state.activeId]),
+    navigateMainWindow: url => calls.push(["navigate", url]), senderIsLocal: ({ sender }) => sender === localContents,
+    mainWindow: { isDestroyed: () => false, webContents: { ...vpsContents, send: (...args) => calls.push(["send", ...args]) } } });
+  vm.runInContext(`${source.slice(start, end)}\nglobalThis.openWorkspaceSettings = openWorkspaceSettings;`, context);
+  // On a server's page: this window switches to this computer, on that server's copy panel.
+  context.openWorkspaceSettings("vps", "copy");
+  context.openWorkspaceSettings("vps");
+  assert.deepEqual(calls, [["persist", "local"], ["navigate", `${LOCAL}/?desktop-settings=workspaces&copy-to=vps`],
+    ["persist", "local"], ["navigate", `${LOCAL}/?desktop-settings=workspaces&share-computer=vps`]]);
+  // Already on this computer's page: one message names the server and the panel.
+  calls.length = 0;
+  const send = (...args) => calls.push(["send", ...args]);
+  context.mainWindow = { isDestroyed: () => false, webContents: localContents };
+  localContents.send = send;
+  try {
+    context.openWorkspaceSettings("vps", "copy");
+    context.openWorkspaceSettings("vps");
+  } finally { delete localContents.send; }
+  assert.deepEqual(calls, [["send", "workspaces:open-settings", "vps", "copy"], ["send", "workspaces:open-settings", "vps"]]);
 });
 
 test("the Cloud's setup checklist can open the lending switch here, and nothing else can", async () => {

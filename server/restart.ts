@@ -2,7 +2,7 @@
 // a fresh start. A server exits with it after a copied workspace's restore
 // commits (Copy this computer here, docs/copy-workspace.md), and startup then
 // installs the restore before anything else loads. Every launcher in this
-// repo honours it with serverExitAction:
+// repo honours it through one restartPolicy:
 //
 //   - `openmausbot serve` (cli.ts serveUntilStopped), which systemd, launchd,
 //     fleet and a terminal all run;
@@ -19,13 +19,21 @@ export const MAX_RESTARTS = 5;
 /** A run that stayed up this long was not part of a loop. */
 export const STABLE_RUN_MS = 60_000;
 
-/** What a launcher does when its server exits: start it again only when it
- * asked to, and only a few times in a row. */
-export function serverExitAction(code: number | null, stopping: boolean, restarts: number): "restart" | "stop" {
-  return !stopping && code === RESTART_EXIT_CODE && restarts < MAX_RESTARTS ? "restart" : "stop";
-}
-
-/** The restarts-in-a-row count once a run of `ranMs` has ended. */
-export function restartsAfter(restarts: number, ranMs: number): number {
-  return ranMs >= STABLE_RUN_MS ? 0 : restarts;
+/** One launcher's restart rule, counting included: create it as the server
+ * first starts, and ask `again` each time the server exits. It answers true
+ * only when the server asked to start again (RESTART_EXIT_CODE), the launcher
+ * is not stopping, and that has not happened MAX_RESTARTS times in a row (a
+ * run that stayed up STABLE_RUN_MS starts the count again). True means the
+ * launcher starts the server now: that run is timed from this answer. */
+export function restartPolicy(now: () => number = Date.now) {
+  let restarts = 0, startedAt = now();
+  return {
+    again(code: number | null, stopping = false): boolean {
+      if (now() - startedAt >= STABLE_RUN_MS) restarts = 0;
+      if (stopping || code !== RESTART_EXIT_CODE || restarts >= MAX_RESTARTS) return false;
+      restarts++;
+      startedAt = now();
+      return true;
+    },
+  };
 }

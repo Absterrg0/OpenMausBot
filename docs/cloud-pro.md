@@ -944,6 +944,11 @@ section is only what the Cloud adds.
   panel as Settings → Servers, named "My Cloud".
 - **The setup checklist.** While the Cloud's setup checklist is up, the copy
   offer is its second step instead of a card (Setup checklist, above).
+- **Its own page starts the copy.** Because main verified this Cloud through
+  the Admin (`cloudPageSenderAllowed`), not on the Cloud's own word, its card
+  and checklist step start the copy at once, only into an empty Cloud. Any
+  other server's page leads to this computer's Settings instead
+  (docs/copy-workspace.md, Security).
 - **Disk growth.** Every Cloud starts at 10 GB; a plan whose disk grows grows
   it as it fills, up to the plan's maximum. Before anything is exported the app
   measures the copy (`moveFit`, with the Cloud's own `volumeBytes` from

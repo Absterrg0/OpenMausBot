@@ -54,10 +54,11 @@ function Shell({ viewer }: { viewer: WelcomeViewer | null }) {
   const sidebarAndPanelFit = useMediaQuery(SIDEBAR_AND_PANEL_FIT, true);
   useEffect(() => {
     if (!window.ogb?.environments) return;
-    const open = (computerId?: string | null) => {
+    // A saved server's Computer access panel, or ("copy") its Copy this computer here panel.
+    const open = (computerId?: string | null, panel?: "copy") => {
       if (computerId) {
         const target = new URL(window.location.href);
-        target.searchParams.set("share-computer", computerId);
+        target.searchParams.set(panel === "copy" ? "copy-to" : "share-computer", computerId);
         window.history.replaceState(null, "", `${target.pathname}${target.search}${target.hash}`);
       }
       dispatch({ type: "toggleAppSettings", open: true, section: "desktopWorkspaces" });

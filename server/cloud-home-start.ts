@@ -28,7 +28,7 @@ import {
   CLOUD_SECRETS_FD_ENV, cloudHomeConfiguration, cloudHomeHost, cloudHomeSecrets, prepareCloudHomeVolume,
   withoutCloudSecrets, withoutIgnoredCloudKeys, type CloudHomeConfig,
 } from "./cloud-home.ts";
-import { restartsAfter, serverExitAction } from "./restart.ts";
+import { restartPolicy } from "./restart.ts";
 
 const SERVICE_USER = "maus";
 /** The descriptor the server reads its secrets from. */
@@ -170,13 +170,10 @@ export function startCloudHome(env: NodeJS.ProcessEnv = process.env) {
       if (!again?.(code)) stop(true);
     });
   };
-  let restarts = 0;
+  const policy = restartPolicy();
   const runServer = () => {
-    const startedAt = Date.now();
     watch(spawnWithSecrets(process.execPath, [join(here, "index.js")], server, secrets, ids), (code) => {
-      restarts = restartsAfter(restarts, Date.now() - startedAt);
-      if (serverExitAction(code, stopping, restarts) !== "restart") return false;
-      restarts++;
+      if (!policy.again(code, stopping)) return false;
       runServer();
       return true;
     });

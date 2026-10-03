@@ -20,11 +20,12 @@
 // a client-scope device and the machine's own loopback. That is not a wall
 // against the machine itself: a process there runs as the same user, can
 // already read and write the data folder, and could pair itself as the owner.
-// A workspace shared with other people (a hosted organisation workspace, or a
-// server with email sign-in) never receives one: replacing it would replace
-// their work too. Nothing here logs a body, a password or a file name.
+// A workspace shared with other people (workspaceShared) never receives one:
+// replacing it would replace their work too. Nothing here logs a body, a
+// password or a file name.
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { z } from "zod";
+import { sharedSignIn, type SignInLists } from "./admin-activity.ts";
 import {
   backupsBytes, beginUpload, CLOUD_MOVE_MAX_BYTES, CLOUD_MOVE_MAX_PART_BYTES, CLOUD_MOVE_PART_BYTES, completedUpload, discardNextPreviousCloud,
   discardUpload, enabledRoutineCount, forgetMoveRestore, freeVolumeBytes, isEmptyWorkspace, moveSpaceNeeded, noteMoveRestore, prepareNextPreviousCloud,
@@ -44,6 +45,15 @@ export type CloudMoveJob =
   | { kind: "preview"; state: "done"; id: string; summary: MoveSummary }
   | { kind: "restore" | "undo"; state: "done"; id: string; previous?: Omit<PreviousCloud, "bytes"> | null }
   | { kind: "preview" | "restore" | "undo"; state: "failed"; error: string };
+
+/** Shared with other people, so one person's copy must never replace it: a
+ * hosted organisation workspace, or (not on a Cloud home, whose sign-in is its
+ * owner's OMB Cloud account) an email sign-in list that lets someone else in
+ * (sharedSignIn: a member, a second admin, or a whole @domain). The owner's
+ * own address alone (`openmausbot access add you@example.com`) is not. */
+export function workspaceShared(input: { hosted: boolean; cloudHome: boolean; signIn: SignInLists }): boolean {
+  return input.hosted || (!input.cloudHome && sharedSignIn(input.signIn));
+}
 
 export function createCloudMoveRoutes(options: {
   dataDir: string;
