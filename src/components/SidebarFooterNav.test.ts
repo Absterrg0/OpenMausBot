@@ -11,7 +11,6 @@ const fixture = vi.hoisted(() => ({
 vi.mock("@/lib/interface-mode", () => ({ useAdvancedMode: () => fixture.advanced, setAdvancedMode: () => {} }));
 vi.mock("@/state/store", () => ({ useStore: () => ({ state: fixture.state, dispatch: fixture.dispatch }) }));
 import { SidebarFooterNav } from "./SidebarFooterNav";
-import { SidebarMoreMenu } from "./SidebarMoreMenu";
 
 type Props = { children?: ReactNode; [key: string]: unknown };
 function nodes(value: ReactNode): ReactElement<Props>[] {
@@ -75,7 +74,6 @@ describe("sidebar footer places", () => {
   it("shows Team map as its own row in Advanced mode, with no Tools menu", () => {
     fixture.advanced = true;
     const { nodes: tree, html } = render("comfortable");
-    expect(tree.some((node) => node.type === SidebarMoreMenu)).toBe(false);
     expect(html).toContain(">Team map</span>");
     expect(html).not.toContain(">Tools<");
     const row = tree.find((node) => node.props.id === "team-map")!;
