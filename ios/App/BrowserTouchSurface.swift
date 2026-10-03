@@ -49,6 +49,12 @@ struct BrowserTouchSurface: UIViewRepresentable {
         Coordinator(onIntents: onIntents, onViewState: onViewState)
     }
 
+    static func dismantleUIView(_ view: TouchSurfaceView, coordinator: Coordinator) {
+        coordinator.flush()
+        coordinator.invalidate()
+        view.coordinator = nil
+    }
+
     @MainActor
     final class Coordinator: NSObject, UIGestureRecognizerDelegate {
         private var core = GestureCore(
@@ -60,6 +66,8 @@ struct BrowserTouchSurface: UIViewRepresentable {
         private let onIntents: ([GestureIntent]) -> Void
         private let onViewState: (ViewTransform, RemotePoint) -> Void
         private var displayLink: CADisplayLink?
+        private var shownTransform = ViewTransform.identity
+        private var shownCursor = RemotePoint(x: 0.5, y: 0.5)
         /// The one finger the core is tracking. A second touch cancels it:
         /// two fingers mean zoom or pan, which the core does not see as touches.
         private var trackedTouch: ObjectIdentifier?
@@ -88,12 +96,15 @@ struct BrowserTouchSurface: UIViewRepresentable {
 
             // The core has no clock; a long press only becomes observable when
             // something tells it time moved, and momentum only decays then.
-            let link = CADisplayLink(target: self, selector: #selector(step))
+            let target = DisplayTarget()
+            target.coordinator = self
+            let link = CADisplayLink(target: target, selector: #selector(DisplayTarget.step))
             link.add(to: .main, forMode: .common)
             displayLink = link
         }
 
         func update(mode: GestureMode, driving: Bool, frameWidth: Double, frameHeight: Double, viewSize: CGSize) {
+            if core.mode != mode || core.driving != driving { flush() }
             core.mode = mode
             core.driving = driving
             guard viewSize.width > 0, viewSize.height > 0 else { return }
@@ -109,14 +120,34 @@ struct BrowserTouchSurface: UIViewRepresentable {
         /// Releases whatever the remote is holding. Called when the view goes
         /// away or control is handed back.
         func flush() {
+            trackedTouch = nil
             emit(core.flush())
+        }
+
+        func invalidate() {
+            displayLink?.invalidate()
+            displayLink = nil
+        }
+
+        func resize(_ size: CGSize) {
+            update(mode: core.mode, driving: core.driving,
+                   frameWidth: core.mapping.frameWidth, frameHeight: core.mapping.frameHeight, viewSize: size)
+        }
+
+        @MainActor private final class DisplayTarget: NSObject {
+            weak var coordinator: Coordinator?
+            @objc func step() { coordinator?.step() }
         }
 
         private var now: Double { CACurrentMediaTime() - startTime }
 
         private func emit(_ intents: [GestureIntent]) {
             if !intents.isEmpty { onIntents(intents) }
-            onViewState(core.transform, core.cursor)
+            if shownTransform != core.transform || shownCursor != core.cursor {
+                shownTransform = core.transform
+                shownCursor = core.cursor
+                onViewState(core.transform, core.cursor)
+            }
         }
 
         @objc private func step() {
@@ -211,6 +242,11 @@ struct BrowserTouchSurface: UIViewRepresentable {
 /// them without a recognizer deciding first what they mean.
 final class TouchSurfaceView: UIView {
     weak var coordinator: BrowserTouchSurface.Coordinator?
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        coordinator?.resize(bounds.size)
+    }
 
     override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
         coordinator?.touchesBegan(touches, in: self)

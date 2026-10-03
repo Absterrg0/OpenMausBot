@@ -148,7 +148,7 @@ class CompanionClient(
      */
     fun browserLive(): BrowserLiveTransport? {
         val base = endpoint?.baseUrl ?: return null
-        return BrowserLiveTransport(base, token, streamingClient, actionClient)
+        return BrowserLiveTransport(base, token, streamingClient, actionClient, ::ensureServerIdentity)
     }
 
     /**
@@ -924,12 +924,16 @@ class CompanionClient(
         request: Request,
         requestClient: OkHttpClient = actionClient,
     ): RawResponse {
+        ensureServerIdentity()
+        return performUnchecked(request, requestClient)
+    }
+
+    internal suspend fun ensureServerIdentity() {
         if (token != null && connection.serverEnvironmentId != null &&
             environment().environmentId != connection.serverEnvironmentId
         ) {
             throw APIError.Status(401, "This address belongs to a different server. Pair again to continue.")
         }
-        return performUnchecked(request, requestClient)
     }
 
     private suspend fun performUnchecked(

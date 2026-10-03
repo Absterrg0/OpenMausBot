@@ -345,6 +345,18 @@ export function createProxyHandler(options: ProxyOptions) {
 
     const token = bearerToken(req.headers.authorization);
     const device = options.authenticate(token);
+    const browserRequest = isBrowserControlAccess(method, path);
+    const browserRefusal = () => {
+      if (!browserRequest) return null;
+      const current = options.authenticate(token);
+      if (!current || current.id !== device?.id) {
+        return { status: 401, error: "pair this device from Remote access settings on the host computer" };
+      }
+      return current.browserControlAccess ? null : {
+        status: 403,
+        error: "browser control is off for this device — enable it in Remote access settings on the host computer",
+      };
+    };
     if (viewers.isViewerPath(req.url)) {
       viewers.handleHttp(req, res, device);
       return;
@@ -441,6 +453,13 @@ export function createProxyHandler(options: ProxyOptions) {
       },
       (harness) => {
         clearTimeout(headersDeadline);
+        // Opening the native browser can take time. A grant revoked during
+        // that wait must not expose frames or register a stream afterwards.
+        const refusal = browserRefusal();
+        if (refusal) {
+          harness.destroy();
+          return sendJson(res, refusal.status, { error: refusal.error });
+        }
         // Keep liveness tied to the actual harness. Answering from the
         // sidecar alone made a dead bot server look healthy and caused the
         // desktop to advertise a hosted route that could not serve chats.
@@ -638,6 +657,8 @@ export function createProxyHandler(options: ProxyOptions) {
         });
         harness.on("error", () => res.destroy());
         harness.on("end", () => {
+          const refusal = browserRefusal();
+          if (refusal) return sendJson(res, refusal.status, { error: refusal.error });
           const body = Buffer.concat(chunks).toString("utf8");
 
           // Two failures live here and they are not the same failure.

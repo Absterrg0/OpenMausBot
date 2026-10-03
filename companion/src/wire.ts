@@ -99,10 +99,13 @@ export function createSseScrubber(): (chunk: string) => string {
       const boundary = nextBoundary(pending);
       if (!boundary) break;
       const event = pending.slice(0, boundary.index);
+      if (Buffer.byteLength(event) > MAX_SSE_EVENT_BYTES) {
+        throw new Error(`SSE event exceeded ${MAX_SSE_EVENT_BYTES} bytes`);
+      }
       pending = pending.slice(boundary.index + boundary.terminator.length);
       out += scrubEvent(event) + boundary.terminator;
     }
-    if (pending.length > MAX_SSE_EVENT_BYTES) {
+    if (Buffer.byteLength(pending) > MAX_SSE_EVENT_BYTES) {
       throw new Error(`SSE event exceeded ${MAX_SSE_EVENT_BYTES} bytes without a terminator`);
     }
     return out;

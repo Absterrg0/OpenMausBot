@@ -12,8 +12,8 @@ import kotlinx.serialization.json.Json
  *
  * Both platforms run the same fixture file, so a behaviour added on one and
  * not the other fails here rather than in a bug report six weeks later. The
- * file itself lives with the iOS tests and is copied onto this module's test
- * classpath by a Gradle task, so there is exactly one copy to edit.
+ * file itself lives with the iOS tests and is added directly to this module's
+ * test resource source directory, so there is exactly one copy to edit.
  */
 class RemoteGestureParityTest {
     @Serializable
@@ -103,7 +103,7 @@ class RemoteGestureParityTest {
 
     private fun loadSuite(): ParitySuite {
         val stream = checkNotNull(javaClass.getResourceAsStream("/gesture-parity.json")) {
-            "gesture-parity.json is not on the test classpath — check the copy task in core/build.gradle.kts"
+            "gesture-parity.json is not on the test classpath — check the test resource source directory in core/build.gradle.kts"
         }
         return Json { ignoreUnknownKeys = true }
             .decodeFromString<ParitySuite>(stream.bufferedReader().readText())

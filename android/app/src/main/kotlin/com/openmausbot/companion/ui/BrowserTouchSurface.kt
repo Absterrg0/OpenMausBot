@@ -91,6 +91,8 @@ fun Modifier.browserTouchSurface(
             }
         }
         .pointerInput(mode, driving) {
+            val releases = core.flush()
+            if (releases.isNotEmpty()) intents.value(releases)
             core.mode = mode
             core.driving = driving
 

@@ -44,6 +44,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.Color
@@ -53,8 +54,12 @@ import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.openmausbot.companion.core.APIError
 import com.openmausbot.companion.core.BrowserFrame
+import com.openmausbot.companion.core.BrowserFrameAcks
 import com.openmausbot.companion.core.BrowserLiveMessage
 import com.openmausbot.companion.core.BrowserStatus
 import com.openmausbot.companion.core.BrowserInputQueue
@@ -66,10 +71,9 @@ import com.openmausbot.companion.core.RemotePoint
 import com.openmausbot.companion.core.ViewTransform
 import com.openmausbot.companion.core.ViewportMapping
 import com.openmausbot.companion.core.bytes
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.cancel
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
@@ -93,7 +97,7 @@ fun BrowserControlScreen(botId: String, onBack: () -> Unit) {
             ViewportMapping(1.0, 1.0, 1280.0, 720.0, ViewTransform.IDENTITY),
         )
     }
-    val sink = remember { BrowserLiveSink() }
+    var sink by remember { mutableStateOf(BrowserLiveSink()) }
 
     var mode by remember { mutableStateOf(GestureMode.DIRECT) }
     var driving by remember { mutableStateOf(false) }
@@ -109,38 +113,57 @@ fun BrowserControlScreen(botId: String, onBack: () -> Unit) {
     var surfaceHeight by remember { mutableStateOf(1.0) }
     var status by remember { mutableStateOf(BrowserStatus(false, false, 1280.0, 720.0)) }
     var failure by remember { mutableStateOf<String?>(null) }
+    var changingControl by remember { mutableStateOf(false) }
+    var generation by remember { mutableStateOf(0) }
+    val lifecycleOwner = LocalLifecycleOwner.current
+    var foreground by remember { mutableStateOf(lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) }
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, _ ->
+            foreground = lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
 
-    val transport = remember(botId) { session.browserLive() }
     // Bumped by Try again. The stream never restarts on its own, so without
     // this a failure left the screen dead until the person backed out.
     var attempt by remember { mutableStateOf(0) }
+    val transport = remember(botId, attempt, foreground) { session.browserLive() }
     var streamEnded by remember { mutableStateOf(false) }
 
     // One stream for as long as the screen is up. Reconnection is not handled
     // here for the same reason it is not in the main event stream: only
     // something that knows whether the view is on screen can decide.
-    LaunchedEffect(transport, botId, attempt) {
-        val live = transport ?: return@LaunchedEffect
+    LaunchedEffect(transport, botId, attempt, foreground) {
+        val current = ++generation
+        if (!foreground) return@LaunchedEffect
+        val live = transport
+        if (live == null) {
+            failure = "The active connection is no longer available."
+            streamEnded = true
+            return@LaunchedEffect
+        }
         streamEnded = false
         failure = null
         viewerId = null
         queue = null
         driving = false
-        runCatching {
+        frame = null
+        sink = BrowserLiveSink()
+        core.flush()
+        status = BrowserStatus(false, false, 1280.0, 720.0)
+        changingControl = false
+        var acknowledgements: BrowserFrameAcks? = null
+        var ownedId: String? = null
+        var pending: BrowserInputQueue? = null
+        try {
             live.live(botId).collect { message ->
                 when (message) {
                     is BrowserLiveMessage.Frame -> {
                         frame = message.frame
                         sink.frameWidth = message.frame.deviceWidth
                         sink.frameHeight = message.frame.deviceHeight
-                        viewerId?.let { id ->
-                            runCatching {
-                                live.action(botId, id, buildJsonObject {
-                                    put("type", "ack")
-                                    put("seq", message.frame.seq)
-                                })
-                            }
-                        }
+                        acknowledgements?.enqueue(message.frame.seq)
                     }
                     is BrowserLiveMessage.Status -> {
                         status = message.status
@@ -152,56 +175,48 @@ fun BrowserControlScreen(botId: String, onBack: () -> Unit) {
                     is BrowserLiveMessage.Url -> address = message.url
                     is BrowserLiveMessage.Ready -> {
                         viewerId = message.viewerId
+                        ownedId = message.viewerId
                         queue = BrowserInputQueue(
-                            scope = scope,
+                            scope = this,
                             send = { body -> live.send(botId, message.viewerId, body) },
-                            onError = { failure = it.message },
+                            onError = { if (current == generation) failure = it.message },
                         )
+                        pending = queue
+                        acknowledgements = BrowserFrameAcks(this) { sequence ->
+                            live.action(botId, message.viewerId, buildJsonObject {
+                                put("type", "ack")
+                                put("seq", sequence)
+                            })
+                        }
                     }
                     // The server is the authority on who is driving: a peer
                     // taking control must end ours rather than leave two
                     // surfaces both believing they hold it.
-                    is BrowserLiveMessage.Control -> if (!message.controlling) driving = false
+                    is BrowserLiveMessage.Control -> driving = message.owned && message.controlling
                     is BrowserLiveMessage.Error -> failure = message.message
                     is BrowserLiveMessage.Heartbeat -> Unit
                     is BrowserLiveMessage.Tabs -> Unit
                 }
             }
-        }.onFailure {
-            if (it is kotlinx.coroutines.CancellationException) throw it
-            failure = explainBrowserFailure(it)
-        }
-        streamEnded = true
-        driving = false
-    }
-
-    // A key or button left down on the remote outlives the session, and
-    // nothing on the far side will ever lift it.
-    //
-    // Deliberately not rememberCoroutineScope: that scope is cancelled in the
-    // same disposal pass, so the release never left the phone and the server
-    // was left believing the session still held control. This one outlives
-    // the composition on purpose, and is the only place that is true.
-    val releaseScope = remember { CoroutineScope(SupervisorJob() + Dispatchers.Default) }
-    DisposableEffect(botId) {
-        onDispose {
-            val held = core.flush()
-            val id = viewerId
-            val live = transport
-            releaseScope.launch {
-                try {
-                    // Deliberately not through `pending`: that queue was built
-                    // on the composition scope, which is cancelled in this
-                    // same disposal pass, so its pump would never run and
-                    // drain() would spin forever waiting for it.
-                    if (live != null && id != null) {
-                        held.flatMap(sink::bodies).forEach { body ->
-                            runCatching { live.send(botId, id, body) }
-                        }
-                        runCatching { live.action(botId, id, buildJsonObject { put("type", "release") }) }
-                    }
-                } finally {
-                    releaseScope.cancel()
+        } catch (error: CancellationException) {
+            throw error
+        } catch (error: Exception) {
+            if (current == generation) failure = explainBrowserFailure(error)
+        } finally {
+            acknowledgements?.stop()
+            if (current == generation) {
+                core.flush()
+                streamEnded = true
+                driving = false
+                viewerId = null
+                queue = null
+            }
+            // Cleanup survives disposal, drops queued text/clicks, and uses
+            // this stream's viewer rather than a replacement viewer.
+            withContext(NonCancellable) {
+                pending?.clear()
+                ownedId?.let { id ->
+                    runCatching { live.action(botId, id, buildJsonObject { put("type", "release") }) }
                 }
             }
         }
@@ -225,6 +240,7 @@ fun BrowserControlScreen(botId: String, onBack: () -> Unit) {
                 value = address,
                 onValueChange = { address = it },
                 singleLine = true,
+                enabled = driving,
                 modifier = Modifier.weight(1f),
                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Go),
                 keyboardActions = KeyboardActions(onGo = {
@@ -259,6 +275,7 @@ fun BrowserControlScreen(botId: String, onBack: () -> Unit) {
             Modifier
                 .weight(1f)
                 .fillMaxWidth()
+                .clipToBounds()
                 .onSizeChanged {
                     surfaceWidth = it.width.toDouble()
                     surfaceHeight = it.height.toDouble()
@@ -268,21 +285,24 @@ fun BrowserControlScreen(botId: String, onBack: () -> Unit) {
                 frame?.bytes()?.let { BitmapFactory.decodeByteArray(it, 0, it.size) }
             }
             if (bitmap != null) {
+                val density = LocalDensity.current
+                val frameW = frame?.deviceWidth ?: status.viewportWidth
+                val frameH = frame?.deviceHeight ?: status.viewportHeight
+                val fit = minOf(surfaceWidth / frameW, surfaceHeight / frameH)
                 Image(
                     bitmap = bitmap.asImageBitmap(),
                     contentDescription = "${bot.name}'s browser",
                     contentScale = ContentScale.Fit,
                     modifier = Modifier
-                        .fillMaxSize()
+                        .align(Alignment.Center)
+                        .size(with(density) { (frameW * fit).toFloat().toDp() },
+                              with(density) { (frameH * fit).toFloat().toDp() })
                         .graphicsLayer {
                             // Measured against the drawn frame, not the view.
                             // The gesture core maps coordinates through the
                             // same aspect fit, and on a letterboxed frame the
                             // two differ enough that a zoomed tap lands
                             // nowhere near the pixel touched.
-                            val frameW = frame?.deviceWidth ?: 1280.0
-                            val frameH = frame?.deviceHeight ?: 720.0
-                            val fit = minOf(size.width / frameW, size.height / frameH)
                             scaleX = transform.scale.toFloat()
                             scaleY = transform.scale.toFloat()
                             transformOrigin = TransformOrigin(0f, 0f)
@@ -303,8 +323,8 @@ fun BrowserControlScreen(botId: String, onBack: () -> Unit) {
                         core = core,
                         mode = mode,
                         driving = driving,
-                        frameWidth = frame?.deviceWidth ?: 1280.0,
-                        frameHeight = frame?.deviceHeight ?: 720.0,
+                        frameWidth = frame?.deviceWidth ?: status.viewportWidth,
+                        frameHeight = frame?.deviceHeight ?: status.viewportHeight,
                         onIntents = ::send,
                         onViewState = { newTransform, newCursor ->
                             transform = newTransform
@@ -320,8 +340,8 @@ fun BrowserControlScreen(botId: String, onBack: () -> Unit) {
                 // Positioned on the drawn frame, not the surface: the cursor
                 // is in frame coordinates, and on a letterboxed page the two
                 // differ by the height of the bars.
-                val frameW = frame?.deviceWidth ?: 1280.0
-                val frameH = frame?.deviceHeight ?: 720.0
+                val frameW = frame?.deviceWidth ?: status.viewportWidth
+                val frameH = frame?.deviceHeight ?: status.viewportHeight
                 val fit = minOf(surfaceWidth / frameW, surfaceHeight / frameH)
                 val drawnW = frameW * fit
                 val drawnH = frameH * fit
@@ -329,10 +349,10 @@ fun BrowserControlScreen(botId: String, onBack: () -> Unit) {
                     Modifier
                         .offset(
                             x = with(density) {
-                                ((surfaceWidth - drawnW) / 2 + cursor.x * drawnW).toInt().toDp()
+                                ((surfaceWidth - drawnW) / 2 + (cursor.x - transform.offsetX) * transform.scale * drawnW).toInt().toDp() - 11.dp
                             },
                             y = with(density) {
-                                ((surfaceHeight - drawnH) / 2 + cursor.y * drawnH).toInt().toDp()
+                                ((surfaceHeight - drawnH) / 2 + (cursor.y - transform.offsetY) * transform.scale * drawnH).toInt().toDp() - 11.dp
                             },
                         )
                         .size(22.dp)
@@ -390,19 +410,26 @@ fun BrowserControlScreen(botId: String, onBack: () -> Unit) {
             if (driving) {
                 Button(
                     onClick = {
+                        val pending = queue
+                        val id = viewerId
+                        val live = transport
+                        val current = generation
+                        val releases = core.flush().flatMap(sink::bodies)
                         driving = false
                         latched = 0
+                        changingControl = true
                         scope.launch {
                             // Let go of what the remote is holding before
                             // handing it back; stale travel is not worth
                             // waiting for.
-                            queue?.drain()
-                            val id = viewerId
-                            if (transport != null && id != null) {
+                            releases.forEach { pending?.enqueue(it) }
+                            pending?.drain()
+                            if (live != null && id != null) {
                                 runCatching {
-                                    transport.action(botId, id, buildJsonObject { put("type", "release") })
+                                    live.action(botId, id, buildJsonObject { put("type", "release") })
                                 }
                             }
+                            if (current == generation) changingControl = false
                         }
                     },
                     modifier = Modifier.weight(1f),
@@ -416,20 +443,27 @@ fun BrowserControlScreen(botId: String, onBack: () -> Unit) {
                     onClick = {
                         val id = viewerId ?: return@Button
                         val live = transport ?: return@Button
+                        val current = generation
+                        changingControl = true
                         scope.launch {
                             runCatching {
                                 live.action(botId, id, buildJsonObject { put("type", "take") })
                             }.onSuccess {
-                                driving = true
+                                if (current != generation || viewerId != id || !foreground) {
+                                    runCatching { live.action(botId, id, buildJsonObject { put("type", "release") }) }
+                                    return@launch
+                                }
                                 failure = null
                             }.onFailure { failure = explainBrowserFailure(it) }
+                            if (current == generation) changingControl = false
                         }
                     },
-                    enabled = status.connected && viewerId != null,
+                    enabled = status.connected && viewerId != null && !changingControl && foreground,
                     modifier = Modifier.weight(1f),
                 ) { Text("Take control") }
             }
         }
+        failure?.let { Text(it, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(12.dp)) }
     }
 }
 

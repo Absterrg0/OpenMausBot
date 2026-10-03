@@ -168,6 +168,11 @@ describe("createSseScrubber", () => {
 });
 
 describe("the SSE event ceiling", () => {
+  it("bounds complete events and counts multibyte text as bytes", () => {
+    const payload = "é".repeat(MAX_SSE_EVENT_BYTES / 2 + 1);
+    expect(() => createSseScrubber()(`data: ${payload}\n\n`)).toThrow(/exceeded/);
+    expect(() => createSseScrubber()(`data: ${payload}`)).toThrow(/exceeded/);
+  });
   it("clears the largest frame the harness will emit", () => {
     // browser-live caps a frame at 3 MiB of base64 and a paired phone may now
     // ask for that stream. A ceiling under it would end the connection on the

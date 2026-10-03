@@ -568,8 +568,11 @@ final class Session: ObservableObject {
     /// that wants one, it is rarely open, and a stream that outlived the
     /// session's current route would keep talking to the wrong address.
     func browserLiveClient() -> BrowserLiveClient? {
-        guard let connection, let token else { return nil }
-        return BrowserLiveClient(connection: connection, token: token)
+        #if DEBUG
+        if ProcessInfo.processInfo.arguments.contains("-browser-preview") { return BrowserPreview.client }
+        #endif
+        guard let route = client?.connection ?? connection, let token else { return nil }
+        return BrowserLiveClient(connection: route, token: token)
     }
 
     /// `GET /.well-known/openmausbot/environment` on a server about to be

@@ -123,9 +123,16 @@ struct ComputerView: View {
         .navigationDestination(isPresented: $showingBrowser) {
             if let client = session.browserLiveClient() {
                 BrowserControlView(bot: current, client: client)
+            } else {
+                VStack(spacing: 12) {
+                    Text("Browser unavailable").font(.headline)
+                    Text("The active connection is no longer available.")
+                }
+                .padding()
             }
         }
         .safeAreaInset(edge: .bottom) {
+            VStack(spacing: 0) {
             if polled != nil && vmProblem == nil && control == nil {
                 takeControlBar
             }
@@ -178,6 +185,7 @@ struct ComputerView: View {
                 .padding(.horizontal, 18)
                 .padding(.vertical, 12)
                 .background(.ultraThinMaterial)
+            }
             }
         }
         .alert("Open live cloud desktop?", isPresented: $confirmingDesktop) {

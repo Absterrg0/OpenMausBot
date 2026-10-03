@@ -23,13 +23,16 @@ final class BrowserControlModel: ObservableObject {
     /// shows Try again rather than a spinner that never resolves — the
     /// failure the first hands-on test hit after the grant was switched on.
     @Published var streamEnded = false
+    @Published var changingControl = false
 
     private let botId: String
-    private let client: BrowserLiveClient
+    private var client: BrowserLiveClient
     private var viewerId: String?
     private var stream: Task<Void, Never>?
     private var sink = BrowserLiveSink()
     private var queue: BrowserInputQueue?
+    private var acknowledgements: BrowserFrameAcks?
+    private var generation = 0
 
     init(botId: String, client: BrowserLiveClient) {
         self.botId = botId
@@ -44,34 +47,61 @@ final class BrowserControlModel: ObservableObject {
         viewerId = nil
         queue = nil
         driving = false
+        frame = nil
+        status = BrowserStatus(connected: false, screencasting: false, viewportWidth: 1280, viewportHeight: 720)
+        sink = BrowserLiveSink()
+        generation += 1
+        let current = generation
+        let client = self.client
         stream = Task { [weak self] in
             guard let self else { return }
             do {
                 for try await message in client.live(botId: botId) {
+                    guard !Task.isCancelled, current == generation else { return }
                     await self.apply(message)
                 }
-                await MainActor.run { self.failure = self.failure ?? "The browser stream ended." }
+                guard !Task.isCancelled, current == generation else { return }
+                self.failure = self.failure ?? "The browser stream ended."
             } catch is CancellationError {
                 return
             } catch {
-                await MainActor.run { self.failure = Self.explain(error) }
+                guard !Task.isCancelled, current == generation else { return }
+                self.failure = Self.explain(error)
             }
-            await MainActor.run {
-                self.stream = nil
-                self.streamEnded = true
-                self.driving = false
-            }
+            await acknowledgements?.stop()
+            await queue?.clear()
+            guard current == generation else { return }
+            viewerId = nil
+            self.stream = nil
+            self.streamEnded = true
+            self.driving = false
         }
     }
 
-    func retry() {
-        stream?.cancel()
-        stream = nil
+    func retry(client: BrowserLiveClient?) {
+        stop()
+        guard let client else {
+            failure = "The active connection is no longer available."
+            streamEnded = true
+            return
+        }
+        self.client = client
         start()
     }
 
     func stop() {
-        Task { await releaseControl() }
+        generation += 1
+        let id = viewerId, pending = queue, acks = acknowledgements, client = client, botId = botId
+        driving = false
+        changingControl = false
+        viewerId = nil
+        queue = nil
+        acknowledgements = nil
+        Task {
+            await acks?.stop()
+            await pending?.clear()
+            if let id { _ = try? await client.action(botId: botId, viewerId: id, body: ["type": "release"]) }
+        }
         stream?.cancel()
         stream = nil
     }
@@ -97,7 +127,7 @@ final class BrowserControlModel: ObservableObject {
             self.frame = frame
             sink.frameWidth = frame.deviceWidth
             sink.frameHeight = frame.deviceHeight
-            if let viewerId { try? await client.action(botId: botId, viewerId: viewerId, body: ["type": "ack", "seq": frame.seq]) }
+            await acknowledgements?.enqueue(frame.seq)
         case let .status(status):
             self.status = status
             if frame == nil {
@@ -114,8 +144,8 @@ final class BrowserControlModel: ObservableObject {
         // The server is the authority on who is driving: a peer taking
         // control must end ours rather than leave two surfaces both
         // believing they hold it.
-        case let .control(controlling, _):
-            if !controlling { driving = false }
+        case let .control(controlling, _, owned):
+            driving = owned && controlling
         case .heartbeat:
             break
         case let .error(message):
@@ -126,22 +156,34 @@ final class BrowserControlModel: ObservableObject {
     private func makeQueue(viewerId: String) {
         let client = self.client
         let botId = self.botId
+        let current = generation
         queue = BrowserInputQueue(
             send: { body in try await client.send(botId: botId, viewerId: viewerId, input: body) },
             onError: { [weak self] error in
-                Task { @MainActor in self?.failure = error.localizedDescription }
+                Task { @MainActor in
+                    if self?.generation == current { self?.failure = error.localizedDescription }
+                }
             }
         )
+        acknowledgements = BrowserFrameAcks { sequence in
+            _ = try await client.action(botId: botId, viewerId: viewerId, body: ["type": "ack", "seq": sequence])
+        }
     }
 
     func takeControl() async {
-        guard let viewerId else { return }
+        guard let viewerId, !changingControl, stream != nil, !streamEnded else { return }
+        changingControl = true
+        let current = generation, client = client
+        defer { if current == generation { changingControl = false } }
         do {
             _ = try await client.action(botId: botId, viewerId: viewerId, body: ["type": "take"])
-            driving = true
+            guard current == generation, self.viewerId == viewerId, !Task.isCancelled else {
+                _ = try? await client.action(botId: botId, viewerId: viewerId, body: ["type": "release"])
+                return
+            }
             failure = nil
         } catch {
-            failure = Self.explain(error)
+            if current == generation { failure = Self.explain(error) }
         }
     }
 
@@ -149,6 +191,9 @@ final class BrowserControlModel: ObservableObject {
         driving = false
         latchedModifiers = 0
         guard let viewerId, let queue else { return }
+        changingControl = true
+        let current = generation, client = client
+        defer { if current == generation { changingControl = false } }
         // Let go of what the remote is holding before handing it back; stale
         // travel is not worth waiting for.
         await queue.drain()
@@ -234,10 +279,13 @@ struct BrowserControlView: View {
             releaseHeldInput()
             model.stop()
         }
-        .onChange(of: scenePhase) { _, phase in
+        .onValueChange(of: scenePhase) { phase in
             // Backgrounding mid-drag must not leave a button down on the
             // remote with nothing left to lift it.
-            if phase != .active { releaseHeldInput() }
+            if phase != .active {
+                releaseHeldInput()
+                model.stop()
+            } else { model.retry(client: session.browserLiveClient()) }
         }
         .alert("Browser", isPresented: Binding(
             get: { model.failure != nil },
@@ -261,7 +309,11 @@ struct BrowserControlView: View {
     private var chrome: some View {
         HStack(spacing: 10) {
             Button { Task { await model.command("back") } } label: { Image(systemName: "chevron.left") }
+                .accessibilityLabel("Back in browser")
+                .disabled(!model.driving)
             Button { Task { await model.command("reload") } } label: { Image(systemName: "arrow.clockwise") }
+                .accessibilityLabel("Reload browser")
+                .disabled(!model.driving)
 
             TextField("Address", text: $address)
                 .textFieldStyle(.roundedBorder)
@@ -269,10 +321,11 @@ struct BrowserControlView: View {
                 .autocorrectionDisabled()
                 .submitLabel(.go)
                 .focused($addressFocused)
+                .disabled(!model.driving)
                 .onSubmit { Task { await model.navigate(address) } }
                 // The page's own navigation must not overwrite what someone
                 // is halfway through typing.
-                .onChange(of: model.url) { _, url in if !addressFocused { address = url } }
+                .onValueChange(of: model.url) { url in if !addressFocused { address = url } }
 
             Picker("", selection: $model.mode) {
                 Image(systemName: "hand.tap").tag(GestureMode.direct)
@@ -337,7 +390,7 @@ struct BrowserControlView: View {
                     .frame(width: 1, height: 1)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
-                    .onChange(of: typedBuffer) { _, value in
+                    .onValueChange(of: typedBuffer) { value in
                         guard !value.isEmpty else { return }
                         model.typed(value)
                         typedBuffer = ""
@@ -361,16 +414,16 @@ struct BrowserControlView: View {
     }
 
     private func cursorReticle(in size: CGSize) -> some View {
-        Circle()
+        let drawn = drawnSize(in: size, frame: model.frame)
+        let x = (size.width - drawn.width) / 2
+            + (model.cursor.x - model.transform.offsetX) * model.transform.scale * drawn.width
+        let y = (size.height - drawn.height) / 2
+            + (model.cursor.y - model.transform.offsetY) * model.transform.scale * drawn.height
+        return Circle()
             .strokeBorder(Color.white, lineWidth: 2)
             .background(Circle().fill(Color.black.opacity(0.35)))
             .frame(width: 22, height: 22)
-            .position(
-                x: (size.width - drawnSize(in: size, frame: model.frame).width) / 2
-                    + model.cursor.x * drawnSize(in: size, frame: model.frame).width,
-                y: (size.height - drawnSize(in: size, frame: model.frame).height) / 2
-                    + model.cursor.y * drawnSize(in: size, frame: model.frame).height
-            )
+            .position(x: x, y: y)
             .allowsHitTesting(false)
     }
 
@@ -393,7 +446,7 @@ struct BrowserControlView: View {
                 .buttonStyle(.borderedProminent)
             } else if model.streamEnded {
                 Button {
-                    model.retry()
+                    model.retry(client: session.browserLiveClient())
                 } label: {
                     Label("Try again", systemImage: "arrow.clockwise")
                         .frame(maxWidth: .infinity)
@@ -407,7 +460,7 @@ struct BrowserControlView: View {
                         .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(!model.status.connected)
+                .disabled(!model.status.connected || model.changingControl)
             }
         }
         .padding(12)

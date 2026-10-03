@@ -84,6 +84,7 @@ class BrowserLiveDecoderTest {
         )
         assertTrue(control.controlling)
         assertFalse(control.held)
+        assertTrue(control.owned)
 
         assertEquals(BrowserLiveMessage.Heartbeat, BrowserLiveDecoder.message("heartbeat", "{}"))
     }
@@ -110,6 +111,12 @@ class BrowserLiveDecoderTest {
         assertNull(BrowserLiveDecoder.message("frame", "not json"))
         // A frame without its metadata cannot be mapped to coordinates.
         assertNull(BrowserLiveDecoder.message("frame", """{"seq":1,"data":"x"}"""))
+        for (width in listOf("0", "-1", "8193", "1e300", "[]")) {
+            assertNull(BrowserLiveDecoder.message("frame",
+                """{"seq":1,"data":"x","metadata":{"deviceWidth":$width,"deviceHeight":720}}"""))
+        }
+        assertNull(BrowserLiveDecoder.message("frame", """{"seq":[],"data":"x"}"""))
+        assertNull(BrowserLiveDecoder.message("status", """{"connected":[]}"""))
     }
 
     @Test

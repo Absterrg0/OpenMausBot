@@ -66,11 +66,12 @@ final class BrowserLiveDecoderTests: XCTestCase {
     }
 
     func testDecodesControlAndHeartbeat() {
-        guard case let .control(controlling, held)? = BrowserLiveDecoder.message(
+        guard case let .control(controlling, held, owned)? = BrowserLiveDecoder.message(
             event: "control", data: #"{"controlling":true,"held":false,"owned":true}"#
         ) else { return XCTFail("expected control") }
         XCTAssertTrue(controlling)
         XCTAssertFalse(held)
+        XCTAssertTrue(owned)
 
         XCTAssertEqual(BrowserLiveDecoder.message(event: "heartbeat", data: "{}"), .heartbeat)
     }
@@ -93,6 +94,10 @@ final class BrowserLiveDecoderTests: XCTestCase {
         XCTAssertNil(BrowserLiveDecoder.message(event: "frame", data: "not json"))
         // A frame without its metadata cannot be mapped to coordinates.
         XCTAssertNil(BrowserLiveDecoder.message(event: "frame", data: #"{"seq":1,"data":"x"}"#))
+        for width in ["0", "-1", "8193", "1e300", "[]"] {
+            XCTAssertNil(BrowserLiveDecoder.message(event: "frame", data:
+                "{\"seq\":1,\"data\":\"x\",\"metadata\":{\"deviceWidth\":\(width),\"deviceHeight\":720}}"))
+        }
     }
 
     func testFrameBytesDecodeFromBase64() {
