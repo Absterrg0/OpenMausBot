@@ -104,6 +104,9 @@ const UNFINISHED_ACCOUNT = /^(initiated|initializing|pending)$/i;
 /** An attempt that ended without connecting. Composio keeps the record and
  * its alias on show, but no longer reserves that alias. */
 const LAPSED_ACCOUNT = /^(expired|failed)$/i;
+/** Short enough to survive the connection card's 180-character error. */
+const SIGN_IN_IN_PROGRESS = (alias: string, toolkit: string) =>
+  `Sign-in for "${alias}" on ${toolkit} is still in progress. Finish it, or retry once it expires (about 10 minutes).`;
 /** Composio's catalog cursor is base64 of the page and limit. */
 const CATALOG_CURSOR = /^[A-Za-z0-9+/_=-]{1,256}$/;
 const printableAliasSchema = z.string().min(1).max(64).refine((value) => {
@@ -495,23 +498,27 @@ async function authorize(
   const serviceAccounts = accounts.filter((account) => account.toolkit?.slug?.toLowerCase() === slug);
   // Only a connected account owns its alias. Composio creates the account,
   // alias included, when the auth link is minted, and stops reserving the
-  // alias when that link expires. An attempt the user never finished is
-  // therefore this same connection, retried. The app hands a retry the link
-  // it already issued while the attempt is open, so an attempt reaching this
-  // point is one whose link it no longer knows: it is replaced. A lapsed
-  // attempt is left as is.
-  const sameAlias = alias
-    ? serviceAccounts.filter((account) => account.alias?.trim().toLowerCase() === alias.toLowerCase())
+  // alias when that link expires; a lapsed attempt no longer blocks it. An
+  // attempt the user never finished is this same connection, retried. The
+  // app hands such a retry the link it already issued, so an unfinished
+  // attempt reaching this point is one whose link it no longer knows (minted
+  // before a restart, say). It is left alone rather than replaced: Composio
+  // has no conditional delete, so removing it could race a sign-in finishing
+  // in its tab, or remove an attempt renamed since the list was read. Its
+  // alias frees itself when the attempt lapses.
+  const requestedAlias = alias;
+  const sameAlias = requestedAlias
+    ? serviceAccounts.filter((account) => account.alias?.trim().toLowerCase() === requestedAlias.toLowerCase())
     : [];
-  const retried = sameAlias.filter((account) => UNFINISHED_ACCOUNT.test(account.status ?? ""));
-  if (
-    retried.some((account) => !account.id || !ACCOUNT_ID.test(account.id))
-    || sameAlias.some((account) => !retried.includes(account) && !LAPSED_ACCOUNT.test(account.status ?? ""))
-  ) {
+  const holders = sameAlias.filter((account) => !LAPSED_ACCOUNT.test(account.status ?? ""));
+  if (holders.some((account) => !UNFINISHED_ACCOUNT.test(account.status ?? ""))) {
     return json({ error: `Account alias "${alias}" is already in use for ${slug}` }, 409);
   }
+  if (holders.length) {
+    return json({ error: SIGN_IN_IN_PROGRESS(alias!, slug) }, 409);
+  }
   const usableAccounts = serviceAccounts.filter((account) =>
-    !retried.includes(account) && /^(active|initiated|initializing|pending)$/i.test(account.status ?? "")
+    /^(active|initiated|initializing|pending)$/i.test(account.status ?? "")
   );
   if (usableAccounts.length >= MULTI_ACCOUNT_CONFIG.max_accounts_per_toolkit) {
     return json({ error: `${slug} already has the maximum of ${MULTI_ACCOUNT_CONFIG.max_accounts_per_toolkit} accounts` }, 409);
@@ -522,30 +529,6 @@ async function authorize(
       alias = `omb-retry-${crypto.randomUUID()}`;
     } else {
       return json({ error: "Add an account alias so the existing connection is not replaced" }, 400);
-    }
-  }
-  for (const account of retried) {
-    // The list is already a moment old. A sign-in finished in another tab
-    // since then makes this a connected account, which must not be removed:
-    // read it again and only replace an attempt that is still unfinished.
-    // Composio's delete takes no status condition, so this narrows the gap
-    // to the one request between the read and the delete; it does not close
-    // it. An unfinished attempt holds no credentials, so nothing is revoked:
-    // a sign-in that lands in that gap loses the record, never the grant.
-    // Clearing the alias instead would leave the old link live, and a
-    // sign-in finished there would connect an account with no alias.
-    const path = `/connected_accounts/${encodeURIComponent(account.id!)}`;
-    const current = await composioRequest(env, path);
-    if (current.status === 404) continue;
-    if (!current.ok) return json({ error: await upstreamError(current, "Authorization unavailable") }, 502);
-    const status = connectedAccountResponseSchema.parse(await current.json()).status ?? "";
-    if (LAPSED_ACCOUNT.test(status)) continue;
-    if (!UNFINISHED_ACCOUNT.test(status)) {
-      return json({ error: `Account alias "${alias}" is already in use for ${slug}` }, 409);
-    }
-    const removed = await composioRequest(env, path, { method: "DELETE" });
-    if (!removed.ok && removed.status !== 404) {
-      return json({ error: await upstreamError(removed, "Authorization unavailable") }, 502);
     }
   }
   const linkRequest: AccountLinkRequest = { toolkit: slug };
