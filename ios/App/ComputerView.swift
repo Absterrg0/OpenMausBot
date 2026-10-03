@@ -28,6 +28,7 @@ struct ComputerView: View {
     @EnvironmentObject private var session: Session
     @Environment(\.dismiss) private var dismiss
     @State private var confirmingDesktop = false
+    @State private var showingBrowser = false
     @State private var openingDesktop = false
     @State private var desktopURL: URL?
     @State private var desktopError: String?
@@ -119,7 +120,19 @@ struct ComputerView: View {
                     .foregroundStyle(current.busy == true ? Color.green : Color.secondary)
             }
         }
+        .navigationDestination(isPresented: $showingBrowser) {
+            if let client = session.browserLiveClient() {
+                BrowserControlView(bot: current, client: client)
+            } else {
+                VStack(spacing: 12) {
+                    Text("Browser unavailable").font(.headline)
+                    Text("The active connection is no longer available.")
+                }
+                .padding()
+            }
+        }
         .safeAreaInset(edge: .bottom) {
+            VStack(spacing: 0) {
             if polled != nil && vmProblem == nil && control == nil {
                 takeControlBar
             }
@@ -127,6 +140,21 @@ struct ComputerView: View {
             // an interactive desktop for it — no button beats a dead one. An
             // older harness never sends cloudBackend, so nil keeps the button.
             // Minting a desktop session is admin-only on a server, too.
+            VStack(spacing: 8) {
+                // Watching is the cheap half and always available; driving
+                // the browser is the half this button leads to.
+                Button {
+                    showingBrowser = true
+                } label: {
+                    Label("Open browser", systemImage: "safari")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
+                .disabled(session.browserLiveClient() == nil)
+            }
+            .padding(.horizontal, 18)
+            .padding(.top, 12)
+
             if current.computer == "cloud" && current.cloudBackend != "vps" && session.canAdminister {
                 VStack(spacing: 8) {
                     if let desktopError {
@@ -157,6 +185,7 @@ struct ComputerView: View {
                 .padding(.horizontal, 18)
                 .padding(.vertical, 12)
                 .background(.ultraThinMaterial)
+            }
             }
         }
         .alert("Open live cloud desktop?", isPresented: $confirmingDesktop) {

@@ -615,7 +615,7 @@ public struct CompanionClient: Sendable {
 
     // MARK: - Requests
 
-    private func makeRequest(_ method: String, _ path: String, query: [URLQueryItem] = [], body: [String: Any]? = nil) throws -> URLRequest {
+    func makeRequest(_ method: String, _ path: String, query: [URLQueryItem] = [], body: [String: Any]? = nil) throws -> URLRequest {
         guard let base = connection.baseURL,
               var components = URLComponents(url: base, resolvingAgainstBaseURL: false)
         else { throw APIError.badURL }
@@ -680,7 +680,7 @@ public struct CompanionClient: Sendable {
         return (try? JSONDecoder().decode(SendReceipt.self, from: data)) ?? SendReceipt()
     }
 
-    private func perform(_ request: URLRequest) async throws -> (Data, URLResponse) {
+    func perform(_ request: URLRequest) async throws -> (Data, URLResponse) {
         do {
             return try await session.data(for: request)
         } catch {
@@ -1941,7 +1941,7 @@ public struct CompanionClient: Sendable {
     /// time, and 1.8e308 does not survive that arithmetic: the request opens
     /// and then never delivers a byte. The stream appeared to hang forever
     /// with no error to show for it.
-    private static let streaming: URLSession = {
+    static let streaming: URLSession = {
         let configuration = URLSessionConfiguration.default
         configuration.timeoutIntervalForRequest = 90
         configuration.waitsForConnectivity = true

@@ -403,6 +403,11 @@ private fun PairedScreen(
                 is Destination.Computer -> ComputerScreen(
                     botId = destination.botId,
                     onBack = navigator::pop,
+                    onOpenBrowser = { navigator.push(Destination.Browser(it)) },
+                )
+                is Destination.Browser -> BrowserControlScreen(
+                    botId = destination.botId,
+                    onBack = navigator::pop,
                 )
                 is Destination.Overview -> BotOverviewScreen(
                     botId = destination.botId,
