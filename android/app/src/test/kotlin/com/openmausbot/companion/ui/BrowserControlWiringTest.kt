@@ -6,10 +6,12 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.click
 import androidx.compose.ui.test.hasSetTextAction
 import androidx.compose.ui.test.hasText
+import androidx.compose.ui.test.isEnabled
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithContentDescription
@@ -27,6 +29,7 @@ import com.sun.net.httpserver.HttpServer
 import java.net.InetSocketAddress
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ConcurrentLinkedQueue
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.assertEquals
@@ -57,6 +60,7 @@ class BrowserControlWiringTest {
     private val streams = ConcurrentHashMap<String, HttpExchange>()
     private val actions = ConcurrentLinkedQueue<JsonObject>()
     private val releases = AtomicInteger()
+    private val resumedReady = CountDownLatch(1)
     @Volatile private var owner: String? = null
     private lateinit var scene: WiringScene
 
@@ -73,6 +77,7 @@ class BrowserControlWiringTest {
             if (exchange.requestMethod == "GET" && exchange.requestURI.path.endsWith("/browser/live")) {
                 val viewer = "viewer-${streams.size}-${System.nanoTime()}"
                 streams[viewer] = exchange
+                if (streams.size > 1) resumedReady.await()
                 exchange.responseHeaders.set("Content-Type", "text/event-stream")
                 exchange.sendResponseHeaders(200, 0)
                 event(exchange, "ready", """{"viewerId":"$viewer"}""")
@@ -114,7 +119,7 @@ class BrowserControlWiringTest {
         compose.runOnIdle { scene.session.connect() }
         compose.waitUntil(10_000) { compose.onAllNodesWithText("https://fixture.test").fetchSemanticsNodes().isNotEmpty() }
         compose.onNodeWithText("https://fixture.test").assertIsNotEnabled()
-        compose.onNodeWithText("Take control").performClick()
+        takeControl()
         waitForHandBack()
         compose.onNodeWithContentDescription("${fixture.name}'s browser").performTouchInput { click(center) }
         compose.waitUntil(5_000) { actions.any { it["eventType"]?.jsonPrimitive?.content == "mouseReleased" } }
@@ -126,20 +131,31 @@ class BrowserControlWiringTest {
         compose.onNodeWithText("Hand back").performClick()
         compose.waitUntil(5_000) { releases.get() == 1 }
         compose.onNodeWithText("https://fixture.test").assertIsNotEnabled()
-        compose.onNodeWithText("Take control").performClick()
+        takeControl()
         waitForHandBack()
         compose.activityRule.scenario.moveToState(Lifecycle.State.CREATED)
         compose.waitUntil(5_000) { releases.get() == 2 }
         compose.activityRule.scenario.moveToState(Lifecycle.State.RESUMED)
-        compose.waitUntil(5_000) { compose.onAllNodesWithText("Take control").fetchSemanticsNodes().isNotEmpty() }
+        compose.waitUntil(5_000) { streams.size == 2 }
+        // Resume renders the watch button before its new stream is ready.
+        // A click here is ignored; wait for readiness instead of label presence.
+        compose.onNodeWithText("Take control").assertIsNotEnabled()
+        resumedReady.countDown()
         compose.onNodeWithText("https://fixture.test").assertIsNotEnabled()
-        compose.onNodeWithText("Take control").performClick()
+        takeControl()
         waitForHandBack()
         val takenViewer = actions.last { it["type"]?.jsonPrimitive?.content == "take" }["viewerId"]
         compose.runOnIdle { shown = false }
         compose.waitUntil(5_000) { releases.get() == 3 }
         assertEquals(takenViewer, actions.last { it["type"]?.jsonPrimitive?.content == "release" }["viewerId"])
         assertTrue(actions.all { it["viewerId"] != null })
+    }
+
+    private fun takeControl() {
+        compose.waitUntil(5_000) {
+            compose.onAllNodes(hasText("Take control") and isEnabled()).fetchSemanticsNodes().isNotEmpty()
+        }
+        compose.onNodeWithText("Take control").assertIsEnabled().performClick()
     }
 
     private fun waitForHandBack() = compose.waitUntil(5_000) {
