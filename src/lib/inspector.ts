@@ -87,6 +87,7 @@ export function summarizeRuntime(e: RuntimeEvent): { summary: string; tone: Insp
       const seconds = Math.round(e.waitedMs / 1000);
       const waited = e.waitedMs < 1_000 ? "under a second" : `${seconds}s`;
       if (e.outcome === "acquired") return { summary: `computer acquired after ${waited}`, tone: "boundary" };
+      if (e.outcome === "parked") return { summary: `computer wait parked after ${waited}`, tone: "plain" };
       if (e.outcome === "gave_up") return { summary: `computer wait gave up after ${waited}`, tone: "error" };
       return { summary: `computer wait stopped after ${waited}`, tone: "plain" };
     }
@@ -111,6 +112,8 @@ export function summarizeRuntime(e: RuntimeEvent): { summary: string; tone: Insp
       return { summary: `tokens in ${e.input} · out ${e.output}`, tone: "plain" };
     case "runtime.error":
       return { summary: `${e.setup ? "setup: " : ""}${clip(oneLine(e.message))}`, tone: "error" };
+    case "runtime.notice":
+      return { summary: `notice: ${clip(oneLine(e.message))}`, tone: "plain" };
     default:
       return { summary: (e as { type: string }).type, tone: "plain" };
   }

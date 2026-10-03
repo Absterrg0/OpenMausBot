@@ -3,7 +3,8 @@ import { X } from "lucide-react";
 import { useStore, visibleMessages, type Message } from "@/state/store";
 import { cn } from "@/lib/cn";
 import { t } from "@/lib/i18n";
-import { parseChoices } from "../../shared/ask-question";
+import { isPersistentQuestionCard, parseChoices } from "../../shared/ask-question";
+import { ExpandableText } from "./ExpandableText";
 
 const LETTERS = ["A", "B", "C", "D", "E", "F"];
 
@@ -20,6 +21,11 @@ export function shouldHideOnboardingCard(message: Message, transcript: Message[]
   const index = transcript.findIndex((entry) => entry.id === message.id);
   if (index < 0) return false;
   return transcript.slice(index + 1).some((later) => later.role === "user" && later.kind === "text");
+}
+
+export function canDismissOptionCard(card: NonNullable<Message["card"]>): boolean {
+  if (card.requestId && isPersistentQuestionCard(card)) return card.answered === "answer" && !card.dismissed;
+  return true;
 }
 
 export function OptionCard({
@@ -41,7 +47,7 @@ export function OptionCard({
   const transcript = bot ? visibleMessages(bot) : [];
   // Full thread, not the mounted window: a search-focus slice can omit the
   // later user message that means they already talked past this quiz.
-  if (!card || shouldHideOnboardingCard(message, transcript)) return null;
+  if (!card || shouldHideOnboardingCard(message, transcript) || (card.requestId && card.dismissed && card.answered)) return null;
 
   const title = card.title;
   const subtitle = card.subtitle;
@@ -59,18 +65,22 @@ export function OptionCard({
       <div className="flex items-start justify-between gap-4">
         <div>
           <div className="text-[16px] font-semibold text-ink">{title}</div>
-          <div className="mt-0.5 text-[14px] text-ink-secondary">
-            {subtitle}
-          </div>
+          {subtitle && (
+            <ExpandableText text={subtitle} className="mt-0.5 text-[14px] text-ink-secondary" />
+          )}
         </div>
-        <button
-          onClick={() =>
-            dispatch({ type: "dismissCard", botId, threadId, messageId: message.id, groupId })
-          }
-          className="rounded-md p-1 text-ink-secondary hover:bg-control hover:text-ink"
-        >
-          <X size={16} />
-        </button>
+        {canDismissOptionCard(card) && (
+          <button
+            onClick={() =>
+              dispatch({ type: "dismissCard", botId, threadId, messageId: message.id, groupId })
+            }
+            className="rounded-md p-1 text-ink-secondary hover:bg-control hover:text-ink"
+            aria-label={t("onboarding.card.dismiss")}
+            title={t("onboarding.card.dismiss")}
+          >
+            <X size={16} />
+          </button>
+        )}
       </div>
 
       <div className="mt-3 overflow-hidden rounded-lg border border-hairline/40">
@@ -109,7 +119,7 @@ export function OptionCard({
           onChange={(e) => setCustom(e.target.value)}
           onKeyDown={(e) => e.key === "Enter" && answer(custom)}
           placeholder={t("onboarding.card.custom")}
-          className="mt-3 w-full rounded-lg border border-hairline/40 bg-inset px-3 py-2.5 text-[15px] text-ink placeholder:text-ink-secondary focus:outline-none focus:border-hairline"
+          className="mt-3 w-full rounded-lg border border-hairline/40 bg-inset px-3 py-2.5 text-[15px] text-ink placeholder:text-ink-secondary focus:outline-none"
         />
       )}
     </div>

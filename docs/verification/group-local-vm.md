@@ -103,3 +103,12 @@ boundary, preserves a workspace file while removing the container, and restarts
 the server in that same disposable home. Auto recovers the prior VM once capacity
 is free, preserves its file, and neither probes nor provisions a bot that never
 had a VM. The occupied-cap case remains unprovisioned.
+
+The pool regressions start two cold seats concurrently while one seat's
+inspection is blocked, then show a third turn waiting and reusing a released
+seat. They repeat with a full existing per-bot inventory: the per-bot cap
+still rejects its next desktop, while switching to pool mode permits its own
+configured seats. `maxInstances` limits the selected mode, not the total
+containers retained across mode changes. Both scenarios use the isolated
+container boundary above and require the actual fake-engine MCP descriptors
+to match the assigned seats; no real desktop or model is contacted.

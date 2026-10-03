@@ -122,6 +122,16 @@ describe("queueDelegation", () => {
     expect(_pendingCount(from.threadId)).toBe(0);
   });
 
+  it("lets a cross-bot send start a new ownership chain at the depth cap", () => {
+    const result = queueDelegation(commsBus, from, {
+      toBotId: target.id,
+      message: "own this",
+      depth: 1,
+      oneWay: true,
+    }, 1);
+    expect(result.result).toBe("ok");
+  });
+
   it("rejects when the target bot does not exist", () => {
     const result = queueDelegation(commsBus, from, {
       toBotId: "ghost",
@@ -130,6 +140,17 @@ describe("queueDelegation", () => {
     }, 1);
     expect(result.result).toBe("no_target");
     expect(_pendingCount(from.threadId)).toBe(0);
+  });
+
+  it("accepts six handoffs per source thread and refuses the seventh", () => {
+    const item = { toBotId: target.id, message: "next task", depth: 0 };
+    for (let index = 0; index < 6; index++) {
+      expect(queueDelegation(commsBus, from, item, 1).result).toBe("ok");
+    }
+    expect(queueDelegation(commsBus, from, item, 1).result).toBe("too_many");
+    expect(_pendingCount(from.threadId)).toBe(6);
+    const sibling = store.createTask(from.id, "Separate work", false)!;
+    expect(queueDelegation(commsBus, from, item, 1, sibling.threadId).result).toBe("ok");
   });
 
   it("queues, broadcasts, and drops a 'Delegated to @Target' chip on the source thread", () => {
@@ -667,6 +688,30 @@ describe("drainDelegations", () => {
     expect(runTargetCalls).toEqual([]);
   });
 
+  it.each(["missing target", "deleted target thread", "deleted source too"] as const)(
+    "reports one-way delivery failure after %s without waking the sender or recreating a thread",
+    async (change) => {
+      const source = store.createTask(from.id, "Source", false)!;
+      const opened = store.createTask(target.id, "Recipient", false)!;
+      const queued = queueDelegation(commsBus, from, {
+        toBotId: target.id, message: "Independent work", depth: 0, oneWay: true,
+        ...(change !== "missing target" ? { targetThreadId: opened.threadId } : {}),
+      }, 1, source.threadId);
+      if (change === "missing target") store.deleteBot(target.id);
+      else store.deleteTask(target.id, opened.threadId);
+      if (change === "deleted source too") store.deleteTask(from.id, source.threadId);
+      const runTarget = vi.fn();
+      const settled = vi.fn();
+      drainDelegations(commsBus, approvalBus, source.threadId, runTarget, settled);
+      await waitFor(() => findDelegationReceipt(queued.id!) && _pendingCount(source.threadId) === 0);
+      expect(runTarget).not.toHaveBeenCalled();
+      expect(settled).not.toHaveBeenCalled();
+      expect(store.messagesFor(opened.threadId)).toEqual([]);
+      if (change === "deleted source too") expect(store.messagesFor(source.threadId)).toEqual([]);
+      else expect(store.messagesFor(source.threadId).some(message => message.tool?.ok === false)).toBe(true);
+    },
+  );
+
   it("auto-allows when alwaysAllow already covers the pair (no card pushed)", async () => {
     store.patchBot(from.id, {
       approvePeerComms: true,
@@ -1148,6 +1193,16 @@ describe("busy waits and expiry", () => {
     expect(findDelegationReceipt(queued.id!)).toMatchObject({ status: "dropped" });
   });
 
+  it("keeps an accepted one-way send when its source turn fails", () => {
+    const opened = store.createTask(target.id, "Owned work", false)!;
+    queueDelegation(commsBus, from, {
+      toBotId: target.id, message: "keep running", depth: 0,
+      targetThreadId: opened.threadId, oneWay: true,
+    }, 1);
+    discardDelegations(commsBus, from.threadId);
+    expect(_pendingCount(from.threadId)).toBe(1);
+  });
+
   it("expires a handoff nobody could take within 24 hours, and wakes the delegator", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     try {
@@ -1503,7 +1558,8 @@ describe("peer wake helpers", () => {
     let now = 1_000_000;
     const budget = new DelegationWakeBudget(() => now);
 
-    for (let i = 0; i < DELEGATION_WAKE_MAX_PER_WINDOW; i++) {
+    expect(DELEGATION_WAKE_MAX_PER_WINDOW).toBe(6);
+    for (let i = 0; i < 6; i++) {
       expect(budget.tryAcquire("t1")).toBe(true);
     }
     // cap reached — no further wakes within the same window

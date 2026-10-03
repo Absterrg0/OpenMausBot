@@ -8,7 +8,7 @@ import type { ModelPicker } from "./ModelPicker";
 const fixture = vi.hoisted(() => {
   vi.stubGlobal("window", {});
   vi.stubGlobal("localStorage", { getItem: () => null, setItem: () => {} });
-  return { dispatch: vi.fn(), showToolCalls: false, platform: "other", localReasonCode: "cua-driver-unavailable", localMessage: "", model: null as ComponentProps<typeof ModelPicker> | null,
+  return { showThreads: true, advanced: true, menus: [] as { ariaLabel: string; items: { key: string; disabled?: boolean; heading?: string; active?: boolean }[] }[], dispatch: vi.fn(), canWrite: null as boolean | null, showToolCalls: false, platform: "other", localReasonCode: "cua-driver-unavailable", localMessage: "", model: null as ComponentProps<typeof ModelPicker> | null,
     approval: null as ComponentProps<typeof ApprovalModeSelector> | null };
 });
 vi.mock("@/state/store", async (importOriginal) => {
@@ -26,6 +26,25 @@ vi.mock("./DesktopCapabilities", async (importOriginal) => ({
   useDesktopCapabilities: () => ({ capabilities: { dictation: { available: false }, host: { packaged: true, platform: fixture.platform }, localComputer: { available: false, reasonCode: fixture.localReasonCode, message: fixture.localMessage } }, ready: true }),
 }));
 vi.mock("@/lib/analytics", () => ({ track: vi.fn() }));
+vi.mock("@/lib/thread-preferences", async (importOriginal) => ({
+  ...await importOriginal<typeof import("@/lib/thread-preferences")>(),
+  useShowThreads: () => fixture.showThreads,
+}));
+vi.mock("@/lib/interface-mode", () => ({ useAdvancedMode: () => fixture.advanced, setAdvancedMode: vi.fn() }));
+// Record every popover menu's items; the trigger still renders so the markup
+// assertions elsewhere in this file see the same header.
+vi.mock("./SidebarPopoverMenu", async (importOriginal) => ({
+  ...await importOriginal<typeof import("./SidebarPopoverMenu")>(),
+  SidebarPopoverMenu: (props: { ariaLabel: string; items: never[]; renderTrigger: (state: { open: boolean }) => unknown }) => {
+    fixture.menus.push({ ariaLabel: props.ariaLabel, items: props.items });
+    return props.renderTrigger({ open: false });
+  },
+}));
+vi.mock("@/lib/cloud-guest", () => ({ useCanWriteIn: () => fixture.canWrite }));
+vi.mock("./CitationUI", async (importOriginal) => ({
+  ...await importOriginal<typeof import("./CitationUI")>(),
+  CitationSelectionToolbar: () => createElement("span", { "data-testid": "citation-toolbar" }),
+}));
 vi.mock("./ModelPicker", () => ({ ModelPicker: (props: ComponentProps<typeof ModelPicker>) => {
   fixture.model = props;
   return createElement("span", { "data-test-model-control": true });
@@ -35,7 +54,7 @@ vi.mock("./ApprovalModeSelector", () => ({ ApprovalModeSelector: (props: Compone
   return createElement("span", { "data-test-approval-control": true });
 } }));
 
-const { ChatView, ErrorRow, claudeUpdateTarget } = await import("./ChatView");
+const { ChatView, ErrorRow, NewConversationInstead, claudeUpdateTarget } = await import("./ChatView");
 afterAll(() => vi.unstubAllGlobals());
 
 const bot: Bot = {
@@ -46,7 +65,60 @@ const bot: Bot = {
     modelSelection: { instanceId: "test", model: "thread-model" }, approvalMode: "ask" }],
 };
 
+describe("Advanced mode in the header menu", () => {
+  const inspector = () => {
+    fixture.menus = [];
+    renderToStaticMarkup(createElement(ChatView, { bot }));
+    const more = fixture.menus.find((menu) => menu.ariaLabel === "More")!;
+    return more.items.find((item) => item.key === "inspector")!;
+  };
+
+  it("keeps the inspector visible but locked, labelled for Advanced mode, in Simple mode", () => {
+    fixture.advanced = false;
+    const item = inspector();
+    expect(item.disabled).toBe(true);
+    expect(item.heading).toBe("In Advanced mode");
+    fixture.advanced = true;
+  });
+
+  it("leaves the inspector exactly as it was in Advanced mode", () => {
+    fixture.advanced = true;
+    const item = inspector();
+    expect(item.disabled).toBeFalsy();
+    expect(item.heading).toBeUndefined();
+  });
+});
+
 describe("thread control placement", () => {
+  it.each([true, false])("leaves All threads to the sidebar in both modes (advanced: %s)", (advanced) => {
+    fixture.advanced = advanced;
+    const markup = renderToStaticMarkup(createElement(ChatView, { bot }));
+    expect(markup).not.toContain('aria-label="All threads"');
+    expect(markup).toContain('data-testid="chat-more"');
+    fixture.advanced = true;
+  });
+
+  it.each([true, false])("calls from the composer beside dictation, not the header (advanced %s)", (advanced) => {
+    fixture.advanced = advanced;
+    const markup = renderToStaticMarkup(createElement(ChatView, { bot }));
+    const header = markup.slice(markup.indexOf("data-chathead-controls"), markup.indexOf("data-composer-row"));
+    expect(header).not.toContain("data-call-button");
+    expect(markup).not.toContain('data-call-button="header"');
+    const actions = markup.slice(markup.indexOf("data-composer-actions"));
+    expect(actions).toContain('data-call-button="composer"');
+    expect(markup.match(/data-call-button=/g)).toHaveLength(1);
+    fixture.advanced = true;
+  });
+
+  it("gives the editor its own row in a narrow chat", () => {
+    const markup = renderToStaticMarkup(createElement(ChatView, { bot }));
+    expect(markup).toContain("@container/composer");
+    const row = /data-composer-row="[^"]*" class="([^"]*)"/.exec(markup)!;
+    expect(row[1]).toContain("@max-[30rem]/composer:flex-wrap");
+    const editor = /class="mention-editor ([^"]*)"/.exec(markup)!;
+    expect(editor[1].split(" ")).toEqual(expect.arrayContaining(["min-w-0", "flex-1", "@max-[30rem]/composer:order-first", "@max-[30rem]/composer:basis-full"]));
+  });
+
   it("keeps the composer inert until the deleted thread's replacement transcript arrives", () => {
     const markup = renderToStaticMarkup(createElement(ChatView, { bot: { ...bot, awaitingThreadSnapshot: true } }));
     expect(markup).toMatch(/<textarea[^>]*disabled=""[^>]*aria-busy="true"/);
@@ -69,6 +141,12 @@ describe("thread control placement", () => {
     expect(markup).toContain("Full access controls tool approvals, not provider safety checks");
     expect(markup).not.toContain("<button");
     expect(renderToStaticMarkup(createElement(ErrorRow, { message: "Network timeout", onRetry: () => {} }))).toContain("<button");
+  });
+  it("directs ChatGPT plan limits to usage settings rather than repeatedly retrying", () => {
+    const markup = renderToStaticMarkup(createElement(ErrorRow, { message: "ChatGPT plan usage limit reached (subscription_sharing_usage_limit_exceeded)", onRetry: () => {} }));
+    expect(markup).toContain("Manage usage");
+    expect(markup).toContain("https://chatgpt.com/settings/usage");
+    expect(markup).not.toContain(">Retry<");
   });
   it("offers to update Claude Code for a too-old install, or hands over the command", () => {
     const claude = { instanceId: "claude", driverKind: "claudeAgent", displayName: "Claude", snapshot: { state: "available", authenticated: true } } as InstanceInfo;
@@ -122,6 +200,28 @@ describe("thread control placement", () => {
       fixture.showToolCalls = false;
     }
   });
+  // A bot saved on a retired model runs another one; with Tool calls off
+  // (the default) the notice saying so was dropped with the tool steps.
+  it.each([false, true])("shows a model notice as a status row when tool calls are %s", (showToolCalls) => {
+    fixture.showToolCalls = showToolCalls;
+    const explanation = "OpenCode no longer offers opencode/x-preview-f-free, so this conversation uses opencode/big-pickle.";
+    const messages: Bot["messages"] = [
+      { id: "read", role: "bot", kind: "activity", at: 1, tool: { name: "Read", ok: true } },
+      { id: "notice", role: "bot", kind: "activity", at: 2, tool: { name: `notice: ${explanation}`, ok: true } },
+      { id: "bash", role: "bot", kind: "activity", at: 3, tool: { name: "Bash", ok: true } },
+      { id: "reply", role: "bot", kind: "text", at: 4, text: "ok" },
+    ];
+    try {
+      const markup = renderToStaticMarkup(createElement(ChatView, { bot: { ...bot, busy: false, messages } }));
+      expect(markup).toContain('data-mid="notice"><div role="status"');
+      expect(markup.match(/no longer offers/g)).toHaveLength(1);
+      expect(markup).not.toContain(`notice: ${explanation}`);
+      if (!showToolCalls) expect(markup).not.toContain('data-testid="tool-activity"');
+    } finally {
+      fixture.showToolCalls = false;
+    }
+  });
+
   it("offers the matching macOS Settings and relaunch actions only for a named CUA permission failure", () => {
     fixture.platform = "darwin";
     fixture.localMessage = "Screen Recording required";
@@ -160,8 +260,35 @@ describe("thread control placement", () => {
     } }));
     // unicode-bidi does not inherit: setting it on the bubble leaves this
     // inner text block LTR. Keep the class directly on the node with prose.
-    expect(markup).toMatch(/<div class="chat-text[^"]*">(?:شغّل|שלום|مرحبا)/);
+    expect(markup).toMatch(/<div class="chat-text[^"]*"[^>]*>(?:شغّل|שלום|مرحبا)/);
     expect(markup).not.toMatch(/class="[^"]*chat-text[^"\n]*bg-bubble-user/);
+  });
+
+  it("wraps the header into a name line and a chip line when the column is narrow", () => {
+    // On a phone, or with a panel beside the chat, the header's chip group
+    // cannot shrink: the name truncated to nothing and the rename pencil
+    // landed under the export button. Below 30rem the header wraps instead.
+    // The query lives on the container's child row: a container query never
+    // matches the container element itself. (Approach from #1289.)
+    const markup = renderToStaticMarkup(createElement(ChatView, { bot: { ...bot, busy: false } }));
+    expect(markup).toContain("@container/chathead");
+    const row = /data-chathead-row="[^"]*" class="([^"]*)"/.exec(markup)!;
+    expect(row[1].split(" ")).toContain("@max-[30rem]/chathead:flex-wrap");
+    const identity = /data-chathead-identity="[^"]*" class="([^"]*)"/.exec(markup)!;
+    expect(identity[1].split(" ")).toEqual(expect.arrayContaining(["min-w-0", "@max-[30rem]/chathead:basis-full"]));
+    const controls = /data-chathead-controls="[^"]*" class="([^"]*)"/.exec(markup)!;
+    expect(controls[1].split(" ")).toEqual(expect.arrayContaining(["shrink-0", "@max-[30rem]/chathead:ml-auto", "@max-[30rem]/chathead:flex-wrap"]));
+  });
+
+  it("keeps the Chief of Staff badge on one line instead of stacking a word per line", () => {
+    // #1871: the badge shrank with the name and wrapped "Chief / of / Staff",
+    // taller than the header row.
+    const markup = renderToStaticMarkup(createElement(ChatView, { bot: { ...bot, busy: false, chiefOfStaff: true } }));
+    const badge = /<span title="Chief of Staff" class="([^"]*)"><svg[^>]*lucide-crown[^]*?<\/svg> <span class="([^"]*)">Chief of Staff<\/span>/.exec(markup)!;
+    expect(badge[1].split(" ")).toEqual(expect.arrayContaining(["shrink-0", "whitespace-nowrap"]));
+    // In a narrow column it folds to the crown, so the name keeps the room;
+    // the label stays for screen readers and as the tooltip.
+    expect(badge[2].split(" ")).toContain("@max-4xl/chathead:sr-only");
   });
 
   it("keeps the selected thread's model in the header and permissions inside the composer pill", () => {
@@ -184,5 +311,68 @@ describe("thread control placement", () => {
     expect(markup).not.toContain("data-test-model-control");
     expect(markup).not.toContain("data-test-approval-control");
     delete window.ogb;
+  });
+
+  it.each([true, false])("pins a place per conversation from the composer only in Advanced (advanced: %s)", (advanced) => {
+    fixture.advanced = advanced;
+    const markup = renderToStaticMarkup(createElement(ChatView, { bot }));
+    const pill = markup.slice(markup.indexOf("rounded-3xl bg-composer"), markup.indexOf("<textarea"));
+    expect(pill.match(/data-testid="place-chip"/g) ?? []).toHaveLength(advanced ? 1 : 0);
+    // Nowhere else in the chat either: Simple follows the bot's Works on.
+    expect(markup.includes("Where this conversation works")).toBe(advanced);
+    fixture.advanced = true;
+  });
+});
+
+// A polite live region on the whole transcript re-reads every change: the
+// ticking "Thinking 3s", each activity label, every chip. The log stays a
+// landmark people can browse, and one quiet status line speaks when a
+// reply is done or an approval is waiting.
+describe("screen reader announcements", () => {
+  it("keeps the transcript log out of live announcements", () => {
+    const markup = renderToStaticMarkup(createElement(ChatView, { bot }));
+    expect(markup).toMatch(/role="log" aria-live="off" aria-label="Conversation with Pepper"/);
+  });
+
+  it("does not make the working label a second live region", async () => {
+    const { TurnPresence } = await import("./TurnPresence");
+    const markup = renderToStaticMarkup(createElement(TurnPresence, { avatar: null, visible: true, label: "Running a command", since: 1 }));
+    expect(markup).toContain("Running a command");
+    expect(markup).not.toMatch(/thinking-shimmer[^"]*" aria-live/);
+  });
+
+  it("renders one visually hidden status line for finished replies", () => {
+    const markup = renderToStaticMarkup(createElement(ChatView, { bot }));
+    expect(markup.match(/data-testid="transcript-announcer"/g)).toHaveLength(1);
+    expect(markup).toMatch(/<p role="status" aria-live="polite" aria-atomic="true" class="sr-only" data-testid="transcript-announcer">/);
+  });
+});
+
+// On an OMB Cloud home a guest writes only in conversations it opened: in
+// any other, one button starts its own instead of a send that fails.
+describe("a guest's composer on a Cloud home", () => {
+  it("offers a new conversation in one click, with no dialog", () => {
+    const onNew = vi.fn();
+    const markup = renderToStaticMarkup(createElement(NewConversationInstead, { onNew }));
+    expect(markup).toContain("You can only write in conversations you started on this Cloud.");
+    expect(markup).toContain(">New conversation<");
+    expect(markup).not.toContain("<textarea");
+    const tree = NewConversationInstead({ onNew }) as { props: { children: Array<{ type: string; props: { onClick?: () => void } }> } };
+    tree.props.children.find((child) => child.type === "button")!.props.onClick!();
+    expect(onNew).toHaveBeenCalledOnce();
+  });
+
+  it("takes the composer's place only where the device may not write", () => {
+    fixture.canWrite = false;
+    const refused = renderToStaticMarkup(createElement(ChatView, { bot }));
+    expect(refused).toContain('data-testid="cloud-guest-composer"');
+    expect(refused).not.toContain("<textarea");
+    expect(refused).not.toContain('data-testid="citation-toolbar"');
+    fixture.canWrite = true;
+    const allowed = renderToStaticMarkup(createElement(ChatView, { bot }));
+    expect(allowed).not.toContain('data-testid="cloud-guest-composer"');
+    expect(allowed).toContain("<textarea");
+    expect(allowed).toContain('data-testid="citation-toolbar"');
+    fixture.canWrite = null;
   });
 });

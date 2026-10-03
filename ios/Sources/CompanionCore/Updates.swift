@@ -4,27 +4,47 @@
 // stopped and needs an answer, a bot mid-turn, and a bot that finished with
 // something you have not read. A bot that is idle and read is not an update
 // and never appears here; that is what the roster below is for.
+//
+// The computation lives in Core rather than the app target so the Updates
+// sheet, the Live Activity, and home-screen widgets all consume one
+// definition of "what needs you" and can never disagree; ChatUpdate is
+// Codable so the same value can serialize into a widget snapshot.
 import Foundation
-import CompanionCore
 
-struct ChatUpdate: Identifiable, Hashable {
-    enum Kind: Int, Comparable {
+public struct ChatUpdate: Identifiable, Hashable, Codable {
+    public enum Kind: Int, Comparable, Codable, Sendable {
         case needsYou = 0, working, toReview
-        static func < (a: Kind, b: Kind) -> Bool { a.rawValue < b.rawValue }
+        public static func < (a: Kind, b: Kind) -> Bool { a.rawValue < b.rawValue }
     }
 
-    let chat: Chat
-    let kind: Kind
+    public let chat: Chat
+    public let kind: Kind
     /// One line under the name — the question, what it is doing, or what it said.
-    let line: String
+    public let line: String
     /// The card to answer, when `kind == .needsYou`.
-    let card: OptionCard?
+    public let card: OptionCard?
 
-    var id: String { chat.conversationID }
+    public var id: String { chat.conversationID }
+
+    /// The options a compact surface may offer as one-tap answers: a live
+    /// ask with a real card, minus SKILL.md requests, which must be read in
+    /// the chat before they enable anything. The Updates sheet's pills and
+    /// the widgets' buttons share this one rule, so they can never disagree
+    /// about what is answerable.
+    public var answerOptions: [String] {
+        Self.answerOptions(kind: kind, card: card)
+    }
+
+    /// The rule behind `answerOptions`, in the form a snapshot row can also
+    /// reach: it sees the kind and the card, nothing else.
+    public static func answerOptions(kind: Kind, card: OptionCard?) -> [String] {
+        guard kind == .needsYou, let card, card.isPending, card.skillRequest == nil else { return [] }
+        return card.options
+    }
 }
 
 extension CompanionState {
-    var updates: [ChatUpdate] {
+    public var updates: [ChatUpdate] {
         var out: [ChatUpdate] = []
         var seen = Set<String>()
 
@@ -69,7 +89,7 @@ extension CompanionState {
         return out.sorted { $0.kind < $1.kind }
     }
 
-    func chat(forThread threadId: String) -> Chat? {
+    public func chat(forThread threadId: String) -> Chat? {
         if let bot = bot(forThread: threadId) { return .bot(bot) }
         if let room = room(forThread: threadId) { return .room(room) }
         return nil
@@ -107,6 +127,7 @@ extension CompanionState {
         case .screen: return "Screenshot"
         case .digest: return ""
         case .compaction: return last.compaction?.chipText ?? last.text ?? ""
+        case .routineRun: return last.routineRun?.previewLine ?? last.text ?? ""
         }
     }
 }

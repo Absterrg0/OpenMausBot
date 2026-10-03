@@ -6,6 +6,7 @@
 // readable.
 
 import type { ApprovalMode } from "../shared/approval-mode.ts";
+import type { ToolScope } from "../shared/tool-scope.ts";
 import type { EffortLevel } from "../shared/wire.ts";
 import type {
   DriverKind, InstanceId, ModelVariantOption, RuntimeEventListener, ThreadId, TurnId,
@@ -27,6 +28,8 @@ export type ProviderErrorCode =
   | "missing_cli"
   | "invalid_credentials"
   | "inactive_subscription"
+  /** The account has no credit left for a pay-as-you-go model. */
+  | "insufficient_funds"
   | "quota_or_region_restriction"
   | "upstream_outage"
   | "model_catalog_outage";
@@ -86,6 +89,9 @@ export interface InstanceConfig {
   icon?: ProviderIcon;
   environment?: Record<string, string>;
   enabled?: boolean;
+  /** Picker group for this instance, over its driver's default: an
+   * `openai-compat` instance on a provider's own key is "api", not "custom". */
+  access?: EngineAccess;
   config?: unknown;
 }
 
@@ -116,6 +122,17 @@ export interface SendTurnInput {
   /** Per-bot approval policy, reasserted by providers on every turn so a
    * resumed native session cannot retain a stale, more permissive mode. */
   approvalMode?: ApprovalMode;
+  /** Fresh owner selection, independent of execution approval and resume state. */
+  toolScope?: ToolScope;
+  /** A guest drives this turn on an OMB Cloud home: it runs with no shell
+   * or command execution and reads nothing outside its own folder. Sent
+   * only to a driver whose capabilities.guestTurns is "confined"; the harness
+   * refuses the turn for any other (docs/cloud-pro.md). */
+  guestConfined?: boolean;
+  /** Why this turn is confined, in the owner's words, for a refusal to end
+   * with (on a personal Cloud home, what came before it: a routine or a
+   * conversation from before this update). */
+  confinedWhy?: string;
   /** Images attached to this user turn only. They are deliberately kept out
    * of replay transcripts: the provider's native session owns earlier image
    * context, while a fresh replay retains the visible attachment marker. */
@@ -324,6 +341,11 @@ export interface ProviderAdapter {
      * engine (integrations.hooks). Only Claude Code today; other engines
      * deliver the same information through their protocols. */
     hooks?: boolean;
+    /** How a guest-driven turn on an OMB Cloud home can run on this engine:
+     * "confined" = sendTurn honours `guestConfined` (no shell or command
+     * execution, no reads outside its folder). Absent: such a turn is
+     * refused. */
+    guestTurns?: "confined";
   };
   sendTurn(input: SendTurnInput): Promise<TurnStartResult>;
   interruptTurn(threadId: ThreadId, turnId?: TurnId): Promise<void>;
@@ -367,6 +389,9 @@ export type SteerOutcome = "steered" | "refused" | "indeterminate";
 
 // ── provider snapshot (upstream ServerProviderShape, reduced) ────────────
 export interface ProviderSnapshot {
+  /** Separate, explicitly authorized ChatGPT-plan billing (not Codex login). */
+  chatgptPlan?: boolean;
+  authenticationUnavailableReason?: string;
   state: "available" | "unavailable";
   reason?: string;
   authenticated?: boolean;
@@ -419,6 +444,9 @@ export interface EngineInstall {
     label: string;
     downloadBytes: number;
   };
+  /** Set up inside the app rather than in a terminal: the engine needs a key
+   * saved under Settings → API keys, and the setup card links there. */
+  settings?: "connections";
   /** Settings can install or update this engine on the machine running the
    * server, as the server's own user, into a directory the app owns. Set by
    * the registry when the install one-liner is an npm package and npm is on
@@ -503,6 +531,19 @@ export interface DriverCreateInput<Config> {
   config: Config;
 }
 
+export interface TextGenerationUsage {
+  model: string;
+  input?: number;
+  output?: number;
+  cachedInput?: number;
+  costUsd?: number;
+}
+
+export interface TextGenerationOptions {
+  signal?: AbortSignal;
+  onUsage?: (usage: TextGenerationUsage) => void;
+}
+
 export interface ProviderInstance {
   readonly instanceId: InstanceId;
   readonly driverKind: DriverKind;
@@ -514,6 +555,7 @@ export interface ProviderInstance {
   /** Optional first-party runtime installation and account setup. */
   readonly installRuntime?: () => Promise<void>;
   readonly startAuthentication?: () => Promise<ProviderAuthenticationStart>;
+  readonly authenticationMethod?: "browser-pkce";
   readonly getAuthentication?: (flowId: string) => Promise<ProviderAuthenticationStatus>;
   readonly completeAuthentication?: (flowId: string, callbackUrl: string) => Promise<void>;
   readonly cancelAuthentication?: () => Promise<void>;
@@ -525,7 +567,7 @@ export interface ProviderInstance {
   /** Cheap one-shot text call (upstream TextGeneration) — titles, summaries.
    * The signal is a best-effort cap: drivers that can honor it abort the
    * underlying provider call; the rest keep their own timeout. */
-  generateText?(prompt: string, options?: { signal?: AbortSignal }): Promise<string>;
+  generateText?(prompt: string, options?: TextGenerationOptions): Promise<string>;
   /** Isolated, tool-free permission review on this same provider. Kept
    * separate from generateText so the UI never infers a security capability
    * from a generic helper that may expose prompts in argv or lack approvals. */

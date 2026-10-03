@@ -26,6 +26,22 @@ export const scriptedTurnSchema = z.object({
   fail: z.boolean().optional(),
 });
 
+/** A fixture skill for the skill bench: the manifest shape the server's
+ * user-skill loader reads (DATA_DIR/skills/<id>/manifest.json) plus the
+ * SKILL.md body, as pure data. The installSkill step materializes it under
+ * the booted world's data dir; user skills hot-load every turn, so later
+ * sends in the same run see it without a server restart. */
+export const fixtureSkillSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  version: z.string(),
+  description: z.string(),
+  defaultEnabled: z.boolean().default(true),
+  triggerTerms: z.array(z.string()).min(1),
+  requiredCapabilities: z.array(z.string()).default([]),
+  skillMd: z.string(),
+});
+
 export const scenarioBotSchema = z.object({
   /** Referenced from steps and scripted arguments as "@key". */
   key: z.string(),
@@ -51,9 +67,18 @@ export const stepSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("snapshotRoutineRun"), routine: z.string(), saveAs: z.string() }),
   z.object({ kind: z.literal("waitForRoutineRun"), routine: z.string(), status: z.string(), timeoutMs: z.number().optional() }),
   z.object({ kind: z.literal("writeGate"), gate: z.string() }),
+  /** Materializes a fixture skill as a user skill under the world's data
+   * dir. The skill bench uses it to run the same prompt with the skill
+   * installed and without it; ordinary scenarios can pin skill-delivery
+   * behavior the same way. */
+  z.object({ kind: z.literal("installSkill"), skill: fixtureSkillSchema }),
   /** Applied before the first turn: pins admission preconditions (for
    * example threads.maxConcurrentPerBot) the scenario's behavior needs. */
   z.object({ kind: z.literal("setConfig"), config: z.record(z.string(), z.unknown()) }),
+  /** Replaces a bot's library skill assignments wholesale (the Skills
+   * surface's PUT), so a scenario can prove an assignment change alters
+   * what the next turn sees. */
+  z.object({ kind: z.literal("setSkillAssignment"), bot: z.string(), skills: z.array(z.string()) }),
   z.object({ kind: z.literal("setVmState"), state: z.record(z.string(), z.unknown()) }),
   z.object({ kind: z.literal("consumeDump"), timeoutMs: z.number().optional() }),
   z.object({ kind: z.literal("captureComputer"), bot: z.string() }),
@@ -68,6 +93,7 @@ export const assertionSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("toolNames"), bot: z.string(), equals: z.array(z.string()) }),
   z.object({ kind: z.literal("turnOrder"), bots: z.array(z.string()) }),
   z.object({ kind: z.literal("systemPromptIncludes"), bot: z.string(), turn: z.number().int(), includes: z.string() }),
+  z.object({ kind: z.literal("systemPromptOmits"), bot: z.string(), turn: z.number().int(), omits: z.string() }),
   z.object({ kind: z.literal("promptIncludes"), bot: z.string(), turn: z.number().int(), includes: z.string() }),
   z.object({
     kind: z.literal("handoffTree"),
@@ -105,6 +131,9 @@ export const scenarioSchema = z.object({
   world: z.enum(["coordination", "localVm"]),
   /** Gate keys the scenario uses; the runner materializes each as a file. */
   gates: z.array(z.string()).default([]),
+  /** Library skills the runner installs before any turn (approved, as a
+   * reviewed import would be), under features.skillsLibrary. */
+  librarySkills: z.array(z.object({ name: z.string(), instructions: z.string() })).default([]),
   bots: z.array(scenarioBotSchema),
   steps: z.array(stepSchema),
   assertions: z.array(assertionSchema),
@@ -115,6 +144,7 @@ export const scenarioSchema = z.object({
 
 export type ScriptedToolCall = z.infer<typeof scriptedToolCallSchema>;
 export type ScriptedTurn = z.infer<typeof scriptedTurnSchema>;
+export type FixtureSkill = z.infer<typeof fixtureSkillSchema>;
 export type ScenarioBot = z.infer<typeof scenarioBotSchema>;
 export type Step = z.infer<typeof stepSchema>;
 export type Assertion = z.infer<typeof assertionSchema>;

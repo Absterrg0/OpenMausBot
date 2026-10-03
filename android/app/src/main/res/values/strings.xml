@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">MausBot</string>
+    <string name="app_name" translatable="false">MausBot</string>
     <string name="notification_channel_blocking">Approvals and questions</string>
     <string name="notification_channel_blocking_desc">Time-sensitive prompts that need an answer</string>
     <string name="notification_channel_done">Bot messages</string>
@@ -763,4 +763,11 @@
     <string name="mobile_until_6_pm">Until 6 PM</string>
     <string name="mobile_until_9_am_tomorrow">Until 9 AM tomorrow</string>
     <string name="mobile_pairing_code_placeholder">6-digit or ABCD-EFGH-JKLM code</string>
+    <string name="mobile_threads_list">Threads list</string>
+    <string name="mobile_list_density">List density</string>
+    <string name="mobile_change_list_density">Change list density</string>
+    <string name="mobile_density_comfortable">Comfortable</string>
+    <string name="mobile_density_compact">Compact</string>
+    <string name="mobile_density_comfortable_caption">Larger faces, with each bot\'s latest message under its name.</string>
+    <string name="mobile_density_compact_caption">One line per bot. Bots with more than one active thread show how many; tap the number to list them.</string>
 </resources>

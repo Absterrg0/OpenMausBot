@@ -13,8 +13,10 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import type { BotVisibility, CloudBackend, ConnectorToolGrant, EffortLevel, InstalledPackageMetadata, ServerFrame, GroupThreadUsage, SteerQueueReason } from "../../shared/wire";
+import { flushSync } from "react-dom";
+import type { BotVisibility, CardAnswerer, CloudBackend, ConnectorToolGrant, EffortLevel, InstalledPackageMetadata, LiveCallState, LiveSettings, ServerFrame, GroupThreadUsage, SteerQueueReason } from "../../shared/wire";
 import type { TurnDigest } from "../../shared/digest";
+import type { ToolScope } from "../../shared/tool-scope";
 import type { ModelVariantOption, RuntimeEvent } from "../../shared/runtime-events";
 import type { MausColor, MausMotion } from "@/lib/mascot";
 import type { BotAvatarCrop } from "../../shared/bot-avatar";
@@ -33,6 +35,7 @@ import {
 } from "../../shared/skill-request";
 import type { Routine, RoutineInput, RoutineRun, RoutineRunStatusFilter } from "@/lib/routines";
 import type { WebhookAttempt, WebhookIngressStatus, WebhookTrigger } from "@/lib/webhooks";
+import { botShowsUnread } from "@/lib/bot-unread";
 import { answerResponse, dismissResponse } from "@/lib/card-answer";
 import { currentCall } from "@/lib/call";
 import { showNotification, type NotificationTarget } from "@/lib/notify";
@@ -69,6 +72,8 @@ export interface OptionCardData {
   title: string;
   subtitle: string;
   options: string[];
+  /** Distinguishes a provider question from an approval after its live run ends. */
+  requestType?: "permission" | "question";
   /** what each option means, keyed by its label — a question that came with
    * explanations (AskUserQuestion) shows them under the buttons. Kept beside
    * `options` rather than inside it so every existing reader of the plain
@@ -82,6 +87,8 @@ export interface OptionCardData {
   /** The words an answered question card was answered with — `answered`
    * only holds the behavior once the server settles a live ask. */
   answeredText?: string;
+  /** Who settled the card; `via: "call"` when it was decided by voice on a Live call. */
+  answeredBy?: CardAnswerer;
   dismissed?: boolean;
   /** Present when this card is a live provider ask (approval/question). */
   requestId?: string;
@@ -171,8 +178,9 @@ export interface Message {
   tool?: { name: string; ok?: boolean; spoken?: string; setup?: boolean; claudeUpdate?: boolean; summary?: string; input?: string; output?: string ; itemId?: string; outputPath?: string; fullResult?: boolean };
   /** user messages sent into a running turn — the model saw it mid-turn */
   steered?: boolean;
-  /** a user message that arrived through the server's API, not typed here */
-  via?: "api";
+  /** a user message that did not come from typing here: through the
+   * server's API, or spoken during a Live call. */
+  via?: "api" | "call";
   /** Provider turn that produced this message. */
   turnId?: string;
   /** Last assistant text item from a settled provider turn. */
@@ -207,12 +215,11 @@ export interface Message {
   /** steer-queue entry this drained user line came from. Pending chips
    * match on this id, not on equal text. Absent on ordinary sends. */
   queueId?: string;
+  /** Auto rooms: the decision model picked this reply's speaker. */
+  routedBy?: import("../../shared/wire").WireMessage["routedBy"];
 }
 
-export type GroupDefaultResponder =
-  | { kind: "member"; botId: string }
-  | { kind: "everyone" }
-  | { kind: "mentions" };
+export type GroupDefaultResponder = import("../../shared/wire").GroupDefaultResponder;
 
 /** A room: several bots + you in one shared thread. */
 export interface Group {
@@ -310,6 +317,11 @@ export interface Task {
    * composer, or by its first Auto turn to the place it reached. Wins over
    * the bot's Works on (except Off); absent = follows the bot. */
   surface?: "cloud" | "vm" | "local" | "browser";
+  /** true when that pin is the machine's own record (an Auto turn's landing
+   * place or the bot's select_computer choice), which the next Works on
+   * change moves; absent on a person's pin or one older than the server's
+   * record of who set it. Server-derived. */
+  surfaceAuto?: true;
   /** set when a bot (not the person) started this thread — its own or a
    * teammate's; the sidebar shows a quiet "opened by <name>" under the title */
   openedBy?: ThreadOpener;
@@ -359,6 +371,8 @@ export interface TaskUsage {
 }
 
 export interface Bot {
+  /** Owner selection, independent of engine approval mode. */
+  toolScope?: ToolScope;
   waitingForTeammates?: boolean;
   id: string;
   threadId: string;
@@ -390,7 +404,7 @@ export interface Bot {
   unread: boolean;
   busy?: boolean;
   /** what the bot is doing, as the harness sees it; busy is derived from it */
-  activity?: "working" | "waiting-on-you" | "idle" | "no-signal" | "dead";
+  activity?: "working" | "waiting-on-you" | "idle" | "no-signal" | "dead" | "parked.computer";
   /** The selected thread's turn-start anchor (epoch ms) while busy, else null;
    * fed to the Thinking timer so elapsed time survives thread switches. */
   turnStartedAt?: number | null;
@@ -416,6 +430,8 @@ export interface Bot {
   voice?: string;
   /** whether this bot may send voice notes (on unless switched off) */
   voiceNotes?: boolean;
+  /** whether this bot uses native memory (on unless switched off) */
+  memoryEnabled?: boolean;
   pinned?: boolean;
   hidden?: boolean;
   /** Sidebar section this bot renders under; absent = unsectioned. */
@@ -442,6 +458,9 @@ export interface Bot {
   connectorTools?: Record<string, ConnectorToolGrant>;
   /** Whether this bot gets the app's built-in browser (Browser tab). On unless switched off. */
   browser?: boolean;
+  /** Memory upkeep (Bot settings → Memory): background capture and the
+   * nightly tidy-up. On unless explicitly false. */
+  memoryUpkeep?: boolean;
   /** Which app-wide MCP servers (Plugins → MCP servers) this bot mounts, by
    * name. Absent = every enabled server; [] = none (null clears over PATCH). */
   mcpServers?: string[] | null;
@@ -512,7 +531,8 @@ function taskPatchFields(patch: TaskUpdatePatch): Partial<Task> {
     ...(projectId === undefined ? {} : { projectId: projectId ?? undefined }),
     ...(archivedAt === undefined ? {} : { archivedAt: archivedAt ?? undefined }),
     ...(snoozedUntil === undefined ? {} : { snoozedUntil: snoozedUntil ?? undefined }),
-    ...(surface === undefined ? {} : { surface: surface ?? undefined }),
+    // A person's pin or unpin is never the machine's record.
+    ...(surface === undefined ? {} : { surface: surface ?? undefined, surfaceAuto: undefined }),
     ...(pinned === undefined ? {} : { pinned: pinned ? true : undefined }) };
 }
 
@@ -591,7 +611,11 @@ export function messageVersions(bot: Bot, message: Message): Message[] {
 export interface ConfigStatus {
   xai?: { configured: boolean };
   mistral?: { configured: boolean };
-  anthropic?: { configured: boolean };
+  cerebras?: { configured: boolean };
+  /** `everyClaudeBot`: the key runs every Claude bot, not only "Claude (API key)". */
+  anthropic?: { configured: boolean; everyClaudeBot?: boolean };
+  openai?: { configured: boolean };
+  openrouter?: { configured: boolean };
   openaiCompat?: { configured: boolean; url?: string };
   /** what this server is entitled to; Settings shows only what works here.
    * `license` reaches admins only, and only while the key is inside its
@@ -606,14 +630,15 @@ export interface ConfigStatus {
   budgets?: { monthlyUsd?: number; warnAtPercent?: number };
   billing?: { currency?: string; prices?: Record<string, { inputPerMillion: number; outputPerMillion: number; cachedInputPerMillion?: number }> };
   composio: { configured: boolean; mode?: "managed" | "self-hosted" | "unavailable" };
-  box: { configured: boolean };
+  /** `included`: cloud computers come with Cloud Pro, no key is saved. */
+  box: { configured: boolean; included?: boolean };
   vps: { configured: boolean; sshAlias: string };
   rooms: { turnTimeoutMinutes: number };
   /** Workspace defaults for new bots; absent effort = no level is sent. */
   newBots?: { effort?: EffortLevel };
   threads?: { maxConcurrentPerBot: number; eventLogMaxBytes?: number; eventLogRetentionDays?: number };
   automaticRecovery?: { enabled: boolean; backup?: ModelSelection };
-  localVm: { mode: "shared" | "per-bot"; maxInstances: number };
+  localVm: { mode: "shared" | "per-bot" | "pool"; maxInstances: number; idleTimeoutMinutes?: number };
   opencodeGo?: { configured: boolean };
   /** Voice. `configured` = the engine has what it needs (an ElevenLabs or
    * Fish Audio key, or a Chatterbox server address); `ready` = that AND a voice, which is
@@ -626,7 +651,24 @@ export interface ConfigStatus {
     provider?: "elevenlabs" | "fish" | "system" | "chatterbox" | "xai";
     baseUrl?: string;
     model?: string;
+    /** Fish Audio speech model; present only while Fish is the provider. */
+    fishModel?: "s2.1-pro" | "s2.1-pro-free";
+    /** ElevenLabs voice comes with Cloud Pro; no key is saved. */
+    included?: boolean;
   };
+  /** The decision model: switches and whether a key is on file. The key
+   * itself never comes back. `enabled` is the switch as it takes effect
+   * (off while no key is saved). `included`: Cloud Pro's decisions, no key
+   * saved. */
+  decider?: {
+    provider: "jev";
+    configured: boolean;
+    included?: boolean;
+    enabled: boolean;
+    jobs: { roomRouting: boolean };
+  };
+  /** Live calls (OpenAI GPT-Live): configured-or-not, never the key. */
+  live?: LiveSettings;
   /** Shared write-only credential for on-demand GPT Image avatars. */
   imageGen?: {
     configured: boolean;
@@ -643,7 +685,7 @@ export interface ConfigStatus {
   /** UI language override; "" (or absent) follows the system language. */
   language?: string;
   /** Opt-in flags. Absent means off. */
-  features?: { skillAuthoring: boolean; showToolCalls?: boolean; browser?: boolean; sharedComputers?: boolean; claudeUserMcp?: boolean };
+  features?: { skillAuthoring: boolean; showToolCalls?: boolean; browser?: boolean; sharedComputers?: boolean; claudeUserMcp?: boolean; llmThreadTitles?: boolean; skillsLibrary?: boolean };
   /** First-run progress: whether the welcome tour was finished and which
    * one-time hints were dismissed. Server-owned so it follows the workspace. */
   onboarding?: OnboardingStatus;
@@ -655,6 +697,9 @@ export interface ConfigStatus {
   /** The enrolled organisation's read-only desktop policy; null when this
    * desktop is not enrolled or its Admin sends no policy. */
   managedPolicy?: ManagedPolicySummary | null;
+  /** This server is an OMB Cloud home: it offers no "this computer" and no
+   * Local VM (server/cloud-home.ts). Absent everywhere else. */
+  cloudHome?: boolean;
 }
 
 export interface ManagedPolicySummary {
@@ -690,14 +735,17 @@ export interface BrowserProfile {
 // Settings shows (a saved key's Test button used to vanish that way).
 export type ConfigStatusFrame = Pick<
   ConfigStatus,
-  "xai" | "mistral" | "anthropic" | "openaiCompat" | "fleet" | "composio" | "box" | "vps" | "rooms" | "threads" | "automaticRecovery" | "localVm" | "opencodeGo" | "tts" | "imageGen" | "profile" | "language" | "features" | "onboarding" | "browserEngine" | "browserProfiles" | "edition" | "budgets" | "billing" | "managedPolicy"
+  "xai" | "mistral" | "cerebras" | "anthropic" | "openai" | "openrouter" | "openaiCompat" | "fleet" | "composio" | "box" | "vps" | "rooms" | "threads" | "automaticRecovery" | "localVm" | "opencodeGo" | "tts" | "decider" | "imageGen" | "live" | "profile" | "language" | "features" | "onboarding" | "browserEngine" | "browserProfiles" | "edition" | "budgets" | "billing" | "managedPolicy" | "cloudHome"
 >;
 
 export function configStatusFromFrame(frame: ConfigStatusFrame): ConfigStatus {
   return {
     xai: frame.xai,
     mistral: frame.mistral,
+    cerebras: frame.cerebras,
     anthropic: frame.anthropic,
+    openai: frame.openai,
+    openrouter: frame.openrouter,
     openaiCompat: frame.openaiCompat,
     fleet: frame.fleet,
     composio: frame.composio,
@@ -709,7 +757,9 @@ export function configStatusFromFrame(frame: ConfigStatusFrame): ConfigStatus {
     localVm: frame.localVm,
     opencodeGo: frame.opencodeGo,
     tts: frame.tts,
+    decider: frame.decider,
     imageGen: frame.imageGen,
+    live: frame.live,
     profile: frame.profile,
     language: frame.language,
     features: frame.features,
@@ -720,6 +770,7 @@ export function configStatusFromFrame(frame: ConfigStatusFrame): ConfigStatus {
     budgets: frame.budgets,
     billing: frame.billing,
     managedPolicy: frame.managedPolicy,
+    ...(frame.cloudHome ? { cloudHome: true } : {}),
   };
 }
 
@@ -734,6 +785,8 @@ export interface EngineInstall {
   managed?: { label: string; downloadBytes: number };
   /** the server can install or update this engine itself, no terminal */
   server?: { package: string };
+  /** configured with a key in Settings → API keys, not in a terminal */
+  settings?: "connections";
 }
 
 /** One row of GET /api/instances — the model picker's data. */
@@ -754,6 +807,8 @@ export interface InstanceInfo {
     state: "available" | "unavailable";
     reason?: string;
     authenticated?: boolean;
+    chatgptPlan?: boolean;
+    authenticationUnavailableReason?: string;
     account?: { email?: string; organization?: string; method?: "login" | "api-key" };
     version?: string | null;
     /** A newer provider version unlocks capabilities, but this installed
@@ -791,7 +846,7 @@ export interface InstanceInfo {
   /** `custom` agents sit below the rail divider — no subscription catalog. */
   access?: "subscription" | "custom" | "api";
   /** `signOut`: the browser may remove the stored sign-in to switch accounts. */
-  authentication?: { method: "device-code" | "paste-code" | "browser"; signOut?: boolean };
+  authentication?: { method: "device-code" | "paste-code" | "browser" | "browser-pkce"; signOut?: boolean };
   install?: EngineInstall;
   /** Configured CLI path override — set ONLY when the user overrode it;
    * absent means the driver default is in effect. */
@@ -802,6 +857,9 @@ export interface InstanceInfo {
   cliCandidates?: string[];
   /** Server-owned Claude profile; a saved directory does not prove sign-in. */
   claudeAccount?: { configDir: string; signInCommand: string; signInShell: "powershell" | "sh"; isDefault: boolean };
+  /** This engine can leave large temporary files behind on this server
+   * (Antigravity on Windows); Settings offers to clear them. */
+  freeUpSpace?: boolean;
 }
 
 export type AppSettingsSection =
@@ -812,6 +870,7 @@ export type AppSettingsSection =
   | "appearance"
   | "experimental"
   | "connections"
+  | "decisionModel"
   | "engines"
   | "companion"
   | "remote"
@@ -820,7 +879,8 @@ export type AppSettingsSection =
   | "people"
   | "activity"
   | "backups"
-  | "workspaces";
+  | "workspaces"
+  | "skills";
 
 export type BotSettingsSection =
   | "overview"
@@ -856,6 +916,16 @@ export interface AppState {
   /** Session discoveries stay with their conversation and never enter persisted settings. */
   modelVariantSessions: Record<string, ModelVariantSession>;
   config: ConfigStatus | null;
+  /** The Live call the harness is running, including a call that has just
+   * ended; null when no call is known. Follows `live.call` SSE frames and
+   * the initial `/api/live/call` snapshot. */
+  liveCall: LiveCallState | null;
+  /** Counts the `live.call` frames folded in, so a `/api/live/call` lookup
+   * that was out while one landed is known to be older news. */
+  liveCallVersion: number;
+  /** The request order of the newest lookup answer applied: an earlier
+   * lookup that comes back after it is older news too. */
+  liveCallLookupSeq: number;
   /** selected chat — a bot id OR a group id */
   selectedId: string;
   activeView: "chat" | "team-map" | "routines";
@@ -871,6 +941,9 @@ export interface AppState {
   /** Which tab the Plugins panel opens on; "mcp" when a bot's tools
    * sent the user there to add a server. */
   pluginsSurface: "apps" | "mcp";
+  /** The Triggers pop-up (webhooks, as a sentence: when this happens, that
+   * bot should…). */
+  triggersOpen: boolean;
   /** The "New bot" role picker. */
   newBotOpen: boolean;
   /** Creation continues even when the role picker is dismissed. */
@@ -880,6 +953,14 @@ export interface AppState {
   inspectorOpen: boolean;
   appSettingsOpen: boolean;
   appSettingsSection: AppSettingsSection;
+  /** Non-zero while Settings → OMB Cloud is open because of the Cloud page's
+   * openmausbot://cloud link; each link counts up. Any other
+   * toggleAppSettings (another section, the same one by hand, closing) sets 0. */
+  appSettingsCloudLink: number;
+  /** Counts up each time Settings opens on the phone pairing ("Connect your
+   * phone"): Remote access scrolls to the pairing that fits this window and
+   * focuses the button that shows the code. Any other toggleAppSettings sets 0. */
+  appSettingsPhonePairing: number;
   shortcutsOpen: boolean;
   /** the first-run welcome tour, also replayable from Settings → General */
   welcomeOpen: boolean;
@@ -901,7 +982,7 @@ export interface AppState {
   computerControl: Record<string, { held: boolean; helpReason: string | null }>;
   /** a search hit to scroll to once its thread is on screen; nonce lets the
    * same message be focused twice in a row */
-  focusMessage: { threadId: string; messageId: string; nonce: number; consumed: boolean } | null;
+  focusMessage: { threadId: string; messageId: string; matchText?: string; nonce: number; consumed: boolean } | null;
   connected: boolean;
   error: string | null;
   /** a quiet, non-error line above the transcript; clears itself */
@@ -1067,6 +1148,11 @@ export type Action =
   | { type: "interruptGroup"; groupId: string; threadId?: string; onError?: () => void }
   | { type: "instances"; instances: InstanceInfo[] }
   | { type: "configStatus"; config: ConfigStatus }
+  | { type: "liveCall"; call: LiveCallState | null }
+  /** A `GET /api/live/call` answer, requested at `since` (liveCallVersion)
+   * as lookup number `seq`: applied only if no newer frame landed while it
+   * was out, and no later lookup's answer came back first. */
+  | { type: "liveCallLookup"; call: LiveCallState | null; since: number; seq: number }
   | { type: "profileSaved"; profile: Partial<NonNullable<ConfigStatus["profile"]>> }
   | { type: "select"; id: string }
   | {
@@ -1118,10 +1204,13 @@ export type Action =
   | { type: "switchTask"; botId: string; threadId: string }
   | { type: "taskSwitched"; bot: Bot }
   | { type: "renameTask"; botId: string; threadId: string; title: string }
+  /** Name the thread again from its conversation; the new title arrives with the bot event. */
+  | { type: "regenerateTaskTitle"; botId: string; threadId: string; onSettled?: (ok: boolean) => void }
   | { type: "deleteTask"; botId: string; threadId: string }
   | { type: "newBot"; role?: BotRole; visibility?: BotVisibility; section?: string; preserveSelection?: boolean; onCreated?: (bot: Bot) => void; onError?: (message: string) => void }
   | { type: "botCreationPending"; on: boolean }
   | { type: "updateTask"; botId: string; threadId: string; patch: TaskUpdatePatch }
+  | { type: "refreshTaskPermissions"; botId: string; threadId: string; acknowledgeLocalAuto?: boolean }
   | { type: "createProject"; botId: string; name: string; emoji?: string | null; onCreated?: (project: BotProject) => void; onError?: (message: string) => void }
   | { type: "updateProject"; botId: string; projectId: string; patch: ProjectUpdatePatch; onSaved?: () => void; onError?: (message: string) => void }
   | { type: "deleteProject"; botId: string; projectId: string; onDeleted?: () => void; onError?: (message: string) => void }
@@ -1149,12 +1238,13 @@ export type Action =
   | { type: "revealThread"; threadId: string }
   | { type: "toggleSettings"; open?: boolean; section?: BotSettingsSection; botId?: string }
   | { type: "togglePlugins"; open?: boolean; surface?: "apps" | "mcp" }
+  | { type: "toggleTriggers"; open?: boolean }
   | { type: "toggleNewBot"; open?: boolean }
   | { type: "toggleComputer"; open?: boolean }
   | { type: "toggleInspector"; open?: boolean }
-  | { type: "focusMessage"; threadId: string; messageId: string }
+  | { type: "focusMessage"; threadId: string; messageId: string; matchText?: string }
   | { type: "focusMessageConsumed"; nonce: number }
-  | { type: "toggleAppSettings"; open?: boolean; section?: AppSettingsSection }
+  | { type: "toggleAppSettings"; open?: boolean; section?: AppSettingsSection; cloudLink?: boolean; phonePairing?: boolean }
   | { type: "toggleShortcuts"; open?: boolean }
   | { type: "toggleWelcome"; open?: boolean }
   | { type: "toggleTour"; open?: boolean }
@@ -1359,6 +1449,10 @@ function optimisticUserMessage(
   };
 }
 
+/** Settings → OMB Cloud as opened by openmausbot://cloud (the Cloud page's
+ * "Open in the app"); that view then signs in or connects by itself. */
+export const CLOUD_LINK_SETTINGS = { type: "toggleAppSettings", open: true, section: "cloudAccount", cloudLink: true } as const satisfies Action;
+
 export function reducer(state: AppState, action: Action): AppState {
   if (action.type === "messageAdded" || action.type === "messagePatched" || action.type === "threadActive" || action.type === "optimisticMessageRemoved") {
     const owner = state.bots.find((bot) => (bot.threadId !== action.threadId || bot.awaitingThreadSnapshot) && bot.tasks?.some((task) => task.threadId === action.threadId));
@@ -1450,6 +1544,7 @@ export function reducer(state: AppState, action: Action): AppState {
         inspectorOpen: false,
         appSettingsOpen: false,
         pluginsOpen: false,
+        triggersOpen: false,
       };
     case "showChat":
       return state.activeView === "chat" ? state : { ...state, activeView: "chat" };
@@ -1462,6 +1557,7 @@ export function reducer(state: AppState, action: Action): AppState {
         inspectorOpen: false,
         appSettingsOpen: false,
         pluginsOpen: false,
+        triggersOpen: false,
       };
     case "routinesHydrated":
       return { ...state, routines: action.routines, routineRuns: trimRoutineRuns(action.runs), routinesLoadState: "ready" };
@@ -1539,6 +1635,12 @@ export function reducer(state: AppState, action: Action): AppState {
       return { ...state, instances: action.instances };
     case "configStatus":
       return { ...state, config: action.config };
+    case "liveCall":
+      return { ...state, liveCall: action.call, liveCallVersion: state.liveCallVersion + 1 };
+    case "liveCallLookup":
+      return action.since === state.liveCallVersion && action.seq > state.liveCallLookupSeq
+        ? { ...state, liveCall: action.call, liveCallLookupSeq: action.seq }
+        : state;
     case "profileSaved":
       return state.config ? {
         ...state,
@@ -1663,7 +1765,7 @@ export function reducer(state: AppState, action: Action): AppState {
         // The slim deletion broadcast can arrive before the full snapshot.
         // Finish that switch once, replaying any events received in between.
         // Later duplicate HTTP snapshots must not overwrite newer messages.
-        return reducer(switching, { type: "taskSwitched", bot: { ...before, ...action.bot, computer: action.bot.computer, section: action.bot.section, messages: action.bot.messages, browserProfile: action.bot.browserProfile } });
+        return reducer(switching, { type: "taskSwitched", bot: { ...before, ...action.bot, computer: action.bot.computer, section: action.bot.section, toolScope: action.bot.toolScope, messages: action.bot.messages, browserProfile: action.bot.browserProfile } });
       }
       const patched = updateBot(switching, action.bot.id, (b) => ({
         ...b,
@@ -1678,6 +1780,7 @@ export function reducer(state: AppState, action: Action): AppState {
         // Resetting Works on to Auto removes the field from the complete
         // server frame; merging alone would keep the old target highlighted.
         computer: action.bot.computer,
+        toolScope: action.bot.toolScope,
         // A complete frame omits section after another client moves the bot
         // into General. Retaining the old label strands an empty team in UI.
         section: action.bot.section,
@@ -1927,7 +2030,15 @@ export function reducer(state: AppState, action: Action): AppState {
         ...state,
         pluginsOpen: open,
         pluginsSurface: action.surface ?? state.pluginsSurface,
-        ...(open ? { settingsOpen: false, appSettingsOpen: false, newBotOpen: false, shortcutsOpen: false } : {}),
+        ...(open ? { settingsOpen: false, appSettingsOpen: false, newBotOpen: false, shortcutsOpen: false, triggersOpen: false } : {}),
+      };
+    }
+    case "toggleTriggers": {
+      const open = action.open ?? !state.triggersOpen;
+      return {
+        ...state,
+        triggersOpen: open,
+        ...(open ? { settingsOpen: false, appSettingsOpen: false, newBotOpen: false, shortcutsOpen: false, pluginsOpen: false } : {}),
       };
     }
     case "botCreationPending":
@@ -1936,7 +2047,7 @@ export function reducer(state: AppState, action: Action): AppState {
       const open = action.open ?? !state.newBotOpen;
       return {
         ...state, newBotOpen: open,
-        ...(open ? { settingsOpen: false, appSettingsOpen: false, pluginsOpen: false, shortcutsOpen: false } : {}),
+        ...(open ? { settingsOpen: false, appSettingsOpen: false, pluginsOpen: false, shortcutsOpen: false, triggersOpen: false } : {}),
       };
     }
     case "notice":
@@ -1949,6 +2060,7 @@ export function reducer(state: AppState, action: Action): AppState {
         focusMessage: {
           threadId: action.threadId,
           messageId: action.messageId,
+          matchText: action.matchText,
           nonce: (state.focusMessage?.nonce ?? 0) + 1,
           consumed: false,
         },
@@ -1982,10 +2094,13 @@ export function reducer(state: AppState, action: Action): AppState {
         ...state,
         appSettingsOpen: open,
         appSettingsSection: action.section ?? state.appSettingsSection,
+        appSettingsCloudLink: action.cloudLink && open ? state.appSettingsCloudLink + 1 : 0,
+        appSettingsPhonePairing: action.phonePairing && open ? state.appSettingsPhonePairing + 1 : 0,
         settingsOpen: open ? false : state.settingsOpen,
         computerOpen: open ? false : state.computerOpen,
         inspectorOpen: open ? false : state.inspectorOpen,
         pluginsOpen: open ? false : state.pluginsOpen,
+        triggersOpen: open ? false : state.triggersOpen,
       };
     }
     case "toggleShortcuts": {
@@ -2181,6 +2296,7 @@ export function reducer(state: AppState, action: Action): AppState {
     case "newGroupTask":
     case "switchGroupTask":
     case "deleteGroupTask":
+    case "regenerateTaskTitle":
       return state;
     case "newTask":
       return { ...state, selectedId: action.botId, activeView: "chat" };
@@ -2230,6 +2346,7 @@ export function reducer(state: AppState, action: Action): AppState {
         ...bot,
         ...action.bot,
         computer: action.bot.computer,
+        toolScope: action.bot.toolScope,
         messages: action.bot.messages ?? [],
         // The snapshot decides whether this thread has scrollback. Merging
         // would carry the previous thread's answer onto a new one.
@@ -2259,6 +2376,7 @@ export function reducer(state: AppState, action: Action): AppState {
     case "cancelRoutineRun":
     case "markRoutineRunSeen":
     case "markAllRoutineRunsSeen":
+    case "refreshTaskPermissions":
       return state;
     case "sendGroup": {
       if (!action.sendId) return state;
@@ -2296,6 +2414,9 @@ export const initialState: AppState = {
   sections: [],
   instances: [],
   config: null,
+  liveCall: null,
+  liveCallVersion: 0,
+  liveCallLookupSeq: 0,
   selectedId: "",
   activeView: "chat",
   routines: [],
@@ -2308,12 +2429,15 @@ export const initialState: AppState = {
   settingsOpen: false,
   pluginsOpen: false,
   pluginsSurface: "apps",
+  triggersOpen: false,
   newBotOpen: false,
   botCreationPending: false,
   computerOpen: false,
   inspectorOpen: false,
   appSettingsOpen: false,
   appSettingsSection: "general",
+  appSettingsCloudLink: 0,
+  appSettingsPhonePairing: 0,
   shortcutsOpen: false,
   welcomeOpen: false,
   tourOpen: false,
@@ -2334,6 +2458,30 @@ export const initialState: AppState = {
 };
 
 // ── API client ─────────────────────────────────────────────────────────
+/** The call a `live.call` frame (or a `GET /api/live/call` answer) carries,
+ * or null for a malformed one, which is ignored. A missing `call` key is
+ * malformed, never "the line is free": that reading would drop a running
+ * call's bar on a broken frame. */
+export function liveCallFromFrame(frame: unknown): { call: LiveCallState | null } | null {
+  if (!frame || typeof frame !== "object" || !Object.prototype.hasOwnProperty.call(frame, "call")) return null;
+  const call: unknown = Reflect.get(frame, "call");
+  if (call === null) return { call: null };
+  if (!call || typeof call !== "object") return null;
+  const record = call as Record<string, unknown>; // SAFETY: the fields read below are checked before use
+  if (typeof record.callId !== "string" || typeof record.botId !== "string" || typeof record.threadId !== "string" || typeof record.status !== "string") {
+    return null;
+  }
+  return { call: call as LiveCallState };
+}
+
+let liveCallLookups = 0;
+/** The next `GET /api/live/call` lookup's number, in request order (see
+ * `liveCallLookupSeq`). Take it when the request leaves. */
+export function nextLiveCallLookup(): number {
+  liveCallLookups += 1;
+  return liveCallLookups;
+}
+
 export class ApiError extends Error {
   readonly status: number;
   /** The refusal's JSON body, for callers that read more than `error`. */
@@ -2401,7 +2549,7 @@ type TrustedApprovalBridge = {
   setMode(
     botId: string,
     mode: ApprovalMode,
-    options?: { acknowledgeLocalAuto?: boolean; threadId?: string; threadOnly?: boolean; allThreads?: boolean },
+    options?: { acknowledgeLocalAuto?: boolean; threadId?: string; threadOnly?: boolean; allThreads?: boolean; refreshPermissions?: boolean },
   ): Promise<BotAnnouncement>;
 };
 
@@ -2765,12 +2913,13 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         const expectedSelection = expected.modelSelection;
         if (
           approvalModeFor(persisted) !== approvalModeFor(expected) ||
+          (persisted.memoryEnabled !== false) !== (expected.memoryEnabled !== false) ||
           persisted.modelSelection.instanceId !== expectedSelection.instanceId ||
           persisted.modelSelection.model !== expectedSelection.model ||
           persisted.modelSelection.effort !== expectedSelection.effort ||
           persisted.modelSelection.variant !== expectedSelection.variant
         ) {
-          throw new Error("The approval level or model could not be saved, so this work was not started");
+          throw new Error("The approval level, memory setting, or model could not be saved, so this work was not started");
         }
       })]);
       if (threadId) await taskWrites.get(threadId)?.execution;
@@ -3249,7 +3398,10 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           // A copy of a restricted bot is restricted from its first moment.
           api("/api/bots", {
             method: "POST",
-            ...(source.visibility && source.visibility !== "everyone" ? { body: JSON.stringify({ visibility: source.visibility }) } : {}),
+            body: JSON.stringify({
+              ...(source.visibility && source.visibility !== "everyone" ? { visibility: source.visibility } : {}),
+              ...(Object.hasOwn(source, "toolScope") ? { settings: { toolScope: source.toolScope } } : {}),
+            }),
           })
             .then(({ bot }) =>
               api(`/api/bots/${bot.id}`, {
@@ -3391,6 +3543,34 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         case "updateTask":
           persistTaskPatch(action.botId, action.threadId, action.patch);
           break;
+        case "refreshTaskPermissions": {
+          const bot = stateRef.current.bots.find((candidate) => candidate.id === action.botId);
+          const task = bot?.tasks?.find((candidate) => candidate.threadId === action.threadId);
+          if (!bot || !task) {
+            showError(new Error("That thread is no longer available"));
+            break;
+          }
+          const mode = approvalModeFor(bot);
+          const current = approvalModeFor(currentTaskBot(bot, action.threadId));
+          const acknowledgeLocalAuto = action.acknowledgeLocalAuto === true;
+          // Full, Custom, and leaving Custom stay on the private desktop
+          // channel. Ask, Edits, and Auto can use the thread settings route.
+          const needsDesktop = mode === "full" || mode === "custom" || current === "custom";
+          const refreshed = needsDesktop
+            ? window.ogb?.approvals
+              ? window.ogb.approvals.setMode(action.botId, mode, {
+                threadId: action.threadId, threadOnly: true, refreshPermissions: true, acknowledgeLocalAuto,
+              })
+              : Promise.reject(new Error("This approval change requires the packaged desktop app"))
+            : api<{ bot: BotAnnouncement }>(`/api/bots/${action.botId}/tasks/${action.threadId}`, {
+              method: "PATCH",
+              body: JSON.stringify({ refreshPermissions: true, ...(acknowledgeLocalAuto ? { acknowledgeLocalAuto: true } : {}) }),
+            }).then((result) => result.bot);
+          void refreshed.then((updated) => {
+            if (updated) rawDispatch({ type: "botPatched", bot: withTaskWrites(updated) });
+          }).catch(showError);
+          break;
+        }
         case "createProject":
           api(`/api/bots/${action.botId}/projects`, { method: "POST", body: JSON.stringify({ name: action.name, emoji: action.emoji }) })
             .then(({ bot, project }) => {
@@ -3447,6 +3627,11 @@ export function StoreProvider({ children }: { children: ReactNode }) {
             method: "PATCH",
             body: JSON.stringify({ title: action.title }),
           }).catch(showError);
+          break;
+        case "regenerateTaskTitle":
+          api(`/api/bots/${action.botId}/tasks/${action.threadId}/title`, { method: "POST" })
+            .then(() => action.onSettled?.(true))
+            .catch((error) => { showError(error); action.onSettled?.(false); });
           break;
         case "deleteTask":
           api<{ bot?: BotAnnouncement }>(`/api/bots/${action.botId}/tasks/${action.threadId}`, { method: "DELETE" })
@@ -3607,6 +3792,22 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       for (const key of keys) refreshState(key).version += 1;
     };
     const loadAll = async (): Promise<boolean> => {
+      // The Live call snapshot is its own fire-and-forget request: a server
+      // without the route answers 404, and the catch keeps that silent — a
+      // running call still arrives moments later over the SSE `live.call`
+      // frame, so this is only for the case where one was already live
+      // before this window connected.
+      // Applied only if no live.call frame lands while it is out (a frame
+      // is newer news than this answer), and only if the answer to a later
+      // lookup did not come back first. Rendered at once, like a frame.
+      const since = stateRef.current.liveCallVersion;
+      const seq = nextLiveCallLookup();
+      void api<unknown>("/api/live/call")
+        .then((body) => {
+          const answer = liveCallFromFrame(body);
+          if (alive && answer) flushSync(() => rawDispatch({ type: "liveCallLookup", call: answer.call, since, seq }));
+        })
+        .catch(() => {});
       const chat = () =>
         api(`/api/bots?messages=${MESSAGE_PAGE_SIZE}`).then(({ bots, groups, sections, computerControl, botQueuedMessages }) => {
           if (!alive) return;
@@ -3707,7 +3908,9 @@ export function StoreProvider({ children }: { children: ReactNode }) {
             // Auto-speak is disabled during any call. Call mode owns both the
             // singleton speaker and microphone ordering for its whole lifetime.
             const owner = stateRef.current.bots.find((b) => b.threadId === frame.threadId || b.tasks?.some((task) => task.threadId === frame.threadId));
-            if (owner?.speakReplies && currentCall() === null && frame.message.text?.trim()) {
+            const live = stateRef.current.liveCall;
+            const onLiveCall = Boolean(live && live.status !== "ended" && live.botId === owner?.id);
+            if (owner?.speakReplies && currentCall() === null && !onLiveCall && frame.message.text?.trim()) {
               void speaker.speak(frame.message.text, {
                 botId: owner.id,
                 messageId: frame.message.id,
@@ -3733,7 +3936,9 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           if (bot.id === stateRef.current.selectedId && stateRef.current.activeView === "chat" &&
               (selectedTask?.unread || (!bot.tasks && bot.unread))) {
             if (selectedTask) selectedTask.unread = false;
-            bot.unread = Boolean(bot.tasks?.some((task) => task.unread));
+            // Hidden routine runs must not put the dot back on the next frame.
+            // No task list: the bot flag is the unread signal.
+            bot.unread = botShowsUnread(bot);
             fetch(`/api/bots/${bot.id}/read`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ threadId: selected?.threadId }) }).catch(() => {});
           }
           rawDispatch({
@@ -3820,6 +4025,13 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           botPatchQueue.cancel(frame.botId);
           rawDispatch({ type: "deleteBot", botId: frame.botId });
           break;
+        case "live.call": {
+          const framed = liveCallFromFrame(frame);
+          // Rendered at once: a bot message frame right behind this one
+          // decides auto-speak from stateRef, which must know the call by then.
+          if (framed) flushSync(() => rawDispatch({ type: "liveCall", call: framed.call }));
+          break;
+        }
         // a key changed and the fleet hot-reloaded — refresh the picker so
         // newly available providers un-dim immediately
         case "config":

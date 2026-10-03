@@ -48,6 +48,7 @@ import androidx.compose.ui.unit.sp
 import com.openmausbot.companion.R
 import com.openmausbot.companion.core.ActivityDetail
 import com.openmausbot.companion.core.Connection
+import com.openmausbot.companion.core.RosterDensity
 import com.openmausbot.companion.core.Session
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -83,6 +84,7 @@ fun SettingsScreen(
     val notifications by environment.notifications.access.collectAsState()
     val activityDetail by environment.chatPreferences.activityDetail.collectAsState()
     val appearanceSkin by environment.chatPreferences.appearanceSkin.collectAsState()
+    val rosterDensity by environment.chatPreferences.rosterDensity.collectAsState()
     val scope = rememberCoroutineScope()
     val clipboard = LocalClipboard.current
     val haptics = rememberHaptics()
@@ -98,6 +100,7 @@ fun SettingsScreen(
     var pendingComputerRemoval by remember { mutableStateOf<Connection?>(null) }
     var choosingActivity by remember { mutableStateOf(false) }
     var choosingAppearance by remember { mutableStateOf(false) }
+    var choosingDensity by remember { mutableStateOf(false) }
     var editingQuickReplies by remember { mutableStateOf(false) }
 
     Column(modifier = Modifier.fillMaxSize()) {
@@ -238,6 +241,14 @@ fun SettingsScreen(
                 SettingsButton(stringResource(R.string.mobile_settings_change_activity_detail)) { choosingActivity = true }
                 SettingsButton(stringResource(R.string.mobile_quick_replies_c14223c4)) { editingQuickReplies = true }
                 Footnote(localizedActivityCaption(activityDetail))
+            }
+
+            // Per device, like the desktop's sidebar density: a phone and a
+            // laptop have different room for a list.
+            SettingsSection("Threads list") {
+                SettingsRow("List density", localizedMobileCopy(rosterDensity.label))
+                SettingsButton("Change list density") { choosingDensity = true }
+                Footnote(rosterDensity.caption)
             }
 
             SettingsSection("Appearance") {
@@ -383,41 +394,26 @@ fun SettingsScreen(
     }
 
     if (choosingActivity) {
-        AlertDialog(
-            onDismissRequest = { choosingActivity = false },
-            title = { Text(stringResource(R.string.mobile_activity_detail_049f3bdf)) },
-            text = {
-                // iOS draws a Picker (SettingsView.swift:67-78), which marks the
-                // choice already in force; three plain buttons do not.
-                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    ActivityDetail.entries.forEach { detail ->
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .heightIn(min = MIN_TOUCH_TARGET)
-                                .selectable(
-                                    selected = detail == activityDetail,
-                                    role = Role.RadioButton,
-                                    onClick = {
-                                        environment.chatPreferences.setActivityDetail(detail)
-                                        choosingActivity = false
-                                    },
-                                )
-                                .padding(vertical = 6.dp),
-                            horizontalArrangement = Arrangement.spacedBy(10.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            RadioButton(selected = detail == activityDetail, onClick = null)
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(localizedActivityLabel(detail), textAlign = TextAlign.Start)
-                                Text(localizedActivityCaption(detail), fontSize = 12.sp, color = secondaryTint)
-                            }
-                        }
-                    }
-                }
-            },
-            confirmButton = {},
-            dismissButton = { TextButton(onClick = { choosingActivity = false }) { Text(stringResource(R.string.mobile_cancel_77dfd213)) } },
+        ChoiceDialog(
+            title = "Activity detail",
+            options = ActivityDetail.entries,
+            selected = activityDetail,
+            label = { it.label },
+            caption = { it.caption },
+            onChoose = environment.chatPreferences::setActivityDetail,
+            onDismiss = { choosingActivity = false },
+        )
+    }
+
+    if (choosingDensity) {
+        ChoiceDialog(
+            title = "List density",
+            options = RosterDensity.entries,
+            selected = rosterDensity,
+            label = { it.label },
+            caption = { it.caption },
+            onChoose = environment.chatPreferences::setRosterDensity,
+            onDismiss = { choosingDensity = false },
         )
     }
 
@@ -461,6 +457,57 @@ fun SettingsScreen(
             onDismiss = { editingQuickReplies = false },
         )
     }
+}
+
+/**
+ * One choice from a short list, each with the line that explains it. iOS draws
+ * a Picker (SettingsView.swift:67-78), which marks the choice already in
+ * force; three plain buttons do not, so these are radio rows.
+ */
+@Composable
+private fun <T> ChoiceDialog(
+    title: String,
+    options: List<T>,
+    selected: T,
+    label: (T) -> String,
+    caption: (T) -> String,
+    onChoose: (T) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(localizedMobileCopy(title)) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                options.forEach { option ->
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(min = MIN_TOUCH_TARGET)
+                            .selectable(
+                                selected = option == selected,
+                                role = Role.RadioButton,
+                                onClick = {
+                                    onChoose(option)
+                                    onDismiss()
+                                },
+                            )
+                            .padding(vertical = 6.dp),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        RadioButton(selected = option == selected, onClick = null)
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(localizedMobileCopy(label(option)), textAlign = TextAlign.Start)
+                            Text(localizedMobileCopy(caption(option)), fontSize = 12.sp, color = secondaryTint)
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {},
+        dismissButton = { TextButton(onClick = onDismiss) { Text(stringResource(R.string.mobile_cancel_77dfd213)) } },
+    )
 }
 
 @Composable

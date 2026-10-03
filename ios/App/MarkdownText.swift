@@ -26,6 +26,17 @@ private struct OptionalIdentifier: ViewModifier {
 }
 
 struct MarkdownText: View {
+    private final class CachedInline: NSObject {
+        let text: AttributedString
+        init(_ text: AttributedString) { self.text = text }
+    }
+    private static let inlineCache: NSCache<NSString, CachedInline> = {
+        let cache = NSCache<NSString, CachedInline>()
+        cache.countLimit = 256
+        cache.totalCostLimit = 524_288
+        return cache
+    }()
+
     let source: String
     /// Draws a caret after the last block. The streaming bubble sets this so
     /// the live reply and the settled one are the same view with the same
@@ -264,13 +275,7 @@ struct MarkdownText: View {
     /// The words VoiceOver should hear, with inline markers removed. The
     /// visible text still goes through Foundation so emphasis stays styled.
     private func renderedInline(_ text: String) -> String {
-        if let attributed = try? AttributedString(
-            markdown: text,
-            options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)
-        ) {
-            return String(attributed.characters)
-        }
-        return text
+        String(attributedInline(text).characters)
     }
 
     private func marker(_ symbol: String, indent: Int, text: String, tail: Bool) -> some View {
@@ -293,16 +298,21 @@ struct MarkdownText: View {
     /// half-typed link mid-stream should show as the characters the model has
     /// sent so far, not vanish until it closes the bracket.
     private func inline(_ text: String, tail: Bool = false) -> Text {
-        let rendered: Text
-        if let attributed = try? AttributedString(
+        Text(attributedInline(text)) + caretText(tail)
+    }
+
+    private func attributedInline(_ text: String) -> AttributedString {
+        let key = text as NSString
+        if let cached = Self.inlineCache.object(forKey: key) { return cached.text }
+        let attributed = (try? AttributedString(
             markdown: text,
             options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)
-        ) {
-            rendered = Text(attributed)
-        } else {
-            rendered = Text(text)
+        )) ?? AttributedString(text)
+        let bytes = text.utf8.count
+        if bytes <= 8_192 {
+            Self.inlineCache.setObject(CachedInline(attributed), forKey: key, cost: bytes * 4)
         }
-        return rendered + caretText(tail)
+        return attributed
     }
 
     /// A figure space then a block, so the caret sits off the last glyph

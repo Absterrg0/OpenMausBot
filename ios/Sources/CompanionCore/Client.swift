@@ -473,6 +473,14 @@ public struct SendReceipt: Decodable, Sendable {
     }
 }
 
+/// What the respond route answered about a card. Only the plain and peer
+/// approval paths speak it; the specialized card resolvers write their own
+/// shapes, so `outcome` is optional and a body without one reads as nil
+/// rather than as a failure.
+private struct RespondResponse: Decodable {
+    let outcome: String?
+}
+
 /// The exact conversation a retriable send belongs to. Carrying the thread
 /// as well as the bot/room id prevents a Share Extension retry from landing
 /// in a different task if the desktop switches tasks while iOS is suspended.
@@ -1536,6 +1544,65 @@ public struct CompanionClient: Sendable {
             }
     }
 
+    // MARK: - Live calls
+
+    /// How long a call may take to start. The Mac creates the OpenAI session
+    /// (up to 20 s) before it answers, and the sidecar allows 30 s until
+    /// response headers; the usual 20 s here would give up first.
+    public static let liveCallStartTimeout: TimeInterval = 35
+
+    /// Start a Live call: the phone's SDP offer goes to the Mac, which creates
+    /// the GPT-Live session with its own key and returns OpenAI's answer.
+    ///
+    /// The two 409s carry structure `check` would drop — `needsKey` (no key on
+    /// the Mac) and `activeCall` (who is on the line) — so they are read here
+    /// first and thrown as `LiveCallStartError`. Everything else is the usual
+    /// `APIError` with the Mac's own message.
+    public func startLiveCall(botId: String, threadId: String?, sdp: String) async throws -> LiveCallStart {
+        guard Self.validRouteID(botId), threadId.map(Self.validRouteID) ?? true else { throw APIError.badURL }
+        var body: [String: Any] = ["botId": botId, "sdp": sdp, "client": "ios"]
+        if let threadId { body["threadId"] = threadId }
+        var request = try makeRequest("POST", "/api/live/session", body: body)
+        request.timeoutInterval = Self.liveCallStartTimeout
+        let (data, response) = try await perform(request)
+        if let http = response as? HTTPURLResponse, http.statusCode == 409,
+           let refusal = try? JSONDecoder().decode(LiveCallRefusalBody.self, from: data) {
+            if refusal.needsKey == true { throw LiveCallStartError.needsKey(message: refusal.error) }
+            if let active = refusal.activeCall { throw LiveCallStartError.busy(active: active, message: refusal.error) }
+        }
+        try Self.check(response, data)
+        do {
+            return try JSONDecoder().decode(LiveCallStart.self, from: data)
+        } catch {
+            throw APIError.transport("The computer sent something this app couldn't read.")
+        }
+    }
+
+    /// Hang up. A 404 means the Mac no longer runs that call — which is what
+    /// the caller wanted — so it reads as `nil` rather than an error.
+    public func endLiveCall(callId: String) async throws -> LiveCallState? {
+        do {
+            return try await send(try makeRequest("POST", "/api/live/call/end", body: ["callId": callId]), as: LiveCallEnvelope.self).call
+        } catch let APIError.status(code, _) where code == 404 {
+            return nil
+        }
+    }
+
+    /// The call the Mac is running right now, if any. A phone that connects
+    /// mid-call asks this once after hydrating; the stream carries changes.
+    public func liveCall() async throws -> LiveCallState? {
+        try await send(try makeRequest("GET", "/api/live/call"), as: LiveCallEnvelope.self).call
+    }
+
+    /// Change the non-secret Live settings on the Mac. The key is not a
+    /// field on `LiveSettingsPatch`, and the Mac answers 400 if one is sent.
+    public func updateLiveSettings(_ patch: LiveSettingsPatch) async throws -> LiveSettings {
+        try await send(
+            try makeRequest("PATCH", "/api/live/settings", encodedBody: patch),
+            as: LiveSettingsEnvelope.self
+        ).live
+    }
+
     private static func validRouteID(_ value: String) -> Bool {
         !value.isEmpty && value.utf8.allSatisfy { byte in
             (48...57).contains(byte) || (65...90).contains(byte) || (97...122).contains(byte)
@@ -1555,18 +1622,25 @@ public struct CompanionClient: Sendable {
     ///
     /// Addressed by thread rather than by bot on purpose: a request raised
     /// inside a room belongs to whichever member is speaking, and the
-    /// harness already knows which that is.
+    /// harness already knows which that is. Returns the server's outcome
+    /// when the body carries one, so a caller can tell an ask that never
+    /// ran (`unavailable`) from one that landed; the specialized card
+    /// branches answer in their own shapes and read as nil.
+    @discardableResult
     public func respond(
         threadId: String,
         requestId: String,
         behavior: String,
         message: String? = nil,
         reviewedSha256: String? = nil
-    ) async throws {
+    ) async throws -> String? {
         var body: [String: Any] = ["requestId": requestId, "behavior": behavior]
         if let message { body["message"] = message }
         if let reviewedSha256 { body["reviewedSha256"] = reviewedSha256 }
-        try await send(try makeRequest("POST", "/api/threads/\(threadId)/respond", body: body))
+        let request = try makeRequest("POST", "/api/threads/\(threadId)/respond", body: body)
+        let (data, response) = try await perform(request)
+        try Self.check(response, data)
+        return (try? JSONDecoder().decode(RespondResponse.self, from: data))?.outcome
     }
 
     /// Remember a grant so the same tool stops asking. The harness decides
@@ -1753,6 +1827,95 @@ public struct CompanionClient: Sendable {
             try makeRequest("POST", "/api/bots/\(botId)/computer/join"),
             as: CloudDesktopSession.self
         )
+    }
+
+    /// A still of the bot's Local VM, whether or not it is working. The phone
+    /// always names the thread, so the harness answers 409 when that
+    /// conversation is not on the Local VM rather than picturing a computer it
+    /// isn't using (and, in pool mode, pictures that thread's own VM). The
+    /// sidecar requires the same per-device computer access as the cloud
+    /// desktop, and answers 403 while it is off; a server paired directly
+    /// answers 403 to a chat-only pairing.
+    public func localVmScreenshot(botId: String, threadId: String) async throws -> LocalVmScreenshot {
+        guard Self.validRouteID(botId), Self.validRouteID(threadId) else { throw APIError.badURL }
+        var request = try makeRequest(
+            "POST",
+            "/api/bots/\(botId)/local-computer/screenshot",
+            query: [URLQueryItem(name: "threadId", value: threadId)]
+        )
+        // The harness execs into the VM for each capture; a busy VM can take
+        // longer than an ordinary call.
+        request.timeoutInterval = 45
+        return try await send(request, as: LocalVmScreenshot.self)
+    }
+
+    /// Take or hand back a bot's computer under this device's control lease.
+    /// While held, the harness refuses the bot's own computer actions.
+    @discardableResult
+    public func computerControl(botId: String, take: Bool, leaseId: String) async throws -> ComputerControlState {
+        guard Self.validRouteID(botId), Self.validRouteID(leaseId), (16...120).contains(leaseId.count) else {
+            throw APIError.badURL
+        }
+        return try await send(
+            try makeRequest(
+                "POST",
+                "/api/bots/\(botId)/computer/control",
+                body: ["action": take ? "take" : "release", "controlLeaseId": leaseId]
+            ),
+            as: ComputerControlState.self
+        )
+    }
+
+    /// The Local VM's live desktop, relayed by the sidecar or, on a phone
+    /// paired with the server directly, proxied by the server itself. The
+    /// harness grants it only to the lease that holds the computer, and the
+    /// relay or proxy closes as soon as that lease stops holding it.
+    public func localVmViewer(botId: String, threadId: String, leaseId: String) async throws -> LocalVmViewerSession {
+        guard Self.validRouteID(botId), Self.validRouteID(threadId), Self.validRouteID(leaseId),
+              (16...120).contains(leaseId.count)
+        else { throw APIError.badURL }
+        return try await send(
+            try makeRequest(
+                "POST",
+                "/api/bots/\(botId)/local-computer/join",
+                query: [
+                    URLQueryItem(name: "threadId", value: threadId),
+                    URLQueryItem(name: "controlLeaseId", value: leaseId),
+                ],
+                body: [:]
+            ),
+            as: LocalVmViewerSession.self
+        )
+    }
+
+    /// Close this device's relayed viewers for the bot.
+    public func closeViewer(botId: String) async throws {
+        guard Self.validRouteID(botId) else { throw APIError.badURL }
+        // The harness takes computer mutations as JSON only; without a body
+        // it answers 415 and closes nothing.
+        try await send(try makeRequest("POST", "/api/bots/\(botId)/computer/viewer-close", body: [:]))
+    }
+
+    /// The authenticated WebSocket request for a Local VM viewer, relayed or
+    /// proxied: same host and token as every other call, `ws` or `wss` to
+    /// match.
+    public func viewerSocketRequest(_ viewer: LocalVmViewerSession) throws -> URLRequest {
+        guard let base = connection.baseURL,
+              var components = URLComponents(url: base, resolvingAgainstBaseURL: false)
+        else { throw APIError.badURL }
+        components.scheme = components.scheme == "https" ? "wss" : "ws"
+        components.path = "/" + viewer.socketPath
+        let query = viewer.socketQuery.sorted { $0.key < $1.key }.map { URLQueryItem(name: $0.key, value: $0.value) }
+        components.queryItems = query.isEmpty ? nil : query
+        guard let url = components.url else { throw APIError.badURL }
+        var request = URLRequest(url: url)
+        request.timeoutInterval = requestTimeout
+        if let token { request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization") }
+        // websockify carries RFB in binary frames, and the sidecar relays
+        // that subprotocol. The server's own proxy answers without one, and
+        // a handshake that asked for one would be refused.
+        if viewer.relayed { request.setValue("binary", forHTTPHeaderField: "Sec-WebSocket-Protocol") }
+        return request
     }
 
     public func markRead(botId: String, threadId: String? = nil) async throws {

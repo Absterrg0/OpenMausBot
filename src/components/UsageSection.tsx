@@ -6,8 +6,9 @@ import { useStore } from "@/state/store";
 import { BotAvatar } from "./Avatar";
 import { Card } from "./SettingsPrimitives";
 import { t } from "@/lib/i18n";
-import { botUsage, cachedInput, costCaption, formatTokens, formatUsd, hasFiniteCost, headlineTokens, sumUsage, usageDetail } from "@/lib/usage";
+import { botUsage, cachedUsageNote, costCaption, formatTokens, formatUsd, hasFiniteCost, headlineTokens, sumUsage, tokensColumnLabel, usageDetail } from "@/lib/usage";
 import { UsageHistory } from "./UsageHistory";
+import { PlanUsage } from "./PlanUsage";
 
 export function UsageSection() {
   const { state } = useStore();
@@ -27,9 +28,11 @@ export function UsageSection() {
     });
   const total = sumUsage(rows.map((r) => r.usage));
   const billings = new Set(rows.map((r) => r.billing));
+  const cachedNote = cachedUsageNote(total);
 
   return (
     <>
+    <PlanUsage />
     <Card title={t("usage.title")} subtitle={t("usage.subtitle")}>
       {rows.length === 0 ? (
         <div className="text-[13px] text-ink-secondary">{t("usage.empty")}</div>
@@ -38,7 +41,7 @@ export function UsageSection() {
           <div className="grid grid-cols-[1fr_auto_auto_auto] gap-x-5 border-b border-hairline/40 pb-2 text-[11.5px] font-medium uppercase tracking-wide text-ink-secondary">
             <span>{t("usage.colBot")}</span>
             <span className="text-right">{t("usage.colTurns")}</span>
-            <span className="text-right">{t("usage.colTokens")}</span>
+            <span className="text-right">{tokensColumnLabel(total)}</span>
             <span className="text-right">{t("usage.colCost")}</span>
           </div>
           {rows.map(({ bot, usage }) => (
@@ -60,10 +63,8 @@ export function UsageSection() {
             <span className="text-right tabular-nums" title={usageDetail(total)}>{formatTokens(headlineTokens(total))}</span>
             <span className="text-right tabular-nums">{hasFiniteCost(total.costUsd) ? formatUsd(total.costUsd) : "—"}</span>
           </div>
-          {cachedInput(total) > 0 && (
-            <div className="mt-3 text-[12px] leading-relaxed text-ink-secondary">
-              {t("usage.cachedNote", { cached: formatTokens(cachedInput(total)) })}
-            </div>
+          {cachedNote && (
+            <div className="mt-3 text-[12px] leading-relaxed text-ink-secondary">{cachedNote}</div>
           )}
           {hasFiniteCost(total.costUsd) && (
             <div className="mt-3 text-[12px] leading-relaxed text-ink-secondary">

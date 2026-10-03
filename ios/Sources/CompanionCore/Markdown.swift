@@ -33,9 +33,25 @@ public enum MarkdownBlock: Equatable, Sendable {
 }
 
 public enum Markdown {
+    final class CachedBlocks: NSObject {
+        let blocks: [MarkdownBlock]
+        init(_ blocks: [MarkdownBlock]) { self.blocks = blocks }
+    }
+
+    // Pure parse results only. Large replies and old streaming prefixes are
+    // not retained indefinitely; NSCache also releases them under pressure.
+    static let blockCache: NSCache<NSString, CachedBlocks> = {
+        let cache = NSCache<NSString, CachedBlocks>()
+        cache.countLimit = 128
+        cache.totalCostLimit = 1_048_576
+        return cache
+    }()
+
     /// Split into blocks. Never throws and never drops input: an unparseable
     /// line ends up in a paragraph, which is what the reader wanted anyway.
     public static func blocks(_ source: String) -> [MarkdownBlock] {
+        let key = source as NSString
+        if let cached = blockCache.object(forKey: key) { return cached.blocks }
         var blocks: [MarkdownBlock] = []
         var paragraph: [String] = []
         /// Marker indents of lists that are still open, outermost first.
@@ -140,6 +156,10 @@ public enum Markdown {
             paragraph.append(trimmed)
         }
         flushParagraph()
+        let bytes = source.utf8.count
+        if bytes <= 65_536 {
+            blockCache.setObject(CachedBlocks(blocks), forKey: key, cost: bytes * 4 + blocks.count * 32)
+        }
         return blocks
     }
 

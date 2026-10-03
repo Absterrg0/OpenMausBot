@@ -1,6 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">OpenMausMobile</string>
     <string name="notification_channel_blocking">审批与问题</string>
     <string name="notification_channel_blocking_desc">需要及时回复的提示</string>
     <string name="notification_channel_done">机器人消息</string>
@@ -763,4 +762,11 @@
     <string name="mobile_until_6_pm">直到下午 6 点</string>
     <string name="mobile_until_9_am_tomorrow">直到明天上午 9 点</string>
     <string name="mobile_pairing_code_placeholder">6 位数或 ABCD-EFGH-JKLM 代码</string>
+    <string name="mobile_threads_list">对话列表</string>
+    <string name="mobile_list_density">列表密度</string>
+    <string name="mobile_change_list_density">更改列表密度</string>
+    <string name="mobile_density_comfortable">宽松</string>
+    <string name="mobile_density_compact">紧凑</string>
+    <string name="mobile_density_comfortable_caption">头像更大，机器人名称下会显示最新消息。</string>
+    <string name="mobile_density_compact_caption">每个机器人占一行。拥有多个活跃对话的机器人会显示对话数量；点按数字即可列出对话。</string>
 </resources>

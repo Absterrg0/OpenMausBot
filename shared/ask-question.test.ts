@@ -7,14 +7,17 @@ import {
   ASK_USER_TOOL_DEFINITION,
   capAnswerEcho,
   formatQuestionAnswers,
+  isPersistentQuestionCard,
   MAX_ANSWER_ECHO,
   MAX_OPTIONS,
+  MAX_QUESTION_TEXT,
   MAX_QUESTIONS,
   ombAskProtocolPrompt,
   parseAskQuestions,
   parseChoices,
   parseOmbAskQuestions,
   parseProtocolAskQuestions,
+  shouldSettleRequestCard,
   questionAnswersById,
   questionAnswersByQuestion,
   questionChoices,
@@ -99,7 +102,7 @@ describe("parseAskQuestions", () => {
     const [question] = parseAskQuestions({
       questions: [{ question: "x".repeat(9000), options: [{ label: "y".repeat(9000) }] }],
     })!;
-    expect(question!.question.length).toBeLessThanOrEqual(400);
+    expect(question!.question.length).toBe(MAX_QUESTION_TEXT);
     expect(question!.options[0]!.label.length).toBeLessThanOrEqual(120);
   });
 });
@@ -447,5 +450,26 @@ describe("questionAnswersById", () => {
   it("files nothing when a bare reply could answer any of several ids", () => {
     expect(questionAnswersById("Yes", questions)).toEqual({});
     expect(questionAnswersById("   ", questions.slice(0, 1))).toEqual({});
+  });
+});
+
+describe("isPersistentQuestionCard", () => {
+  it("keeps explicit and legacy questions open while excluding approval/proposal cards", () => {
+    expect(isPersistentQuestionCard({ requestType: "question" })).toBe(true);
+    expect(isPersistentQuestionCard({ questionRequest: { version: 1 } })).toBe(true);
+    expect(isPersistentQuestionCard({})).toBe(true);
+    expect(isPersistentQuestionCard({ requestType: "permission", tool: "Bash" })).toBe(false);
+    expect(isPersistentQuestionCard({ routineRequest: {} })).toBe(false);
+    expect(isPersistentQuestionCard({ modelRequest: {} })).toBe(false);
+    expect(isPersistentQuestionCard({ tighteningRequest: {} })).toBe(false);
+  });
+
+  it("settles a question only for an explicit user answer", () => {
+    const question = { requestType: "question" as const };
+    expect(shouldSettleRequestCard(question, "timeout")).toBe(false);
+    expect(shouldSettleRequestCard(question, "system")).toBe(false);
+    expect(shouldSettleRequestCard(question, "unavailable")).toBe(false);
+    expect(shouldSettleRequestCard(question, "user")).toBe(true);
+    expect(shouldSettleRequestCard({ requestType: "permission", tool: "Bash" }, "timeout")).toBe(true);
   });
 });

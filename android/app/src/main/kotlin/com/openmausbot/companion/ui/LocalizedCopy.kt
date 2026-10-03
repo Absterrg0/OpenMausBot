@@ -6,6 +6,13 @@ import com.openmausbot.companion.R
 
 /** Translates fixed English copy returned by UI policy helpers. */
 private val localizedCopyResources = mapOf(
+    "Threads list" to R.string.mobile_threads_list,
+    "List density" to R.string.mobile_list_density,
+    "Change list density" to R.string.mobile_change_list_density,
+    "Comfortable" to R.string.mobile_density_comfortable,
+    "Compact" to R.string.mobile_density_compact,
+    "Larger faces, with each bot's latest message under its name." to R.string.mobile_density_comfortable_caption,
+    "One line per bot. Bots with more than one active thread show how many; tap the number to list them." to R.string.mobile_density_compact_caption,
     "%1\$d active" to R.string.mobile_updates_active_count,
     "%1\$d links" to R.string.mobile_share_links,
     "%1\$d messages queued" to R.string.mobile_updates_queued_count,
@@ -132,6 +139,7 @@ private val localizedCopyResources = mapOf(
     "Cloud VM status is unavailable" to R.string.mobile_cloud_vm_status_is_unavailable_32c78491,
     "Collapse" to R.string.mobile_collapse_9cf188d3,
     "Collapsed, %1\$s threads" to R.string.mobile_a11y_thread_state_collapsed,
+    "Collapsed" to R.string.mobile_a11y_collapsed,
     "Completed" to R.string.mobile_completed_1798b3ba,
     "Completed, waiting, failed, and manually started runs appear here." to R.string.mobile_completed_waiting_failed_and_manually_st_55acdcb1,
     "COMPUTER" to R.string.mobile_computer_9e47da19,
@@ -203,6 +211,7 @@ private val localizedCopyResources = mapOf(
     "Every X minutes" to R.string.mobile_every_x_minutes_000b5c3a,
     "Expand" to R.string.mobile_expand_9869e506,
     "Expanded, %1\$s threads" to R.string.mobile_a11y_thread_state_expanded,
+    "Expanded" to R.string.mobile_a11y_expanded,
     "Explain steps" to R.string.mobile_explain_steps_b60a9fb6,
     "FILE" to R.string.mobile_file_b4915d3a,
     "File" to R.string.mobile_file_2c3cafa4,

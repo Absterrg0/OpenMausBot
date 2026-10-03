@@ -12,6 +12,9 @@ const HEARTBEAT_MS = 10_000;
 // The native press resolver supplies the virtual key codes and Enter/Tab text
 // that its raw input_keyboard relay omits. Keep unknown keys literal.
 const DISCRETE_KEYS = new Set(["Backspace", "Enter", "Tab", "Escape", "Delete", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Home", "End", "PageUp", "PageDown"]);
+// The panel has no take-control button: interacting takes control, and an
+// interrupted action is recovered from the panel's menu.
+const RESTART_NEEDED = "A browser action was interrupted. Choose Restart browser… in the browser menu before continuing.";
 
 export class BrowserLiveError extends Error {
   readonly status: number;
@@ -38,6 +41,20 @@ function displayUrl(value: unknown): string {
     url.username = ""; url.password = "";
     return url.href;
   } catch { return ""; }
+}
+
+/** Chrome's own launch-failure wording: the engine is installed and its
+ * daemon answers, but no browser can start (no display, an early exit).
+ * Distinct from a missing engine — the fix is a fresh session, not an
+ * install, so the generic "check the engine is installed" guidance would
+ * send the operator the wrong way (#1383). */
+function browserLaunchFailure(error: unknown): boolean {
+  const detail = [
+    (error as { stderr?: unknown })?.stderr,
+    (error as { stdout?: unknown })?.stdout,
+    error instanceof Error ? error.message : String(error),
+  ].filter((part): part is string => typeof part === "string").join("\n");
+  return /missing x server|\$DISPLAY|devtoolsactiveport|chrome exited|could not launch|failed to launch|browser launch failed/iu.test(detail);
 }
 
 /** Project only the viewer protocol. Never relay engine commands, results or console output. */
@@ -159,6 +176,7 @@ interface Viewer extends OpenOptions {
 export class BrowserLive {
   private readonly runtime: BrowserRuntime;
   private readonly viewers = new Map<string, Viewer>();
+  private readonly sessionResets = new Map<string, Promise<boolean>>();
   constructor({ runtime }: { runtime: BrowserRuntime }) { this.runtime = runtime; }
 
   private current(viewer: Viewer): boolean {
@@ -264,10 +282,33 @@ export class BrowserLive {
       if (!this.current(viewer)) throw new Error("stale viewer");
       const result = object(JSON.parse(stdout));
       const data = object(result?.data);
-      if (result?.success !== true || !data) throw new Error("browser command failed");
+      if (result?.success !== true || !data) {
+        // Keep the engine's own error internal (logged, never sent) so a
+        // launch failure is recognized for what it is below.
+        const detail = [result?.error, result?.message].filter((part): part is string => typeof part === "string").join(" ");
+        throw new Error(detail ? `browser command failed: ${detail}` : "browser command failed");
+      }
       return data;
     } catch (error) {
       console.warn("browser-live:", error);
+      if (browserLaunchFailure(error)) {
+        // The daemon is alive but holding a launch configuration Chrome
+        // cannot satisfy on this host (a headed launch with no display). It
+        // fails every command the same way until the daemon is killed —
+        // discard the session so the next connect starts a fresh one. One
+        // tracked reset per session: a reconnect or repeated command joins
+        // the in-flight teardown instead of spawning another (#1383).
+        if (!this.sessionResets.has(viewer.session)) {
+          const reset = closeBrowserSession(viewer.spec.command, env).then((closed) => {
+            if (closed) console.warn(`browser-live: reset ${viewer.session} after a failed browser launch; reconnecting starts a fresh session`);
+            else console.warn(`browser-live: reset of ${viewer.session} after a failed browser launch did not finish; the next command retries it`);
+            return closed;
+          }, () => false);
+          this.sessionResets.set(viewer.session, reset);
+          void reset.finally(() => { if (this.sessionResets.get(viewer.session) === reset) this.sessionResets.delete(viewer.session); });
+        }
+        throw new BrowserLiveError("The browser could not start on this server. Reconnect to retry with a fresh browser session.", 503);
+      }
       throw new BrowserLiveError("The browser could not complete this action. Check that the browser engine is installed, then reconnect.", 503);
     }
   }
@@ -327,6 +368,10 @@ export class BrowserLive {
     options.res.once("close", () => this.close(viewer));
     options.res.once("error", () => this.close(viewer));
     try {
+      // A failed launch already started this session's daemon teardown; wait
+      // for it so the status probe meets a fresh daemon, not the stuck one.
+      const resetting = this.sessionResets.get(viewer.session);
+      if (resetting) await resetting;
       let status = await this.command(viewer, ["stream", "status"]);
       if (status.enabled !== true) {
         try { status = await this.command(viewer, ["stream", "enable"]); }
@@ -422,13 +467,15 @@ export class BrowserLive {
       try {
         const taking = this.runtime.take(viewer.session, viewer.id);
         this.control(viewer.session);
-        await taking;
+        // waited: the bot's own action finished first, so input the person
+        // aimed at the page before the grant may no longer fit it.
+        const waited = await taking;
         if (!this.current(viewer)) { this.close(viewer); throw new BrowserLiveError("This browser view closed.", 409); }
-        return { ok: true };
-      } catch { throw new BrowserLiveError("Another browser view or bot action is using this browser. Try again shortly.", 409); }
+        return { ok: true, waited: waited === true };
+      } catch { throw this.refusal(viewer, "Another browser view or bot action is using this browser. Try again shortly."); }
       finally { this.control(viewer.session); }
     }
-    if (!this.runtime.canControl(viewer.session, viewer.id)) throw new BrowserLiveError("Take control of this browser before interacting.", 409);
+    if (!this.runtime.canControl(viewer.session, viewer.id)) throw this.refusal(viewer, "Browser control changed. Try again.");
     if (viewer.pendingActions >= 32) throw new BrowserLiveError("Too many browser actions are pending. Try again shortly.", 429);
     viewer.pendingActions += 1;
     try {
@@ -438,8 +485,13 @@ export class BrowserLive {
         else if (action.type === "command") await this.command(viewer, action.args);
       });
       return { ok: true };
-    } catch (error) { throw error instanceof BrowserLiveError ? error : new BrowserLiveError("Browser control changed. Take control again to continue.", 409); }
+    } catch (error) { throw error instanceof BrowserLiveError ? error : this.refusal(viewer, "Browser control changed. Try again."); }
     finally { viewer.pendingActions -= 1; this.control(viewer.session); }
+  }
+
+  /** Why this viewer cannot act now: an interrupted browser needs a restart. */
+  private refusal(viewer: Viewer, otherwise: string): BrowserLiveError {
+    return new BrowserLiveError(this.runtime.interrupted(viewer.session) ? RESTART_NEEDED : otherwise, 409);
   }
 
   closeForSession(session: string): void { for (const viewer of this.viewers.values()) if (viewer.session === session) this.close(viewer); }

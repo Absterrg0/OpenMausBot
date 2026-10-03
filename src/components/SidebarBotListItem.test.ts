@@ -1,6 +1,6 @@
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { StoreProvider, type Bot } from "@/state/store";
 
@@ -10,6 +10,8 @@ vi.mock("./DesktopCapabilities", () => ({
 
 import { ConfirmDialogCard } from "./ConfirmDialog";
 import { BotDeleteMenuItem, BotListItem, botConfirmCopy, currentArchivableBot } from "./Sidebar";
+import { endCall } from "@/lib/call";
+import { configureLiveMedia, resetLiveMedia, startLiveCall } from "@/lib/live-call-media";
 
 const bot = (overrides: Partial<Bot> = {}): Bot => ({
   id: "atlas",
@@ -25,18 +27,24 @@ const bot = (overrides: Partial<Bot> = {}): Bot => ({
   ...overrides,
 });
 
-function renderRow(candidate: Bot, quiet = false) {
+function renderRow(candidate: Bot, quiet = false, density: "comfortable" | "icons" = "comfortable") {
   return renderToStaticMarkup(createElement(
     StoreProvider,
     null,
     createElement(BotListItem, {
       bot: candidate,
-      density: "comfortable",
+      density,
       quiet,
       onMenu: vi.fn(),
     }),
   ));
 }
+
+afterEach(() => {
+  resetLiveMedia();
+  endCall();
+  vi.unstubAllGlobals();
+});
 
 describe("BotListItem", () => {
   it("offers direct New thread and New folder icons and a keyboard-accessible bot menu", () => {
@@ -80,6 +88,45 @@ describe("BotListItem", () => {
     }));
     expect(markup).toContain("Created notes.txt with three lines.");
     expect(markup).not.toContain("[digest]");
+  });
+
+  // A turn can end on the approval card itself: Stop while it is open, or a
+  // provider that settles the ask without writing more. The card then reads
+  // Allowed or Denied, and the row must say the same, not "Approval needed".
+  describe("an approval card that ends the chat", () => {
+    const approval = (card: Partial<NonNullable<Bot["messages"][number]["card"]>>): Bot => bot({
+      messages: [
+        { id: "u1", role: "user", kind: "text", text: "list the files", at: 1 },
+        {
+          id: "c1", role: "bot", kind: "options", at: 2,
+          card: { title: "Approval needed", subtitle: "ls -la", options: ["Allow", "Deny"], requestId: "r1", tool: "Bash", ...card },
+        },
+      ] as Bot["messages"],
+    });
+
+    it("keeps the request's title while it is still open", () => {
+      expect(renderRow(approval({}))).toContain("Approval needed");
+    });
+
+    it("says Allowed once it was allowed", () => {
+      const markup = renderRow(approval({ answered: "allow" }));
+      expect(markup).toContain("Allowed");
+      expect(markup).not.toContain("Approval needed");
+    });
+
+    it("says Denied once it was denied, or closed by Stop", () => {
+      for (const answered of ["deny", "unavailable"]) {
+        const markup = renderRow(approval({ answered, dismissed: answered === "unavailable" }));
+        expect(markup).toContain("Denied");
+        expect(markup).not.toContain("Approval needed");
+      }
+    });
+
+    it("says Expired once nothing can answer it", () => {
+      const markup = renderRow(approval({ expired: true, options: [] }));
+      expect(markup).toContain("Expired");
+      expect(markup).not.toContain("Approval needed");
+    });
   });
 
   it("leaves the full Chief card as one selectable hit area", () => {
@@ -146,6 +193,29 @@ describe("BotListItem", () => {
     expect(renderRow(bot({ busy: true }))).toContain('data-testid="working-dot"');
     expect(renderRow(bot())).not.toContain('data-testid="working-dot"');
     expect(renderRow(bot({ busy: true, activity: "waiting-on-you" }))).not.toContain('data-testid="working-dot"');
+  });
+
+  it("marks the bot this window is on a Live call with by a green phone badge", () => {
+    expect(renderRow(bot())).not.toContain('data-testid="live-call-badge"');
+
+    vi.stubGlobal("window", { ogb: { speechStop: vi.fn(async () => {}) } });
+    // the microphone prompt never answers: the call stays "starting"
+    configureLiveMedia({ getUserMedia: () => new Promise<MediaStream>(() => {}) });
+    void startLiveCall({ botId: "atlas", threadId: "thread-atlas" });
+
+    const markup = renderRow(bot());
+    expect(markup).toContain('data-testid="live-call-badge"');
+    expect(markup).toContain('aria-label="On a Live call"');
+    // in the name line, after the name
+    expect(markup.indexOf('data-testid="live-call-badge"')).toBeGreaterThan(markup.indexOf(">Atlas<"));
+    expect(renderRow(bot({ id: "other" }))).not.toContain('data-testid="live-call-badge"');
+    expect(renderRow(bot(), true)).toContain('data-testid="live-call-badge"');
+
+    // icons-only rows have no name line: the badge sits on the avatar and
+    // the row's accessible name says it
+    const icons = renderRow(bot(), false, "icons");
+    expect(icons).toContain('data-testid="live-call-badge"');
+    expect(icons).toContain('aria-label="Atlas · On a Live call"');
   });
 
   it("marks an idle bot waiting on a teammate with a quiet dot, never the work signals", () => {

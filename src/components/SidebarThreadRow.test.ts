@@ -5,11 +5,12 @@ import { setLocale } from "@/lib/i18n";
 import { formatUpdatedAt, nextSnoozeExpiry, orderedSidebarThreads, orderedThreadList, SidebarThreadRow, threadByline, threadOpenerLabel, threadUpdatedLabel, visibleSidebarThreads } from "./SidebarThreadRow";
 
 // The More menu lives behind component state and a portal, which a static
-// render never reaches. SidebarThreadRow uses exactly useState, useRef and
-// useEffect; stubbing those three (initial values first, state kept across a
-// re-render) lets this suite render the row directly, click the real action
-// button, and see the menu the click opened — the same extract-and-call
-// approach the ThreadRefs tests use for onClick props.
+// render never reaches. SidebarThreadRow uses exactly useState, useRef,
+// useEffect and (through its menu motion) useLayoutEffect; stubbing those four
+// (initial values first, state kept across a re-render, effects never run)
+// lets this suite render the row directly, click the real action button, and
+// see the menu the click opened — the same extract-and-call approach the
+// ThreadRefs tests use for onClick props.
 const rowHooks = vi.hoisted(() => {
   const slots: unknown[] = [];
   let cursor = 0;
@@ -35,6 +36,7 @@ vi.mock("react", async (importOriginal) => {
     useState: rowHooks.useState as unknown as typeof actual.useState,
     useRef: ((initial: unknown) => ({ current: initial })) as unknown as typeof actual.useRef,
     useEffect: (() => undefined) as unknown as typeof actual.useEffect,
+    useLayoutEffect: (() => undefined) as unknown as typeof actual.useLayoutEffect,
   };
 });
 
@@ -224,10 +226,10 @@ describe("threads a bot closed", () => {
     expect(markup).toContain("closed by Parker");
     expect(markup).not.toContain("opened by");
     expect(markup).toContain('title="Helper 1 · Closed"');
-    expect(markup).toContain("text-ink-secondary/70");
+    expect(markup).toContain('text-ink-tertiary">Helper 1</span>');
     // a live status outranks the closed note; the selected row is not dimmed
     expect(render({ threadId: "h", title: "Helper 1", closedBy, busy: true })).toContain('title="Helper 1 · Working"');
-    expect(render({ threadId: "h", title: "Helper 1", closedBy }, true)).not.toContain("text-ink-secondary/70");
+    expect(render({ threadId: "h", title: "Helper 1", closedBy }, true)).not.toContain('text-ink-tertiary">Helper 1</span>');
   });
 });
 
@@ -435,7 +437,7 @@ describe("archived threads", () => {
     expect(threadByline({ openedBy: { botId: "scout", name: "Scout", at: 1 }, archivedAt: 5, closedBy: { botId: "pm", name: "Parker", at: 2 } })).toBe("closed by Parker");
     const markup = render({ threadId: "1", title: "Put away", archivedAt: 5 });
     expect(markup).toContain("Archived");
-    expect(markup).toContain("text-ink-secondary/70");
+    expect(markup).toContain('text-ink-tertiary">Put away</span>');
     expect(render({ threadId: "1", title: "Put away", archivedAt: 5, busy: true })).toContain('title="Put away · Working · Archived"');
   });
   it("treats archivedAt: 0 as archived, because zero is a valid timestamp at the API boundary", () => {
@@ -449,51 +451,52 @@ describe("archived threads", () => {
   });
 });
 
+// Row menu helpers: render the row, open its More menu, find a button.
+type RowTask = Parameters<typeof SidebarThreadRow>[0]["task"];
+type RowProps = { children?: unknown; [key: string]: unknown };
+type RowNode = { $$typeof?: unknown; type?: unknown; props?: RowProps; children?: unknown };
+
+const renderRow = (task: RowTask, ownerId: string, fresh = true, extra: Partial<Parameters<typeof SidebarThreadRow>[0]> = {}): RowNode => {
+  rowHooks.begin(fresh);
+  return SidebarThreadRow({ task, ownerId, current: false, onSelect: vi.fn(), onRename: vi.fn(), onDelete: vi.fn(), ...extra }) as RowNode;
+};
+
+const walk = (node: unknown, visit: (element: RowNode) => void): void => {
+  if (Array.isArray(node)) {
+    node.forEach((child) => walk(child, visit));
+    return;
+  }
+  if (!node || typeof node !== "object") return;
+  const element = node as RowNode;
+  if (element.$$typeof !== undefined || element.type !== undefined) visit(element);
+  walk(element.props?.children ?? element.children, visit);
+};
+
+const textOf = (node: unknown): string => {
+  if (typeof node === "string") return node;
+  if (Array.isArray(node)) return node.map(textOf).join("");
+  if (!node || typeof node !== "object") return "";
+  const element = node as RowNode;
+  return textOf(element.props?.children ?? element.children);
+};
+
+const buttonWithLabel = (tree: RowNode, label: string) => {
+  let found: RowNode | undefined;
+  walk(tree, (element) => {
+    if (!found && element.type === "button" && textOf(element).includes(label)) found = element;
+  });
+  return found;
+};
+
+const moreMenuButton = (tree: RowNode) => {
+  let found: RowNode | undefined;
+  walk(tree, (element) => {
+    if (!found && element.props && "aria-expanded" in element.props) found = element;
+  });
+  return found;
+};
+
 describe("Copy link", () => {
-  type RowTask = Parameters<typeof SidebarThreadRow>[0]["task"];
-  type RowProps = { children?: unknown; [key: string]: unknown };
-  type RowNode = { $$typeof?: unknown; type?: unknown; props?: RowProps; children?: unknown };
-
-  const renderRow = (task: RowTask, ownerId: string, fresh = true): RowNode => {
-    rowHooks.begin(fresh);
-    return SidebarThreadRow({ task, ownerId, current: false, onSelect: vi.fn(), onRename: vi.fn(), onDelete: vi.fn() }) as RowNode;
-  };
-
-  const walk = (node: unknown, visit: (element: RowNode) => void): void => {
-    if (Array.isArray(node)) {
-      node.forEach((child) => walk(child, visit));
-      return;
-    }
-    if (!node || typeof node !== "object") return;
-    const element = node as RowNode;
-    if (element.$$typeof !== undefined || element.type !== undefined) visit(element);
-    walk(element.props?.children ?? element.children, visit);
-  };
-
-  const textOf = (node: unknown): string => {
-    if (typeof node === "string") return node;
-    if (Array.isArray(node)) return node.map(textOf).join("");
-    if (!node || typeof node !== "object") return "";
-    const element = node as RowNode;
-    return textOf(element.props?.children ?? element.children);
-  };
-
-  const buttonWithLabel = (tree: RowNode, label: string) => {
-    let found: RowNode | undefined;
-    walk(tree, (element) => {
-      if (!found && element.type === "button" && textOf(element).includes(label)) found = element;
-    });
-    return found;
-  };
-
-  const moreMenuButton = (tree: RowNode) => {
-    let found: RowNode | undefined;
-    walk(tree, (element) => {
-      if (!found && element.props && "aria-expanded" in element.props) found = element;
-    });
-    return found;
-  };
-
   it("writes the exact canonical link for the row's owner to the clipboard", () => {
     const writeText = vi.fn(() => Promise.resolve());
     vi.stubGlobal("navigator", { clipboard: { writeText } });
@@ -521,6 +524,81 @@ describe("Copy link", () => {
       expect(writeText).toHaveBeenCalledWith(link);
       writeText.mockClear();
     }
+    vi.unstubAllGlobals();
+  });
+});
+
+describe("Refresh permissions", () => {
+  const openMenu = (tree: RowNode) => {
+    (moreMenuButton(tree)!.props!.onClick as (event: unknown) => void)({ currentTarget: { getBoundingClientRect: () => ({ left: 100, bottom: 200 }) } });
+  };
+
+  it("is offered only when the row can refresh, and stays disabled while the thread is working", () => {
+    vi.stubGlobal("window", { innerWidth: 1024, innerHeight: 768 });
+    vi.stubGlobal("document", { body: { nodeType: 1 } });
+    const task = { threadId: "t1", title: "Fix the login" };
+    openMenu(renderRow(task, "scout"));
+    expect(buttonWithLabel(renderRow(task, "scout", false), "Refresh permissions")).toBeUndefined();
+
+    const onRefreshPermissions = vi.fn();
+    openMenu(renderRow(task, "scout", true, { onRefreshPermissions }));
+    const offered = buttonWithLabel(renderRow(task, "scout", false, { onRefreshPermissions }), "Refresh permissions");
+    expect(offered?.props?.disabled).toBe(false);
+    expect(offered?.props?.title).toBe("Apply this bot's current approval level and saved approvals to this thread. Other threads stay as they are.");
+    (offered!.props!.onClick as () => void)();
+    expect(onRefreshPermissions).toHaveBeenCalledTimes(1);
+
+    const working = { ...task, activity: "working" as const };
+    openMenu(renderRow(working, "scout", true, { onRefreshPermissions }));
+    const busy = buttonWithLabel(renderRow(working, "scout", false, { onRefreshPermissions }), "Refresh permissions");
+    expect(busy?.props?.disabled).toBe(true);
+    vi.unstubAllGlobals();
+  });
+});
+
+describe("Regenerate title", () => {
+  const openMenu = (tree: RowNode) => {
+    (moreMenuButton(tree)!.props!.onClick as (event: unknown) => void)({ currentTarget: { getBoundingClientRect: () => ({ left: 100, bottom: 200 }) } });
+  };
+
+  it("is offered next to Rename only when the caller can regenerate titles", () => {
+    vi.stubGlobal("window", { innerWidth: 1024, innerHeight: 768 });
+    vi.stubGlobal("document", { body: { nodeType: 1 } });
+    const task = { threadId: "t1", title: "Fix the login" };
+    openMenu(renderRow(task, "scout"));
+    const plain = renderRow(task, "scout", false);
+    expect(buttonWithLabel(plain, "Rename thread")).toBeDefined();
+    expect(buttonWithLabel(plain, "Regenerate title")).toBeUndefined();
+
+    const onRegenerateTitle = vi.fn();
+    openMenu(renderRow(task, "scout", true, { onRegenerateTitle }));
+    const offered = buttonWithLabel(renderRow(task, "scout", false, { onRegenerateTitle }), "Regenerate title");
+    expect(offered?.props?.disabled).toBe(false);
+    vi.unstubAllGlobals();
+  });
+
+  it("shows Regenerating… and stays disabled until the request settles", () => {
+    vi.stubGlobal("window", { innerWidth: 1024, innerHeight: 768 });
+    vi.stubGlobal("document", { body: { nodeType: 1 } });
+    const task = { threadId: "t1", title: "Fix the login" };
+    let settle: ((ok: boolean) => void) | undefined;
+    const onRegenerateTitle = vi.fn((onSettled: (ok: boolean) => void) => { settle = onSettled; });
+    openMenu(renderRow(task, "scout", true, { onRegenerateTitle }));
+    const idle = buttonWithLabel(renderRow(task, "scout", false, { onRegenerateTitle }), "Regenerate title")!;
+    (idle.props!.onClick as () => void)();
+    expect(onRegenerateTitle).toHaveBeenCalledTimes(1);
+
+    const pending = buttonWithLabel(renderRow(task, "scout", false, { onRegenerateTitle }), "Regenerating…")!;
+    expect(pending.props!.disabled).toBe(true);
+    expect(pending.props!["aria-busy"]).toBe(true);
+    // a second click while it runs asks nothing more of the server
+    (pending.props!.onClick as () => void)();
+    expect(onRegenerateTitle).toHaveBeenCalledTimes(1);
+
+    // a failure leaves the menu open with the action ready again
+    settle!(false);
+    const again = buttonWithLabel(renderRow(task, "scout", false, { onRegenerateTitle }), "Regenerate title")!;
+    expect(again.props!.disabled).toBe(false);
     vi.unstubAllGlobals();
   });
 });

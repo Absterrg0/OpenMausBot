@@ -74,6 +74,9 @@ export type RuntimeEvent = RuntimeEventBase &
         type: "turn.wait_started";
         /** The computer resource this turn queued behind (e.g. "computer:box:bx_…"). */
         resource: string;
+        /** Where this turn sat in the resource's arrival-ordered waitlist when
+         * the wait began (#1652). */
+        position?: number;
         /** Who held the computer when the wait began, if the holder was known. */
         holder?: { name: string; task?: string };
       }
@@ -84,8 +87,10 @@ export type RuntimeEvent = RuntimeEventBase &
         /** How long the turn actually waited. */
         waitedMs: number;
         /** acquired: the claim landed; stopped: the turn was stopped or
-         * cancelled while waiting; gave_up: the wait ceiling fired. */
-        outcome: "acquired" | "gave_up" | "stopped";
+         * cancelled while waiting; parked: the wait ceiling settled the turn
+         * for resume (#1651); gave_up: the pre-parking ceiling, kept so
+         * recorded logs still replay. */
+        outcome: "acquired" | "gave_up" | "parked" | "stopped";
       }
     | {
         type: "item.started";
@@ -167,6 +172,9 @@ export type RuntimeEvent = RuntimeEventBase &
     // `claudeUpdate: true` narrows a setup failure to "this Claude Code is
     // too old for the model": the UI offers to run `claude update` for them.
     | { type: "runtime.error"; message: string; setup?: boolean; terminal?: boolean; claudeUpdate?: boolean }
+    /** Something the person should know that did not fail the turn — for
+     * example, a saved model the engine no longer offers was replaced. */
+    | { type: "runtime.notice"; message: string }
   );
 
 export type RuntimeEventListener = (event: RuntimeEvent) => void;

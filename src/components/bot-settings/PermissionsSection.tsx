@@ -84,7 +84,7 @@ export function PermissionsSection({
             aria-label="Chief of Staff"
             disabled={!bot.chiefOfStaff && !canCoordinate}
             onClick={() => patch({ chiefOfStaff: !bot.chiefOfStaff })}
-            title={!bot.chiefOfStaff && !canCoordinate ? "This engine cannot contact other bots" : undefined}
+            title={!bot.chiefOfStaff && !canCoordinate ? "This model cannot contact other bots" : undefined}
             className="disabled:cursor-not-allowed"
           />
         </div>
@@ -125,7 +125,7 @@ export function PermissionsSection({
           aria-label="Ask me before contacting other bots"
           disabled={!bot.approvePeerComms && !canCoordinate}
           onClick={() => patch({ approvePeerComms: !bot.approvePeerComms })}
-          title={!bot.approvePeerComms && !canCoordinate ? "This engine cannot contact other bots" : undefined}
+          title={!bot.approvePeerComms && !canCoordinate ? "This model cannot contact other bots" : undefined}
           className="disabled:cursor-not-allowed"
         />
       </div>
@@ -133,7 +133,7 @@ export function PermissionsSection({
       <div className="rounded-xl bg-card p-4">
         <div className="text-[15px] font-medium text-ink">Approval level</div>
         <div className="mt-0.5 text-[13px] text-ink-secondary">
-          {draft ? "Default for the new bot's threads, routines and delegated work." : "Default for new threads, routines and delegated work. When enabling Full access, you can also apply it to every existing thread."}
+          {draft ? "Default for the new bot's threads, routines and delegated work." : "Default for new threads, routines and delegated work. When enabling Full access, you can also apply it to every existing thread. Use Refresh permissions on a thread to apply the current level to that conversation."}
         </div>
         <ProposalStatus bot={bot} kind="owner" />
         <div className="mt-3">

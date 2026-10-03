@@ -119,7 +119,8 @@ sealed interface TranscriptRow {
  * the raw last message made "Hidden" mean "hidden in one place".
  */
 fun rosterPreview(messages: List<Message>, detail: ActivityDetail): String =
-    when (val last = transcriptRows(messages, detail).lastOrNull()) {
+    // The digest chip follows every reply; the reply is what the row should say.
+    when (val last = transcriptRows(messages, detail).lastOrNull { it.kind != Message.Kind.DIGEST }) {
         null -> ""
         is TranscriptRow.Single -> previewText(last.message)
         is TranscriptRow.ActivityRun ->
@@ -144,6 +145,7 @@ internal fun previewText(message: Message): String = when (message.kind) {
     Message.Kind.SCREEN -> "Screenshot"
     Message.Kind.DIGEST -> ""
     Message.Kind.COMPACTION -> message.compaction?.chipText ?: message.text.orEmpty()
+    Message.Kind.ROUTINE_RUN -> message.routineRunPreview
     Message.Kind.UNKNOWN -> message.text.orEmpty()
 }
 
@@ -151,8 +153,17 @@ internal fun previewText(message: Message): String = when (message.kind) {
  * Rows the harness writes about a turn rather than in it: tool chips and, since
  * Phase 0, the digest and compaction receipts. Hidden together, because a reader
  * who turned activity off does not want the summary of exactly those calls either.
- * Port of `isActivityReceipt` in `ChatPreferences.swift`.
+ * Port of `isActivityReceipt` in `ChatPreferences.swift`. A routine-run card is
+ * not one: it is the run's result, and it stays whatever the setting.
  */
+/**
+ * A status row the server writes while a turn runs ("notice: Qwen hit a rate
+ * limit and is retrying"). Port of `isStatusNotice` in `ChatPreferences.swift`:
+ * it tells the reader what the bot is doing, so it is never hidden or folded.
+ */
+fun isStatusNotice(message: Message): Boolean =
+    message.kind == Message.Kind.ACTIVITY && message.tool?.name?.startsWith("notice:") == true
+
 fun isActivityReceipt(message: Message): Boolean = when (message.kind) {
     Message.Kind.ACTIVITY, Message.Kind.DIGEST, Message.Kind.COMPACTION -> true
     else -> false
@@ -197,17 +208,20 @@ fun transcriptRows(messages: List<Message>, detail: ActivityDetail): List<Transc
         }
 
         messages.forEach { message ->
-            if (message.kind == Message.Kind.DIGEST) return@forEach
+            // Match iOS: a receipt with no recorded work should not leave a
+            // chip or an empty row after every ordinary conversational reply.
+            if (message.kind == Message.Kind.DIGEST && TurnDigest.parse(message.text).sections.isEmpty()) return@forEach
             val turn = folds[message.id]
             if (turn != null) {
                 flush()
                 add(turn)
-            } else if (message.id in hiddenIds || (detail == ActivityDetail.HIDDEN && isActivityReceipt(message))) {
+            } else if (message.id in hiddenIds || (detail == ActivityDetail.HIDDEN && isActivityReceipt(message) && !isStatusNotice(message))) {
                 // The reversible turn fold owns narration; Hidden owns tools.
             } else if (detail != ActivityDetail.REDUCED || message.kind != Message.Kind.ACTIVITY) {
+                // The digest lands here too: its own row, never a step in a run.
                 flush()
                 add(TranscriptRow.Single(message))
-            } else if (message.tool?.ok == false) {
+            } else if (message.tool?.ok == false || isStatusNotice(message)) {
                 flush()
                 add(TranscriptRow.Single(message))
             } else {

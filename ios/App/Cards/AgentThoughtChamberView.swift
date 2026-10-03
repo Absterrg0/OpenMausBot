@@ -1,11 +1,16 @@
 import SwiftUI
 import CompanionCore
 
-public struct AgentThoughtChamberView: View {
+public struct AgentThoughtChamberView: View, Equatable {
     public let reasoning: String
     public let botName: String
     public let mascotColor: Color
     public let isStreaming: Bool
+
+    public static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.reasoning == rhs.reasoning && lhs.botName == rhs.botName
+            && lhs.mascotColor == rhs.mascotColor && lhs.isStreaming == rhs.isStreaming
+    }
     
     @Environment(\.colorScheme) private var colorScheme
     @State private var isExpanded: Bool = false
@@ -24,7 +29,7 @@ public struct AgentThoughtChamberView: View {
     
     public var body: some View {
         let isDark = colorScheme == .dark
-        let window = ReasoningWindow(reasoning)
+        let window = ReasoningWindow(reasoning, characterLimit: isExpanded ? 2_000 : 0)
         
         VStack(alignment: .leading, spacing: 6) {
             headerButton(isDark: isDark, total: window.total)

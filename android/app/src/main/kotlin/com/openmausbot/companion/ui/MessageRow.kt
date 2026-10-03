@@ -80,11 +80,13 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.openmausbot.companion.audio.VoiceNoteController
 import com.openmausbot.companion.core.Chat
 import com.openmausbot.companion.core.AttachedMessageContent
 import com.openmausbot.companion.core.generatedImages
@@ -96,6 +98,7 @@ import com.openmausbot.companion.core.OptionCard
 import com.openmausbot.companion.core.ThreadRef
 import com.openmausbot.companion.core.ToolActivity
 import com.openmausbot.companion.core.forTask
+import com.openmausbot.companion.core.routineExecutionRef
 import com.openmausbot.companion.core.TranscriptCard
 import com.openmausbot.companion.core.TranscriptCards
 import com.openmausbot.companion.core.webhookContent
@@ -164,6 +167,10 @@ fun MessageRow(
             horizontalAlignment = if (mine) Alignment.End else Alignment.Start,
             verticalArrangement = Arrangement.spacedBy(6.dp),
         ) {
+            // Only a thread the phone knows gets an "Open run" button.
+            val runRef = remember(state, message.routineRun?.executionThreadId) {
+                message.routineRun?.let { state.routineExecutionRef(it) }
+            }
             MessageContent(
                 chat = chat,
                 message = message,
@@ -172,6 +179,7 @@ fun MessageRow(
                 openLink = openLink,
                 openAttachment = openAttachment,
                 openThread = openThread,
+                runRef = runRef,
             )
 
             message.comm?.let {
@@ -180,6 +188,11 @@ fun MessageRow(
                     fontSize = 12.sp,
                     color = secondaryTint,
                 )
+            }
+
+            // A request the person spoke on a Live call; the harness labels it.
+            if (mine && message.via == "call") {
+                Text(text = "via call", fontSize = 12.sp, color = secondaryTint)
             }
 
             message.reactions?.takeIf { it.isNotEmpty() }?.let { reactions ->
@@ -412,6 +425,7 @@ private fun MessageContent(
     openLink: ((String, Message) -> Unit)?,
     openAttachment: ((DisplayedMessageAttachment, Message, DownloadedFile?) -> Unit)?,
     openThread: ((ThreadRef) -> Unit)?,
+    runRef: ThreadRef?,
 ) {
     when (message.kind) {
         Message.Kind.TEXT -> TextBubble(chat.threadId, message, endsRun, openLink, openAttachment)
@@ -423,7 +437,7 @@ private fun MessageContent(
             CardView(chat, message, haptics)
         }
         Message.Kind.ACTIVITY -> {
-            ActivityChip(message.tool, message.threadRef, openThread)
+            ActivityChip(message.tool, message.threadRef, openThread, teammateReport = message.threadRef != null || message.comm != null)
             // Claude Code too old for the model: offer the update on the
             // engine this bot's thread runs on. Rooms have no single engine.
             val claudeInstance = (chat as? Chat.BotChat)?.bot
@@ -438,9 +452,17 @@ private fun MessageContent(
             detail = message.compaction?.summary ?: message.text.orEmpty(),
         )
         Message.Kind.SCREEN -> ScreenShot(chat.threadId, message)
-        // Turn-audit chip (tool list + reply preview). Desktop shows it only
-        // behind a "show tool calls" setting Android doesn't have; hide it.
-        Message.Kind.DIGEST -> {}
+        // The turn's audit, as a chip that opens its sections. The activity
+        // setting already dropped it when tool calls are hidden.
+        Message.Kind.DIGEST -> TurnDigestChip(message)
+        Message.Kind.ROUTINE_RUN -> RoutineRunCardView(
+            message = message,
+            openRun = if (runRef != null && openThread != null) {
+                { openThread(runRef) }
+            } else {
+                null
+            },
+        )
         // A message kind from a newer computer. Almost everything the harness
         // sends carries `text`, so showing it is usually the whole message and
         // always better than a gap in the transcript. When there is nothing to
@@ -735,6 +757,10 @@ private fun voiceNoteClock(ms: Long): String {
  * rather than talking over it. The clip's bytes are fetched through the same
  * authenticated file route as image thumbnails, but only on first play — a
  * note nobody opens costs no request, and a replay never refetches.
+ *
+ * While this phone is on a Live call the play button is off, with the reason
+ * under the bubble: a note asks for the audio focus the call holds, and the
+ * call ends when it loses it (as the profile sheet keeps its voice preview off).
  */
 @Composable
 private fun VoiceNoteAttachmentView(
@@ -745,6 +771,8 @@ private fun VoiceNoteAttachmentView(
     val foreground = if (message.role == Message.Role.USER) BubbleColor.mineText else MaterialTheme.colorScheme.onSurface
     val session = LocalCompanion.current.session
     val player = LocalCompanion.current.voiceNotes
+    val liveCall by LocalCompanion.current.liveCalls.state.collectAsState()
+    val callHoldsAudio = liveCall.holdsMedia
     val scope = rememberCoroutineScope()
     val key = remember(message.id, note.path) { message.id + ":" + note.path }
     var clip by remember(message.id, note.path) { mutableStateOf<VoiceNoteClipState>(VoiceNoteClipState.NotLoaded) }
@@ -752,7 +780,10 @@ private fun VoiceNoteAttachmentView(
     var scrub by remember(key) { mutableStateOf<Float?>(null) }
 
     fun startPlayback(data: ByteArray) {
-        if (player.play(key, data) != null) clip = VoiceNoteClipState.Failed
+        val failure = player.play(key, data) ?: return
+        // A Live call took the audio while the clip downloaded: the player
+        // refused it, and the clip waits, ready, for the call to end.
+        if (failure != VoiceNoteController.DURING_LIVE_CALL) clip = VoiceNoteClipState.Failed
     }
 
     fun loadAndPlay() {
@@ -805,74 +836,89 @@ private fun VoiceNoteAttachmentView(
     val durationSeconds = durationMs?.let { it / 1000f } ?: 0f
     val positionMs = scrub?.toLong() ?: (active?.positionMs ?: 0L)
 
-    Row(
-        modifier = Modifier
-            .widthIn(max = 360.dp)
-            .clip(RoundedCornerShape(16.dp))
-            .background(foreground.copy(alpha = 0.10f))
-            .padding(horizontal = 12.dp, vertical = 8.dp),
-        horizontalArrangement = Arrangement.spacedBy(10.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Box(
+    // Pausing never takes the audio; starting or resuming would.
+    val playable = playing || !callHoldsAudio
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Row(
             modifier = Modifier
-                .size(28.dp)
-                .clip(CircleShape)
-                .background(MaterialTheme.colorScheme.primary)
-                .clickable(role = Role.Button) {
-                    when {
-                        playing -> player.pause()
-                        clip is VoiceNoteClipState.Loading -> Unit
-                        active != null && player.resumable(key) ->
-                            if (player.resume() != null) clip = VoiceNoteClipState.Failed
-                        clip is VoiceNoteClipState.Ready ->
-                            startPlayback((clip as VoiceNoteClipState.Ready).data)
-                        else -> loadAndPlay()
-                    }
-                }
-                .semantics {
-                    contentDescription = if (playing) "Pause voice note" else "Play voice note"
-                },
-            contentAlignment = Alignment.Center,
+                .widthIn(max = 360.dp)
+                .clip(RoundedCornerShape(16.dp))
+                .background(foreground.copy(alpha = 0.10f))
+                .padding(horizontal = 12.dp, vertical = 8.dp),
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+            verticalAlignment = Alignment.CenterVertically,
         ) {
-            when {
-                clip is VoiceNoteClipState.Loading && active == null ->
-                    CircularProgressIndicator(
-                        modifier = Modifier.size(14.dp),
-                        strokeWidth = 2.dp,
-                        color = Color.White,
+            Box(
+                modifier = Modifier
+                    .size(28.dp)
+                    .clip(CircleShape)
+                    .background(MaterialTheme.colorScheme.primary.copy(alpha = if (playable) 1f else 0.38f))
+                    .clickable(role = Role.Button, enabled = playable) {
+                        when {
+                            playing -> player.pause()
+                            // Disabled is how it looks; this is what stops a tap
+                            // that reaches the click action anyway.
+                            callHoldsAudio -> Unit
+                            clip is VoiceNoteClipState.Loading -> Unit
+                            active != null && player.resumable(key) ->
+                                player.resume()?.let { if (it != VoiceNoteController.DURING_LIVE_CALL) clip = VoiceNoteClipState.Failed }
+                            clip is VoiceNoteClipState.Ready ->
+                                startPlayback((clip as VoiceNoteClipState.Ready).data)
+                            else -> loadAndPlay()
+                        }
+                    }
+                    .semantics {
+                        contentDescription = if (playing) "Pause voice note" else "Play voice note"
+                    },
+                contentAlignment = Alignment.Center,
+            ) {
+                when {
+                    clip is VoiceNoteClipState.Loading && active == null ->
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(14.dp),
+                            strokeWidth = 2.dp,
+                            color = Color.White,
+                        )
+                    playing -> VoiceNotePauseGlyph(Color.White)
+                    else -> Icon(
+                        imageVector = Icons.Filled.PlayArrow,
+                        contentDescription = null,
+                        tint = Color.White,
+                        modifier = Modifier.size(20.dp),
                     )
-                playing -> VoiceNotePauseGlyph(Color.White)
-                else -> Icon(
-                    imageVector = Icons.Filled.PlayArrow,
-                    contentDescription = null,
-                    tint = Color.White,
-                    modifier = Modifier.size(20.dp),
-                )
+                }
             }
+            Slider(
+                // The slider works in seconds; without an explicit range Compose clamps
+                // it to 0f..1f and scrubs can only land inside the first second.
+                value = if (durationSeconds > 0f) (positionMs / 1000f).coerceIn(0f, durationSeconds) else 0f,
+                valueRange = if (durationSeconds > 0f) 0f..durationSeconds else 0f..1f,
+                onValueChange = { scrub = it * 1000f },
+                onValueChangeFinished = {
+                    val target = scrub
+                    scrub = null
+                    if (target != null && active != null) player.seek(key, target.toLong())
+                },
+                // Like the desktop range input: no scrubbing until the length is known.
+                enabled = active != null && durationMs != null,
+                modifier = Modifier
+                    .weight(1f)
+                    .semantics { contentDescription = "Seek voice note" },
+            )
+            Text(
+                voiceNoteClock(positionMs) + " / " + (durationMs?.let(::voiceNoteClock) ?: "--:--"),
+                fontSize = 11.sp,
+                color = foreground.copy(alpha = 0.80f),
+            )
         }
-        Slider(
-            // The slider works in seconds; without an explicit range Compose clamps
-            // it to 0f..1f and scrubs can only land inside the first second.
-            value = if (durationSeconds > 0f) (positionMs / 1000f).coerceIn(0f, durationSeconds) else 0f,
-            valueRange = if (durationSeconds > 0f) 0f..durationSeconds else 0f..1f,
-            onValueChange = { scrub = it * 1000f },
-            onValueChangeFinished = {
-                val target = scrub
-                scrub = null
-                if (target != null && active != null) player.seek(key, target.toLong())
-            },
-            // Like the desktop range input: no scrubbing until the length is known.
-            enabled = active != null && durationMs != null,
-            modifier = Modifier
-                .weight(1f)
-                .semantics { contentDescription = "Seek voice note" },
-        )
-        Text(
-            voiceNoteClock(positionMs) + " / " + (durationMs?.let(::voiceNoteClock) ?: "--:--"),
-            fontSize = 11.sp,
-            color = foreground.copy(alpha = 0.80f),
-        )
+        if (!playable) {
+            Text(
+                LiveCallRules.VOICE_NOTE_DURING_CALL,
+                fontSize = 11.sp,
+                color = foreground.copy(alpha = 0.80f),
+                modifier = Modifier.padding(horizontal = 12.dp),
+            )
+        }
     }
 }
 
@@ -908,17 +954,21 @@ private fun VoiceNotePauseGlyph(color: Color) {
  * shape and not only a colour — and the whole row reads as one sentence to a
  * screen reader whichever state it is in.
  *
- * None of iOS's detail is here, because none of it has data: `durationMs`,
- * `parameters` and `output` are dormant on that view and absent from
- * [ToolActivity]. Nothing to expand means nothing to tap, which is why this is
- * not a button — except a chip that names a thread it opened, which is the
- * link to that thread.
+ * Most of iOS's detail is not here, because it has no data: `durationMs` and
+ * `parameters` are absent from [ToolActivity]. Nothing to expand means nothing
+ * to tap, which is why the row is not a button — except a chip that names a
+ * thread it opened, which is the link to that thread. The one exception is
+ * [ToolActivity.output], a teammate's report, which folds open under the row.
  */
 @Composable
 private fun ActivityChip(
     tool: ToolActivity?,
     threadRef: ThreadRef? = null,
     openThread: ((ThreadRef) -> Unit)? = null,
+    /** The chip reports a teammate's work (it links a thread or a room). Only
+     * then does [ToolActivity.output] show: an ordinary tool chip carries raw
+     * output too, and that log stays on the computer's side. */
+    teammateReport: Boolean = false,
 ) {
     if (tool == null) return
     val status = ActivityReceipt.status(tool.ok)
@@ -938,47 +988,71 @@ private fun ActivityChip(
     } else {
         Modifier
     }
-    Row(
-        modifier = Modifier
-            .padding(start = 4.dp)
-            .then(linked)
-            .semantics(mergeDescendants = true) {
-                contentDescription = ActivityReceipt.announcement(tool.name, status)
-            },
-        horizontalArrangement = Arrangement.spacedBy(6.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        if (status == ActivityStatus.ERROR) {
-            Icon(
-                imageVector = Icons.Filled.Warning,
-                contentDescription = null,
-                tint = tint,
-                modifier = Modifier.size(14.dp),
-            )
-        } else {
-            Box(
-                modifier = Modifier
-                    .size(ACTIVITY_DOT)
-                    .background(tint, CircleShape),
-            )
-        }
-        Text(
-            text = tool.name,
-            fontSize = 13.sp,
-            maxLines = 1,
-            color = if (status == ActivityStatus.ERROR) tint else secondaryTint,
-        )
-        if (ActivityReceipt.showsLabel(status)) {
+    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        Row(
+            modifier = Modifier
+                .padding(start = 4.dp)
+                .then(linked)
+                .semantics(mergeDescendants = true) {
+                    contentDescription = ActivityReceipt.announcement(tool.name, status)
+                },
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            if (status == ActivityStatus.ERROR) {
+                Icon(
+                    imageVector = Icons.Filled.Warning,
+                    contentDescription = null,
+                    tint = tint,
+                    modifier = Modifier.size(14.dp),
+                )
+            } else {
+                Box(
+                    modifier = Modifier
+                        .size(ACTIVITY_DOT)
+                        .background(tint, CircleShape),
+                )
+            }
             Text(
-                text = ActivityReceipt.label(status),
-                fontSize = 12.sp,
-                fontWeight = FontWeight.Medium,
+                text = tool.name,
+                fontSize = 13.sp,
                 maxLines = 1,
-                color = tint,
+                color = if (status == ActivityStatus.ERROR) tint else secondaryTint,
+            )
+            if (ActivityReceipt.showsLabel(status)) {
+                Text(
+                    text = ActivityReceipt.label(status),
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Medium,
+                    maxLines = 1,
+                    color = tint,
+                )
+            }
+        }
+        // A teammate's report under its "replied" chip: a few lines, the rest on
+        // tap. Its own tap target, so the chip above still opens the thread.
+        tool.output?.trim()?.takeIf { teammateReport && it.isNotEmpty() }?.let { output ->
+            var expanded by remember(output) { mutableStateOf(false) }
+            Text(
+                text = output,
+                fontSize = 13.sp,
+                color = secondaryTint,
+                maxLines = if (expanded) Int.MAX_VALUE else TOOL_OUTPUT_LINES,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier
+                    .padding(start = 4.dp + ACTIVITY_DOT + 6.dp)
+                    .clickable(role = Role.Button) {
+                        haptics.play(TactileAction.TOGGLE_ACTIVITY_RUN)
+                        expanded = !expanded
+                    }
+                    .semantics { stateDescription = if (expanded) "Expanded" else "Collapsed" },
             )
         }
     }
 }
+
+/** How much of a teammate's report shows before a tap opens the rest. */
+private const val TOOL_OUTPUT_LINES = 3
 
 /**
  * A quiet chip under a reply for the harness's receipts (the work digest, a
@@ -1080,7 +1154,7 @@ fun ActivityRunChip(items: List<Message>, openThread: ((ThreadRef) -> Unit)? = n
         }
         if (expanded) {
             Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                items.forEach { item -> ActivityChip(item.tool, item.threadRef, openThread) }
+                items.forEach { item -> ActivityChip(item.tool, item.threadRef, openThread, teammateReport = item.threadRef != null || item.comm != null) }
             }
         }
     }

@@ -32,6 +32,7 @@ export type BotUpdatePatch = Partial<
     | "composio"
     | "browser"
     | "browserProfile"
+    | "memoryUpkeep"
     | "mcpServers"
     | "modelSelection"
   >

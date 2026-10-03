@@ -79,6 +79,20 @@ describe("parsePiCatalog", () => {
 });
 
 describe("buildMcpServers", () => {
+  it("mounts a selected custom mail server without unrelated built-ins", () => {
+    const servers = buildMcpServers({ threadId: "selected", text: "Read mail", toolScope: { allow: ["mcp:mail:*"] }, integrations: {
+      agents: { command: "node", args: ["agents"], env: {} },
+      localComputer: { command: "node", args: ["computer"], env: {} },
+      custom: { mail: { command: "node", args: ["mail"], env: { SYNTHETIC: "1" } } },
+    } });
+    expect(Object.keys(servers ?? {})).toEqual(["mail"]);
+    expect(servers?.mail).toMatchObject({ scope: "custom" });
+  });
+
+  it("rejects malformed policy and mounts nothing for native-only selection", () => {
+    expect(() => buildMcpServers({ threadId: "bad", text: "Stop", toolScope: { allow: null } as never })).toThrow(/tool selection/i);
+    expect(buildMcpServers({ threadId: "native", text: "Draft", toolScope: { allow: ["native:read", "native:write"] }, integrations: { agents: { command: "node", args: [], env: {} } } })).toBeNull();
+  });
   it("returns null when there are no integrations", () => {
     expect(buildMcpServers({ threadId: "t", text: "hi" })).toBeNull();
   });
@@ -239,6 +253,17 @@ describe("PiDriver turns (fake CLI)", () => {
   beforeEach(() => {
     ensureDirs();
     chmodSync(FAKE_CLI, 0o755);
+  });
+
+  it("refuses a restricted turn when the loaded extension has not confirmed enforcement", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "omb-pi-missing-scope-"));
+    const dump = join(dir, "rpc.jsonl");
+    await create(undefined, { FAKE_PI_DUMP: dump });
+    await expect(instance.adapter.sendTurn({ threadId: "missing-enforcement", text: "Must not reach a provider", toolScope: { allow: [] } })).rejects.toThrow(/tool selection.*enforcement/i);
+    const rows = readFileSync(dump, "utf8").trim().split("\n").map((line) => JSON.parse(line));
+    expect(rows.some((row) => row.argv?.includes("-e"))).toBe(true);
+    expect(rows.find((row) => row.argv?.includes("-e"))?.mcpConfig?.toolScope).toEqual({ allow: [] });
+    expect(rows.some((row) => row.prompt !== undefined)).toBe(false);
   });
   afterEach(async () => {
     recorder?.stop();
@@ -916,18 +941,24 @@ describe("PiDriver turns (fake CLI)", () => {
   it("cancels an ask's fail-safe timer when the turn is interrupted", async () => {
     await create("question-select");
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const scheduled = vi.spyOn(globalThis, "setTimeout");
+    const cancelled = vi.spyOn(globalThis, "clearTimeout");
     try {
       await instance.adapter.sendTurn({ threadId: "t-ask-interrupt", text: "go" });
       await recorder.until((e) => e.type === "request.opened");
+      const askIndex = scheduled.mock.calls.findIndex(([, delay]) => delay === 15 * 60_000);
+      expect(askIndex).toBeGreaterThanOrEqual(0);
+      const askTimer = scheduled.mock.results[askIndex].value;
+      expect(cancelled).not.toHaveBeenCalledWith(askTimer);
       await instance.adapter.interruptTurn("t-ask-interrupt");
       await recorder.until((e) => e.type === "turn.completed");
-      // Flush the short-lived RPC waiter timers, then require that nothing
-      // is left queued: settle() cancels the ask's 15-minute fail-safe
-      // outright instead of leaving it to fire against a dead child while
-      // holding the ask closure alive.
-      await vi.advanceTimersByTimeAsync(21_000);
-      expect(vi.getTimerCount()).toBe(0);
+      // Assert this ask's timer was cancelled, not that the whole process
+      // has no timers: killCliTree may still be polling for the real child
+      // to exit, which advancing a fake clock cannot guarantee.
+      expect(cancelled).toHaveBeenCalledWith(askTimer);
     } finally {
+      scheduled.mockRestore();
+      cancelled.mockRestore();
       vi.useRealTimers();
     }
   });

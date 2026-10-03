@@ -152,14 +152,20 @@ class TranscriptPresentationTest {
     }
 
     @Test
-    fun compactionExpandsItsSummaryAndDigestRemainsHidden() {
+    fun compactionExpandsItsSummaryAndDigestIsAChipThatOpensItsSections() {
         val summary = "Earlier context preserved for the next turn."
         val compact = Message("compact", Message.Role.BOT, Message.Kind.COMPACTION, 6000.0,
             compaction = Compaction(summary, 12345))
-        val digest = Message("digest", Message.Role.BOT, Message.Kind.DIGEST, 7000.0,
-            text = "Digest must stay hidden")
+        val raw = "[digest] · tools: shell ×3 · files: changed a.ts · reply: A dependency is missing."
+        val digest = Message("digest", Message.Role.BOT, Message.Kind.DIGEST, 7000.0, text = raw)
         mount(ActivityDetail.FULL, transcript = messages + compact + digest)
-        compose.onNodeWithText("Digest must stay hidden").assertDoesNotExist()
+        // Never the raw log line; the chip, and its sections on tap.
+        compose.onNodeWithText(raw).assertDoesNotExist()
+        compose.onNodeWithText("What I did · 3 tools").performClick()
+        compose.onNodeWithText("changed a.ts").assertIsDisplayed()
+        compose.onNodeWithText("shell ×3").assertIsDisplayed()
+        compose.onNodeWithText("Done").performClick()
+        compose.onNodeWithText("changed a.ts").assertDoesNotExist()
         compose.onNodeWithText(summary).assertDoesNotExist()
         compose.onNodeWithText(compact.compaction!!.chipText).performClick()
         compose.onNodeWithText(summary).assertIsDisplayed()
@@ -167,6 +173,52 @@ class TranscriptPresentationTest {
         compose.runOnIdle { scene.environment.chatPreferences.setActivityDetail(ActivityDetail.HIDDEN) }
         compose.onNodeWithText(compact.compaction!!.chipText).assertDoesNotExist()
         compose.onNodeWithText(summary).assertDoesNotExist()
+        // Hidden activity hides the digest with the calls it summarises.
+        compose.onNodeWithText("What I did · 3 tools").assertDoesNotExist()
+    }
+
+    @Test
+    fun routineRunShowsItsReportAndOpensTheRun() {
+        val report = (1..12).joinToString("\n") { "Finding $it" }
+        val runs = CompanionJson.decodeFromString<List<Message>>("""
+            [
+              {"id":"run","role":"bot","kind":"routine.run","at":8000,"text":"Routine “Morning brief” completed",
+               "routineRun":{"runId":"r1","routineId":"x","routineName":"Morning brief","status":"completed",
+               "executionThreadId":"thread-bot-1","summary":"$report"}},
+              {"id":"run2","role":"bot","kind":"routine.run","at":9000,"text":"Routine “Sweep” failed",
+               "routineRun":{"runId":"r2","routineId":"y","routineName":"Sweep","status":"failed",
+               "executionThreadId":"gone","error":"Target bot was deleted."}}
+            ]
+        """)
+        mount(ActivityDetail.HIDDEN, transcript = messages + runs)
+        compose.onNodeWithText("Target bot was deleted.").assertIsDisplayed()
+        compose.onNodeWithText("Failed").assertIsDisplayed()
+        // A run the phone knows gets its button; one it cannot find gets none.
+        assertEquals(1, compose.onAllNodesWithText("Open run").fetchSemanticsNodes().size)
+        compose.onNodeWithText("Morning brief").assertIsDisplayed()
+        compose.onNodeWithText("Completed").assertIsDisplayed()
+        compose.onNodeWithText("Routine “Morning brief” completed").assertDoesNotExist()
+        compose.onNodeWithText("Show report").performClick()
+        compose.onNodeWithText("Show less").assertExists()
+        compose.onNodeWithText("Finding 12", substring = true).assertExists()
+    }
+
+    @Test
+    fun quietReplyHasNoDigestChipButRecordedWorkCanStillBeOpened() {
+        val quiet = Message("quiet", Message.Role.BOT, Message.Kind.DIGEST, 6000.0,
+            text = "[digest] · no tool activity observed in this turn · files: none changed · reply: A dependency is missing.")
+        val work = quiet.copy(id = "work", at = 7000.0,
+            text = "[digest] · tools: shell ×1 · files: changed a.ts · reply: Fixed.")
+        mount(ActivityDetail.FULL, transcript = messages + quiet + work)
+        compose.onNodeWithText("A dependency is missing.").assertIsDisplayed()
+        compose.onNodeWithText("What I did", substring = false).assertDoesNotExist()
+        compose.onNodeWithText("What I did · 1 tool").performClick()
+        compose.onNodeWithText("changed a.ts").assertIsDisplayed()
+        compose.onNodeWithText("Done").performClick()
+        compose.runOnIdle { scene.environment.chatPreferences.setActivityDetail(ActivityDetail.REDUCED) }
+        compose.onNodeWithText("What I did", substring = false).assertDoesNotExist()
+        compose.onNodeWithText("What I did · 1 tool").assertIsDisplayed()
+        screenshot("digest-only-recorded-work")
     }
 
     @Test

@@ -13,6 +13,29 @@ import XCTest
 @testable import CompanionCore
 
 final class MarkdownTests: XCTestCase {
+    func testCachedParseReusesContentWithoutSharingMutableResults() throws {
+        let source = "# Cache regression\n\n- **styled** [link](https://example.test)\n\n```swift\nlet n = 1"
+        let key = source as NSString
+        Markdown.blockCache.removeObject(forKey: key)
+        var first = Markdown.blocks(source)
+        let cached = try XCTUnwrap(Markdown.blockCache.object(forKey: key))
+        let expected = first
+        first[0] = .paragraph("changed by the caller")
+        XCTAssertEqual(Markdown.blocks(source), expected)
+        XCTAssertTrue(Markdown.blockCache.object(forKey: key) === cached)
+        XCTAssertNotEqual(Markdown.blocks(source + "\nlet n = 2"), expected)
+
+        Markdown.blockCache.removeObject(forKey: key)
+        XCTAssertEqual(Markdown.blocks(source), expected)
+        XCTAssertFalse(Markdown.blockCache.object(forKey: key) === cached)
+    }
+
+    func testLargeUnicodeReplyIsNotRetainedInParseCache() {
+        let source = String(repeating: "🐭", count: 20_000)
+        XCTAssertEqual(Markdown.blocks(source), [.paragraph(source)])
+        XCTAssertNil(Markdown.blockCache.object(forKey: source as NSString))
+    }
+
     func testPlainTextIsOneParagraph() {
         XCTAssertEqual(Markdown.blocks("just a reply"), [.paragraph("just a reply")])
     }

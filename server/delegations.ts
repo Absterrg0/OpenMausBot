@@ -44,6 +44,8 @@ export interface DelegationItem {
    * "any thread running". Absent = a classic delegation into the target's
    * active thread. */
   targetThreadId?: string;
+  /** Cross-bot send: ownership stays with the recipient; never wake source. */
+  oneWay?: boolean;
 }
 
 interface PendingDelegationItem extends DelegationItem {
@@ -276,6 +278,7 @@ export function _loadPending(): void {
         if (typeof item.targetThreadId === "string" && item.targetThreadId) {
           loaded.targetThreadId = item.targetThreadId;
         }
+        if (item.oneWay === true) loaded.oneWay = true;
         return [loaded];
       });
       if (items.length) pendingDelegations.set(threadId, items);
@@ -344,8 +347,10 @@ export function pendingDelegationSnapshot(): Array<{
 }
 
 /** How many handoffs one turn may queue. Small on purpose: this is the only
- * thing standing between a confused bot and a fan-out of real turns. */
-const MAX_QUEUED_PER_THREAD = 4;
+ * thing standing between a confused bot and a fan-out of real turns. Six,
+ * not four: a lead running a weekly check-in over a five-member team is the
+ * ordinary case, and hitting the cap there silently dropped one teammate. */
+const MAX_QUEUED_PER_THREAD = 6;
 
 /** Validate and enqueue a delegation. Pushes a "Delegated to @B: reason"
  * chip to the source thread so the user can see what was queued. */
@@ -357,7 +362,7 @@ export function queueDelegation(
   sourceThreadId = from.threadId,
 ): QueuedDelegation {
   if (item.toBotId === from.id) return { result: "self" };
-  if (item.depth >= maxDepth) return { result: "too_deep" };
+  if (!item.oneWay && item.depth >= maxDepth) return { result: "too_deep" };
   const target = bus.store.bot(item.toBotId);
   if (!target) return { result: "no_target" };
   const list = pendingDelegations.get(sourceThreadId) ?? [];
@@ -422,6 +427,7 @@ export function drainDelegations(
     taskId: string,
     sourceBotId: string,
     targetThreadId: string | undefined,
+    oneWay: boolean,
   ) => void | Promise<void>,
   /** Terminal failures before dispatch also need to wake the source. A
    * launched peer reports through its provider-turn finalizer instead. */
@@ -446,6 +452,11 @@ export function drainDelegations(
         bus.store.botByThread(threadId) ??
         bus.store.bot(item.sourceBotId);
       if (!from) {
+        appendDeliveryMessage(bus, threadId, item, {
+          role: "bot",
+          kind: "activity",
+          tool: { name: "Send failed — the sending bot no longer exists", ok: false },
+        });
         recordDelegationReceipt({
           id: item.id,
           sourceThreadId: threadId,
@@ -471,7 +482,7 @@ export function drainDelegations(
           result: why.slice(0, 200),
         });
         try {
-          bus.store.appendMessage(threadId, {
+          appendDeliveryMessage(bus, threadId, item, {
             role: "bot",
             kind: "activity",
             tool: { name: `error: delegation failed — ${why.slice(0, 120)}`, ok: false },
@@ -488,7 +499,7 @@ export function drainDelegations(
         if (outcome === "settled" && stillQueued) {
           const receipt = findDelegationReceipt(item.id);
           try {
-            if (receipt) onSettled?.(receipt);
+            if (receipt && !item.oneWay) onSettled?.(receipt);
           } catch (error) {
             console.error("delegation settled but its source could not be resumed", error);
           }
@@ -518,6 +529,20 @@ function acknowledgeDelegation(threadId: string, itemId: string): void {
   if (remaining.length) pendingDelegations.set(threadId, remaining);
   else pendingDelegations.delete(threadId);
   savePending();
+}
+
+function appendDeliveryMessage(
+  bus: CommsBus,
+  sourceThreadId: string,
+  item: PendingDelegationItem,
+  message: Omit<Message, "id" | "at">,
+): void {
+  const threadId = item.oneWay && item.targetThreadId && bus.store.taskByThread(item.toBotId, item.targetThreadId)
+    ? item.targetThreadId : sourceThreadId;
+  // A failed independent send needs a visible receipt, not a source wake.
+  // Never recreate a deleted conversation just to post that failure.
+  if (item.oneWay && threadId === sourceThreadId && !sourceThreadBelongsToBot(bus.store, item.sourceBotId, sourceThreadId)) return;
+  bus.store.appendMessage(threadId, message);
 }
 
 const isExpired = (item: PendingDelegationItem, now: number): boolean => now - item.queuedAt >= DELEGATION_TTL_MS;
@@ -553,8 +578,8 @@ function expireDelegation(bus: CommsBus, sourceThreadId: string, item: PendingDe
     status: "expired",
     result: busyHold ? `@${name} was still busy after ${busyHoldCapText()}` : `@${name} was not free to take this for 24 hours`,
   });
-  if (!sourceThreadBelongsToBot(bus.store, ownerId, sourceThreadId)) return;
-  bus.store.appendMessage(sourceThreadId, {
+  if (!item.oneWay && !sourceThreadBelongsToBot(bus.store, ownerId, sourceThreadId)) return;
+  appendDeliveryMessage(bus, sourceThreadId, item, {
     role: "bot",
     kind: "activity",
     tool: {
@@ -594,7 +619,7 @@ export function expireStaleDelegations(
   now: number,
   onSettled?: (receipt: DelegationReceipt) => void,
 ): number {
-  const expired: DelegationReceipt[] = [];
+  const expired: Array<{ receipt: DelegationReceipt; oneWay: boolean }> = [];
   for (const [threadId, items] of pendingDelegations) {
     if (drainingThreads.has(threadId)) continue;
     const due = items.filter((item) => isDueForExpiry(bus, item, now));
@@ -606,14 +631,14 @@ export function expireStaleDelegations(
     for (const item of due) {
       expireDelegation(bus, threadId, item, ownerId ?? item.sourceBotId);
       const receipt = findDelegationReceipt(item.id);
-      if (receipt) expired.push(receipt);
+      if (receipt) expired.push({ receipt, oneWay: item.oneWay === true });
     }
   }
   if (!expired.length) return 0;
   savePending();
-  for (const receipt of expired) {
+  for (const { receipt, oneWay } of expired) {
     try {
-      onSettled?.(receipt);
+      if (!oneWay) onSettled?.(receipt);
     } catch (error) {
       console.error("delegation expired but its source could not be resumed", error);
     }
@@ -626,9 +651,12 @@ export function expireStaleDelegations(
 export function discardDelegations(bus: CommsBus, threadId: string): void {
   const list = pendingDelegations.get(threadId);
   if (!list?.length) return;
-  pendingDelegations.delete(threadId);
+  const kept = list.filter(item => item.oneWay);
+  const dropped = list.filter(item => !item.oneWay);
+  if (kept.length) pendingDelegations.set(threadId, kept);
+  else pendingDelegations.delete(threadId);
   savePending();
-  for (const item of list) {
+  for (const item of dropped) {
     recordDelegationReceipt({
       id: item.id,
       sourceThreadId: threadId,
@@ -638,14 +666,15 @@ export function discardDelegations(bus: CommsBus, threadId: string): void {
       result: "the delegating turn did not finish",
     });
   }
+  if (!dropped.length) return;
   const from =
     bus.store.botByThread(threadId) ??
-    bus.store.bot(list.find((item) => bus.store.bot(item.sourceBotId))?.sourceBotId ?? list[0]!.sourceBotId);
+    bus.store.bot(dropped.find((item) => bus.store.bot(item.sourceBotId))?.sourceBotId ?? dropped[0]!.sourceBotId);
   if (!from) return;
   bus.store.appendMessage(threadId, {
     role: "bot",
     kind: "activity",
-    tool: { name: `${list.length} queued delegation${list.length > 1 ? "s" : ""} dropped — the turn did not finish`, ok: false },
+    tool: { name: `${dropped.length} queued delegation${dropped.length > 1 ? "s" : ""} dropped — the turn did not finish`, ok: false },
   });
 }
 
@@ -664,13 +693,14 @@ async function processOne(
     taskId: string,
     sourceBotId: string,
     targetThreadId: string | undefined,
+    oneWay: boolean,
   ) => void | Promise<void>,
 ): Promise<"settled" | "requeued" | "dispatched"> {
   let sender = from;
   let target = bus.store.bot(item.toBotId);
   // Retained approval authorizes the message, not a deleted conversation or
   // revoked room membership. Check every retry before writing to its source.
-  if (!sourceThreadBelongsToBot(bus.store, sender.id, sourceThreadId)) {
+  if (!item.oneWay && !sourceThreadBelongsToBot(bus.store, sender.id, sourceThreadId)) {
     recordDelegationReceipt({
       id: item.id,
       sourceThreadId,
@@ -690,7 +720,7 @@ async function processOne(
       status: "error",
       result: "no such bot",
     });
-    bus.store.appendMessage(sourceThreadId, {
+    appendDeliveryMessage(bus, sourceThreadId, item, {
       role: "bot",
       kind: "activity",
       tool: { name: `error: delegation to ${item.toBotId} failed — no such bot`, ok: false },
@@ -736,7 +766,7 @@ async function processOne(
     // a denial, which otherwise recreates a deleted source transcript.
     const current = bus.store.bot(item.toBotId);
     const currentSender = bus.store.bot(from.id);
-    if (!current || !currentSender || !sourceThreadBelongsToBot(bus.store, currentSender.id, sourceThreadId)) {
+    if (!current || !currentSender || (!item.oneWay && !sourceThreadBelongsToBot(bus.store, currentSender.id, sourceThreadId))) {
       recordDelegationReceipt({
         id: item.id,
         sourceThreadId,
@@ -759,7 +789,7 @@ async function processOne(
         approvalOutcome: verdict,
         result: verdict === "deny" ? "the user denied this handoff" : failure.error,
       });
-      bus.store.appendMessage(sourceThreadId, {
+      appendDeliveryMessage(bus, sourceThreadId, item, {
         role: "bot",
         kind: "activity",
         tool: { name: verdict === "deny" ? `Delegation to @${target.name} denied by user`
@@ -797,8 +827,8 @@ async function processOne(
   const originatingGroup =
     (item.originatingGroupId ? bus.store.group(item.originatingGroupId) : undefined) ??
     (sourceThreadId ? bus.store.groupByThread(sourceThreadId) : undefined);
-  const channel = getOrCreateChannel(bus.store, sender, target, originatingGroup);
-  mirrorExchange(bus, sender, target, item.message, channel, sourceThreadId);
+  const channel = item.oneWay ? undefined : getOrCreateChannel(bus.store, sender, target, originatingGroup);
+  if (channel) mirrorExchange(bus, sender, target, item.message, channel, sourceThreadId);
   const reasonLine = item.reason ? `\n\n[Reason: ${item.reason}]` : "";
   // A fresh thread's first line gets the shared peer-provenance note from
   // the harness (which knows whether the opener was unattended); the
@@ -806,7 +836,7 @@ async function processOne(
   const prefixed = item.targetThreadId
     ? item.message
     : `[Delegated by @${sender.name}, another bot in this OpenMausBot workspace. Do the work and reply directly.]\n\n${item.message}${reasonLine}`;
-  await runTarget(item.toBotId, prefixed, item.depth + 1, sourceThreadId, channel, item.id, sender.id, item.targetThreadId);
+  await runTarget(item.toBotId, prefixed, item.oneWay ? 0 : item.depth + 1, sourceThreadId, channel, item.id, sender.id, item.targetThreadId, item.oneWay === true);
   return "dispatched";
 }
 
@@ -844,7 +874,7 @@ function holdWhileTargetBusy(
   item.busySince = Date.now();
   if (!item.waitAnnounced) {
     item.waitAnnounced = true;
-    bus.store.appendMessage(sourceThreadId, {
+    appendDeliveryMessage(bus, sourceThreadId, item, {
       role: "bot",
       kind: "activity",
       tool: { name: waitingChipText(bus.store, target, item) },
@@ -884,7 +914,7 @@ function dropIfThreadGone(
     status: "dropped",
     result: `the thread opened on @${target.name} was deleted before it could start`,
   });
-  bus.store.appendMessage(sourceThreadId, {
+  appendDeliveryMessage(bus, sourceThreadId, item, {
     role: "bot",
     kind: "activity",
     tool: { name: `Thread on @${target.name} canceled — it was deleted before it could start`, ok: false },
@@ -928,7 +958,7 @@ function dropIfUnreachable(
     status: "dropped",
     result,
   });
-  bus.store.appendMessage(sourceThreadId, {
+  appendDeliveryMessage(bus, sourceThreadId, item, {
     role: "bot",
     kind: "activity",
     tool: { name: `Delegation to @${target.name} canceled — ${reason}`, ok: false },
@@ -979,7 +1009,13 @@ export function buildDelegationFailurePrompt(targetName: string, reason: string)
   ].join("\n\n");
 }
 
-export const DELEGATION_WAKE_MAX_PER_WINDOW = 3;
+// Must not be smaller than MAX_QUEUED_PER_THREAD: every delegate reply is
+// one wake, so a fan-out that the queue cap allows has to be resumable
+// within the window. Three failed a five-member weekly check-in whose
+// replies all landed inside four minutes ("Delegation follow-up limit
+// reached"), while the same routine passed a week earlier only because the
+// replies happened to spread over twenty.
+export const DELEGATION_WAKE_MAX_PER_WINDOW = 6;
 export const DELEGATION_WAKE_WINDOW_MS = 5 * 60 * 1000;
 
 /** Bounded auto-wake budget per source thread. A delegation completion
