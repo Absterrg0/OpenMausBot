@@ -445,6 +445,7 @@ public struct CompanionState: Sendable {
                     merged.activeLeafId = activeLeafIds[bot.threadId]
                 }
                 bots[index] = merged
+                if merged.currentTaskBusy == false { clearStream(bot.threadId) }
             } else {
                 bots.append(bot)
                 if let page = bot.messages {

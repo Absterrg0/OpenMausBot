@@ -111,7 +111,17 @@ struct RootView: View {
                 }
                 .onAppear { hasSeenWelcome = true }
             case .chats:
+                Group {
+                #if DEBUG
+                if ProcessInfo.processInfo.arguments.contains("-browser-preview"), let bot = session.state.bots.first {
+                    BrowserPreviewNavigation(bot: bot)
+                } else {
+                    ChatListView()
+                }
+                #else
                 ChatListView()
+                #endif
+                }
                     .onAppear {
                         hasSeenWelcome = true
                         // This is either an existing pairing or a new pairing

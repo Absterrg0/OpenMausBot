@@ -281,6 +281,18 @@ export function CompanionSection({ profileEmail = "", focusRequest = 0 }: { prof
                           }
                         />
                       </div>
+                      <div className="mt-3 flex items-center justify-between gap-3 border-t border-hairline/30 pt-3">
+                        <div>
+                          <div className="text-[12px] text-ink">{t("remote.devices.allowBrowser")}</div>
+                          <div className="mt-0.5 text-[11px] text-ink-secondary">{t("remote.devices.allowBrowserDetail")}</div>
+                        </div>
+                        <Switch
+                          checked={device.browserControlAccess === true}
+                          aria-label={t("remote.devices.browserAria", { name: device.name })}
+                          disabled={c.busy}
+                          onClick={() => void c.act((companion) => companion.browserControl(device.id, !device.browserControlAccess))}
+                        />
+                      </div>
                     </li>
                   ))}
                 </ul>

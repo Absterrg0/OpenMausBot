@@ -778,6 +778,22 @@ const toolDefinitions = (externalRuntime: boolean) => [
     },
   },
   {
+    name: "propose_team_memory",
+    description:
+      "Propose something every bot on the team should know: who a person is (person), where something lives (place), what was decided (decision), or what a name means (term). Every addition or replacement waits for a workspace admin to confirm its card before entering shared prompts. End the turn and do not claim it is remembered before confirmation; accepted facts stay unchanged until then.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        kind: { type: "string", enum: ["person", "place", "decision", "term"], description: "What kind of entry this is." },
+        name: { type: "string", maxLength: 120, description: "The person's name, the thing or document, the decision in a few words, or the term." },
+        detail: { type: "string", maxLength: 600, description: "One or two sentences: the person's role, where the thing lives, what was decided and where, what the term means." },
+        aliases: { type: "array", maxItems: 8, items: { type: "string", maxLength: 120 }, description: "Other names it goes by, for example a nickname or an abbreviation." },
+      },
+      required: ["kind", "name", "detail"],
+    },
+  },
+  {
     name: "skills_list",
     description:
       "List this bot's imported skills (enabled and disabled) and any staged skill writes waiting for the user to confirm. Use this before skill_manage to avoid duplicate names. Listing does not enable anything.",

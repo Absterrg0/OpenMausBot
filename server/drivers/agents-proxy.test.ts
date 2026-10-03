@@ -641,6 +641,7 @@ describe("agents-proxy MCP surface", () => {
       "propose_routine_action",
       "propose_profile",
       "propose_model",
+      "propose_team_memory",
       "skills_list",
       "skill_manage",
     ]);

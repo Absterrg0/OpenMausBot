@@ -1155,6 +1155,24 @@ export async function callTool(name: string, args: Json, context: ToolCallContex
     if (r.error || r.ok !== true) return { text: String(r.error ?? "The log line was not confirmed."), isError: true };
     return { text: `Logged to ${String(r.file)}: ${String(r.line)}` };
   }
+  if (name === "propose_team_memory") {
+    const kind = String(args.kind ?? "").trim();
+    const entryName = String(args.name ?? "").trim();
+    const detail = String(args.detail ?? "").trim();
+    if (!kind || !entryName || !detail) return { text: "propose_team_memory needs kind, name, and detail.", isError: true };
+    const r = await api("/api/internal/team-memory", {
+      method: "POST",
+      body: JSON.stringify({
+        fromBotId: BOT_ID,
+        fromThreadId: THREAD_ID,
+        kind,
+        name: entryName,
+        detail,
+        aliases: Array.isArray(args.aliases) ? args.aliases.filter((alias) => typeof alias === "string") : undefined,
+      }),
+    });
+    return confirmationResult(r, `remembering ${entryName} for the team`, "entry");
+  }
   if (name === "session_search") {
     const q = String(args.query ?? "").trim();
     const since = typeof args.since === "string" ? args.since.trim() : "";

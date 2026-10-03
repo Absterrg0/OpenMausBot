@@ -132,3 +132,24 @@ describe("propose_profile", () => {
     ]);
   });
 });
+
+describe("propose_team_memory", () => {
+  it.each(["person", "place", "decision", "term"])("sends the %s proposal with exact identity and never claims immediate publication", async (kind) => {
+    const calls: Array<{ path: string; body: any }> = [];
+    const result = await callTool("propose_team_memory", { kind, name: "  Fixture name  ", detail: "  Unreviewed detail  ", aliases: ["Alias"] }, context({
+      client: {
+        api: async (path, init) => {
+          calls.push({ path, body: JSON.parse(String(init?.body)) });
+          return { status: "proposed", requestId: "proposal-fixture", summary: "Needs admin review" };
+        },
+        apiResponse: async () => ({ ok: true, status: 200, body: {} }),
+      },
+    }));
+    expect(result.isError).not.toBe(true);
+    expect(result.text).toMatch(/confirm|wait/i);
+    expect(result.text).not.toContain("Remembered for the team");
+    expect(calls).toEqual([{ path: "/api/internal/team-memory", body: {
+      fromBotId: "bot-voice", fromThreadId: "thread-voice", kind, name: "Fixture name", detail: "Unreviewed detail", aliases: ["Alias"],
+    } }]);
+  });
+});

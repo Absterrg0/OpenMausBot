@@ -49,6 +49,7 @@ struct ChatView: View {
     @State private var threadDrafts: [String: ComposerSnapshot] = [:]
     @State private var preparingAttachments = false
     @State private var sendingMessage = false
+    @State private var steering = false
     @State private var attachmentError: String?
     @State private var openingFileName: String?
     @State private var fileOpenError: String?
@@ -234,10 +235,10 @@ struct ChatView: View {
                         // one arrives — the store clears it on the same frame
                         // that appends the message, so there is never a beat
                         // where both are on screen.
-                        if let live = session.state.streaming[threadId], !live.isEmpty {
+                        if current.busy, let live = session.state.streaming[threadId], !live.isEmpty {
                             StreamingBubble(text: live, reasoning: nil, color: current.color)
                                 .id(Self.liveBubbleId)
-                        } else if activityDetail != ActivityDetail.hidden.rawValue,
+                        } else if current.busy, activityDetail != ActivityDetail.hidden.rawValue,
                                   let thinking = session.state.reasoning[threadId], !thinking.isEmpty {
                             // Only while there is no answer yet. Once tokens
                             // of the reply exist, the reasoning is behind us
@@ -490,7 +491,16 @@ struct ChatView: View {
             cancelThreadOpen()
         }
         .onValueChange(of: session.connection?.id) { _ in
+            steering = false
             cancelThreadOpen()
+        }
+        .onValueChange(of: heldSends.first?.queueId) { _ in steering = false }
+        .onValueChange(of: current.busy) { busy in if !busy { steering = false } }
+        .onValueChange(of: threadId) { _ in steering = false }
+        .task(id: steering) {
+            guard steering else { return }
+            try? await Task.sleep(for: .seconds(20))
+            if !Task.isCancelled { steering = false }
         }
         .onDisappear {
             dictation.stop()
@@ -953,6 +963,28 @@ struct ChatView: View {
         messages.contains { $0.card?.isPending == true }
     }
 
+    private var engineCanSteer: Bool {
+        guard case let .bot(bot) = current else { return false }
+        return attachments.isEmpty && session.steeringInstanceIds.contains(bot.modelSelection.instanceId)
+    }
+
+    private var composerPrompt: String {
+        if sendingMessage { return "Sending…" }
+        if dictation.isListening { return "Listening…" }
+        if current.busy { return engineCanSteer ? "Sends into this turn" : "Sends after this turn" }
+        return "Ask \(current.name)"
+    }
+
+    private var steerQueued: (() -> Void)? {
+        guard current.busy, !hasPendingApproval, case let .bot(bot) = current else { return nil }
+        return {
+            steering = true
+            dictation.stop()
+            Haptics.impact(.medium)
+            Task { await session.interrupt(bot: bot) }
+        }
+    }
+
     private func submit(_ explicitText: String? = nil) {
         // This also cancels an in-flight permission prompt before it can
         // open the microphone after the message has already been sent.
@@ -1267,7 +1299,7 @@ struct ChatView: View {
     private var composer: some View {
         VStack(spacing: 6) {
             if !heldSends.isEmpty {
-                QueuedSendList(sends: heldSends, edit: editQueued) { send in
+                QueuedSendList(sends: heldSends, steer: steerQueued, steering: steering, edit: editQueued) { send in
                     Task { await session.cancelQueued(send, threadId: threadId, in: current) }
                 }
                 .transition(.move(edge: .bottom).combined(with: .opacity))
@@ -1416,7 +1448,7 @@ struct ChatView: View {
                         .padding(.bottom, 6)
 
                         TextField(
-                            sendingMessage ? "Sending…" : dictation.isListening ? "Listening…" : "Ask \(current.name)",
+                            composerPrompt,
                             text: $draft,
                             axis: .vertical
                         )
@@ -1479,6 +1511,9 @@ struct ChatView: View {
                         .padding(.trailing, 6)
                         .padding(.bottom, 6)
                         .animation(.easeOut(duration: 0.15), value: canSend)
+                        .accessibilityLabel(current.busy
+                            ? engineCanSteer ? "Send into the running turn" : "Queue this message for when the turn finishes"
+                            : "Send message")
                     }
                     .frame(minHeight: 44)
                     // A capsule at one line (44pt tall, 22pt corners) that
@@ -1836,6 +1871,11 @@ struct TextBubble: View {
                         .foregroundStyle(Color.primary)
                         .textSelection(.enabled)
                         .fixedSize(horizontal: false, vertical: true)
+                }
+                if mine, message.steered == true {
+                    Text("sent mid-turn")
+                        .font(.system(size: 11))
+                        .foregroundStyle(BubbleColor.mineText.opacity(0.72))
                 }
             }
             .padding(.horizontal, customCard ? 0 : 15)
@@ -2632,6 +2672,8 @@ struct StreamingBubble: View {
 /// for thread capacity rather than because a turn is running.
 private struct QueuedSendList: View {
     let sends: [QueuedSend]
+    let steer: (() -> Void)?
+    let steering: Bool
     let edit: (QueuedSend) -> Void
     let cancel: (QueuedSend) -> Void
 
@@ -2657,6 +2699,13 @@ private struct QueuedSendList: View {
                         .lineLimit(1)
                         .truncationMode(.tail)
                         .frame(maxWidth: .infinity, alignment: .leading)
+                    if index == 0, let steer {
+                        Button(steering ? "Steering…" : sends.count > 1 ? "Steer all" : "Steer", action: steer)
+                            .font(.system(size: 14, weight: .medium))
+                            .buttonStyle(.bordered)
+                            .disabled(steering)
+                            .accessibilityHint("Stops the current turn so the queued messages run now")
+                    }
                     Button {
                         edit(send)
                     } label: {

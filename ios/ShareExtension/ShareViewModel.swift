@@ -49,6 +49,7 @@ final class ShareViewModel: ObservableObject {
     }
 
     @Published private(set) var phase: Phase = .idle
+    @Published private(set) var queuedReceipt: SendReceipt?
     @Published private(set) var computers: [ShareComputer] = []
     @Published private(set) var destinations: [ShareDestination] = []
     @Published private(set) var preview = SharePreview()
@@ -376,7 +377,7 @@ final class ShareViewModel: ObservableObject {
     ) async {
         phase = .sending
         do {
-            try await withFailover(deadline: deadline) { client in
+            let receipt = try await withFailover(deadline: deadline) { client in
                 try await client.send(
                     text: delivery.text,
                     to: delivery.destination.messageDestination,
@@ -394,6 +395,10 @@ final class ShareViewModel: ObservableObject {
             items = nil
             pendingDelivery = nil
             phase = .sent
+            if receipt.queued == true {
+                queuedReceipt = receipt
+                return // Keep the queued result visible until the person taps Done.
+            }
             try? await Task.sleep(for: .milliseconds(450))
             onComplete?()
         } catch {
