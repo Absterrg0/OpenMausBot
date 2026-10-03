@@ -309,11 +309,12 @@ import { ManagedDesktopProviders } from "./managed-desktop.ts";
 import { computerKindForResource, ManagedDesktopPolicy, type ComputerKind } from "./managed-policy.ts";
 import { hostedModelPolicy, HOSTED_MODEL_POLICY_HEADER, HOSTED_PROVIDER_SETTINGS_ERROR } from "./hosted-models.ts";
 import {
-  boatNotConfiguredMessage, CLOUD_HOME_RESTART_EXIT_CODE, CLOUD_HOME_SECRET_KEYS, CLOUD_IGNORED_KEYS, CLOUD_PAIRING_PATH, cloudHomeConfiguration, cloudHomeOffersPlace, cloudHomePlaceRefusal,
+  boatNotConfiguredMessage, CLOUD_HOME_SECRET_KEYS, CLOUD_IGNORED_KEYS, CLOUD_PAIRING_PATH, cloudHomeConfiguration, cloudHomeOffersPlace, cloudHomePlaceRefusal,
   createCloudPairing, firstCloudTurnPatch, readSignedBody,
 } from "./cloud-home.ts";
 import { CLOUD_PERSONAL_REFUSAL, settleCloudOwnership, type CloudOwnership } from "./cloud-owner.ts";
 import { createCloudMoveRoutes } from "./cloud-move-http.ts";
+import { RESTART_EXIT_CODE } from "./restart.ts";
 import { holdIncludedServices } from "./included-services.ts";
 import type { ProviderInstance } from "./contracts.ts";
 import { selectDefaultModelSelection, withNewBotEffort } from "./default-model-selection.ts";
@@ -15533,18 +15534,23 @@ const workspaceBackupRoutes = createWorkspaceBackupRoutes({
   restored: workspaceRestore,
   ...workspaceBackupAccess,
 });
-// Move to Cloud (server/cloud-move-http.ts): every server sizes its own
-// workspace for the desktop; only a Cloud home receives one. After its
-// restore commits, the Cloud home restarts so startup installs it.
-let cloudHomeRestartRequested = false;
+// Copy this computer here (server/cloud-move-http.ts, docs/copy-workspace.md):
+// every server sizes its own workspace for its desktop, and every server the
+// person owns receives one, a Cloud home included. A workspace shared with
+// other people never does: a hosted organisation workspace, or a server
+// whose email sign-in lets others in. After the restore commits, the server
+// exits with RESTART_EXIT_CODE and its launcher starts it again, so startup
+// installs it (server/restart.ts).
+let restartRequested = false;
 const cloudMoveRoutes = createCloudMoveRoutes({
   dataDir: DATA_DIR,
   appVersion: serverVersion(),
-  cloudHome: Boolean(CLOUD_HOME),
+  environmentId: ENVIRONMENT_ID,
+  sharedWorkspace: () => HOSTED_WORKSPACE || (!CLOUD_HOME && emailSignIn.enabled()),
   readBody,
   restored: workspaceRestore,
   ...workspaceBackupAccess,
-  restart: () => { cloudHomeRestartRequested = true; gracefulShutdown(); },
+  restart: () => { restartRequested = true; gracefulShutdown(); },
 });
 
 // Route modules (server/routes/README.md). `workspaceAccess` is assigned at
@@ -25320,8 +25326,8 @@ const gracefulShutdown = createGracefulShutdown({
     closeMessageDb();
     mcpOAuth.dispose();
     releaseDataDirLeaseAtExit();
-    // A Cloud home's launcher starts the server again on this code only.
-    process.exit(cloudHomeRestartRequested && code === 0 ? CLOUD_HOME_RESTART_EXIT_CODE : code);
+    // Every launcher in this repo starts the server again on this code (server/restart.ts).
+    process.exit(restartRequested && code === 0 ? RESTART_EXIT_CODE : code);
   },
 });
 

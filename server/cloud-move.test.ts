@@ -1,6 +1,7 @@
-// Move to Cloud's Cloud side in isolation: the resumable upload slot, what
-// counts as an empty Cloud, the space check, the routes' owner-only gate, and
-// the previous Cloud. The whole move over two real servers is
+// Copy this computer here, the receiving server's side in isolation
+// (docs/copy-workspace.md): the resumable upload slot, what counts as an empty
+// server, the space check, the routes' owner-only gate and shared-workspace
+// refusal, and the previous workspace. The whole copy over real servers is
 // cloud-move.e2e.test.ts.
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
@@ -177,7 +178,8 @@ it("once a move's restore is installed, deletes its safety copy and staged files
 // ── the routes ──────────────────────────────────────────────────────────
 let server: Server | undefined;
 afterEach(async () => { await new Promise<void>((done) => server ? server.close(() => done()) : done()); server = undefined; });
-async function routes(options: { cloudHome?: boolean; freeBytes?: number | (() => number); volumeBytes?: () => number; exclusive?: <T>(work: () => Promise<T>) => Promise<T> } = {}) {
+const ENVIRONMENT = "8d0f6c1e-2b7a-4f3e-9c5d-1a2b3c4d5e6f";
+async function routes(options: { sharedWorkspace?: boolean; restored?: { id?: string; restored?: boolean }; freeBytes?: number | (() => number); volumeBytes?: () => number; exclusive?: <T>(work: () => Promise<T>) => Promise<T> } = {}) {
   const sessions = new SessionRegistry({ file: join(dataDir, "sessions.json") });
   const owner = sessions.issue({ label: "Owner's app", scopes: ["admin", "client"] });
   const phone = sessions.issue({ label: "Phone", scopes: ["client"] });
@@ -185,7 +187,7 @@ async function routes(options: { cloudHome?: boolean; freeBytes?: number | (() =
   const authenticate = (req: IncomingMessage) => resolveRequestAuth(req, { sessions, cookieName: "fixture", streamPath: "/api/events", url: new URL(req.url!, base) });
   const restarts: number[] = [];
   const handle = createCloudMoveRoutes({
-    dataDir, appVersion: "0.1.90", cloudHome: options.cloudHome ?? true, readBody, restored: {},
+    dataDir, appVersion: "0.1.90", environmentId: ENVIRONMENT, sharedWorkspace: () => options.sharedWorkspace ?? false, readBody, restored: options.restored ?? {},
     exclusive: options.exclusive ?? ((work) => work()), authorized: (req, auth) => authenticate(req).auth?.kind === auth.kind,
     status: () => ({ busy: false, pendingRestore: false }), restart: () => restarts.push(Date.now()),
     freeBytes: () => typeof options.freeBytes === "function" ? options.freeBytes() : options.freeBytes ?? 1024 ** 4, gateRetryMs: 0, restartDelayMs: 0,
@@ -223,22 +225,46 @@ it("refuses a move that does not fit the Cloud's volume, counting a backup of wh
   expect((await roomy.call("POST", "/api/cloud-move/upload", roomy.owner, { sha256: "a".repeat(64), bytes })).status).toBe(200);
 });
 
-it("needs a paired admin session on a Cloud home: not the bare loopback, not a client device, not another server", async () => {
-  const cloud = await routes();
-  expect((await cloud.call("GET", "/api/cloud-move", cloud.owner)).status).toBe(200);
-  expect((await cloud.call("GET", "/api/cloud-move")).status).toBe(403);
-  expect((await cloud.call("POST", "/api/cloud-move/upload")).status).toBe(403);
-  expect((await cloud.call("GET", "/api/cloud-move", cloud.phone)).status).toBe(403);
-  expect((await cloud.call("POST", "/api/cloud-move/undo", cloud.phone, {})).status).toBe(403);
-  // Every server sizes its own workspace for its desktop; none but a Cloud receives one.
-  expect((await cloud.call("GET", "/api/cloud-move/estimate")).status).toBe(200);
-  server!.close(); server = undefined;
-  const desktop = await routes({ cloudHome: false });
-  expect((await desktop.call("GET", "/api/cloud-move", desktop.owner)).status).toBe(404);
-  expect((await desktop.call("POST", "/api/cloud-move/upload", desktop.owner, { sha256: "a".repeat(64), bytes: 4096 })).status).toBe(404);
-  expect(existsSync(join(dataDir, ".backups", "cloud-move"))).toBe(false);
-  expect(desktop.restarts).toEqual([]);
+it("any server receives a copy from its owner's paired app: not the bare loopback, not a client device", async () => {
+  const server = await routes();
+  expect((await server.call("GET", "/api/cloud-move", server.owner)).status).toBe(200);
+  expect((await server.call("GET", "/api/cloud-move")).status).toBe(403);
+  expect((await server.call("POST", "/api/cloud-move/upload")).status).toBe(403);
+  expect((await server.call("GET", "/api/cloud-move", server.phone)).status).toBe(403);
+  expect((await server.call("POST", "/api/cloud-move/undo", server.phone, {})).status).toBe(403);
+  expect((await server.call("POST", "/api/cloud-move/upload", server.owner, { sha256: "a".repeat(64), bytes: 4096 })).status).toBe(200);
+  // Every server sizes its own workspace for its desktop.
+  expect((await server.call("GET", "/api/cloud-move/estimate")).status).toBe(200);
 });
+
+it("a workspace shared with other people never receives one, and says why", async () => {
+  const shared = await routes({ sharedWorkspace: true });
+  for (const [method, path, body] of [["GET", "/api/cloud-move"], ["POST", "/api/cloud-move/upload", { sha256: "a".repeat(64), bytes: 4096 }], ["POST", "/api/cloud-move/undo", {}]] as const) {
+    const refused = await shared.call(method, path, shared.owner, body);
+    expect(refused.status, `${method} ${path}`).toBe(403);
+    expect(refused.body).toMatchObject({ code: "shared_workspace", error: expect.stringMatching(/shared with other people/) });
+  }
+  expect(existsSync(join(dataDir, ".backups", "cloud-move"))).toBe(false);
+  expect(shared.restarts).toEqual([]);
+  // It still sizes its own workspace, for its own desktop.
+  expect((await shared.call("GET", "/api/cloud-move/estimate", shared.owner)).status).toBe(200);
+});
+
+it("says which version and which machine it is, so the app refuses an older server or this computer's own before exporting", async () => {
+  const server = await routes();
+  expect((await server.call("GET", "/api/cloud-move", server.owner)).body).toMatchObject({ appVersion: "0.1.90", environmentId: ENVIRONMENT });
+  expect((await server.call("GET", "/api/cloud-move/estimate", server.owner)).body).toMatchObject({ appVersion: "0.1.90", environmentId: ENVIRONMENT });
+});
+
+it("tidies after a copy on any server, so a second copy still has its swap back", async () => {
+  writeFileSync(join(dataDir, "bots.json"), JSON.stringify([{ id: "one" }, { id: "two" }]));
+  const id = randomUUID();
+  await prepareNextPreviousCloud(dataDir, id, backup(dataDir));
+  expect(previousCloud(dataDir)).toBeNull();
+  // Startup installed the copy's restore: building the routes settles it.
+  const server = await routes({ restored: { restored: true, id } });
+  expect((await server.call("GET", "/api/cloud-move", server.owner)).body.previous).toMatchObject({ bots: 2 });
+}, 60_000);
 
 it("restores only what its own preview staged", async () => {
   const cloud = await routes();
@@ -251,7 +277,7 @@ it("restores only what its own preview staged", async () => {
 it("refuses a session without admin scope even if a gate in front let it through", async () => {
   const { Readable } = await import("node:stream");
   const handle = createCloudMoveRoutes({
-    dataDir, appVersion: "0.1.90", cloudHome: true, readBody, restored: {}, exclusive: (work) => work(), authorized: () => true,
+    dataDir, appVersion: "0.1.90", environmentId: ENVIRONMENT, sharedWorkspace: () => false, readBody, restored: {}, exclusive: (work) => work(), authorized: () => true,
     status: () => ({ busy: false, pendingRestore: false }), restart: () => { throw new Error("must not restart"); },
   });
   const answer = async (auth: RequestAuth, method: string, path: string) => {

@@ -3,8 +3,9 @@
 // signed in and a bot has finished a turn there, or until the person hides
 // it. Each step's state is read from the Cloud or this app (lib/cloud-setup),
 // never ticked by hand, and each action opens what already exists: the engine
-// sign-in, Move to Cloud, the chat's composer, the lending switch. No dialogs.
-// Desktop and self-hosted installs never see it; they keep the welcome flow.
+// sign-in, Copy this computer here, the chat's composer, the lending switch. No
+// dialogs. Desktop and self-hosted installs never see it; they keep the welcome
+// flow, and an empty one gets the same Copy this computer here card.
 import { useEffect, useState } from "react";
 import { CheckCircle2, Circle, Cloud } from "lucide-react";
 import { cloudMoveOffer, CloudMoveSuggestion, moveNextSteps, useCloudMove } from "@/components/CloudMove";
@@ -65,9 +66,10 @@ export function CloudSetup({ viewer }: { viewer: WelcomeViewer | null }) {
   const move = useCloudMove(moveBridge);
   const lendBridge = shown && window.ogb?.platform === "darwin" ? window.ogb.cloudLending : undefined;
   const lent = useLentComputer(Boolean(lendBridge));
-  // Hidden or finished: the one-time Move to Cloud card works as it always did.
-  if (stage === "hidden" || stage === "done") return <CloudMoveSuggestion />;
-  if (!shown) return null;
+  // Anywhere but the checklist (any other server, or the checklist hidden or
+  // finished): the one-time Copy this computer here card, which shows only
+  // when main suggests it. Not while this page is still finding out what it is.
+  if (!shown) return stage === "waiting" || !viewer ? null : <CloudMoveSuggestion />;
 
   const items = cloudSetupItems({
     ...facts,
@@ -108,7 +110,7 @@ export function CloudSetup({ viewer }: { viewer: WelcomeViewer | null }) {
       if (!moveBridge) return null;
       // Open once asked for, and while a move is under way or has stopped.
       if (moveOpen || (moveItem?.status === "todo" && move.state.phase !== "idle")) {
-        return cloudMoveOffer(moveBridge, move, { start: () => {}, notNow: () => { setMoveSkipped(true); remember(CLOUD_SETUP_MOVE_SKIPPED); } });
+        return cloudMoveOffer(move, { notNow: () => { setMoveSkipped(true); remember(CLOUD_SETUP_MOVE_SKIPPED); } });
       }
       return <>{hint("cloudSetup.move.hint")}{action("cloudSetup.move.action", () => setMoveOpen(true))}</>;
     }

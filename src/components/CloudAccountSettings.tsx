@@ -270,6 +270,6 @@ export function CloudAccountSettings({ linkRequest = 0, cloudHome = false, onCon
     </Card>
     {machine && cloudHomeCard({ machine, busy, failed: homeFailed, onConnect: connectHome, lending: bridge.lending })}
     {signed && view.kind === "paid" && cloudPhoneCard({ ready: machine?.status === "ready", busy, failed: phoneFailed, onUse: openOnPhone })}
-    {machine?.status === "ready" && <CloudMoveSettings />}
+    {machine?.status === "ready" && <CloudMoveSettings destination="cloud" />}
   </>;
 }

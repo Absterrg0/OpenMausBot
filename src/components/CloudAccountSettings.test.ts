@@ -361,3 +361,16 @@ it("on the Cloud itself, opens this Cloud's phone pairing directly; never where 
   plan.state.mockRejectedValueOnce(new Error("cloud-plan:state is only available in this app's window")); f.values = []; view({ onConnectPhone }); f.effects[0](); await flush();
   expect(view({ onConnectPhone }).nodes.some(node => node.type === "button")).toBe(false);
 });
+
+it("once the Cloud is ready, offers Copy this computer here for the Cloud itself", async () => {
+  const move = { state: vi.fn().mockResolvedValue({ phase: "idle", local: null, cloud: null, suggest: false, destination: { id: "cloud", name: "My Cloud", origin, kind: "cloud" }, blocked: null }),
+    start: vi.fn(), cancel: vi.fn(), restorePrevious: vi.fn(), dismiss: vi.fn(), onState: vi.fn(() => () => {}) };
+  vi.stubGlobal("window", { ogb: { cloudAccount: bridge, cloudMove: move } });
+  vi.mocked(bridge.state).mockResolvedValue(readyCloud);
+  await ready(readyCloud);
+  render();
+  for (const effect of f.effects) effect();
+  await flush();
+  expect(move.state.mock.calls).toContainEqual(["cloud"]);
+  expect(render().html).toContain("Copy this computer&#x27;s bots and chats");
+});

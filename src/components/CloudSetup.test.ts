@@ -46,7 +46,8 @@ const ready = { instanceId: "claude", snapshot: { state: "available", authentica
 const signedOut = { instanceId: "claude", snapshot: { state: "available", authenticated: false } };
 const local = { bots: 4, rooms: 1, chats: 37, bytes: 1.5 * 1024 ** 3, files: 900 };
 const emptyCloud = { contents: { bots: 1, rooms: 0, chats: 0 }, empty: true, freeBytes: 9 * 1024 ** 3, previous: null, heldBytes: 0 };
-const overview = (extra: Partial<CloudMoveOverview> = {}): CloudMoveOverview => ({ phase: "idle", local, cloud: emptyCloud, suggest: true, ...extra });
+const CLOUD = { id: "cloud", name: "My Cloud", origin: "https://omb-u-1a2b3c4d5e6f.fly.dev", kind: "cloud" as const };
+const overview = (extra: Partial<CloudMoveOverview> = {}): CloudMoveOverview => ({ phase: "idle", local, cloud: emptyCloud, suggest: true, destination: CLOUD, blocked: null, ...extra });
 let bridge: CloudMoveBridge, push: (state: CloudMoveState) => void, lent: unknown[], open: ReturnType<typeof vi.fn>;
 let dispatched: unknown[];
 
@@ -78,12 +79,10 @@ beforeEach(() => {
 });
 afterEach(() => { vi.unstubAllGlobals(); setLocale("en"); });
 
-it("is not shown off a Cloud home, to a guest, or before the Cloud has answered, and asks nothing", async () => {
-  for (const who of [null, { hosted: false, canSave: true }, { ...owner, canSave: false }]) {
-    viewer = who; f.values = [];
-    await mount();
-    expect(render().html).toBe("");
-  }
+it("is not shown before the page knows what it is, or before the Cloud has answered, and asks nothing", async () => {
+  viewer = null; f.values = [];
+  await mount();
+  expect(render().html).toBe("");
   viewer = owner;
   for (const change of [{ connected: false }, { instances: [] }, { config: { cloudHome: true } }]) {
     const saved = f.state; f.state = { ...f.state, ...change }; f.values = [];
@@ -92,6 +91,24 @@ it("is not shown off a Cloud home, to a guest, or before the Cloud has answered,
     f.state = saved;
   }
   expect(bridge.state).not.toHaveBeenCalled();
+  expect(api).not.toHaveBeenCalled();
+});
+
+it("off a Cloud home, and to a Cloud guest, there is no checklist: the plain Copy this computer here card, only when main suggests it", async () => {
+  const server = { id: "vps", name: "bots.example.test", origin: "https://bots.example.test", kind: "server" as const };
+  for (const who of [{ hosted: false, canSave: true }, { ...owner, canSave: false }]) {
+    viewer = who; f.values = [];
+    vi.mocked(bridge.state).mockResolvedValue(overview({ suggest: false, destination: server }));
+    await mount();
+    expect(render().html).toBe("");
+    f.values = [];
+    vi.mocked(bridge.state).mockResolvedValue(overview({ suggest: true, destination: server }));
+    await mount();
+    const { html } = render();
+    expect(html).not.toContain("Set up your Cloud");
+    expect(html).toContain("Bring your bots and chats from this Mac");
+    expect(html).toContain("bots.example.test is empty. Copy 4 bots and 37 chats here (about 1.5 GB).");
+  }
   expect(api).not.toHaveBeenCalled();
 });
 
@@ -169,21 +186,21 @@ it("Hide setup is one click, kept in the Cloud's own settings, and is the move's
   expect(render().html).toBe("");
 });
 
-it("bringing bots opens Move to Cloud in place; Move starts it, and Not now is kept as skipped", async () => {
+it("bringing bots opens the copy in place; Copy starts it, and Not now is kept as skipped", async () => {
   await mount();
-  expect(render().html).not.toContain("Move 4 bots and 37 chats");
+  expect(render().html).not.toContain("Copy 4 bots and 37 chats");
   // One step is open at a time: here, signing in.
   expect(button("Move to Cloud")).toBeUndefined();
   expand("Bring your bots from your computer");
   button("Move to Cloud")!.props.onClick!();
   let { html } = render();
-  expect(html).toContain("Your Cloud is empty. Move 4 bots and 37 chats here (about 1.5 GB).");
+  expect(html).toContain("My Cloud is empty. Copy 4 bots and 37 chats here (about 1.5 GB).");
   expect(html).toContain("API keys and sign-ins stay on this computer");
-  button("Move")!.props.onClick!(); await flush();
-  expect(bridge.start).toHaveBeenCalledExactlyOnceWith();
-  push({ phase: "uploading", action: "move", progress: { bytesTransferred: 1, totalBytes: 2 } });
-  expect(render().html).toContain("Uploading to your Cloud");
-  push({ phase: "done", action: "move", moved: { bots: 4, rooms: 1, chats: 37 } });
+  button("Copy")!.props.onClick!(); await flush();
+  expect(vi.mocked(bridge.start).mock.calls).toEqual([[undefined]]);
+  push({ phase: "uploading", action: "move", destination: CLOUD, progress: { bytesTransferred: 1, totalBytes: 2 } });
+  expect(render().html).toContain("Uploading to My Cloud");
+  push({ phase: "done", action: "move", destination: CLOUD, moved: { bots: 4, rooms: 1, chats: 37 } });
   expect(statuses().move).toBe("done");
 
   // Another Cloud, where the person says Not now instead.

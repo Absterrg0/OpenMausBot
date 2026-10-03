@@ -116,7 +116,8 @@ const __APP_VERSION__: string;
       platform: NodeJS.Platform;
       organization?: import("../../electron/managed-desktop.mjs").ManagedDesktopBridge;
       cloudAccount?: import("../../electron/cloud-account.mjs").CloudAccountBridge;
-      /** Move to Cloud; on a remote page, only the person's own Cloud is answered. */
+      /** Copy this computer here: this computer's page names a saved server (or
+       * "cloud"); a server's own page is answered about itself only. */
       cloudMove?: import("../../electron/cloud-move.mjs").CloudMoveBridge;
       /** The Cloud's setup checklist: shows the lending switch in this app's
        * own Settings → OMB Cloud (leaving the Cloud's page). */

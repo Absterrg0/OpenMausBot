@@ -36,6 +36,7 @@ import { appendAdminAction, flushAdminActivity, sharedSignIn } from "./admin-act
 import { bindDecisionRetention, decisionRetentionDays } from "./decision-log.ts";
 import { hostedWorkspaceConfigured } from "./enterprise.ts";
 import { resolveLoopbackTrust } from "./request-auth.ts";
+import { restartsAfter, serverExitAction } from "./restart.ts";
 import { writeFileAtomic } from "./atomic.ts";
 import { ensureCaddy, normalizeDomainOption, startCaddy, type RunningCaddy } from "./caddy.ts";
 import { runServiceCommand } from "./service-cli.ts";
@@ -1128,12 +1129,30 @@ export async function runServe(options: CliOptions, log: (line: string) => void 
   }
 }
 
+/** `serve` until the server stops for good. A server that exits with
+ * RESTART_EXIT_CODE (a copied workspace committed; docs/copy-workspace.md)
+ * is started again in this process, with its tunnel, Tailscale or domain
+ * address unchanged, and without a second pairing code or browser tab; at
+ * most MAX_RESTARTS times in a row (server/restart.ts). */
+export async function serveUntilStopped(options: CliOptions, run: (options: CliOptions) => Promise<number> = runServe, now: () => number = Date.now): Promise<number> {
+  let restarts = 0, launch = options;
+  for (;;) {
+    const startedAt = now();
+    const code = await run(launch);
+    restarts = restartsAfter(restarts, now() - startedAt);
+    if (serverExitAction(code, false, restarts) !== "restart") return code;
+    restarts++;
+    console.log("\nOpenMausBot is starting again to finish installing a copy from the desktop app…");
+    launch = { ...options, pair: false, open: false };
+  }
+}
+
 /** Keep setup imports behind the data-dir override: config binds its paths
  * when first imported. `serve` remains usable with stdin closed. */
 export async function runOnboardingCommand(
   options: CliOptions,
   io: CliIo = defaultIo(),
-  startServer: (options: CliOptions) => Promise<number> = runServe,
+  startServer: (options: CliOptions) => Promise<number> = serveUntilStopped,
   flow: { prompts?: SetupIo; phoneSetup?: typeof runPhoneSetup; running?: typeof isWorkspaceRunning; open?: typeof openDashboard } = {},
 ): Promise<number> {
   const interactive = process.stdin.isTTY === true && process.stdout.isTTY === true;
@@ -1209,7 +1228,7 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
     case "start":
       return runOnboardingCommand(options);
     case "serve":
-      return runServe(options);
+      return serveUntilStopped(options);
     case "pair":
       return runPair(options);
     case "sessions":

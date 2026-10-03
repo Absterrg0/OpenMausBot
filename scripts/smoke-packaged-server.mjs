@@ -247,7 +247,56 @@ if (listening) {
   } catch (error) { backupReport = { error: String(error) }; }
 }
 
+// The container image runs the server through server-launcher.js (Dockerfile,
+// deploy/podman/Containerfile). It must start the bundled index.js beside it
+// as its own child, and a stop (SIGTERM, `docker stop`) must end both with the
+// server's clean exit. Containers are Linux; Windows has no SIGTERM to pass on.
+let launcherReport = null;
+if (listening && process.platform !== "win32") {
+  const launcherHome = mkdtempSync(join(tmpdir(), "omb-smoke-launcher-"));
+  const launcherPort = 31000 + Math.floor(Math.random() * 9000);
+  const launcher = spawn(process.execPath, [join(staging, "server", "server-launcher.js")], {
+    cwd: staging,
+    env: { ...fixtureEnv, HOME: launcherHome, USERPROFILE: launcherHome, OMB_DATA_DIR: join(launcherHome, ".openmausbot"), OMB_PORT: String(launcherPort), OMB_WEBHOOK_PORT: String(launcherPort + 1) },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  let launcherOutput = "";
+  launcher.stdout.on("data", (chunk) => (launcherOutput += chunk));
+  launcher.stderr.on("data", (chunk) => (launcherOutput += chunk));
+  const exited = new Promise((resolve) => launcher.once("exit", (code, signal) => resolve({ code, signal })));
+  try {
+    let serverPid = null;
+    const until = Date.now() + 45_000;
+    while (Date.now() < until && launcher.exitCode === null && serverPid === null) {
+      try {
+        const health = await (await fetch(`http://127.0.0.1:${launcherPort}/api/health`, { signal: AbortSignal.timeout(2_000) })).json();
+        if (Number.isSafeInteger(health.pid)) serverPid = health.pid;
+      } catch { /* not up yet */ }
+      if (serverPid === null) await new Promise((resolve) => setTimeout(resolve, 300));
+    }
+    launcher.kill("SIGTERM");
+    let timer;
+    const exit = await Promise.race([exited, new Promise((resolve) => { timer = setTimeout(() => resolve({ timeout: true }), 20_000); })]);
+    clearTimeout(timer);
+    let stillServing = false;
+    try { await fetch(`http://127.0.0.1:${launcherPort}/api/health`, { signal: AbortSignal.timeout(2_000) }); stillServing = true; } catch { /* stopped */ }
+    launcherReport = { serverPid, launcherPid: launcher.pid, exit, stillServing, output: launcherOutput.slice(-2_000) };
+  } catch (error) {
+    launcherReport = { error: String(error), output: launcherOutput.slice(-2_000) };
+  } finally {
+    if (launcher.exitCode === null) launcher.kill("SIGKILL");
+    try { rmSync(launcherHome, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }); } catch { /* the OS will reap it */ }
+  }
+}
+
 cleanup();
+
+if (launcherReport && (launcherReport.error || !launcherReport.serverPid || launcherReport.serverPid === launcherReport.launcherPid ||
+  launcherReport.exit?.code !== 0 || launcherReport.stillServing)) {
+  console.error("the packaged container launcher did not run the server as its child and stop it cleanly:");
+  console.error(JSON.stringify(launcherReport, null, 2));
+  process.exit(1);
+}
 
 if (!listening) {
   console.error(`the packaged server never served /api/health on port ${port}.`);
@@ -305,5 +354,6 @@ console.log(`packaged server started with no node_modules in reach (port ${port}
 console.log(`all ${count} spawned proxy paths resolve inside the packaged server dir ✓`);
 console.log("packaged MCP stdio server reached the API and flushed its final frames ✓");
 console.log("packaged backup worker exported an encrypted archive ✓");
+if (launcherReport) console.log("packaged container launcher ran the server as its child and stopped it cleanly ✓");
 if (layerShipped) console.log("packaged server found its enterprise layer inside the server dir ✓");
 if (browserBundle) console.log(`packaged browser discovered without installation; access on by default ✓ ${JSON.stringify(browserReport)}`);

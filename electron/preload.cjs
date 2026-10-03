@@ -35,9 +35,12 @@ ipcRenderer.on("app:open-settings", (_event, section) => {
 // helpers here. Main enforces the same rule on the sensitive channels.
 const localOrigin = process.argv.find((arg) => arg.startsWith("--omb-local-origin="))?.slice("--omb-local-origin=".length) ?? null;
 const isLocalPage = !localOrigin || location.origin === localOrigin;
-// cloudMove, cloudLending and cloudPlan: main answers them on a remote page
-// only when that page is the person's own verified Cloud in this window (Move
-// to Cloud's card, the Cloud's setup checklist, and its Settings' plan line).
+// cloudMove: main answers a remote page about that page's own server only,
+// while it is this window's active server (Copy this computer here's card and
+// its Settings → Backups). cloudLending and cloudPlan: only the person's own
+// verified Cloud (the Cloud's setup checklist, and its Settings' plan line).
+/** A saved server's id, forwarded only from this computer's own page. */
+const savedServer = id => isLocalPage && typeof id === "string" && /^[\w-]{1,64}$/.test(id) ? [id] : [];
 const REMOTE_SAFE = new Set(["platform", "getCapabilities", "onCapabilitiesChanged", "applySkin", "setUnreadCount", "permStatus", "workspaces", "cloudMove", "cloudLending", "cloudPlan"]);
 
 // Sandboxed preload cannot import TS or sibling modules. Keep this list in
@@ -317,16 +320,18 @@ const bridge = {
       stop: () => ipcRenderer.invoke("lending:stop"),
     },
   } : undefined,
-  /** Move to Cloud: this computer's workspace to the person's Cloud home.
-   * No arguments reach main. A remote page may start a move only from the
+  /** Copy this computer here: this computer's workspace to a server the
+   * person added (their Cloud included). Only this computer's own page names
+   * where (a saved server's id, or "cloud"); a server's page names nothing,
+   * main answers it about itself, and it may start a copy only from the
    * person's own click. */
   cloudMove: process.argv.includes("--omb-company-desktop=1") ? {
-    state: () => ipcRenderer.invoke("cloud-move:state"),
-    start: () => isLocalPage || navigator.userActivation?.isActive === true
-      ? ipcRenderer.invoke("cloud-move:start") : Promise.reject(new Error("Choose Move to start moving.")),
+    state: id => ipcRenderer.invoke("cloud-move:state", ...savedServer(id)),
+    start: id => isLocalPage ? ipcRenderer.invoke("cloud-move:start", ...savedServer(id))
+      : navigator.userActivation?.isActive === true ? ipcRenderer.invoke("cloud-move:start") : Promise.reject(new Error("Choose Copy to start copying.")),
     cancel: () => ipcRenderer.invoke("cloud-move:cancel"),
-    restorePrevious: () => ipcRenderer.invoke("cloud-move:restore-previous"),
-    dismiss: () => ipcRenderer.invoke("cloud-move:dismiss"),
+    restorePrevious: id => ipcRenderer.invoke("cloud-move:restore-previous", ...savedServer(id)),
+    dismiss: id => ipcRenderer.invoke("cloud-move:dismiss", ...savedServer(id)),
     onState: cb => {
       const handler = (_event, state) => cb(state);
       ipcRenderer.on("cloud-move:state-changed", handler);

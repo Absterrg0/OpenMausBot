@@ -48,10 +48,6 @@ export const CLOUD_PAIRING_SKEW_S = 300;
 export const CLOUD_PAIRING_NONCE_MS = 10 * 60_000;
 const MAX_NONCES = 10_000;
 export const CLOUD_HOME_MARKER = ".omb-cloud-home.json";
-/** The server exits with this after a restore commits (Move to Cloud): the
- * launcher then starts it again, and startup installs the restore. Any other
- * exit stops the machine for Fly to restart. */
-export const CLOUD_HOME_RESTART_EXIT_CODE = 75;
 
 export interface CloudHomeConfig {
   machineId: string;

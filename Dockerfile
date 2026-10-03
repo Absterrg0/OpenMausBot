@@ -73,4 +73,7 @@ VOLUME ["/data"]
 USER maus
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
   CMD curl -sf http://127.0.0.1:8799/api/health | grep -q openmausbot || exit 1
-CMD ["node", "dist-server/index.js"]
+# The launcher runs dist-server/index.js and starts it again when it asks to
+# (a copied workspace committing, server/restart.ts), so the container, and a
+# Caddy sharing its network, stays up through that restart.
+CMD ["node", "dist-server/server-launcher.js"]

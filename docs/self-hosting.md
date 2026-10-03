@@ -438,6 +438,24 @@ Folder transfers are limited to 256 KiB per file and do not follow links or
 delete files. Local screen control also needs OS permissions and a supported
 desktop driver. Microphone access is not included.
 
+**Bring this computer's bots and chats.** When the server you just connected
+is empty, its page shows **Bring your bots and chats from this computer**
+with **Copy** and **Not now**. Any time later, **Settings → Servers → Copy this
+computer here** on that server's row does the same, and replaces what the server
+has (backed up on the server first; **Swap {server} back** puts it back). On the
+server's own page, **Settings → Backups → Import from this computer** is the
+same copy. No file, no password: the app uploads the encrypted workspace
+backup directly, continues where a dropped connection left it, and the server
+restarts itself to install it. API keys, engine sign-ins and paired devices
+stay where they are on both sides; routines arrive paused. The desktop app must
+be paired with an owner code (not `--client`), and a server whose email sign-in
+lets other people in (`openmausbot access add`) never receives one. How each
+way of running the server restarts itself: `openmausbot serve` and
+`service install` start it again in the same process, the Docker and Podman
+images run `server-launcher.js`, which does the same inside the container; a
+server started any other way installs the copy at its next start. Details:
+[docs/copy-workspace.md](copy-workspace.md).
+
 Only conversations you start yourself on that server can use what you share;
 other people's bots, routines and webhooks there cannot. Keys and sign-in
 stores (`~/.ssh`, cloud CLIs, browser profiles, keychains) and `.git`

@@ -4,11 +4,12 @@ import { join } from "node:path";
 import type { IncomingMessage } from "node:http";
 import { afterEach, expect, it } from "vitest";
 import {
-  CLOUD_BROWSER_SIGN_IN_MAX_TTL_S, CLOUD_HOME_MARKER, CLOUD_HOME_RESTART_EXIT_CODE, CLOUD_IGNORED_KEYS, CLOUD_PAIRING_MAX_TTL_S, CLOUD_PAIRING_NONCE_MS, CLOUD_PAIRING_SKEW_S, cloudHomeConfiguration, cloudHomeConfigured,
+  CLOUD_BROWSER_SIGN_IN_MAX_TTL_S, CLOUD_HOME_MARKER, CLOUD_IGNORED_KEYS, CLOUD_PAIRING_MAX_TTL_S, CLOUD_PAIRING_NONCE_MS, CLOUD_PAIRING_SKEW_S, cloudHomeConfiguration, cloudHomeConfigured,
   boatNotConfiguredMessage, cloudHomeHost, cloudHomeOffersPlace, cloudHomePlaceRefusal, cloudPairingSignature, createCloudPairing, firstCloudTurnPatch, prepareCloudHomeVolume,
   withoutIgnoredCloudKeys,
 } from "./cloud-home.ts";
-import { cloudHomeChildEnvironments, codeTrustProblem, passwdIds, serverExitAction, spawnWithSecrets } from "./cloud-home-start.ts";
+import { cloudHomeChildEnvironments, codeTrustProblem, passwdIds, spawnWithSecrets } from "./cloud-home-start.ts";
+import { RESTART_EXIT_CODE, serverExitAction } from "./restart.ts";
 import { hostedModelPolicy } from "./hosted-models.ts";
 import { resolveRequestAuth } from "./request-auth.ts";
 import { SessionRegistry } from "./sessions.ts";
@@ -369,13 +370,15 @@ it("ships an edge and a Fly template that keep the server private", () => {
   expect(fly).not.toContain("OMB_HOSTED_");
 });
 
-it("starts the server again only when it asks to after a restore, and only a few times in a row", () => {
-  expect(serverExitAction(CLOUD_HOME_RESTART_EXIT_CODE, false, 0)).toBe("restart");
-  expect(serverExitAction(CLOUD_HOME_RESTART_EXIT_CODE, false, 4)).toBe("restart");
+it("the Cloud launcher starts the server again only when it asks to after a restore, and only a few times in a row", () => {
+  const launcher = readFileSync(join(import.meta.dirname, "cloud-home-start.ts"), "utf8");
+  expect(launcher).toContain("serverExitAction(code, stopping, restarts)");
+  expect(serverExitAction(RESTART_EXIT_CODE, false, 0)).toBe("restart");
+  expect(serverExitAction(RESTART_EXIT_CODE, false, 4)).toBe("restart");
   for (const code of [0, 1, null]) expect(serverExitAction(code, false, 0)).toBe("stop");
   // Stopping for good (Fly asked, or the edge died), or restarting in a loop.
-  expect(serverExitAction(CLOUD_HOME_RESTART_EXIT_CODE, true, 0)).toBe("stop");
-  expect(serverExitAction(CLOUD_HOME_RESTART_EXIT_CODE, false, 5)).toBe("stop");
+  expect(serverExitAction(RESTART_EXIT_CODE, true, 0)).toBe("stop");
+  expect(serverExitAction(RESTART_EXIT_CODE, false, 5)).toBe("stop");
 });
 
 it("records the first finished bot turn once, on a Cloud home only, and a moved workspace never brings its own", () => {

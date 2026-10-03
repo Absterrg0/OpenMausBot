@@ -129,8 +129,8 @@ upgrade is revoked and stays nobody's.
 
 Routines fail closed. A routine is the owner's only with proof: the owner's
 key as its writer, the owner's fingerprint on it (a routine they wrote
-from their own device), or a restore the owner started (Move to Cloud, or a
-backup restored in Settings); a routine made from the owner's bot template,
+from their own device), or a restore the owner started (Copy this computer
+here, or a backup restored in Settings); a routine made from the owner's bot template,
 or a proposal the owner approved, is recorded as theirs when it is made.
 Every other routine is nobody's: it runs confined, like a guest's, and
 reports into a conversation that is nobody's. An owner's routine reports
@@ -195,10 +195,11 @@ box the person ticks:
 1. **Sign in to Claude or ChatGPT**, the one required step: done when any
    engine on the Cloud can run. From another view, its **Sign in** returns to
    the engine sign-in above.
-2. **Bring your bots from your computer**: only in the desktop app, while Move
-   to Cloud's card would be offered (an empty Cloud, a computer with work to
-   bring). **Move to Cloud** opens that offer in place (the size, what stays,
-   **Move** and **Not now**). Done after a move; skipped after **Not now**,
+2. **Bring your bots from your computer**: only in the desktop app, while the
+   Copy this computer here card would be offered (an empty Cloud, a computer
+   with work to bring; docs/copy-workspace.md). **Move to Cloud** opens that
+   offer in place (the size, what stays, **Copy** and **Not now**). Done after
+   a copy; skipped after **Not now**,
    which the Cloud keeps (`cloud-setup-move-skipped` in its onboarding record)
    and which also hides the one-time card.
 3. **Try something that runs while you're away**: one example, a daily
@@ -206,7 +207,7 @@ box the person ticks:
    turn first finishes on the Cloud: the server records `onboarding.firstTurnAt`
    once, on a Cloud home only, for a turn that finished (not a failed or
    stopped one) in a bot's conversation or a room. The onboarding record never
-   travels with Move to Cloud, so moved-in chats do not count.
+   travels with a copy, so copied-in chats do not count.
 4. **Optional: Let your Cloud use this Mac**: only in the desktop app on
    macOS. **Choose what to lend** opens Settings → OMB Cloud on this Mac,
    leaving the Cloud's page as the menu-bar item's **Lending settings…** does
@@ -218,7 +219,8 @@ box the person ticks:
 in its onboarding record), so it holds on every device and after browser
 storage is cleared, and it is the move's **Not now** too. The card also goes
 away by itself once steps 1 and 3 are done. Nothing asks for confirmation.
-After the card, Move to Cloud's one-time card behaves as before.
+After the card, the one-time Copy this computer here card behaves as on any
+other server.
 
 While a window shows a Cloud home, the sidebar's server switcher reads **My
 Cloud · always on**; in a browser, a plain label says the same.
@@ -620,8 +622,8 @@ volume with data on it, is refused), and runs two children as `maus`: the
 server on `127.0.0.1:8799` (webhooks on `127.0.0.1:8800`) and Caddy on
 `:8080`. It stays a small root supervisor: if either child exits, both stop
 and Fly restarts the machine. The one exception: after a restore commits
-(Move to Cloud, below), the server exits with code 75 and the launcher starts
-only the server again.
+(Copy this computer here, below), the server exits with code 75
+(`server/restart.ts`) and the launcher starts only the server again.
 
 The machine's secrets (`OMB_CLOUD_BOOTSTRAP_SECRET` and the relay tokens
 `OMB_CLOUD_BOAT_TOKEN`, `OMB_CLOUD_VOICE_TOKEN`, `OMB_CLOUD_DECIDER_TOKEN`)
@@ -872,8 +874,8 @@ without them works as before; a malformed one is dropped, never the machine):
   the Cloud page, and says when setup is slow.
 - `cloud.retryAt` (ms) when `failed`: the time of the next automatic try.
 - `cloud.disk: {gb, maxGb}`: the volume now and the most the plan lets it grow
-  to. Only with it does Move to Cloud count on a larger disk (and ask the Admin
-  to grow it, below). Without it the app assumes nothing: a move is measured
+  to. Only with it does a copy to the Cloud count on a larger disk (and ask the
+  Admin to grow it, below). Without it the app assumes nothing: a copy is measured
   against the Cloud's free space today, and one larger than the Cloud's whole
   disk says "tell us and we'll make room", never "remove files" or "try again".
   The Admin should send it together with `POST /api/cloud/desktop/disk`.
@@ -924,170 +926,43 @@ pairing-link flow as Connect to a server. The code stays in main-process
 memory for that one navigation: never on disk, never in a renderer. A
 malformed session summary or grant is treated as none.
 
-## Move to Cloud
+## Copy this computer to your Cloud
 
-One action copies everything from the person's own computer to their Cloud:
-bots, chats and their messages, attachments, memory, routines, skills, rooms
-and teams, and the settings a workspace backup carries. It is a copy; nothing
-on the computer changes. Chat history travels between machines here, and only
-here, because the person asked for it. Secrets never travel.
+The Cloud receives this computer's workspace the way every server the person
+adds does: **docs/copy-workspace.md** is the one reference (where it is, what
+moves and what stays, how it copies, Swap back, the restart, security). This
+section is only what the Cloud adds.
 
-### Where it is
-
-- **Settings → OMB Cloud**, under Your Cloud once it is Ready: **Move to
-  Cloud** (`src/components/CloudMove.tsx`). Before anything starts it shows the
-  size and the counts (`GET /api/cloud-move/estimate` on the computer's own
-  server), and says that API keys and sign-ins stay on the computer and that
-  the person signs in to Claude or ChatGPT on the Cloud (the Cloud's first-run
-  engine sign-in above).
-- When the Cloud already has bots or chats, the button reads **Replace my
-  Cloud with this computer's workspace**, and the card says that what the
-  Cloud holds is replaced, backed up on the Cloud first, and put back by **Swap
-  back to previous Cloud**. There is no confirmation dialog. Without a session
-  on the Cloud yet (never connected), it says the same thing conditionally.
-- The first time the app shows an empty Cloud (its starter bot at most, no
-  rooms, nobody has chatted) and the computer has work of its own, the Cloud's
-  page shows a card: **Bring your bots and chats from this Mac** ("this
-  computer" elsewhere), with **Move** and **Not now**. Not now hides it for that
-  Cloud for good; it never blocks anything. Only the desktop app shows it, and
-  main answers the Cloud page only when it is the verified Cloud (the origin the
-  Cloud session reports) open as the window's active server. That page can
-  start a move only from the person's own click (`navigator.userActivation`)
-  and cannot swap back to the previous Cloud. While the Cloud's setup
-  checklist is up, the same offer is its second step instead of a card.
-
-### What moves, and what stays
-
-Exactly what a workspace backup carries (`server/workspace-backup.ts`,
-`server/workspace-backup-policy.ts`). Never: API keys, provider and MCP
-connections, engine sign-ins (`~/.claude`, `~/.codex`, the server's
-`providers/`), saved credentials, pairing, paired devices and sessions (the
-session registry's open marker included: a restore leaves the destination's
-own marker in place, so a crash just before it still ends account sign-ins),
-the server's identity, caches,
-downloaded tools and runtime files. Never this app's Cloud sign-in or what
-it lends (Let my Cloud use this Mac, above): both live in the desktop app's
-own storage, not in the workspace, and a lent Mac reconnects once the Cloud
-has restarted. Unsent drafts and window preferences stay on the computer.
-
-The Cloud keeps its own: every connection section of its config (engine and
-API keys, the included Boat and voice relays, sign-in allow-lists), its
-sessions and pairing, its engine sign-ins, its computer-sharing switch
-(`features.sharedComputers` always stays with the machine a backup is restored
-on), and its boot contract (the environment, and the volume marker outside the
-data folder). As with any restore, routines, webhooks and scheduled calls
-arrive paused and nothing queued runs; the person turns routines on in the
-Cloud when they want them to run there instead. A bot that used an engine or
-API key the Cloud does not have asks for one there, and a bot pointed at a
-project folder outside the workspace keeps that path, which the Cloud does not
-have: the files inside the workspace move, folders elsewhere on the computer
-do not.
-
-### How it moves (`electron/cloud-move.mjs`, `server/cloud-move-http.ts`)
-
-1. Main opens a session of its own on the Cloud. The Admin opens a single-use
-   pairing window for the signed-in owner (`POST /api/cloud/desktop/pairing`),
-   and main redeems it at `/api/auth/pair` for a bearer token held only in
-   memory. That session is labelled "Move to Cloud" and signed out when the
-   move ends.
-2. The computer's server exports its encrypted backup with a random password,
-   under the usual rule that bots finish their turns first, and main copies it
-   to a private temporary file, hashing it.
-3. `POST /api/cloud-move/upload {sha256, bytes, files}`. The Cloud refuses more
-   than 10 GB of data or 100,000 files (`413`), and checks its free space: the
-   upload three times over (the upload, its decrypted copy and its staged
-   files), plus twice its own workspace (the backup it takes first, briefly
-   with its snapshot), plus 256 MB. A part stored by an earlier upload, of any
-   file, counts as free: a new upload replaces it. Every Cloud starts at
-   10 GB; a plan whose disk grows grows it as it fills, up to the plan's
-   maximum. Before anything is exported the app measures the move the same
-   way (`moveFit`, with the Cloud's own `volumeBytes` from
-   `GET /api/cloud-move`), against the plan's largest disk only when the
-   Admin says how far it grows (`cloud.disk`): if it fits only once the disk
-   grows, it asks the Admin to grow it now (`POST /api/cloud/desktop/disk
-   {sizeGb}`, answered `{disk: {gb, maxGb}}`; `404` means this Admin cannot,
-   so the app says "tell us and we'll make room" with no "try again";
-   `409`/`422` over the plan) and waits until the Cloud reports the room
-   (only a timeout or no answer says "try again"). Not enough room is `507`
-   with `freeBytes` and `neededBytes`, and the app shows both, with the next
-   step: "make room on your Cloud" when the disk could hold it; "a plan with a
-   larger disk" only when the move is larger than the plan's whole disk, and
-   never on Max, the largest. A move that cannot fit says so before it
-   starts, and the Cloud's own card offers no move it would refuse. Nothing has been moved at that
-   point. A new upload also deletes whatever an earlier attempt staged.
-4. Parts of 16 MB (at most 64): `PUT /api/cloud-move/upload/<sha256>?offset=n`.
-   A part already stored is accepted again without being written; any other
-   offset answers `409` with `received`; a part that fails is cut back off.
-   Main retries with backoff and continues from where the Cloud stands. An
-   upload that keeps failing keeps its archive for 30 minutes, so moving again
-   continues it rather than starting over; the Cloud keeps a stored part for a
-   day, and its startup deletes an older one.
-5. `POST /api/cloud-move/preview {sha256, password}`: the Cloud checks the
-   SHA-256 and stages the file as an ordinary backup, which authenticates the
-   whole file before parsing anything. Anything that is not a valid backup is
-   refused and the upload discarded.
-6. `POST /api/cloud-move/restore {id}`, inside the maintenance gate: the
-   Cloud's workspace is backed up first (below), then the restore is committed
-   and the server exits with code 75. The launcher
-   (`server/cloud-home-start.ts`) starts only the server again, and startup
-   installs the restore before anything else loads. Preview, restore and undo
-   can take minutes, so each answers `202` and runs as a job the app follows
-   in `GET /api/cloud-move`. A Cloud that answers `409` (another step still
-   running) is asked again with the same staged workspace. A restore that
-   fails on the Cloud (bots that stay busy past a few tries of the gate, for
-   one) deletes what it staged and the backup it took.
-7. Main waits until the Cloud reports that restore installed
-   (`lastRestoreId`), signs its session out, and opens My Cloud in the window.
-
-Stopping before step 6, or any failure before it, asks the Cloud to drop what
-the move staged (`POST /api/cloud-move/discard`; a preview still running drops
-its result when it ends). A stored upload part stays, for moving again.
-
-### Swap back to previous Cloud
-
-Before a move replaces the Cloud's workspace, that workspace is backed up to
-`.backups/cloud-previous` on the Cloud's own volume, which no backup includes
-and no restore replaces. Its random password is kept beside it: the same volume
-holds the same data unencrypted anyway. It is offered as **Swap back to
-previous Cloud** unless it is a fresh Cloud's (its starter bot at most, no
-rooms, nobody has chatted).
-
-Swapping back (`POST /api/cloud-move/undo`) is the same restore the other way
-round: the workspace the Cloud has now is backed up first and becomes the
-previous Cloud, so a swap back can itself be swapped back, and nothing done on
-the Cloud since the move is lost. It needs room for the previous Cloud staged
-and installed plus that backup (`507` otherwise).
-
-That archive is the one undo point kept. A new backup waits in
-`.backups/cloud-previous.next` and replaces it only once startup has installed
-the restore it was made for (a restore that never commits or rolls back leaves
-the previous Cloud as it was). Once a move's or swap's restore is installed,
-startup deletes its safety copy (`.backups/safety-<id>`) and its staged files,
-so `.backups` holds about one workspace, not four. `GET /api/cloud-move`
-reports the previous Cloud's size (`previous.bytes`, shown in Settings) and
-everything `.backups` holds (`heldBytes`). A restore made from Settings →
-Backups keeps its safety copy as before.
-
-### Move security
-
-- Every Cloud route needs a paired session with admin scope. A client-scope
-  device is refused, and so is a bare loopback request: on a Cloud home a
-  process on the machine (a bot's shell) is only a service and cannot pair
-  itself as the owner. It still runs as the server's user and can read and
-  write `/data` directly, which is why a bot that runs commands without the
-  owner approving is trusted with the machine (above). Only a Cloud home
-  receives a workspace; any other server answers `404`, except for sizing its
-  own (`/api/cloud-move/estimate`).
-- The upload is bounded by its declared size, the per-part limit and the
-  backup's own limits on size and file count.
-- The bundle is the workspace backup: credentials are left out by path and by
-  a config allowlist, and checked again at staging (a config with connection
-  settings or webhook secrets is refused). Staging never decompresses: tar is
-  told not to, and gzip or zstd payloads are refused. `server/cloud-move.e2e.test.ts`
-  gives the desktop keys, a driver environment, workspace credentials and a
-  provider login, scans the exported bundle for them, moves it to a real Cloud
-  home, and scans every file on the Cloud's volume.
-- Nothing logs a request body, the password, a file name or bundle contents.
+- **The Admin's grant.** Main signs in to the Cloud through the Admin: it
+  opens a single-use pairing window for the signed-in owner
+  (`POST /api/cloud/desktop/pairing`, `pairHome`), so **Settings → OMB Cloud**
+  can copy before the Cloud was ever opened in this app. No session in the
+  window yet is therefore not a block on the Cloud, as it is on other servers.
+  A saved "My Cloud" entry that is not this account's verified Cloud is copied
+  to like any other server.
+- **Settings → OMB Cloud**, under Your Cloud once it is Ready, opens the same
+  panel as Settings → Servers, named "My Cloud".
+- **The setup checklist.** While the Cloud's setup checklist is up, the copy
+  offer is its second step instead of a card (Setup checklist, above).
+- **Disk growth.** Every Cloud starts at 10 GB; a plan whose disk grows grows
+  it as it fills, up to the plan's maximum. Before anything is exported the app
+  measures the copy (`moveFit`, with the Cloud's own `volumeBytes` from
+  `GET /api/cloud-move`) against the plan's largest disk only when the Admin
+  says how far it grows (`cloud.disk`): if it fits only once the disk grows, it
+  asks the Admin to grow it now (`POST /api/cloud/desktop/disk {sizeGb}`,
+  answered `{disk: {gb, maxGb}}`; `404` means this Admin cannot, so the app
+  says "tell us and we'll make room" with no "try again"; `409`/`422` over the
+  plan) and waits until the Cloud reports the room (only a timeout or no answer
+  says "try again"). Not enough room says "make room on your Cloud" when the
+  disk could hold it, "a plan with a larger disk" only when the copy is larger
+  than the plan's whole disk, and never that on Max, the largest. No other
+  server's disk is grown or measured against a plan.
+- **The restart.** The Cloud's launcher (`server/cloud-home-start.ts`) starts
+  only the server again on exit 75, and startup settles who owns what came
+  (`server/cloud-owner.ts`): a copied routine is the owner's.
+- **Older Clouds.** A Cloud from before Move to Cloud answers `404` and the app
+  says it has not updated yet; one from before any server could receive a copy
+  still receives one from this app (its routes are the same).
 
 ## Security summary
 
