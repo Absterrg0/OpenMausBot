@@ -268,6 +268,7 @@ public struct Message: Codable, Hashable, Identifiable, Sendable {
     /// when it held the message, echoed back on the line that finally landed.
     /// Clients match it against their held-send rows to retire them.
     public var queueId: String?
+    public var steered: Bool?
     /// Rooms: which member said this.
     public var from: Sender?
     /// How a user-role message arrived: "api" through the server's HTTP API,
@@ -1076,9 +1077,11 @@ public struct ModelCatalog: Codable, Hashable, Sendable {
 /// offer a reasoning control.
 public struct InstanceCapabilities: Codable, Hashable, Sendable {
     public var effortLevels: [String]?
+    public var queueing: Bool?
 
-    public init(effortLevels: [String]? = nil) {
+    public init(effortLevels: [String]? = nil, queueing: Bool? = nil) {
         self.effortLevels = effortLevels
+        self.queueing = queueing
     }
 }
 

@@ -166,6 +166,48 @@ final class QueuedSendTests: XCTestCase {
 
     // MARK: - Row and attention derivation
 
+    func testIdleMetadataClearsOnlyItsThreadWithoutNeedingAReply() {
+        var state = CompanionState()
+        var bot = Bot(id: "bot", threadId: "idle", name: "Scout", title: "Researcher",
+                      description: "", notifications: true, color: "green", unread: false,
+                      modelSelection: ModelSelection(instanceId: "engine", model: "default"), createdAt: 1)
+        bot.busy = true // A sibling can still be running when this task stops.
+        var idle = BotTask(threadId: "idle", title: "Idle", createdAt: 1)
+        idle.busy = false
+        var busy = BotTask(threadId: "busy", title: "Busy", createdAt: 1)
+        busy.busy = true
+        bot.tasks = [idle, busy]
+        state.bots = [bot]
+        state.streaming = ["idle": "unfinished", "busy": "still working"]
+        state.reasoning = ["idle": "unfinished"]
+
+        state.apply(.bot(bot))
+
+        XCTAssertNil(state.streaming["idle"])
+        XCTAssertNil(state.reasoning["idle"])
+        XCTAssertEqual(state.streaming["busy"], "still working")
+    }
+
+    func testRoomReplacementRetiresTheExactQueuedSend() throws {
+        var state = CompanionState()
+        var snapshot = try room("room", threadId: "t1")
+        state.rooms = [snapshot]
+        state.rememberQueued(held("q1"), threadId: "t1")
+        state.rememberQueued(held("q2"), threadId: "t1")
+        snapshot.messages = [landed("m1", queueId: "q1")]
+        state.apply(.room(snapshot))
+        XCTAssertEqual(state.pendingQueued["t1"], [held("q2")])
+    }
+
+    func testLiveSteerWireFieldsRemainOptionalForOlderComputers() throws {
+        let decoder = JSONDecoder()
+        XCTAssertNil(try decoder.decode(InstanceCapabilities.self, from: Data("{}".utf8)).queueing)
+        XCTAssertEqual(try decoder.decode(InstanceCapabilities.self, from: Data("{\"queueing\":true}".utf8)).queueing, true)
+        let message = try decoder.decode(Message.self, from: Data("{\"id\":\"m1\",\"role\":\"user\",\"kind\":\"text\",\"at\":1,\"steered\":true}".utf8))
+        XCTAssertEqual(message.steered, true)
+        XCTAssertNil(landed("m2", queueId: nil).steered)
+    }
+
     func testWireQueuedActivityStillDemandsAttention() {
         var task = BotTask(threadId: "t1", title: "t", createdAt: 1)
         task.activity = "queued"

@@ -71,6 +71,7 @@ final class Session: ObservableObject {
     /// Distinguishes a real `.notDetermined` result from the in-memory value
     /// used while notification settings are still loading at launch.
     @Published private(set) var notificationAuthorizationResolved = false
+    @Published private(set) var steeringInstanceIds: Set<String> = []
     /// A short-lived desktop handoff waiting for PairingView to present it.
     @Published private(set) var pairingInvite: PairingInvite?
     /// Pairing can be opened while another computer remains connected. The
@@ -115,6 +116,7 @@ final class Session: ObservableObject {
     /// can finish after its replacement starts; its cleanup must not clear
     /// the replacement's handle.
     private var streamGeneration = 0
+    private var runtimeGeneration = 0
     private var reconnectDelay: UInt64 = 0
     /// How many computer panels are open. A count rather than a flag: the
     /// panel can be pushed twice in a navigation stack, and the last one to
@@ -735,6 +737,8 @@ final class Session: ObservableObject {
     private func stopActiveRuntime() {
         leavingComputer.send()
         resetCredentialEntry()
+        runtimeGeneration += 1
+        steeringInstanceIds = []
         streamGeneration += 1
         streamTask?.cancel()
         streamTask = nil
@@ -997,6 +1001,13 @@ final class Session: ObservableObject {
                                 ifCursorMatches: expectedCursor) else { continue }
             log.info("hydrated \(snapshot.fleet.bots.count, privacy: .public) bots, \(snapshot.fleet.groups.count, privacy: .public) rooms")
             NotificationCoordinator.shared.setBadge(state.unreadCount)
+            // Wording must not delay hydration or the stream's cursor commit.
+            let runtime = runtimeGeneration
+            Task { [weak self] in
+                let engines = (try? await client.instances()) ?? []
+                guard let self, self.runtimeGeneration == runtime else { return }
+                self.steeringInstanceIds = Set(engines.filter { $0.capabilities?.queueing == true }.map(\.instanceId))
+            }
             await refreshLiveCall(using: client)
             return
         }
@@ -1121,6 +1132,7 @@ final class Session: ObservableObject {
     // is a phone that disagrees with the laptop.
 
     func send(_ text: String, to chat: Chat) async {
+        let runtime = runtimeGeneration
         let connectionID = client?.connection.id
         var receipt: SendReceipt?
         await perform {
@@ -1132,7 +1144,7 @@ final class Session: ObservableObject {
         // The receipt describes a queue on the computer this request went
         // to. A machine switched mid-flight has already reset state for the
         // computer now on screen, and that row must not land in it.
-        guard client?.connection.id == connectionID else { return }
+        guard runtimeGeneration == runtime, client?.connection.id == connectionID else { return }
         rememberQueuedSend(from: receipt, text: text)
     }
 
@@ -1150,6 +1162,7 @@ final class Session: ObservableObject {
             return false
         }
         let connectionID = client.connection.id
+        let runtime = runtimeGeneration
         actionError = nil
         do {
             try AttachmentPolicy.validate(attachments)
@@ -1227,19 +1240,21 @@ final class Session: ObservableObject {
             // The send succeeded on the computer it was addressed to, so the
             // draft clears either way. Its queue row belongs to that computer,
             // and must not be drawn on one selected mid-upload.
-            if self.client?.connection.id == connectionID {
-                rememberQueuedSend(from: receipt, text: text)
+            if runtimeGeneration == runtime, self.client?.connection.id == connectionID {
+                rememberQueuedSend(from: receipt, text: trimmed.isEmpty ? message : trimmed)
+                attachmentSendIDs.removeValue(forKey: draftKey)
+                actionError = nil
             }
-            attachmentSendIDs.removeValue(forKey: draftKey)
-            actionError = nil
             return true
         } catch is CancellationError {
             return false
         } catch let error as APIError where error.isUnauthorized {
+            guard runtimeGeneration == runtime else { return false }
             status = .unauthorized
             actionError = error.localizedDescription
             return false
         } catch {
+            guard runtimeGeneration == runtime else { return false }
             actionError = error.localizedDescription
             return false
         }
@@ -1268,6 +1283,7 @@ final class Session: ObservableObject {
     /// edit never hands back words that already joined a turn.
     @discardableResult
     func cancelQueued(_ send: QueuedSend, threadId: String, in chat: Chat) async -> Bool {
+        let runtime = runtimeGeneration
         let connectionID = client?.connection.id
         let destination: MessageDestination
         switch chat {
@@ -1283,7 +1299,7 @@ final class Session: ObservableObject {
         // The cancel landed on the computer that owned the row. One selected
         // mid-request has already reset state; its rows are not this cancel's
         // to retire.
-        guard agreed, client?.connection.id == connectionID else { return false }
+        guard agreed, runtimeGeneration == runtime, client?.connection.id == connectionID else { return false }
         state.cancelQueued(queueId: send.queueId, threadId: threadId)
         return cancelled
     }
@@ -2670,11 +2686,14 @@ final class Session: ObservableObject {
 
     private func perform(quietly: Bool = false, _ body: (CompanionClient) async throws -> Void) async {
         guard let client else { return }
+        let runtime = runtimeGeneration
         do {
             try await body(client)
         } catch let error as APIError where error.isUnauthorized {
+            guard runtimeGeneration == runtime else { return }
             status = .unauthorized
         } catch {
+            guard runtimeGeneration == runtime else { return }
             if !quietly { actionError = error.localizedDescription }
         }
     }

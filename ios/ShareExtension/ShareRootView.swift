@@ -73,7 +73,11 @@ struct ShareRootView: View {
         case .idle, .loading: return "Preparing your share…"
         case .ready: return "Choose where this should go"
         case .sending: return "Sending securely…"
-        case .sent: return "Sent"
+        case .sent:
+            guard let receipt = model.queuedReceipt else { return "Sent" }
+            return receipt.reason == "capacity"
+                ? "Queued — waiting for a free thread slot"
+                : "Queued — sends after the current turn"
         case .failed: return "Needs your attention"
         }
     }
@@ -309,20 +313,21 @@ struct ShareRootView: View {
 
     private var footer: some View {
         Button {
-            model.send()
+            if model.queuedReceipt != nil { model.onComplete?() }
+            else { model.send() }
         } label: {
             HStack(spacing: 8) {
                 if model.phase == .sending { ProgressView().tint(.white) }
-                Text(model.phase == .sending ? "Sending…" : "Send")
+                Text(model.queuedReceipt != nil ? "Done" : model.phase == .sending ? "Sending…" : "Send")
                     .fontWeight(.semibold)
-                if model.phase != .sending { Image(systemName: "arrow.up") }
+                if model.phase != .sending && model.queuedReceipt == nil { Image(systemName: "arrow.up") }
             }
             .frame(maxWidth: .infinity)
             .padding(.vertical, 13)
         }
         .buttonStyle(.borderedProminent)
         .buttonBorderShape(.roundedRectangle(radius: 14))
-        .disabled(!model.canSend)
+        .disabled(!model.canSend && model.queuedReceipt == nil)
         .padding(16)
         .background(Color(uiColor: .secondarySystemGroupedBackground))
     }
