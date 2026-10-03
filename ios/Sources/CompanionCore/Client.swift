@@ -2000,11 +2000,33 @@ public struct CompanionClient: Sendable {
     static let streaming: URLSession = {
         let configuration = URLSessionConfiguration.default
         configuration.timeoutIntervalForRequest = 90
-        configuration.waitsForConnectivity = true
+        // Fail, don't wait. A waiting task suspends the request timeout and
+        // throws nothing for up to a week, so an app with cellular data off,
+        // or a path the system holds closed, sat on "Connecting…" forever on
+        // 5G with no banner and no route change (MOCA-82). Failing lets the
+        // session's own backoff retry, name the cause, and try another route.
+        configuration.waitsForConnectivity = false
         // no caching for an event stream — it would only ever be wrong
         configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
         return URLSession(configuration: configuration)
     }()
+
+    /// A quick answer from this route before the event stream is opened on
+    /// it, for a phone with more than one route to try. The stream's own
+    /// 90-second timeout also covers connecting, so a home-network address
+    /// dialled from 5G took a minute and a half to give up; this gives up in
+    /// seconds. Throws only what is about the route — no answer, or a gateway
+    /// saying the tunnel is down — so the caller can move on; any other
+    /// answer means the route works and the stream should be tried.
+    public func probeRoute(timeout: TimeInterval = 10, session probeSession: URLSession? = nil) async throws {
+        var request = try makeRequest("GET", "/api/health")
+        request.timeoutInterval = timeout
+        let (_, response) = try await (probeSession ?? session).data(for: request)
+        if let http = response as? HTTPURLResponse {
+            let failure = APIError.status(code: http.statusCode, message: nil)
+            if ConnectionAdvice.shouldTryAnotherRoute(after: failure) { throw failure }
+        }
+    }
 
     /// The event stream, resuming from `cursor` when there is one.
     ///

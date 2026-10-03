@@ -97,6 +97,18 @@ public struct CandidateRotation: Equatable, Sendable {
     }
 }
 
+/// An event stream that answered 200 and then ended before its `hello`.
+///
+/// A live stream that later closes is the computer going away, and reopens
+/// on the same route. One that never said hello never connected at all — a
+/// captive page, a proxy, an origin that hangs up — and redialling it forever
+/// strands the phone even when another allowed route reaches the computer.
+/// Port of Android's `MissingStreamHelloException` (#1536).
+public struct StreamClosedBeforeHello: Error, LocalizedError, Equatable, Sendable {
+    public init() {}
+    public var errorDescription: String? { "Lost the connection." }
+}
+
 /// What to do with a connection failure: whether another stored address is
 /// worth trying, and what to tell the person watching the banner.
 public enum ConnectionAdvice {
@@ -127,6 +139,7 @@ public enum ConnectionAdvice {
     /// family Cloudflare can return when a tunnel or its origin is unhealthy.
     /// Application errors such as 400/401/500 deliberately stay put.
     public static func shouldTryAnotherRoute(after error: Error) -> Bool {
+        if error is StreamClosedBeforeHello { return true }
         if let urlError = error as? URLError {
             return shouldTryAnotherHost(urlError.code)
         }
@@ -191,6 +204,41 @@ public enum ConnectionAdvice {
             advice = "Could not reach \(host): \(URLError(code).localizedDescription)"
         }
         let fallback = next.map { " Trying \($0) next." } ?? ""
+        return advice + fallback + " The app keeps retrying automatically."
+    }
+
+    /// As above, from the whole error: an app whose cellular data is turned
+    /// off in Settings fails as "not connected" only off Wi-Fi, which reads
+    /// as "works on Wi-Fi, never on 5G" unless the banner names the switch.
+    public static func message(
+        for error: URLError,
+        host: String,
+        port: Int,
+        tryingNext next: String? = nil
+    ) -> String {
+        if error.code == .notConnectedToInternet, error.networkUnavailableReason == .cellular {
+            return "Cellular data is off for MausBot. Turn it on in Settings → MausBot → Cellular Data, or join Wi-Fi."
+        }
+        return message(for: error.code, host: host, port: port, tryingNext: next)
+    }
+
+    /// A stream the route answered and then refused or dropped — a firewall
+    /// or bot challenge in front of the tunnel, a captive portal, a proxy.
+    /// Named for the route, because the computer itself never saw it.
+    public static func message(
+        forStreamFailure error: Error,
+        host: String,
+        tryingNext next: String? = nil
+    ) -> String? {
+        let fallback = next.map { " Trying \($0) next." } ?? ""
+        let advice: String
+        if error is StreamClosedBeforeHello {
+            advice = "\(host) answered but closed the connection before it started."
+        } else if let apiError = error as? APIError, case let .status(code, _) = apiError, code != 401 {
+            advice = "The route through \(host) refused the live connection (HTTP \(code))."
+        } else {
+            return nil
+        }
         return advice + fallback + " The app keeps retrying automatically."
     }
 
