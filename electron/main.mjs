@@ -2630,7 +2630,6 @@ ipcMain.handle("perm:open-settings", localOnly("perm:open-settings", (_event, pa
 }));
 
 ipcMain.handle("desktop:relaunch", localOnly("desktop:relaunch", (event) => {
-  if (process.platform !== "darwin") return false;
   requireMainWindowSender(event);
   relaunchAfterDesktopRemoteChange();
   return true;
@@ -2704,12 +2703,15 @@ function publicDesktopRemoteState() {
 
 function requireMainWindowSender(event) {
   const sender = BrowserWindow.fromWebContents(event.sender);
-  if (!sender || sender !== mainWindow || sender.isDestroyed()) {
+  if (!sender || sender !== mainWindow || sender.isDestroyed() ||
+      !event.senderFrame || event.senderFrame !== event.sender.mainFrame) {
     throw new Error("The desktop client window is unavailable");
   }
 }
 
 function relaunchAfterDesktopRemoteChange() {
+  if (desktopShutdownStarted) return;
+  desktopShutdownStarted = true;
   const timer = setTimeout(() => {
     // Electron's default uses its original native argv, not the JS array
     // from which we consumed the one-shot organisation action.
