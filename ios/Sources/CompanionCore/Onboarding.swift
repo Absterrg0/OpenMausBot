@@ -55,6 +55,9 @@ public enum CompanionPairingInviteEvent: Equatable, Sendable {
     case consumed
     case pairingSucceeded
     case signedOut
+    /// "Pair again" on the revoked screen has signed the dead pairing out.
+    /// `held` is the invite that was waiting when the button was tapped.
+    case pairAgain(held: PairingInvite?)
 }
 
 /// Pure invite lifecycle shared by Session and sequence tests. A paired phone
@@ -70,6 +73,12 @@ public enum CompanionPairingInvitePolicy {
             return invite
         case .consumed, .pairingSucceeded, .signedOut:
             return nil
+        case .pairAgain(let held):
+            // The router keeps an invite that reaches a revoked phone behind
+            // the recovery screen; it is held there, not refused. It is what
+            // the person came back with, so it outlives the sign-out that
+            // "Pair again" starts with, instead of leaving an empty form.
+            return held
         }
     }
 }

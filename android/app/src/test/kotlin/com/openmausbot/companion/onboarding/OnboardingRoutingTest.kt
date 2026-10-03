@@ -425,4 +425,54 @@ class OnboardingRoutingTest {
         compose.onNodeWithText("This phone was unpaired").assertIsDisplayed()
         assertTrue(scene.asked().isEmpty())
     }
+
+    /**
+     * The recovery the case above waits for (MOCA-248). "Pair again" signed
+     * out, and signing out empties the invite queue, so the form opened empty
+     * and the link the person came back with was gone.
+     */
+    @Test
+    fun `Pair again opens the link that arrived on the revoked screen`() {
+        val scene = OnboardingScene(
+            savedConnection = OnboardingScene.MAC,
+            savedToken = "device-token",
+            welcomeSeen = true,
+            revoked = true,
+        )
+        mount(scene)
+        scene.session.connect()
+        compose.waitUntil(5_000) {
+            scene.session.status.value is Session.Status.Unauthorized
+        }
+        scene.session.receivePairingURL(
+            "openmausbot://pair?address=127.0.0.1:8810&code=123456",
+        )
+        compose.waitForIdle()
+        compose.onNodeWithText("This phone was unpaired").assertIsDisplayed()
+
+        compose.onNodeWithText("Pair again").performClick()
+        compose.waitUntil(5_000) { scene.session.connection.value == null }
+        compose.waitForIdle()
+
+        compose.onNodeWithText("Pair with this computer").assertIsDisplayed()
+    }
+
+    /**
+     * A pair link that does not read used to raise "Something went wrong" over
+     * whatever screen the phone was on (MOCA-248). It belongs on the pairing
+     * form, beside the way to get a good one.
+     */
+    @Test
+    fun `a pairing link that does not read says so on the pairing form, not in a dialog`() {
+        val scene = OnboardingScene(welcomeSeen = true)
+        mount(scene)
+        compose.onNodeWithText(OnboardingCopy.UNPAIRED_HOME_TITLE).assertIsDisplayed()
+
+        scene.session.receivePairingURL("openmausbot://pair?address=127.0.0.1:8810")
+        compose.waitForIdle()
+
+        compose.onNodeWithText("Pair with a computer").assertIsDisplayed()
+        compose.onNodeWithText(Session.INVALID_PAIRING_LINK_MESSAGE).assertExists()
+        compose.onNodeWithText("Something went wrong").assertDoesNotExist()
+    }
 }

@@ -64,12 +64,14 @@ struct PairingView: View {
             }
             .onAppear {
                 accept(session.pairingInvite)
+                showLinkError(session.pairingLinkError)
             }
             .onDisappear {
                 choiceGeneration += 1
                 discovery.stop()
             }
             .onValueChange(of: session.pairingInvite) { invite in accept(invite) }
+            .onValueChange(of: session.pairingLinkError) { message in showLinkError(message) }
             .onValueChange(of: showingOtherWays) { isShowing in
                 if isShowing {
                     discovery.start()
@@ -475,6 +477,14 @@ struct PairingView: View {
         code = ""
         failure = nil
         session.consumePairingInvite()
+    }
+
+    /// A pairing link that could not be read opened this screen; say so here,
+    /// next to the button that fixes it.
+    private func showLinkError(_ message: String?) {
+        guard let message else { return }
+        failure = message
+        session.consumePairingLinkError()
     }
 
     private func connectionIsProtected(_ connection: Connection) -> Bool {

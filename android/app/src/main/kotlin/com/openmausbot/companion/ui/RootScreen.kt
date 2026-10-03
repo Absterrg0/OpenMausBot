@@ -286,7 +286,7 @@ fun CompanionRoot(
 
                         OnboardingRoute.REVOKED -> UnpairedScreen(
                             onPairAgain = {
-                                session.signOut()
+                                session.pairAgain()
                                 startPairing()
                             },
                             onChooseAnother = connections.firstOrNull { it.id != connection?.id }

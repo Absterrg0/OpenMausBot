@@ -133,7 +133,7 @@ struct RootView: View {
             case .revoked:
                 UnpairedView(
                     onPairAgain: {
-                        session.signOut()
+                        session.pairAgain()
                         startPairing()
                     },
                     onChooseAnother: session.connections.first(where: {

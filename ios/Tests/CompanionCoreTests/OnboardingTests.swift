@@ -250,6 +250,46 @@ final class OnboardingTests: XCTestCase {
         XCTAssertNil(pending)
     }
 
+    /// MOCA-248: a pairing link opened on the "This device was unpaired"
+    /// screen waits behind it, and "Pair again" used to sign out and drop it,
+    /// leaving an empty pairing form. Session plays this exact sequence.
+    func testAnInviteHeldBehindRecoverySurvivesPairAgain() {
+        let invite = PairingInvite(
+            connection: Connection(name: "Mac", host: "mac.local", port: 8810),
+            credential: "omb_pair_" + String(repeating: "a", count: 43)
+        )
+        let held = CompanionPairingInvitePolicy.nextInvite(current: nil, after: .received(invite))
+        XCTAssertEqual(
+            CompanionOnboardingRouter.route(for: .init(
+                pairingState: .revoked,
+                hasSeenWelcome: true,
+                pairingRequested: true,
+                hasPendingPairingInvite: held != nil
+            )),
+            .revoked,
+            "recovery still comes first"
+        )
+
+        // Pair again: the sign-out empties the queue as it always does...
+        var pending = CompanionPairingInvitePolicy.nextInvite(current: held, after: .signedOut)
+        XCTAssertNil(pending)
+        // ...and the invite that was waiting is put back.
+        pending = CompanionPairingInvitePolicy.nextInvite(current: pending, after: .pairAgain(held: held))
+        XCTAssertEqual(pending, invite)
+        XCTAssertEqual(
+            CompanionOnboardingRouter.route(for: .init(
+                pairingState: .unpaired,
+                hasSeenWelcome: true,
+                pairingRequested: true,
+                hasPendingPairingInvite: pending != nil
+            )),
+            .pairing
+        )
+
+        // Nothing was waiting: Pair again opens the empty form, as before.
+        XCTAssertNil(CompanionPairingInvitePolicy.nextInvite(current: nil, after: .pairAgain(held: nil)))
+    }
+
     func testRevokedPairingAlwaysShowsRecovery() {
         XCTAssertEqual(
             CompanionOnboardingRouter.route(for: .init(

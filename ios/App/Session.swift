@@ -74,6 +74,10 @@ final class Session: ObservableObject {
     @Published private(set) var steeringInstanceIds: Set<String> = []
     /// A short-lived desktop handoff waiting for PairingView to present it.
     @Published private(set) var pairingInvite: PairingInvite?
+    /// Why the last pairing link could not be used. PairingView shows it
+    /// inline, beside "Scan QR code", and takes it — never a modal over
+    /// whatever screen the phone happened to be on.
+    @Published private(set) var pairingLinkError: String?
     /// Pairing can be opened while another computer remains connected. The
     /// working session is only replaced after the new credential commits.
     @Published private(set) var pairingRequested = false
@@ -610,7 +614,10 @@ final class Session: ObservableObject {
 
     func receiveURL(_ url: URL) {
         guard let link = CompanionDeepLink.parse(url) else {
-            actionError = "That pairing invitation is not valid. Start pairing again on your computer."
+            // A link this app does not know — the desktop's own
+            // openmausbot://thread/… or openmausbot://cloud among them. Not
+            // the person's mistake, and not a pairing, so nothing to say.
+            log.notice("ignored link \(url.scheme ?? "", privacy: .public)://\(url.host ?? "", privacy: .public)")
             return
         }
         switch link {
@@ -619,10 +626,18 @@ final class Session: ObservableObject {
                 current: pairingInvite,
                 after: .received(invite)
             )
+            pairingLinkError = nil
+            pairingRequested = true
+        case .invalidPairing:
+            pairingLinkError = "That pairing invitation is not valid. Start pairing again on your computer."
             pairingRequested = true
         case let .chat(threadId):
             openChat(threadId: threadId)
         }
+    }
+
+    func consumePairingLinkError() {
+        pairingLinkError = nil
     }
 
     /// A deep link that names a chat. An id this phone does not know — a
@@ -643,6 +658,7 @@ final class Session: ObservableObject {
 
     func endPairing() {
         pairingRequested = false
+        pairingLinkError = nil
         consumePairingInvite()
     }
 
@@ -724,6 +740,20 @@ final class Session: ObservableObject {
             return
         }
         forgetConnection(id: id)
+    }
+
+    /// "Pair again" on the revoked screen: sign the refused computer out and
+    /// open pairing. A link opened while that screen was up waited behind it
+    /// (the router puts recovery first); signing out on its own would drop
+    /// it and leave an empty form, so it is carried across.
+    func pairAgain() {
+        let held = pairingInvite
+        signOut()
+        pairingInvite = CompanionPairingInvitePolicy.nextInvite(
+            current: pairingInvite,
+            after: .pairAgain(held: held)
+        )
+        beginPairing()
     }
 
     private func clearActiveConnection() {

@@ -410,6 +410,20 @@ data class PairingInvite(val connection: Connection, val credential: String) {
 
         fun parse(url: String): PairingInvite? = runCatching { URI(url) }.getOrNull()?.let(::parse)
 
+        /**
+         * Whether [url] is meant as a pairing link — `openmausbot://pair…` —
+         * whether or not the rest of it reads. Decided on the text rather than a
+         * parsed [URI]: a link a chat app mangled may not parse at all, and it is
+         * still someone trying to pair, which a link this app does not know is
+         * not.
+         */
+        fun isPairLink(url: String): Boolean {
+            val text = url.trim()
+            val prefix = "openmausbot://pair"
+            if (!text.startsWith(prefix, ignoreCase = true)) return false
+            return text.length == prefix.length || text[prefix.length] in "?#/"
+        }
+
         /** The server's twelve-symbol code is distinct from companion codes and QR tokens. */
         fun normalizedServerCode(raw: String): String? = raw.uppercase(java.util.Locale.ROOT)
             .filter { it in 'A'..'Z' || it in '0'..'9' }

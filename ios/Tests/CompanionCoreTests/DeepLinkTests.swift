@@ -43,12 +43,43 @@ final class DeepLinkTests: XCTestCase {
             URL(string: "openmausbot://chat/a/b"), // more than the id
             URL(string: "openmausbot://chat/abc%2Fdef"), // an id smuggling a path separator
             URL(string: "openmausbot://other/t-1"), // a host we never emit
-            URL(string: "openmausbot://pair"), // a pair link with nothing in it
             URL(string: "https://example.com/about"), // a web page, not a link
             URL(string: "mausbot://chat/t-1"), // wrong scheme
         ].compactMap { $0 }
         for url in junk {
             XCTAssertNil(CompanionDeepLink.parse(url), url.absoluteString)
+        }
+    }
+
+    /// MOCA-248: links the desktop emits for itself — a thread reference out
+    /// of chat markdown, Cloud's "Open in the app" — used to raise "That
+    /// pairing invitation is not valid". They are not this app's to open.
+    func testTheDesktopsOwnLinksAreIgnoredNotRefused() throws {
+        let desktop = [
+            URL(string: "openmausbot://thread/t-9f2c?bot=b-1"),
+            URL(string: "openmausbot://cloud"),
+            URL(string: "openmausbot://organization"),
+            URL(string: "openmausbot://install?url=https://github.com/x/y"),
+        ].compactMap { $0 }
+        XCTAssertEqual(desktop.count, 4)
+        for url in desktop {
+            XCTAssertNil(CompanionDeepLink.parse(url), url.absoluteString)
+        }
+    }
+
+    /// A pair link that does not parse is still someone trying to pair, so it
+    /// is told apart from a link the app does not know.
+    func testAPairLinkThatDoesNotParseIsAnInvalidPairing() throws {
+        let broken = [
+            URL(string: "openmausbot://pair"), // nothing in it
+            URL(string: "openmausbot://pair?address=macbook.local%3A8810"), // no credential
+            URL(string: "openmausbot://pair?address=macbook.local%3A8810&token=omb_pair_short"), // a truncated token
+            URL(string: "openmausbot://pair?token=omb_pair_" + String(repeating: "a", count: 43)), // no address
+            URL(string: "OPENMAUSBOT://PAIR?code=12"), // any case
+        ].compactMap { $0 }
+        XCTAssertEqual(broken.count, 5)
+        for url in broken {
+            XCTAssertEqual(CompanionDeepLink.parse(url), .invalidPairing, url.absoluteString)
         }
     }
 }

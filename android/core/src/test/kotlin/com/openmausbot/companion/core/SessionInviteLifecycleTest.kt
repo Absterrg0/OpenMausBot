@@ -11,9 +11,12 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.async
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.emptyFlow
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceUntilIdle
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.yield
 
@@ -291,11 +294,154 @@ class SessionInviteLifecycleTest {
         )
     }
 
+    // MOCA-248: "stuck in this alert". Three ways a pairing link used to end in
+    // a modal over the wrong screen, or in an empty pairing form.
+
+    /** What the root would put on screen for this session right now. */
+    private fun Session.route(): OnboardingRoute = OnboardingRouter.route(
+        OnboardingContext(
+            pairingState = when {
+                status.value is Session.Status.Unauthorized -> OnboardingPairingState.REVOKED
+                connection.value != null -> OnboardingPairingState.PAIRED
+                else -> OnboardingPairingState.UNPAIRED
+            },
+            hasSeenWelcome = true,
+            pairingRequested = pairingRequested.value,
+            hasPendingPairingInvite = pairingInvite.value != null,
+        ),
+    )
+
+    @Test
+    fun aSpentQrLinkReopenedOpensThePairingFormInsteadOfADialogElsewhere() = runTest {
+        val session = session(
+            pairOutcomeFn = { _, _, _, _ -> throw APIError.Status(410, "pairing expired") },
+        )
+        session.awaitRestored()
+        session.receivePairingURL(link(first, "192.168.1.2"))
+        val invite = assertNotNull(session.pairingInvite.value)
+        session.consumePairingInvite()
+
+        // An authoritative refusal, not a route failure: the QR is spent.
+        assertTrue(runCatching { session.pair(invite, "request-1") }.isFailure)
+        // The form showed that failure, and the person left it.
+        session.actionError = null
+        session.endPairing()
+        assertEquals(OnboardingRoute.UNPAIRED_HOME, session.route())
+
+        session.receivePairingURL(link(first, "192.168.1.2"))
+
+        assertTrue(
+            session.pairingRequested.value,
+            "the spent link raised its error away from the pairing form",
+        )
+        assertEquals(OnboardingRoute.PAIRING, session.route())
+        assertNull(session.pairingInvite.value, "a spent credential was offered again")
+        assertEquals(Session.SPENT_QR_MESSAGE, session.actionError)
+    }
+
+    @Test
+    fun aPairLinkThatDoesNotReadOpensThePairingFormAndSaysSoThere() = runTest {
+        val broken = listOf(
+            "openmausbot://pair",
+            "openmausbot://pair?address=192.168.1.2:8810", // no credential
+            "openmausbot://pair?address=192.168.1.2:8810&token=omb_pair_short", // truncated
+            "openmausbot://pair?address=192.168.1.2:8810&token=omb pair", // not even a URI
+            "OPENMAUSBOT://PAIR?code=12",
+        )
+        for (url in broken) {
+            val session = session()
+            session.awaitRestored()
+
+            session.receivePairingURL(url)
+
+            assertTrue(session.pairingRequested.value, "$url did not open the pairing form")
+            assertEquals(Session.INVALID_PAIRING_LINK_MESSAGE, session.actionError, url)
+            assertNull(session.pairingInvite.value, url)
+        }
+    }
+
+    @Test
+    fun aLinkThisAppDoesNotKnowChangesNothing() = runTest {
+        // The desktop's own links among them: a thread reference out of chat
+        // markdown, Cloud's "Open in the app".
+        val unknown = listOf(
+            "openmausbot://thread/t-9f2c?bot=b-1",
+            "openmausbot://cloud",
+            "openmausbot://pairing",
+            "https://example.com/about",
+        )
+        for (url in unknown) {
+            val session = session()
+            session.awaitRestored()
+
+            session.receivePairingURL(url)
+
+            assertFalse(session.pairingRequested.value, url)
+            assertNull(session.actionError, "$url raised an error")
+            assertNull(session.pairingInvite.value, url)
+        }
+    }
+
+    /** A phone whose only computer revoked it, with a pairing link opened since. */
+    private suspend fun TestScope.anInviteHeldBehindTheRevokedScreen(): Pair<Session, PairingInvite> {
+        val mac = Connection(id = "c1", name = "Mac", host = "127.0.0.1", port = 8810)
+        val tokens = RecordingTokenStore().apply { save(mac.id, "revoked-token") }
+        val session = session(
+            connectionStore = RecordingConnectionStore().apply { saved = mac },
+            tokenStore = tokens,
+            events = { flow { throw APIError.Status(401, "revoked") } },
+        )
+        session.awaitRestored()
+        session.connect()
+        // The stream lives in `backgroundScope`, which `advanceUntilIdle` does
+        // not wait for; `runCurrent` runs it to its refusal.
+        runCurrent()
+        assertEquals(Session.Status.Unauthorized, session.status.value)
+
+        session.receivePairingURL(link(first, "192.168.1.2"))
+        val invite = assertNotNull(session.pairingInvite.value)
+        // The router rule stands: recovery first, the invite waits behind it.
+        assertEquals(OnboardingRoute.REVOKED, session.route())
+        return session to invite
+    }
+
+    @Test
+    fun anInviteReceivedWhileRevokedSurvivesPairAgain() = runTest {
+        val (session, invite) = anInviteHeldBehindTheRevokedScreen()
+
+        session.pairAgainAndAwait()
+        session.beginPairing()
+
+        assertNull(session.connection.value)
+        assertEquals(
+            invite,
+            session.pairingInvite.value,
+            "Pair again dropped the link the person came back with",
+        )
+        assertTrue(session.pairingRequested.value)
+        assertEquals(OnboardingRoute.PAIRING, session.route())
+    }
+
+    @Test
+    fun theFireAndForgetPairAgainKeepsTheHeldInviteToo() = runTest {
+        val (session, invite) = anInviteHeldBehindTheRevokedScreen()
+
+        // What the revoked screen's button does.
+        session.pairAgain()
+        session.beginPairing()
+        runCurrent()
+
+        assertNull(session.connection.value)
+        assertEquals(invite, session.pairingInvite.value)
+        assertTrue(session.pairingRequested.value)
+    }
+
     private fun TestScope.session(
         connectionStore: ConnectionStore = RecordingConnectionStore(),
         tokenStore: TokenStore = RecordingTokenStore(),
         pairOutcomeFn: suspend (Connection, String, String, String) -> PairingOutcome =
             { _, _, _, _ -> error("pair not expected") },
+        events: () -> Flow<StreamFrame> = { emptyFlow() },
     ): Session = Session(
         scope = backgroundScope,
         connectionStore = connectionStore,
@@ -304,7 +450,7 @@ class SessionInviteLifecycleTest {
         deviceNameProvider = { "Pixel" },
         clientFactory = { connection, token -> CompanionClient(connection, token) },
         pairFn = pairOutcomeFn,
-        eventsFn = { _, _, _ -> emptyFlow() },
+        eventsFn = { _, _, _ -> events() },
         hydrateFn = { _, _ -> Fleet(emptyList(), emptyList()) },
         metadataFn = { throw APIError.Status(404) },
     )

@@ -8,16 +8,29 @@ import Foundation
 
 public enum CompanionDeepLink: Equatable, Sendable {
     case pairing(PairingInvite)
+    /// An openmausbot://pair link that did not parse: a QR code read halfway,
+    /// a link a chat app mangled. Unlike a link this app does not know, the
+    /// person meant to pair, so the app opens pairing and says so there.
+    case invalidPairing
     case chat(threadId: String)
 
     /// Parses one openmausbot:// URL, or a server pair link. Anything the
     /// app does not recognize returns nil and is ignored rather than
     /// surfaced as an error: the person holding the phone did not type it.
+    /// The desktop's own links (openmausbot://thread/…, openmausbot://cloud)
+    /// are among those — they name things on the computer, not in this app.
     public static func parse(_ url: URL) -> CompanionDeepLink? {
         if let invite = PairingInvite.parse(url) { return .pairing(invite) }
-        guard url.scheme?.lowercased() == "openmausbot",
-              url.host?.lowercased() == "chat",
-              let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
+        guard url.scheme?.lowercased() == "openmausbot" else { return nil }
+        switch url.host?.lowercased() {
+        case "pair": return .invalidPairing
+        case "chat": return chat(url)
+        default: return nil
+        }
+    }
+
+    private static func chat(_ url: URL) -> CompanionDeepLink? {
+        guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
               components.path.count > 1
         else { return nil }
         // The path is exactly one segment: the thread id, percent-decoded.
@@ -31,4 +44,3 @@ public enum CompanionDeepLink: Equatable, Sendable {
         return .chat(threadId: threadId)
     }
 }
-

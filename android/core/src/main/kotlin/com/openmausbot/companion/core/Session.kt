@@ -380,12 +380,17 @@ class Session(
         synchronized(inviteLock) {
             val invite = PairingInvite.parse(url)
             if (invite == null) {
-                _actionError.value =
-                    "That pairing invitation is not valid. Start pairing again on your computer."
+                // A link this app does not know is neither a pairing nor the
+                // person's mistake, so it is dropped without a word. A pair link
+                // that does not read is someone trying to pair.
+                if (PairingInvite.isPairLink(url)) refusePairingLink(INVALID_PAIRING_LINK_MESSAGE)
                 return
             }
             if (isQrCredential(invite.credential) && invite.credential in spentQrCredentials) {
-                _actionError.value = SPENT_QR_MESSAGE
+                // Still refused. Reopening the same link used to raise the same
+                // dialog over whatever screen the phone was on, every time,
+                // until the process died; now it lands beside "Scan QR code".
+                refusePairingLink(SPENT_QR_MESSAGE)
                 return
             }
             // An attempt already in flight owns the screen and the credential
@@ -400,6 +405,18 @@ class Session(
             _pairingInvite.value = invite
             _pairingRequested.value = true
         }
+    }
+
+    /**
+     * Refuse a pairing link on the pairing form, where the way forward is,
+     * rather than in a modal over whatever screen the phone was on.
+     * `PairingScreen` shows [actionError] inline and the root keeps its dialog
+     * off that route. The request goes first so the route has moved by the
+     * time the message lands.
+     */
+    private fun refusePairingLink(message: String) {
+        _pairingRequested.value = true
+        _actionError.value = message
     }
 
     /**
@@ -476,6 +493,45 @@ class Session(
         connect()
     }
 
+    /**
+     * "Pair again" on the revoked screen: unpair the computer that refused this
+     * phone and open pairing.
+     *
+     * A link opened while that screen was up waited behind it — recovery
+     * outranks everything in [OnboardingRouter] — and it is what the person came
+     * back with. [signOut] empties it with the rest of the queue, which left an
+     * empty form, so it is lifted out and put back inside the same [gate]
+     * section: no attempt can release or burn an invite in between.
+     */
+    fun pairAgain() {
+        attachmentSendIds.clear()
+        streamJob?.cancel()
+        streamJob = null
+        scope.launch {
+            gate.withLock { pairAgainLocked() }
+            connect()
+        }
+    }
+
+    /** Suspending [pairAgain] for tests / callers that need completion. */
+    suspend fun pairAgainAndAwait() {
+        streamJob?.cancel()
+        streamJob = null
+        gate.withLock { pairAgainLocked() }
+        connect()
+    }
+
+    private suspend fun pairAgainLocked() {
+        val held = synchronized(inviteLock) { _pairingInvite.value }
+        unpairLocked()
+        synchronized(inviteLock) {
+            if (held != null && !(isQrCredential(held.credential) && held.credential in spentQrCredentials)) {
+                _pairingInvite.value = held
+            }
+            _pairingRequested.value = true
+        }
+    }
+
     /** Remove only the selected computer. Other saved computers remain usable. */
     private suspend fun unpairLocked() {
         val id = _connection.value?.id ?: registry.activeConnectionId
@@ -497,7 +553,7 @@ class Session(
         emptyInviteQueue()
         // Two branches, matching iOS signOut:
         // - Had a computer (id != null): forgetConnection — leave pairingRequested
-        //   alone. Pair again does signOut() then beginPairing(); a late clear
+        //   alone. Pair again does pairAgain() then beginPairing(); a late clear
         //   here would overwrite the new true after the first suspension above.
         // - Nothing to forget (id == null): clearActiveConnection — zero the flag.
         if (id == null) {
@@ -2341,6 +2397,8 @@ class Session(
             "This phone couldn't read its saved connection just now."
         const val SPENT_QR_MESSAGE =
             "That pairing code was already used. Start pairing again on your computer and rescan the new QR code."
+        const val INVALID_PAIRING_LINK_MESSAGE =
+            "That pairing invitation is not valid. Start pairing again on your computer."
         const val THREAD_GONE_MESSAGE = "That thread is no longer on your computer."
         const val OFFLINE_MESSAGE = "This computer is offline."
 
