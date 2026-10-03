@@ -166,6 +166,24 @@ describe("thread control placement", () => {
     expect(markup).toContain("https://chatgpt.com/settings/usage");
     expect(markup).not.toContain(">Retry<");
   });
+  it("opens a signed-out engine's failed turn with one sentence and the sign-in, the CLI's words under Details", () => {
+    const claude = {
+      instanceId: "claude", driverKind: "claudeAgent", displayName: "Claude",
+      snapshot: { state: "available", authenticated: false },
+      install: { command: { darwin: "x", linux: "x", win32: "x" }, signInCommand: "claude /login", server: { package: "@anthropic-ai/claude-code" } },
+      authentication: { method: "paste-code" },
+      models: { default: "sonnet", options: [] },
+    } as InstanceInfo;
+    const markup = renderToStaticMarkup(createElement(ErrorRow, { message: "Not logged in · Please run /login", onRetry: () => {}, setupInstance: claude }));
+    expect(markup).toContain(">Claude isn&#x27;t signed in yet. Sign in below, then send your message again.</span>");
+    expect(markup).toContain("Sign in to Claude</button>");
+    expect(markup).toMatch(/<summary[^>]*>Details<\/summary><p[^>]*>Not logged in · Please run \/login<\/p>/);
+    expect(markup).not.toContain(">Retry<");
+    // an update offer is not a sign-in: the row keeps the engine's words
+    const update = renderToStaticMarkup(createElement(ErrorRow, { message: "Claude Code 2.1.268 does not support this model", setupInstance: claude, claudeUpdateInstance: claude }));
+    expect(update).toContain(">Claude Code 2.1.268 does not support this model</span>");
+    expect(update).not.toContain("signed in");
+  });
   it("offers to update Claude Code for a too-old install, or hands over the command", () => {
     const claude = { instanceId: "claude", driverKind: "claudeAgent", displayName: "Claude", snapshot: { state: "available", authenticated: true } } as InstanceInfo;
     const markup = renderToStaticMarkup(createElement(ErrorRow, {

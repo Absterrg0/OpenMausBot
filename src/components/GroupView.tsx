@@ -30,6 +30,8 @@ import { StatusActivityRow } from "@/components/StatusActivityRow";
 import { normalizeState } from "@/lib/mascot";
 import { defaultResponderName, effectiveDefaultResponder, groupResponseHint, jevRoomRoutingOn } from "@/lib/group-routing";
 import { ChatMarkdown } from "./ChatMarkdown";
+import { FailedTurnRow } from "./ChatView";
+import { botEngine, failedTurnCause } from "@/lib/failed-turn";
 import { CitationSelectionToolbar, SentCitations } from "./CitationUI";
 import { Composer } from "./Composer";
 import { ChatFindBar } from "./ChatFindBar";
@@ -84,12 +86,17 @@ function dayLabel(at: number): string {
  * as it would in a 1:1 — a receipt the person cannot follow is only half a
  * receipt. When the linked channel IS this room (an ask made from here is
  * mirrored back into it) there is nowhere to go, so it stays a plain,
- * visible pill. */
+ * visible pill. A member's failed turn is not a step at all: it is the row a
+ * 1:1 chat shows for the same failure, sign-in card and all, for the engine
+ * that member ran on. */
 export function RoomToolChip({ message, roomId }: { message: Message; roomId?: string }) {
   const { state, dispatch } = useStore();
   const tool = message.tool;
   if (!tool) return null;
   if (message.threadRef) return <ThreadChip message={message} />;
+  if (failedTurnCause(tool.name) !== null) {
+    return <FailedTurnRow tool={tool} engine={botEngine(state.bots.find((b) => b.id === message.from?.botId), state.instances)} />;
+  }
   const comm = message.comm;
   if (comm && comm.groupId !== roomId) {
     const withBot = state.bots.find((b) => b.id === comm.withBotId);

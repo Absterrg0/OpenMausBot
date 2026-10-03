@@ -31,6 +31,15 @@ export function needsSignIn(instance: InstanceInfo | undefined): boolean {
   return instance?.snapshot.state === "available" && instance.snapshot.authenticated === false;
 }
 
+/** The card EngineSetup shows for this engine is its sign-in — not an API
+ * key row, an install, or a note that it cannot be set up here. A caller
+ * that words a line around that card (a failed turn's headline) asks this,
+ * so the line and the card never disagree. */
+export function offersSignIn(instance: InstanceInfo | undefined): boolean {
+  return Boolean(instance && needsSignIn(instance) && instance.install
+    && !instance.snapshot.authenticationUnavailableReason && !apiKeySetup(instance));
+}
+
 /** The engine needs setup; unavailable does not prove its CLI is absent.
  * Local-model injection still requires an available engine, but no cloud sign-in. */
 export function needsCli(instance: InstanceInfo | undefined): boolean {
@@ -393,6 +402,12 @@ export function isApiKeyEngine(instance: InstanceInfo | undefined): boolean {
   return instance.driverKind !== "claudeAgent" || Boolean(instance.snapshot.version);
 }
 
+/** Its setup is a key in Settings → API keys, and that is not done yet. */
+function apiKeySetup(instance: InstanceInfo): boolean {
+  return (isApiKeyEngine(instance) || instance.install?.settings === "connections") && !instance.snapshot.authenticationUnavailableReason
+    && (instance.snapshot.state !== "available" || instance.snapshot.authenticated === false);
+}
+
 function ApiKeyEngineSetup({ instance, className, unframed }: { instance: InstanceInfo; className?: string; unframed: boolean }) {
   const { dispatch } = useStore();
   const remote = window.ogb?.remoteClient?.active === true;
@@ -471,8 +486,7 @@ export function EngineSetup({
         ? t("engineSetup.installDescSignIn")
         : t("engineSetup.installDesc"));
 
-  if ((isApiKeyEngine(instance) || install?.settings === "connections") && !instance.snapshot.authenticationUnavailableReason
-    && (instance.snapshot.state !== "available" || instance.snapshot.authenticated === false)) {
+  if (apiKeySetup(instance)) {
     return <ApiKeyEngineSetup instance={instance} className={className} unframed={unframed} />;
   }
 

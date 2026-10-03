@@ -49,6 +49,7 @@ import { openExternalLink } from "@/lib/app-links";
 import { ClaudeUpdatePrompt } from "./ClaudeUpdatePrompt";
 import { MacCuaRecoveryActions } from "./MacCuaRecoveryActions";
 import { macCuaPermissionMessage, missingMacCuaPermissions } from "@/lib/mac-cua-permissions";
+import { failedTurnCause, failedTurnHeadline } from "@/lib/failed-turn";
 import { isProviderSafetyBlock, PROVIDER_SAFETY_GUIDANCE, PROVIDER_SAFETY_HELP_URL } from "../../shared/provider-safety";
 import { BotAvatar } from "./Avatar";
 import { TurnPresence } from "./TurnPresence";
@@ -169,7 +170,9 @@ function CopyButton({ text, className }: { text: string; className?: string }) {
  * to do instead of a Retry, because retrying hits the same wall every time.
  * Once the engine reports itself fixed the card flips back to Retry, which
  * (with the on-focus re-probe) happens by itself when the user returns from
- * the terminal. */
+ * the terminal. When the headline is a plain sentence instead of the
+ * engine's words (a signed-out engine, a Mac permission), those words stay
+ * one click away under it. */
 export function ErrorRow({
   message,
   onRetry,
@@ -192,14 +195,16 @@ export function ErrorRow({
     failedPermissions.length > 0 && failedPermissions.join(",") === currentPermissions.join(",")
     ? macCuaPermissionMessage(currentPermissions)
     : null;
+  // an update offer replaces the setup card, so it is not a sign-in either
+  const headline = macCuaReason ?? failedTurnHeadline(message, claudeUpdateInstance ? undefined : setupInstance);
   return (
     <div className="flex justify-start">
       <div className="w-fit max-w-[min(42rem,78%)] rounded-xl border border-danger/30 bg-danger/10 px-3.5 py-2.5 text-[13.5px] text-danger">
         <div className="flex items-start gap-2">
           <AlertTriangle size={15} className="mt-0.5 shrink-0" />
-          <span className="min-w-0 break-words">{macCuaReason ?? message}</span>
+          <span className="min-w-0 break-words">{headline}</span>
         </div>
-        {macCuaReason && <details className="mt-2 text-[12px] text-ink-secondary"><summary className="cursor-pointer">{t("computer.mac.permission.driverDetail")}</summary><p className="mt-1 break-words">{message}</p></details>}
+        {headline !== message && <details className="mt-2 text-[12px] text-ink-secondary"><summary className="cursor-pointer">{macCuaReason ? t("computer.mac.permission.driverDetail") : t("chat.error.details")}</summary><p className="mt-1 break-words">{message}</p></details>}
         {macCuaReason &&
           <MacCuaRecoveryActions reason={message} />}
         {message.includes("subscription_sharing_usage_limit_exceeded") ? (
@@ -235,6 +240,25 @@ export function ErrorRow({
  * company-managed one is the organisation's to update. */
 export function claudeUpdateTarget(engine: InstanceInfo | undefined): InstanceInfo | undefined {
   return engine?.driverKind === "claudeAgent" && !engine.readOnly ? engine : undefined;
+}
+
+/** A failed turn's stored row ("error: …", src/lib/failed-turn.ts), shown
+ * the same in a 1:1 chat and a room: the server writes the same row for both,
+ * so both read it here. `engine` is the one the turn ran on — what its
+ * sign-in or update card acts on. */
+export function FailedTurnRow({ tool, engine, onRetry }: {
+  tool: NonNullable<Message["tool"]>;
+  engine: InstanceInfo | undefined;
+  onRetry?: () => void;
+}) {
+  return (
+    <ErrorRow
+      message={failedTurnCause(tool.name) ?? tool.name}
+      onRetry={onRetry}
+      setupInstance={tool.setup ? engine : undefined}
+      claudeUpdateInstance={tool.claudeUpdate ? claudeUpdateTarget(engine) : undefined}
+    />
+  );
 }
 
 /** One bad markdown node must not white-screen the app — the transcript
@@ -861,13 +885,12 @@ const MessagesList = memo(function MessagesList({
               // bot⇄bot comm chips and opened-thread chips stay because they
               // link to another conversation.
               // plain tool runs stay out unless Settings → Tool calls is on.
-              if (m.tool?.name.startsWith("error:")) {
+              if (m.tool && failedTurnCause(m.tool.name) !== null) {
                 return (
-                  <ErrorRow
-                    message={m.tool.name.slice(6).trim()}
+                  <FailedTurnRow
+                    tool={m.tool}
+                    engine={engine}
                     onRetry={m.id === retryableMessageId && canRetryLast ? onRegenerate : undefined}
-                    setupInstance={m.tool.setup ? engine : undefined}
-                    claudeUpdateInstance={m.tool.claudeUpdate ? claudeUpdateTarget(engine) : undefined}
                   />
                 );
               }

@@ -31,7 +31,7 @@ import {
   Users,
   X,
 } from "lucide-react";
-import { api, useStore, formatTime, visibleMessages, currentTaskBot, openThread, type AppState, type Bot, type Group } from "@/state/store";
+import { api, useStore, formatTime, visibleMessages, currentTaskBot, openThread, type AppState, type Bot, type Group, type InstanceInfo } from "@/state/store";
 import { approvalModeFor } from "../../shared/approval-mode";
 import { avatarCropRadius, botAvatarProfile } from "../../shared/bot-avatar";
 import { peerLine } from "@/lib/peer-message";
@@ -43,6 +43,7 @@ import { stateForBot } from "@/lib/mascot";
 import { cn } from "@/lib/cn";
 import { useHeldMenuMotion, useMenuMotion } from "./MenuMotion";
 import { lastNonReceipt } from "@/lib/receipts";
+import { activityPreview, botEngine } from "@/lib/failed-turn";
 import { t } from "@/lib/i18n";
 import type { LocaleKey } from "@/locales";
 import { ConfirmDialog } from "./ConfirmDialog";
@@ -142,7 +143,7 @@ function sectionLabel(id: string): string {
   return key ? t(key) : sidebarSectionLabel(id);
 }
 
-function preview(bot: Bot): string {
+function preview(bot: Bot, instances: InstanceInfo[]): string {
   if (bot.activity === "waiting-on-you") return t("sidebar.preview.waiting");
   if (bot.waitingForTeammates) return t("sidebar.preview.waitingOnTeammate");
   if (bot.busy) return t("sidebar.preview.working");
@@ -156,7 +157,8 @@ function preview(bot: Bot): string {
   if (last.kind === "options" && last.card) {
     return (last.card.requestId && last.card.tool && !last.card.questionRequest && approvalCardOutcome(last.card)) || last.card.title;
   }
-  if (last.kind === "activity" && last.tool) return last.tool.name;
+  // a failed turn reads as the chat row says it, never "error: …"
+  if (last.kind === "activity" && last.tool) return activityPreview(last.tool, botEngine(bot, instances));
   if (last.kind === "screen") return t("sidebar.preview.screenFrame");
   const peer = peerLine(last);
   if (peer) return `${peer.name}: ${peer.body}`;
@@ -175,7 +177,7 @@ function openBotContextMenu(onMenu: (menu: MenuState) => void, botId: string, ev
   onMenu({ botId, x: event.clientX, y: event.clientY });
 }
 
-function groupPreview(group: Group, bots: Bot[]): string {
+function groupPreview(group: Group, bots: Bot[], instances: InstanceInfo[]): string {
   if (group.busyBotId) {
     return t("sidebar.preview.botWorking", {
       name: bots.find((b) => b.id === group.busyBotId)?.name ?? t("sidebar.preview.aBot"),
@@ -185,7 +187,7 @@ function groupPreview(group: Group, bots: Bot[]): string {
   const last = lastNonReceipt(group.messages);
   if (!last) return t("sidebar.preview.noMessages");
   const text = last.kind === "activity" && last.tool
-    ? last.tool.name
+    ? activityPreview(last.tool, botEngine(bots.find((bot) => bot.id === last.from?.botId), instances))
     : last.kind === "goal.run" && last.goalRun
       ? sidebarGoalRunPreview(last.goalRun)
       : (last.text ?? "");
@@ -291,7 +293,7 @@ export function GroupListItem({
           {(expanded || (quiet && !groupStatus)) && group.unread && <span className="size-1.5 shrink-0 rounded-full bg-accent" aria-label={t("task.unreadMany")} />}
         </div>
         {!expanded && (!quiet || groupStatus) && <div className="flex items-center justify-between gap-2">
-          <span className="truncate text-[11px] text-ink-secondary">{groupPreview(group, state.bots)}</span>
+          <span className="truncate text-[11px] text-ink-secondary">{groupPreview(group, state.bots, state.instances)}</span>
           {group.unread && <span className="size-2 shrink-0 rounded-full bg-accent" />}
         </div>}
       </div>
@@ -1503,7 +1505,7 @@ export function BotListItem({
                   <span className="sr-only">{t("sidebar.preview.working")}</span>
                 </span>
               ) : (
-                <span className="truncate">{waiting ? t("sidebar.preview.waiting") : teammateWait ? t("sidebar.preview.waitingOnTeammate") : queued ? t("task.queued") : preview(bot)}</span>
+                <span className="truncate">{waiting ? t("sidebar.preview.waiting") : teammateWait ? t("sidebar.preview.waitingOnTeammate") : queued ? t("task.queued") : preview(bot, state.instances)}</span>
               )}
             </span>
           )}
@@ -2062,7 +2064,7 @@ export function Sidebar({ open, onClose, collapseToIcons = false }: {
         !q ||
         b.name.toLowerCase().includes(q) ||
         (b.title ?? "").toLowerCase().includes(q) ||
-        preview(b).toLowerCase().includes(q) ||
+        preview(b, state.instances).toLowerCase().includes(q) ||
         b.tasks?.some((task) => !task.routineRunId && task.title.toLowerCase().includes(q)) ||
         b.projects?.some((folder) => folder.name.toLowerCase().includes(q)),
     );
