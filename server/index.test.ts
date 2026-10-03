@@ -11004,6 +11004,9 @@ describe("harness HTTP API", () => {
       const pending = { id: "ca_work", alias: "Work", status: "INITIATED", toolkit: { slug: "gmail" } };
       connectorAccounts.push(pending);
       expect((await poll()).body).toMatchObject({ connected: false, pending: true });
+      // Once the retry connects, it is the one the card reports.
+      pending.status = "ACTIVE";
+      expect((await poll()).body.connected).toBe(true);
       connectorAccounts.splice(connectorAccounts.indexOf(lapsed), 1);
       pending.status = "FAILED";
       expect((await poll()).body).toMatchObject({ connected: false, status: "FAILED" });
