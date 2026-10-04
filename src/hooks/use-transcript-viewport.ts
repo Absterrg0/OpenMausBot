@@ -20,12 +20,13 @@ import {
   TRANSCRIPT_WINDOW_SIZE,
   expandWindowStart,
   focusWindowRange,
+  followWindowStart,
   resolveTranscriptWindow,
   tailWindowStart,
 } from "@/lib/transcript-window";
 import { useStore } from "@/state/store";
 
-export function useTranscriptViewport<T extends { id: string }>({
+export function useTranscriptViewport<T extends { id: string; role?: string }>({
   ownerId,
   threadId,
   messages,
@@ -47,23 +48,48 @@ export function useTranscriptViewport<T extends { id: string }>({
   const scrollRef = useRef<HTMLDivElement>(null);
   const transcriptRef = useRef<HTMLDivElement>(null);
 
+  // Scroll pinning: follow the bottom while the user hasn't scrolled away.
+  // Follow breaks ONLY on an upward user gesture (wheel/touch/scrollbar/
+  // keys), never on scroll position checks — content growth flickers "at
+  // bottom" false for a frame, and breaking there kills follow permanently
+  // (upstream-verified failure). Scrolling back to the end re-arms it.
+  const [follow, setFollow] = useState(true);
+  const followRef = useRef(true);
+  const previousScrollTop = useRef(0);
+  const touchY = useRef(0);
+
   // Windowed transcript: only a tail of the thread mounts (screenshots make
-  // full threads DOM-heavy). The boundary is anchored per owner+thread; a
-  // render-phase reset re-tails it on switch so the old thread's boundary
-  // never flashes into the new one. Callers derive everything else (last
-  // reply, working dots) from the FULL list.
+  // full threads DOM-heavy). The boundary is per owner+thread; a render-phase
+  // reset re-tails it on switch so the old thread's boundary never flashes
+  // into the new one. While the reader follows the bottom, new rows slide the
+  // boundary up so the window stays one window long, except that it stops at
+  // the person's newest message while that message is mounted and at most one
+  // more window back: the question stays on screen while a turn of hidden tool
+  // steps answers it, and the window never passes two windows. A thread that
+  // shrinks (a branch switch) re-tails it (followWindowStart). The boundary
+  // holds still once they have scrolled away, so the rows they are reading
+  // stay put.
+  // Callers derive everything else (last reply, working dots) from the FULL
+  // list.
   const transcriptKey = `${ownerId}:${threadId}`;
+  const tailStart = tailWindowStart(messages.length);
   const [transcriptWindow, setTranscriptWindow] = useState<{
     key: string;
     start: number;
     end: number | null;
   }>(() => ({
     key: transcriptKey,
-    start: tailWindowStart(messages.length),
+    start: tailStart,
     end: null,
   }));
-  if (transcriptWindow.key !== transcriptKey) {
-    setTranscriptWindow({ key: transcriptKey, start: tailWindowStart(messages.length), end: null });
+  const switched = transcriptWindow.key !== transcriptKey;
+  const nextStart = switched
+    ? tailStart
+    : follow && transcriptWindow.end === null
+      ? followWindowStart(messages, transcriptWindow.start)
+      : transcriptWindow.start;
+  if (switched || nextStart !== transcriptWindow.start) {
+    setTranscriptWindow({ key: transcriptKey, start: nextStart, end: null });
   }
   const {
     visible: windowedMessages,
@@ -75,16 +101,6 @@ export function useTranscriptViewport<T extends { id: string }>({
     () => resolveTranscriptWindow(messages, transcriptWindow.start, TRANSCRIPT_WINDOW_SIZE, transcriptWindow.end),
     [messages, transcriptWindow.start, transcriptWindow.end],
   );
-
-  // Scroll pinning: follow the bottom while the user hasn't scrolled away.
-  // Follow breaks ONLY on an upward user gesture (wheel/touch/scrollbar/
-  // keys), never on scroll position checks — content growth flickers "at
-  // bottom" false for a frame, and breaking there kills follow permanently
-  // (upstream-verified failure). Scrolling back to the end re-arms it.
-  const [follow, setFollow] = useState(true);
-  const followRef = useRef(true);
-  const previousScrollTop = useRef(0);
-  const touchY = useRef(0);
 
   const setBottomFollow = useCallback((next: boolean) => {
     followRef.current = next;
@@ -187,7 +203,7 @@ export function useTranscriptViewport<T extends { id: string }>({
   };
   const jumpToLatest = () => {
     setBottomFollow(true);
-    setTranscriptWindow({ key: transcriptKey, start: tailWindowStart(messages.length), end: null });
+    setTranscriptWindow({ key: transcriptKey, start: tailStart, end: null });
     requestAnimationFrame(() => {
       scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
     });
