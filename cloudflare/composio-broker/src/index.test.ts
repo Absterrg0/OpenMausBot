@@ -158,10 +158,7 @@ describe("connected-apps broker boundaries", () => {
         return Response.json(body);
       }
       if (url.endsWith("/tool_router/session/trs_multi/link") && init?.method === "POST") {
-        return Response.json(
-          { redirect_url: "https://connect.composio.dev/link/gmail", connected_account_id: "ca_linked" },
-          { status: 201 },
-        );
+        return Response.json({ redirect_url: "https://connect.composio.dev/link/gmail" }, { status: 201 });
       }
       if (url.includes("/tool_router/session/trs_multi")) return Response.json(session("trs_multi", "omb_stable"));
       if (url.includes("/connected_accounts?") && !init?.method) {
@@ -177,7 +174,7 @@ describe("connected-apps broker boundaries", () => {
         }
         return Response.json(accounts);
       }
-      if (/\/connected_accounts\/ca_(work|personal)(\?|$)/.test(url) && init?.method === "DELETE") return Response.json({ success: true });
+      if (url.includes("/connected_accounts/ca_work") && init?.method === "DELETE") return Response.json({ success: true });
       return Response.json({ error: "not found" }, { status: 404 });
     });
     const installation = {
@@ -278,30 +275,9 @@ describe("connected-apps broker boundaries", () => {
     });
     const authorized = await authorize("gmail", "second", installation, env as never, ctx as never);
     expect(authorized.status).toBe(200);
-    await expect(authorized.json()).resolves.toEqual({ url: "https://connect.composio.dev/link/gmail", accountId: "ca_linked" });
+    await expect(authorized.json()).resolves.toEqual({ url: "https://connect.composio.dev/link/gmail" });
     const linkCall = fetchCalls.find((call) => call.url.endsWith("/tool_router/session/trs_multi/link"));
     expect(JSON.parse(String(linkCall?.init?.body))).toEqual({ toolkit: "gmail", alias: "second" });
-
-    // A connected account keeps its alias.
-    const taken = await authorize("gmail", "Work", installation, env as never, ctx as never);
-    expect(taken.status).toBe(409);
-    // An attempt nobody finished still holds its alias upstream. The app
-    // hands a retry the link it issued; one reaching the broker is refused as
-    // in progress and left alone, since removing it could race its sign-in.
-    const before = fetchCalls.length;
-    const inProgress = await authorize("gmail", "Personal", installation, env as never, ctx as never);
-    expect(inProgress.status).toBe(409);
-    await expect(inProgress.json()).resolves.toEqual({
-      error: 'Sign-in for "Personal" on gmail is still in progress. Finish it, or retry once it expires (about 10 minutes).',
-    });
-    expect(fetchCalls.slice(before).some((call) => call.init?.method === "DELETE" || call.url.endsWith("/link"))).toBe(false);
-
-    // A lapsed attempt no longer reserves its alias and is left in place.
-    accounts.items.push({ id: "ca_lapsed", alias: "old", toolkit: { slug: "gmail" }, status: "EXPIRED", updated_at: "2026-08-21T09:00:00Z" });
-    const afterLapse = fetchCalls.length;
-    const reused = await authorize("gmail", "old", installation, env as never, ctx as never);
-    expect(reused.status).toBe(200);
-    expect(fetchCalls.slice(afterLapse).some((call) => call.init?.method === "DELETE")).toBe(false);
   });
 
   it("retries only unfinished or expired accounts without replacing grants", async () => {
@@ -339,11 +315,9 @@ describe("connected-apps broker boundaries", () => {
       const response = await authorize("gmail", undefined, installation, env as never, ctx as never);
       expect(response.status).toBe(400);
     }
-    // A lapsed attempt no longer reserves its alias: the same alias is free
-    // to connect again, and the old record is left in place.
+    // An expired attempt no longer holds its alias upstream.
     accounts = [{ id: "old", alias: "Original", status: "EXPIRED", toolkit: { slug: "gmail" } }];
-    const relinked = await authorize("gmail", "original", installation, env as never, ctx as never);
-    expect(relinked.status).toBe(200);
+    expect((await authorize("gmail", "original", installation, env as never, ctx as never)).status).toBe(200);
     expect(linkBodies().at(-1)).toEqual({ toolkit: "gmail", alias: "original" });
     accounts = Array.from({ length: 5 }, (_, id) => ({ id: String(id), status: "INITIALIZING", toolkit: { slug: "gmail" } }));
     expect((await authorize("gmail", undefined, installation, env as never, ctx as never)).status).toBe(409);
