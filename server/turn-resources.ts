@@ -1,6 +1,3 @@
-import { realpathSync } from "node:fs";
-import { relative, resolve, sep } from "node:path";
-
 export type TurnOwner = {
   threadId: string;
   generation: string;
@@ -17,8 +14,11 @@ export type TurnOwner = {
 
 /** One harness owns the data directory. Claims are synchronous and last for
  * the whole turn, not just a click: a screenshot and its following click
- * must see the same desktop. These coordinate app-managed resources; they
- * are not a sandbox for arbitrary shell commands. */
+ * must see the same desktop. These coordinate app-managed resources — a
+ * desktop, a browser session, a phone — that only one turn can drive at a
+ * time. A project folder is not one: a bot's threads work in one folder
+ * side by side, as several agent sessions do in one repo. They are not a
+ * sandbox for arbitrary shell commands. */
 export class TurnResources {
   private readonly owners = new Map<string, TurnOwner>();
   /** Arrival-ordered waiters per requested resource (#1652). Entries exist
@@ -87,10 +87,8 @@ export class TurnResources {
   }
 
   blocker(resource: string, owner: TurnOwner): TurnOwner | undefined {
-    for (const [key, current] of this.owners) {
-      if (overlaps(key, resource) && !sameOwner(current, owner)) return current;
-    }
-    return undefined;
+    const current = this.owners.get(resource);
+    return current && !sameOwner(current, owner) ? current : undefined;
   }
 
   claim(resource: string, owner: TurnOwner): boolean {
@@ -135,33 +133,10 @@ export class TurnResources {
   /** Whether any live owner holds this resource: the parked-resume drain's
    * gate (#1651) — a resume fires only when the seat it queued on is free. */
   free(resource: string): boolean {
-    for (const key of this.owners.keys()) {
-      if (overlaps(key, resource)) return false;
-    }
-    return true;
+    return !this.owners.has(resource);
   }
 }
 
 function sameOwner(a: TurnOwner, b: TurnOwner): boolean {
   return a.threadId === b.threadId && a.generation === b.generation;
-}
-
-export function workspaceResource(cwd: string): string {
-  // Selected folders must exist before the engine starts. Resolve symlinks
-  // and native filename casing so aliases cannot grant two writers to the
-  // same project on case-insensitive volumes.
-  const canonical = realpathSync.native(resolve(cwd));
-  return `workspace:${process.platform === "win32" ? canonical.toLowerCase() : canonical}`;
-}
-
-function overlaps(a: string, b: string): boolean {
-  if (a === b) return true;
-  if (!a.startsWith("workspace:") || !b.startsWith("workspace:")) return false;
-  const left = a.slice("workspace:".length);
-  const right = b.slice("workspace:".length);
-  const contains = (parent: string, child: string) => {
-    const path = relative(parent, child);
-    return path === "" || (path !== ".." && !path.startsWith(`..${sep}`) && !path.startsWith(sep) && !/^[A-Za-z]:/.test(path));
-  };
-  return contains(left, right) || contains(right, left);
 }
