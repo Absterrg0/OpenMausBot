@@ -2125,11 +2125,12 @@ utilityParentPort?.on("message", event => {
 });
 
 // ── peer-agent comms wiring ────────────────────────────────────────────
-// Every mounted proxy receives a fresh, turn-scoped capability for localhost
+// Every mounted proxy receives a turn-scoped capability for localhost
 // /api/internal calls. Identity, source thread, recursion depth and route
 // family all come from this server-side record; caller fields are assertions,
-// never authority. Full mode can inspect its own MCP environment, so a shared
-// or reusable boot token would let one bot impersonate another later.
+// never authority. Full mode can inspect its own MCP environment, so a
+// credential is never shared between bots or threads (see
+// sessionCredentials), and each turn's record is revoked when the turn ends.
 type InternalCapability = {
   botId: string;
   threadId: string;
@@ -2154,9 +2155,16 @@ type InternalCapability = {
   ownThreadCreation?: boolean;
   /** attach_file calls this turn has made, capped so one turn cannot flood the chat. */
   attachedFiles?: number;
+  /** post_to_room calls this turn has made. */
+  roomPosts?: number;
+  /** Delegations this turn handed out: their ids may not be checked or
+   * waited on until a later turn, so the teammate gets to work first. */
+  delegatedThisTurn?: Set<string>;
   externalRuntime?: ExternalRuntimeGrant;
 };
 const MAX_ATTACHED_FILES_PER_TURN = 10;
+const MAX_ROOM_POSTS_PER_TURN = 3;
+const MAX_CREATED_BOTS_PER_TURN = 4;
 // A capability lives for the exact provider-turn generation, including while
 // that turn is parked on a human approval. The long ceiling is only an orphan
 // backstop for an impossible-to-settle adapter; normal terminal paths revoke
@@ -2220,15 +2228,54 @@ function beginInternalCapabilityGeneration(threadId: string, generation = random
   return generation;
 }
 
-function mintInternalCapability(capability: Omit<InternalCapability, "orphanExpiresAt">): string {
+// The bearer an integration's proxy holds is part of the engine's launch
+// contract (Claude's process key, ACP's session inputs): a new one every turn
+// meant a relaunch, a resumed transcript and new MCP servers every turn. So
+// the bearer stays the same while the same bot works the same thread with the
+// same grants and approval level, and only the record behind it is per turn:
+// between turns, and after any revoke, nothing honours it. A changed grant,
+// Stop, a stall, a deleted bot or thread or a provider reload gives the next
+// turn a new bearer, so whatever still holds the old one is never honoured
+// again.
+/** threadId → "botId kind" → the bearer and the grants it was minted for. */
+const sessionCredentials = new Map<string, Map<string, { grants: string; token: string }>>();
+
+/** What a bearer stands for: everything its record grants (a turn's counters
+ * all start at zero), plus the thread's approval level; not the turn. */
+function sessionGrants({ generation: _turn, ...grants }: Omit<InternalCapability, "orphanExpiresAt">): string {
+  const thread = botForThread(grants.botId, grants.threadId);
+  return JSON.stringify({ ...grants, approval: thread ? approvalModeFor(thread) : null });
+}
+
+/** The thread's bearer for this integration, new only when its grants changed. */
+function sessionBearer(capability: Omit<InternalCapability, "orphanExpiresAt">): string {
+  const credentials = sessionCredentials.get(capability.threadId) ?? new Map<string, { grants: string; token: string }>();
+  sessionCredentials.set(capability.threadId, credentials);
+  const slot = `${capability.botId} ${capability.kind}`;
+  const grants = sessionGrants(capability);
+  const held = credentials.get(slot);
+  if (held?.grants === grants) return held.token;
+  const token = randomBytes(24).toString("hex");
+  credentials.set(slot, { grants, token });
+  return token;
+}
+
+function mintInternalCapability(capability: Omit<InternalCapability, "orphanExpiresAt">, { perTurn = false } = {}): string {
   if (activeInternalGenerationByThread.get(capability.threadId) !== capability.generation) {
     throw new Error("cannot mint an integration capability for an inactive turn");
   }
-  const token = randomBytes(24).toString("hex");
-  internalCapabilities.set(token, {
-    ...capability,
-    orphanExpiresAt: Date.now() + INTERNAL_CAPABILITY_ORPHAN_MS,
-  });
+  // perTurn: a bridge into a machine the harness stops and starts between
+  // turns (a Local VM, the VPS, a Boat). A warm engine never restarts a
+  // server whose machine went away, so such a turn gets a new bearer and
+  // starts its engine fresh.
+  const token = perTurn ? randomBytes(24).toString("hex") : sessionBearer(capability);
+  // Minted twice in one turn: keep that turn's record and its counters.
+  if (internalCapabilities.get(token)?.generation !== capability.generation) {
+    internalCapabilities.set(token, {
+      ...capability,
+      orphanExpiresAt: Date.now() + INTERNAL_CAPABILITY_ORPHAN_MS,
+    });
+  }
   return token;
 }
 
@@ -2259,7 +2306,9 @@ function revokeInternalCapabilityGeneration(threadId: string, generation: string
   internalGenerationByProviderTurn.deleteGeneration(threadId, generation);
 }
 
-function revokeInternalCapabilitiesForThread(threadId: string): void {
+/** Before a new turn on this thread mints: nothing an earlier turn here was
+ * given stays honoured. The thread's bearers stay, so its engine stays warm. */
+function revokeEarlierTurnCapabilities(threadId: string): void {
   computerSelectionTurns.delete(threadId);
   const generation = activeInternalGenerationByThread.get(threadId);
   if (generation) revokeInternalCapabilityGeneration(threadId, generation);
@@ -2271,9 +2320,17 @@ function revokeInternalCapabilitiesForThread(threadId: string): void {
   }
 }
 
+/** Stop, a stall, a deleted bot or thread, a provider change: the thread's
+ * bearers are retired too, so nothing that still holds one is honoured again. */
+function revokeInternalCapabilitiesForThread(threadId: string): void {
+  revokeEarlierTurnCapabilities(threadId);
+  sessionCredentials.delete(threadId);
+}
+
 function revokeAllInternalCapabilities(): void {
   computerSelectionTurns.clear();
   internalCapabilities.clear();
+  sessionCredentials.clear();
   // foreignTurns stays: a turn that is not provably the owner's can still
   // write while its engine is torn down, and its own end (which revokes its
   // generation by id) is what judges it (server/lending-memory.ts).
@@ -3063,8 +3120,17 @@ const routineRequestEnvelopeSchema = z.discriminatedUnion("action", [
 
 /** The loopback endpoint a bot's computer proxy polls before acting. With a
  * Boat id, the same turn-scoped token also serves that Boat's tools at
- * /api/internal/computer/mcp, and is revoked when the turn ends. */
-function controlIntegration(botId: string, threadId: string, generation: string, localVmTarget?: LocalVmTarget, boxId?: string) {
+ * /api/internal/computer/mcp, and is revoked when the turn ends. This
+ * computer runs as long as the app does, so its bridge keeps the thread's
+ * bearer like every other integration; any other machine (a Local VM, the
+ * VPS, a Boat) gets a new bearer each turn. */
+function controlIntegration(
+  botId: string,
+  threadId: string,
+  generation: string,
+  machine: "this computer" | { localVmTarget?: LocalVmTarget; boxId?: string } = {},
+) {
+  const { localVmTarget, boxId } = machine === "this computer" ? {} : machine;
   return {
     url: `http://127.0.0.1:${PORT}/api/internal/computer-control?botId=${encodeURIComponent(botId)}`,
     token: mintInternalCapability({
@@ -3079,7 +3145,7 @@ function controlIntegration(botId: string, threadId: string, generation: string,
       skillAuthoring: false,
       createdBots: 0,
       openedThreads: 0,
-    }),
+    }, { perTurn: machine !== "this computer" }),
   };
 }
 
@@ -6534,7 +6600,7 @@ function cloudEngine(instance: ReturnType<typeof registry.get>): CloudEngine {
  * turn-scoped capability naming this Boat, never a Boat credential. */
 function cloudComputerMount(botId: string, owner: TurnOwner, boxId: string, remoteAgent: boolean): Pick<NonNullable<SendTurnInput["integrations"]>, "computer" | "localComputer"> {
   if (remoteAgent) return { computer: { kind: "box", boxId } };
-  const control = controlIntegration(botId, owner.threadId, owner.generation, undefined, boxId);
+  const control = controlIntegration(botId, owner.threadId, owner.generation, { boxId });
   return {
     localComputer: {
       command: process.execPath,
@@ -6563,7 +6629,7 @@ async function mountHostComputer(owner: TurnOwner, botId: string, providerSuppor
       : "CUA Driver is not ready for this computer — check permissions and restart OpenMausBot");
   }
   await bindTurnComputer(owner, "computer:host");
-  return gatedLocalComputer(cua, controlIntegration(botId, owner.threadId, owner.generation));
+  return gatedLocalComputer(cua, controlIntegration(botId, owner.threadId, owner.generation, "this computer"));
 }
 
 /** The bot's own VPS desktop, mounted into the local agent. The desktop lease
@@ -9226,10 +9292,10 @@ async function startTurn(
   // their results still return here (outstandingAssignmentsPrompt tells this
   // turn which are still out). Stop, in this conversation, is the gesture
   // that ends coordination — see interruptDirectThread.
-  // Retire anything a previous turn left behind before minting this turn's
-  // integrations. Completion and interrupt paths do the same; this is the
-  // final backstop against a retained proxy process.
-  revokeInternalCapabilitiesForThread(threadId);
+  // Revoke anything a previous turn left behind before minting this turn's
+  // integrations. Completion and interrupt paths do the same; a proxy the
+  // warm engine kept is honoured again only through this turn's records.
+  revokeEarlierTurnCapabilities(threadId);
   // a webhook turn, or one inherited from a bot already running unattended
   if (opts?.automationSource === "webhook" || opts?.unattended) markUnattended(bot.id, threadId);
   // a person typing into this bot ends the unattended window immediately
@@ -10095,7 +10161,7 @@ async function startTurn(
               pinAutoSurface("local");
             },
           });
-          integrations.localComputer = gatedLocalComputer(cua, controlIntegration(bot.id, threadId, dispatchClaimId));
+          integrations.localComputer = gatedLocalComputer(cua, controlIntegration(bot.id, threadId, dispatchClaimId, "this computer"));
           computerKind = "local";
         }
       }
@@ -12067,7 +12133,7 @@ async function runGroupMemberTurn(
     onDispatchError?.(`${bot.name}'s approval level is still being confirmed — skipped this round`);
     return true;
   }
-  revokeInternalCapabilitiesForThread(threadId);
+  revokeEarlierTurnCapabilities(threadId);
   spoken.add(botId);
   // Must be the SAME resolver the readiness re-check uses below, or a Chief's
   // delegated Full elevation makes the two disagree by construction: every
@@ -12517,7 +12583,7 @@ async function runGroupMemberTurn(
       }
       integrations.localComputer = containerComputerMcp(
         vm.runtime,
-        controlIntegration(readyBot.id, threadId, internalGeneration, target),
+        controlIntegration(readyBot.id, threadId, internalGeneration, { localVmTarget: target }),
         target,
       );
     }
@@ -16079,6 +16145,9 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
           throw Object.assign(new Error("the internal turn capability has expired"), { status: 401 });
         }
       };
+      const delegatedThisTurn = (taskId: string) => {
+        (internalCapability.delegatedThisTurn ??= new Set()).add(taskId);
+      };
       // Where an entry came from, as the person will read it in MEMORY.md:
       // the room or the thread title, never a bare id unless nothing else
       // names the conversation.
@@ -17055,6 +17124,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
           if (internalCapability.generation === EXTERNAL_RUNTIME_GENERATION && !threadBusy(from.id, fromThreadId)) {
             drainThreadDelegations(fromThreadId);
           }
+          delegatedThisTurn(queued.id);
           return json(res, 200, { busy: true, taskId: queued.id, toBotName: target.name, receipt: peerDeliveryReceipt({
             botId: toBotId, botName: target.name, outcome: "queued", taskId: queued.id,
             detail: "the teammate was busy; the ask was queued as a delegation instead",
@@ -17219,6 +17289,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
             kind: "activity",
             tool: { name: `@${currentTarget.name} is still working — ask converted to a delegation` },
           });
+          delegatedThisTurn(taskId);
           return json(res, 200, { timeout: true, taskId, toBotName: currentTarget.name, waitedMs: ASK_BOT_TIMEOUT_MS,
             receipt: peerDeliveryReceipt({ botId: toBotId, botName: currentTarget.name, outcome: "injected", taskId,
               detail: "the teammate's turn started and is still running; only the synchronous wait ended" }) });
@@ -17257,6 +17328,9 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       const delegationMatch = method === "GET" ? path.match(/^\/api\/internal\/delegations\/([\w-]{4,64})$/) : null;
       if (delegationMatch) {
         const taskId = delegationMatch[1];
+        if (internalCapability.delegatedThisTurn?.has(taskId)) {
+          return json(res, 409, { error: `Task ${taskId} was delegated during this turn. Finish your response now so the other bot can work; its result will be delivered to this conversation automatically. Do not check or wait for a newly delegated task until a later turn.` });
+        }
         const fromThreadId = internalCapability.threadId;
         const from = internalSender;
         if (!connectorThread(from.id, fromThreadId)) return json(res, 403, { error: "unknown sender" });
@@ -17429,6 +17503,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
             detail: `${refusal} — nothing was queued`,
           }) });
         }
+        delegatedThisTurn(queued.id);
         const targetName = store.bot(toBotId)?.name ?? toBotId;
         // The queue normally drains when the source thread's turn completes. A
         // caller this server did not spawn (an external runtime) has no live
@@ -17648,6 +17723,12 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         if (!groupId || !message) {
           return json(res, 400, { error: "post_to_room needs group_id (from list_rooms) and message" });
         }
+        // One turn's worth of posts is a handful; past it the turn has
+        // stopped reporting and started broadcasting. Counted per turn, on
+        // top of the room's own budget below.
+        if ((internalCapability.roomPosts ?? 0) >= MAX_ROOM_POSTS_PER_TURN) {
+          return json(res, 429, { error: `You have already posted ${MAX_ROOM_POSTS_PER_TURN} times this turn, which is the limit. Do not retry — finish your turn and say anything further to the user directly.` });
+        }
         if (message.length > ROOM_POST_MAX_CHARS) {
           return json(res, 400, {
             error: `a room post is at most ${ROOM_POST_MAX_CHARS} characters — post the short version and keep the detail in your own reply`,
@@ -17780,6 +17861,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
           peerPost: unattended ? { unattended: true } : {},
           ...(attachedVoiceNote ? { attachments: stagedAttachments } : {}),
         });
+        internalCapability.roomPosts = (internalCapability.roomPosts ?? 0) + 1;
         detachParkedAudio?.();
         store.patchGroup(room.id, { unread: true });
         // The same visibility contract the peer tools keep: whatever a bot
@@ -17820,7 +17902,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         // the title is quoted into chips and the sidebar, one line each
         if (!fitsOnOneLine(title)) return json(res, 400, { error: "title must fit on one line" });
         if (internalCapability.openedThreads >= MAX_THREADS_OPENED_PER_TURN) {
-          return json(res, 429, { error: `you can open at most ${MAX_THREADS_OPENED_PER_TURN} threads in one turn` });
+          return json(res, 429, { error: `You have already opened ${MAX_THREADS_OPENED_PER_TURN} threads this turn, which is the limit. Do not retry — finish your turn and tell the person which threads you still wanted to open, so they can open them or ask you again.` });
         }
         const toBotId = typeof body.toBotId === "string" && body.toBotId.trim() ? body.toBotId.trim() : from.id;
         const target = store.bot(toBotId);
@@ -17924,6 +18006,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         }
         store.setTaskOpenedBy(target.id, task.threadId, { botId: from.id, name: from.name, delegationId: queued.id, at: task.openedBy?.at ?? Date.now() });
         internalCapability.openedThreads += 1;
+        delegatedThisTurn(queued.id);
         // An honest forecast, not a promise: the handoff starts when this
         // turn ends, and by then the target's slots are taken by whatever is
         // running there plus the threads this turn already opened ahead.
@@ -17955,8 +18038,8 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         if (!chief.chiefOfStaff) {
           return json(res, 403, { error: "only a section's Chief of Staff can create operator bots" });
         }
-        if (internalCapability.createdBots >= 4) {
-          return json(res, 429, { error: "you can create at most 4 bots in one turn" });
+        if (internalCapability.createdBots >= MAX_CREATED_BOTS_PER_TURN) {
+          return json(res, 429, { error: `You can create at most ${MAX_CREATED_BOTS_PER_TURN} bots in one turn. Use the team you have before adding more.` });
         }
         if (store.bots.length >= MAX_WORKSPACE_BOTS) {
           return json(res, 409, { error: `this workspace is limited to ${MAX_WORKSPACE_BOTS} bots` });
@@ -17997,7 +18080,9 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         if (store.bot(chief.id) !== chief || chief.hidden || !chief.chiefOfStaff || !connectorThread(chief.id, fromThreadId)) {
           return json(res, 403, { error: "only an active Chief of Staff can create operator bots" });
         }
-        if (internalCapability.createdBots >= 4) return json(res, 429, { error: "you can create at most 4 bots in one turn" });
+        if (internalCapability.createdBots >= MAX_CREATED_BOTS_PER_TURN) {
+          return json(res, 429, { error: `You can create at most ${MAX_CREATED_BOTS_PER_TURN} bots in one turn. Use the team you have before adding more.` });
+        }
         if (store.bots.length >= MAX_WORKSPACE_BOTS) return json(res, 409, { error: `this workspace is limited to ${MAX_WORKSPACE_BOTS} bots` });
         const duplicate = store.bots.find(
           (candidate) =>
@@ -19927,8 +20012,9 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       lastReply.delete(m[2]);
       cancelTeamSetupResumesForThread(m[2]);
       const updated = store.deleteGroupTask(group.id, m[2]);
-      if (updated) clearTurnDigestState(m[2]);
       if (!updated) return json(res, 400, { error: "a channel keeps at least one task" });
+      clearTurnDigestState(m[2]);
+      revokeInternalCapabilitiesForThread(m[2]);
       rejectDeletedThreadSkillStages(stagedSkillCleanups);
       return json(res, 200, { group: groupWithThread(updated) });
     }
@@ -22709,6 +22795,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       const updated = store.deleteTask(m[1], m[2]);
       if (!updated) return json(res, 404, { error: "no such task" });
       clearTurnDigestState(m[2]);
+      revokeInternalCapabilitiesForThread(m[2]);
       handoffs.forget(m[2]);
       settleDirectFollowup(directTurnGenerationByThread.get(m[2]));
       rejectDeletedThreadSkillStages(stagedSkillCleanups);
