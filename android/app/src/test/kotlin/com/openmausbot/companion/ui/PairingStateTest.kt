@@ -697,6 +697,43 @@ class PairingConfirmationTest {
         }
     }
 
+    // Oct 3: a Windows PC's QR led with WSL's address. The phone now also tries the PC's
+    // other addresses, and the confirmation says so rather than showing only the first.
+    @Test
+    fun `a desktop QR says how many more of the computer's addresses it will try`() {
+        val secrets = PairingSecretStore()
+        val invite = requireNotNull(PairingInvite.parse(
+            "openmausbot://pair?address=172.19.96.1%3A8810&token=$credential" +
+                "&name=Miguel%27s+computer&hosts=172.19.96.1,192.168.1.34,miguel.local",
+        ))
+        val confirmation = PairingConfirmation.of(
+            secrets.openingIdle(invite.connection, fromScan = true, credential = invite.credential),
+            secrets,
+        )
+
+        assertEquals("Miguel's computer", confirmation.name)
+        assertEquals("http://172.19.96.1:8810", confirmation.address)
+        assertEquals(2, confirmation.otherAddresses)
+        assertEquals(0, PairingConfirmation.of(typed(PairingSecretStore()), PairingSecretStore()).otherAddresses)
+    }
+
+    // The local-network permission is asked for the routes the pairing walk will dial, so
+    // the two lists are one: a desktop QR's every local address, a typed address alone.
+    @Test
+    fun `the routes asked about before pairing are the ones the pairing walk dials`() {
+        val invite = requireNotNull(PairingInvite.parse(
+            "openmausbot://pair?address=172.19.96.1%3A8810&token=$credential" +
+                "&hosts=172.19.96.1,192.168.1.34,miguel.local",
+        ))
+
+        assertEquals(
+            listOf("http://172.19.96.1:8810", "http://192.168.1.34:8810", "http://miguel.local:8810"),
+            pairingRoutes(invite.connection).map { it.url },
+        )
+        assertEquals(invite.connection.pairingEndpoints, pairingRoutes(invite.connection))
+        assertEquals(listOf("http://192.168.1.42:8810"), pairingRoutes(connection).map { it.url })
+    }
+
     @Test
     fun `a computer that never told us its name is headed by its address`() {
         val secrets = PairingSecretStore()
