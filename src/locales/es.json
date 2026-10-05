@@ -65,6 +65,7 @@
   "cloudAccount.reauthExpired": "Tu sesión en este equipo terminó (dura un tiempo limitado). Vuelve a iniciar sesión para seguir usando tu Cloud aquí. Tu plan no se ve afectado.",
   "cloudAccount.reauthEnded": "Este equipo ya no tiene la sesión iniciada en OMB Cloud, por ejemplo porque se quitó desde tu panel de Cloud. Vuelve a iniciar sesión para usar tu Cloud aquí. Tu plan no se ve afectado.",
   "cloudAccount.unavailable": "No se puede contactar con OMB Cloud ahora mismo, así que esta app no puede comprobar tu plan. Tu plan no ha cambiado; la app lo seguirá intentando.",
+  "cloudAccount.restoreRemoved": "No se pudo leer el inicio de sesión de Cloud de este equipo, así que se quitó. Vuelve a iniciar sesión.",
   "cloudPhone.title": "Tu teléfono",
   "cloudPhone.subtitle": "Vincula la app del teléfono con tu Cloud en lugar de con este equipo, y seguirá funcionando cuando este equipo esté apagado.",
   "cloudPhone.action": "Usar tu Cloud en el teléfono",

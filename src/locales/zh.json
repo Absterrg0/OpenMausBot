@@ -210,6 +210,7 @@
   "cloudAccount.unavailable": "目前无法连接 OMB Cloud，因此此应用无法确认你的方案。你的方案没有任何变化；应用会继续尝试。",
   "cloudAccount.signoutLocalOnly": "已在这台电脑上退出登录。Cloud 未能确认远程吊销；请同时在你的 Cloud 账号中吊销这台电脑。",
   "cloudAccount.storageFailed": "无法读取或清除已保存的 Cloud 登录。请解锁系统钥匙串，然后退出登录再重新连接。",
+  "cloudAccount.restoreRemoved": "无法读取这台电脑的 Cloud 登录，因此已将其移除。请重新登录。",
   "cloudAccount.signinFailed": "Cloud 登录已中止或未能完成。请在这台电脑上重新开始。",
   "cloudAccount.actionFailed": "无法完成此 Cloud 操作。请检查网络连接后重试。",
   "cloudPhone.title": "你的手机",

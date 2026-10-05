@@ -268,6 +268,7 @@
   "cloudAccount.unavailable": "OMB Cloud can't be reached right now, so this app can't check your plan. Nothing has changed with your plan; the app keeps trying.",
   "cloudAccount.signoutLocalOnly": "Signed out on this computer. Cloud could not confirm remote revocation; revoke this computer in your Cloud account too.",
   "cloudAccount.storageFailed": "The saved Cloud sign-in could not be read or cleared. Unlock your system keychain, then sign out again before reconnecting.",
+  "cloudAccount.restoreRemoved": "This computer's Cloud sign-in couldn't be read, so it was removed. Sign in again.",
   "cloudAccount.signinFailed": "Cloud sign-in ended or could not be completed. Start again on this computer.",
   "cloudAccount.actionFailed": "Could not complete this Cloud action. Check your connection and try again.",
   "cloudPhone.title": "Your phone",

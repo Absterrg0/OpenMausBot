@@ -104,6 +104,7 @@ function accountMessage(account: CloudAccountState | null, view: CloudPlanView):
   // A Cloud still there explains itself in its own card below.
   if (view.kind === "attention" && !account.machine) return t("cloudAccount.attention");
   if (account.status === "signed-out" && account.message === "enrollment-expired") return t("cloudAccount.codeExpired");
+  if (account.status === "signed-out" && account.message === "restore-removed") return t("cloudAccount.restoreRemoved");
   if (account.status === "signed-out" && account.message && account.message !== "restoring") return t("cloudAccount.signinFailed");
   return null;
 }

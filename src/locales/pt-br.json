@@ -144,6 +144,7 @@
   "cloudAccount.reauthExpired": "Seu acesso neste computador terminou (ele dura um tempo limitado). Entre novamente para continuar usando seu Cloud aqui. Seu plano não é afetado.",
   "cloudAccount.reauthEnded": "Este computador não está mais conectado ao OMB Cloud, por exemplo porque foi removido no painel do Cloud. Entre novamente para usar seu Cloud aqui. Seu plano não é afetado.",
   "cloudAccount.unavailable": "Não é possível acessar o OMB Cloud agora, então este app não consegue verificar seu plano. Nada mudou no seu plano; o app continua tentando.",
+  "cloudAccount.restoreRemoved": "Não foi possível ler o acesso ao Cloud deste computador, então ele foi removido. Entre novamente.",
   "cloudPhone.title": "Seu celular",
   "cloudPhone.subtitle": "Pareie o app do celular com a sua Cloud em vez deste computador, e ele continua funcionando quando este computador está desligado.",
   "cloudPhone.action": "Usar sua Cloud no celular",

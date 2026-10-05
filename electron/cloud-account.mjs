@@ -1,4 +1,4 @@
-import { createManagedDesktopStore } from "./managed-desktop.mjs";
+import { createManagedDesktopStore, restoreRetryDelay, unreadableRecord } from "./managed-desktop.mjs";
 import { CLOUD_MACHINE_CONNECTABLE, parseCloudPurchase, parseCloudSummary, parsePairingGrant } from "./cloud-home.mjs";
 
 export const CLOUD_ORIGIN = "https://cloud.openmausbot.com";
@@ -264,22 +264,40 @@ export function createCloudAccountClient({ store, openBrowser, platform, deviceN
     } catch { if (current(stamp)) { pending = null; publish({ status: "signed-out", message: "signin-failed" }); } }
     return state();
   }
+  /** The saved sign-in could not be used. One that never will be is removed,
+   * and signing in again is the one next step. One that may only be locked
+   * (the keychain) is kept, never removed, and read again shortly. */
+  async function restoreFailed(stamp, unreadable) {
+    cleanupNeeded = true;
+    if (unreadable) {
+      const removed = await store.write(null).then(() => true, () => false);
+      if (!current(stamp)) return state();
+      if (removed) { cleanupNeeded = false; failures = 0; return publish({ status: "signed-out", message: "restore-removed" }); }
+    }
+    failures++;
+    if (value.message !== "restore-failed") publish({ status: "unavailable", message: "restore-failed" });
+    schedule(start, restoreRetryDelay(failures));
+    return state();
+  }
+  async function start() {
+    const stamp = generation;
+    restoring = true; verifiedUntil = 0;
+    let saved, restored = null, failed = false, unreadable = false;
+    try { saved = await store.read(); } catch (error) { failed = true; unreadable = unreadableRecord(error); }
+    // Read, but not a sign-in this app can use: as unreadable as a record the key no longer opens.
+    if (!failed) try { restored = saved ? validateGrant(saved) : null; } catch { failed = unreadable = true; }
+    restoring = false;
+    if (!current(stamp)) return state();
+    if (failed) return restoreFailed(stamp, unreadable);
+    grant = restored; cleanupNeeded = false; failures = 0;
+    savedHint = grant ? planHint(saved.planHint) : null;
+    plan = grant && savedHint ? { accountId: grant.account.id, ...savedHint } : null;
+    if (!grant) return ["restoring", "restore-failed"].includes(value.message) ? publish({ status: "signed-out" }) : state();
+    return refresh();
+  }
   return {
     state,
-    async start() {
-      const stamp = generation;
-      restoring = true; verifiedUntil = 0;
-      try {
-        const saved = await store.read();
-        if (!current(stamp)) return state();
-        grant = saved ? validateGrant(saved) : null;
-        savedHint = grant ? planHint(saved.planHint) : null;
-        plan = grant && savedHint ? { accountId: grant.account.id, ...savedHint } : null;
-      } catch { if (current(stamp)) { cleanupNeeded = true; return publish({ status: "unavailable", message: "restore-failed" }); } return state(); }
-      finally { restoring = false; }
-      if (!grant) return value.message === "restoring" ? publish({ status: "signed-out" }) : state();
-      return refresh();
-    },
+    start,
     begin,
     /** After this computer's sign-in ended (it lasts a set time, or was
      * removed): forget it and start a new sign-in in one step, never showing

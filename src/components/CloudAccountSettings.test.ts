@@ -141,6 +141,13 @@ it("while a saved sign-in is read, nothing is offered and the Cloud link waits",
   expect(cloudLinkAction({ status: "signed-out", message: "restoring" }, { arrived: true, connected: false })).toBeNull();
   render({ linkRequest: 1 }); f.effects[1](); await flush(); expect(bridge.begin).not.toHaveBeenCalled();
 });
+it("a saved sign-in that could not be read was removed: one line says so, and Sign in is the next step", async () => {
+  await ready({ status: "signed-out", message: "restore-removed" });
+  const html = render().html;
+  expect(html).toContain("Cloud sign-in couldn&#x27;t be read, so it was removed. Sign in again.");
+  none(html, ["could not be completed", "Unlock your system keychain"]);
+  expect(button("Sign in to OMB Cloud")).toBeTruthy();
+});
 it("setting up shows the Cloud page's steps, a slow setup and a failed setup's next try", async () => {
   const paid = { ...free, entitlement: { plan: "pro" as const, status: "active" as const, expiresAt: 1_900_000_000_000, version: 2 } };
   // Paid, and the Admin does not list the Cloud yet: it is being set up.

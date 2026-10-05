@@ -144,6 +144,7 @@
   "cloudAccount.reauthExpired": "Deine Anmeldung auf diesem Computer ist abgelaufen (sie gilt nur eine bestimmte Zeit). Melde dich erneut an, um deine Cloud hier weiter zu nutzen. Dein Tarif ist davon nicht betroffen.",
   "cloudAccount.reauthEnded": "Dieser Computer ist nicht mehr bei OMB Cloud angemeldet, zum Beispiel weil er in deinem Cloud-Dashboard entfernt wurde. Melde dich erneut an, um deine Cloud hier zu nutzen. Dein Tarif ist davon nicht betroffen.",
   "cloudAccount.unavailable": "OMB Cloud ist gerade nicht erreichbar, daher kann diese App deinen Tarif nicht prüfen. An deinem Tarif hat sich nichts geändert; die App versucht es weiter.",
+  "cloudAccount.restoreRemoved": "Die Cloud-Anmeldung dieses Computers konnte nicht gelesen werden und wurde deshalb entfernt. Melde dich erneut an.",
   "cloudPhone.title": "Dein Telefon",
   "cloudPhone.subtitle": "Kopple die Telefon-App mit deiner Cloud statt mit diesem Computer – dann funktioniert sie auch, wenn dieser Computer aus ist.",
   "cloudPhone.action": "Deine Cloud auf dem Telefon nutzen",

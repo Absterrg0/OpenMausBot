@@ -65,6 +65,7 @@
   "cloudAccount.reauthExpired": "Votre connexion sur cet ordinateur a pris fin (elle dure un temps limité). Reconnectez-vous pour continuer à utiliser votre Cloud ici. Votre forfait n'est pas concerné.",
   "cloudAccount.reauthEnded": "Cet ordinateur n'est plus connecté à OMB Cloud, par exemple parce qu'il a été retiré dans votre tableau de bord Cloud. Reconnectez-vous pour utiliser votre Cloud ici. Votre forfait n'est pas concerné.",
   "cloudAccount.unavailable": "OMB Cloud est injoignable pour le moment, cette application ne peut donc pas vérifier votre forfait. Rien n'a changé pour votre forfait ; l'application continue d'essayer.",
+  "cloudAccount.restoreRemoved": "La connexion Cloud de cet ordinateur n'a pas pu être lue, elle a donc été supprimée. Reconnectez-vous.",
   "cloudPhone.title": "Votre téléphone",
   "cloudPhone.subtitle": "Associez l’app mobile à votre Cloud plutôt qu’à cet ordinateur : elle continue de fonctionner quand cet ordinateur est éteint.",
   "cloudPhone.action": "Utiliser votre Cloud sur votre téléphone",
