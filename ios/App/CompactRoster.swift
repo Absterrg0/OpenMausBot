@@ -503,7 +503,10 @@ struct CompactThreadLine: View {
 }
 
 /// A group on one line: two of its members' faces, overlapping, then its name.
-struct CompactRoomRow: View {
+///
+/// Shown `.equatable()`, so a group whose room and members have not moved
+/// does not redraw its two faces on every publish.
+struct CompactRoomRow: View, Equatable {
     let room: Room
     /// Its members as the state holds them, looked up by the list rather
     /// than by observing the session from every row.
@@ -513,6 +516,12 @@ struct CompactRoomRow: View {
     let today: Date
     /// An unanswered approval or question sits in the group's thread.
     var waiting = false
+
+    /// Everything the row draws (the scaled sizes follow the environment).
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.room == rhs.room && lhs.members == rhs.members && lhs.lastActivity == rhs.lastActivity
+            && lhs.today == rhs.today && lhs.waiting == rhs.waiting
+    }
 
     @ScaledMetric(relativeTo: .body) private var scaledFace = CompactRosterMetrics.face
     @Environment(\.dynamicTypeSize) private var typeSize
