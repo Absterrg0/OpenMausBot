@@ -13,7 +13,7 @@ struct BotAvatarView: View {
     var animated = false
     var comets = false
 
-    @EnvironmentObject private var session: Session
+    @Environment(\.avatarLoader) private var avatars
     @State private var image: UIImage?
     @State private var failed = false
 
@@ -45,7 +45,7 @@ struct BotAvatarView: View {
             failed = false
             // Only the flat crops paint the bytes; the mascot never needs them.
             guard crop != .mascot, bot.avatarUrl != nil else { return }
-            let data = await session.avatarData(for: bot)
+            let data = await avatars.data(for: bot)
             guard !Task.isCancelled else { return }
             guard let data, let decoded = Self.decode(data) else {
                 failed = true
@@ -130,6 +130,34 @@ private struct AnimatedAttachmentView: UIViewRepresentable {
         guard view.image !== image else { return }
         view.image = image
         view.startAnimating()
+    }
+}
+
+/// Where a face's picture comes from: the session's cached, authenticated
+/// fetch. An environment value rather than `@EnvironmentObject Session`,
+/// which would redraw every face on screen whenever the session publishes —
+/// many times a second while a fleet works — for a fetch that runs once.
+struct AvatarLoader {
+    private weak var session: Session?
+
+    init(session: Session?) {
+        self.session = session
+    }
+
+    @MainActor
+    func data(for bot: Bot) async -> Data? {
+        await session?.avatarData(for: bot)
+    }
+}
+
+private struct AvatarLoaderKey: EnvironmentKey {
+    static let defaultValue = AvatarLoader(session: nil)
+}
+
+extension EnvironmentValues {
+    var avatarLoader: AvatarLoader {
+        get { self[AvatarLoaderKey.self] }
+        set { self[AvatarLoaderKey.self] = newValue }
     }
 }
 

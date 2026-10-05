@@ -42,6 +42,12 @@ struct ChatListView: View {
     private static let listBottomMargin: CGFloat = 16
 
     var body: some View {
+        // Read once per render. The island, the pill (twice: the bar lays
+        // out both of its widths) and every row's waiting hand all start
+        // from the same approvals, and each walk of them visits every thread.
+        let approvals = session.state.pendingApprovals
+        let updates = session.state.updates(detail: activity, pendingApprovals: approvals)
+        let waiting = waitingChats(approvals)
         NavigationStack(path: $path) {
             GeometryReader { geo in
             VStack(spacing: 0) {
@@ -56,7 +62,7 @@ struct ChatListView: View {
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 0) {
                         if query.isEmpty {
-                            rosterSections
+                            rosterSections(waiting: waiting)
                         } else {
                             if !searchHits.isEmpty {
                                 HStack {
@@ -91,7 +97,7 @@ struct ChatListView: View {
                                     .padding(.top, 24)
                             }
 
-                            botRows(chats, waiting: waitingChats)
+                            botRows(chats, waiting: waiting)
                         }
                     }
                     .padding(.top, Self.listTopInset)
@@ -114,7 +120,7 @@ struct ChatListView: View {
                 }
                 // The list scrolls beneath the floating bar, and its end is
                 // inset by the bar's measured height rather than a guess.
-                .safeAreaInset(edge: .bottom, spacing: 0) { bottomBar }
+                .safeAreaInset(edge: .bottom, spacing: 0) { bottomBar(updates: updates) }
             }
             // top-aligned: the roster fills downward from the header
             .frame(maxWidth: CompanionLayout.rosterWidth, maxHeight: .infinity, alignment: .top)
@@ -122,9 +128,7 @@ struct ChatListView: View {
             // a bot that stopped for you grows out of the island
             .overlay(alignment: .top) {
                 if CompanionLayout.supportsIslandPresentation {
-                    NeedsYouIsland(
-                        update: session.state.updates(detail: activity).first { $0.kind == .needsYou }
-                    ) { chat in path.append(chat) }
+                    NeedsYouIsland(update: updates.first { $0.kind == .needsYou }) { chat in path.append(chat) }
                 }
             }
             }
@@ -298,9 +302,10 @@ struct ChatListView: View {
     }
 
     @ViewBuilder
-    private var rosterSections: some View {
-        let allSummaries = session.state.chatSummaries(activity: activity)
-        let waiting = waitingChats
+    private func rosterSections(waiting: Set<String>) -> some View {
+        // Only comfortable rows show a preview line (search, which matches
+        // on it, reads `chats` instead).
+        let allSummaries = session.state.chatSummaries(activity: activity, previews: density == .comfortable)
         let attention = self.attention
         if !attention.isEmpty {
             sectionLabel(Text("Needs attention"))
@@ -351,11 +356,12 @@ struct ChatListView: View {
             compactRoomsSection(
                 title: "Groups",
                 rooms: session.state.unsectionedChannels,
-                showsCreate: true
+                showsCreate: true,
+                waiting: waiting
             )
 
             if !session.state.botChats.isEmpty {
-                compactRoomsSection(title: "Bot threads", rooms: session.state.botChats, showsCreate: false)
+                compactRoomsSection(title: "Bot threads", rooms: session.state.botChats, showsCreate: false, waiting: waiting)
             }
         }
 
@@ -389,7 +395,7 @@ struct ChatListView: View {
                     if !section.chiefs.isEmpty {
                         botRows(summaries(for: section.chiefs, from: allSummaries), waiting: waiting)
                     }
-                    compactRoomRows(section.channels)
+                    compactRoomRows(section.channels, waiting: waiting)
                 }
                 botRows(summaries(for: section.bots, from: allSummaries), waiting: waiting)
             }
@@ -402,7 +408,9 @@ struct ChatListView: View {
     /// Groups as one-line rows under a title that carries the "+" the
     /// comfortable strip shows as a tile.
     @ViewBuilder
-    private func compactRoomsSection(title: LocalizedStringKey, rooms: [Room], showsCreate: Bool) -> some View {
+    private func compactRoomsSection(
+        title: LocalizedStringKey, rooms: [Room], showsCreate: Bool, waiting: Set<String>
+    ) -> some View {
         HStack(spacing: 0) {
             sectionLabel(Text(title))
             Spacer(minLength: 0)
@@ -429,18 +437,20 @@ struct ChatListView: View {
         .frame(minHeight: showsCreate ? 44 : nil)
         .padding(.top, showsCreate ? 0 : sectionSpacing)
         .padding(.bottom, showsCreate ? 0 : 4)
-        compactRoomRows(rooms)
+        compactRoomRows(rooms, waiting: waiting)
     }
 
     /// In the order the tiles showed them, each stamped with its thread's
     /// last message the way `chatSummaries` stamps a row.
-    private func compactRoomRows(_ rooms: [Room]) -> some View {
-        let waiting = waitingChats
+    private func compactRoomRows(_ rooms: [Room], waiting: Set<String>) -> some View {
+        let today = RosterDay.today
         return ForEach(rooms) { room in
             NavigationLink(value: Chat.room(room)) {
                 CompactRoomRow(
                     room: room,
-                    lastActivity: session.state.visibleTranscript(forThread: room.threadId).last?.at ?? 0,
+                    members: members(of: room),
+                    lastActivity: session.state.lastVisibleMessage(forThread: room.threadId)?.at ?? 0,
+                    today: today,
                     waiting: waiting.contains(room.id)
                 )
             }
@@ -493,28 +503,47 @@ struct ChatListView: View {
     /// One line per bot, its threads beneath it once opened. Search results
     /// can include groups, which get their own one-line row.
     private func compactRows(_ rows: [ChatSummary], waiting: Set<String>) -> some View {
-        ForEach(rows) { summary in
+        let queued = session.state.queuedThreadIds
+        let today = RosterDay.today
+        return ForEach(rows) { summary in
             switch summary.chat {
             case let .bot(bot):
                 CompactBotEntry(
                     bot: bot,
+                    face: MausState.forChat(summary.chat, in: session.state),
                     lastActivity: summary.lastActivity,
+                    today: today,
                     hasPendingCard: waiting.contains(bot.id),
-                    query: $query,
-                    expanded: expandedBinding(bot.id),
-                    collapsedFolders: $collapsedFolders,
-                    creating: creatingBinding(bot.id),
+                    queuedThreadIds: queued,
+                    query: query,
+                    expanded: expandedBots.contains(bot.id),
+                    collapsedFolders: collapsedFolders,
+                    creating: creatingThreads.contains(bot.id),
+                    session: session,
+                    toggleExpanded: {
+                        if expandedBots.contains(bot.id) { expandedBots.remove(bot.id) } else { expandedBots.insert(bot.id) }
+                    },
+                    collapse: { expandedBots.remove(bot.id) },
+                    toggleFolder: { key in
+                        if collapsedFolders.contains(key) { collapsedFolders.remove(key) } else { collapsedFolders.insert(key) }
+                    },
+                    beginCreating: { creatingThreads.insert(bot.id).inserted },
+                    endCreating: { creatingThreads.remove(bot.id) },
                     openRow: {
                         path.append(session.threadSelection.restoringThread(summary.chat, connectionID: session.connection?.id))
                     },
                     open: { chat in path.append(chat) },
                     manage: { chat in managingThreads = chat }
                 )
+                .equatable()
             case let .room(room):
                 Button {
                     path.append(summary.chat)
                 } label: {
-                    CompactRoomRow(room: room, lastActivity: summary.lastActivity, waiting: waiting.contains(room.id))
+                    CompactRoomRow(
+                        room: room, members: members(of: room),
+                        lastActivity: summary.lastActivity, today: today, waiting: waiting.contains(room.id)
+                    )
                 }
                 .buttonStyle(.plain)
                 .accessibilityIdentifier("chat-row.\(room.id)")
@@ -576,7 +605,7 @@ struct ChatListView: View {
 
     // MARK: - Bottom bar
 
-    private var bottomBar: some View {
+    private func bottomBar(updates: [ChatUpdate]) -> some View {
         GlassGroup(spacing: 8) {
             HStack(spacing: 8) {
                 if searchOpen {
@@ -614,8 +643,8 @@ struct ChatListView: View {
                     .glassCapsule()
                 } else {
                     ViewThatFits(in: .horizontal) {
-                        expandedBottomActions
-                        compactBottomActions
+                        expandedBottomActions(updates: updates)
+                        compactBottomActions(updates: updates)
                     }
                 }
             }
@@ -625,9 +654,9 @@ struct ChatListView: View {
         .animation(.snappy(duration: 0.25), value: searchOpen)
     }
 
-    private var expandedBottomActions: some View {
+    private func expandedBottomActions(updates: [ChatUpdate]) -> some View {
         HStack(spacing: 8) {
-            updatesButton
+            updatesButton(updates: updates)
                 .frame(width: 180)
             searchButton
             walkieButton
@@ -638,9 +667,9 @@ struct ChatListView: View {
         }
     }
 
-    private var compactBottomActions: some View {
+    private func compactBottomActions(updates: [ChatUpdate]) -> some View {
         HStack(spacing: 8) {
-            updatesButton
+            updatesButton(updates: updates)
                 .frame(minWidth: 148)
             searchButton
             walkieButton
@@ -665,8 +694,8 @@ struct ChatListView: View {
         }
     }
 
-    private var updatesButton: some View {
-        UpdatesPill(updates: session.state.updates(detail: activity)) {
+    private func updatesButton(updates: [ChatUpdate]) -> some View {
+        UpdatesPill(updates: updates) {
             Haptics.selection()
             showingUpdates = true
         }
@@ -762,8 +791,12 @@ struct ChatListView: View {
         }
     }
 
-    private var waitingChats: Set<String> {
-        Set(session.state.pendingApprovals.compactMap { session.state.chat(forThread: $0.threadId)?.id })
+    private func waitingChats(_ approvals: [(threadId: String, message: Message)]) -> Set<String> {
+        Set(approvals.compactMap { session.state.chat(forThread: $0.threadId)?.id })
+    }
+
+    private func members(of room: Room) -> [Bot] {
+        room.memberIds.compactMap { session.state.bot($0) }
     }
 
     private var rosterIsEmpty: Bool {

@@ -49,6 +49,15 @@ extension CompanionState {
     /// setting: these lines fold tool calls and webhooks by the same rule as
     /// the roster, so Hidden means hidden on every surface (MOCA-204).
     public func updates(detail: ActivityDetail) -> [ChatUpdate] {
+        updates(detail: detail, pendingApprovals: pendingApprovals)
+    }
+
+    /// The same, from `pendingApprovals` the caller already holds: Home
+    /// reads them for its rows too, and each walk visits every thread.
+    public func updates(
+        detail: ActivityDetail,
+        pendingApprovals: [(threadId: String, message: Message)]
+    ) -> [ChatUpdate] {
         var out: [ChatUpdate] = []
         var seen = Set<String>()
 

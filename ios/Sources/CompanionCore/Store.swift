@@ -87,7 +87,12 @@ public struct CompanionState: Sendable {
     /// `live.call` frame, `GET /api/live/call` (Session) or the harness's
     /// answer to a hang-up (`applyLiveCallEnd`) is the only source. Kept as
     /// `ended` until the harness clears it, so the bar can say why.
-    public var liveCall: LiveCallState?
+    public var liveCall: LiveCallState? {
+        didSet { liveCallRevision &+= 1 }
+    }
+    /// Counts writes to `liveCall`, whoever made them: what a lookup that
+    /// was out meanwhile checks before it puts its older answer on the line.
+    public private(set) var liveCallRevision = 0
 
     public init() {}
 
@@ -129,19 +134,40 @@ public struct CompanionState: Sendable {
         return Array(branch[..<index]) + [standIn]
     }
 
+    /// The last line of `visibleTranscript(forThread:)` without building
+    /// the branch, which ends at the leaf. A list row's face needs only
+    /// this, and the roster asks for it for every bot on every render.
+    public func lastVisibleMessage(forThread threadId: String) -> Message? {
+        guard pendingEdits[threadId] == nil else { return visibleTranscript(forThread: threadId).last }
+        let all = transcript(forThread: threadId)
+        guard let leafId = activeLeafIds[threadId] ?? bot(forThread: threadId)?.activeLeafId else { return all.last }
+        // The newest of a duplicated id, as in `activeBranch`.
+        return all.last { $0.id == leafId } ?? all.last
+    }
+
     private func activeBranch(forThread threadId: String) -> [Message] {
         let all = transcript(forThread: threadId)
         guard let leafId = activeLeafIds[threadId] ?? bot(forThread: threadId)?.activeLeafId else { return all }
-        let byId = Dictionary(all.map { ($0.id, $0) }, uniquingKeysWith: { _, newest in newest })
-        guard var current = byId[leafId] else { return all }
-        var visible: [Message] = []
-        var visited = Set<String>()
-        while visited.insert(current.id).inserted {
-            visible.append(current)
-            guard let parentId = current.parentId, let parent = byId[parentId] else { break }
+        // Walk positions, not copies: every render of a busy roster asks for
+        // most threads' branches, and copying each message into a lookup
+        // table cost more than the walk. The newest of a duplicated id wins.
+        var positions: [String: Int] = [:]
+        positions.reserveCapacity(all.count)
+        for position in all.indices { positions[all[position].id] = position }
+        guard var current = positions[leafId] else { return all }
+        var path: [Int] = []
+        var visited = Set<Int>()
+        while visited.insert(current).inserted {
+            path.append(current)
+            guard let parentId = all[current].parentId, let parent = positions[parentId] else { break }
             current = parent
         }
-        return visible.reversed()
+        // An unforked thread is stored in branch order: the branch is the
+        // transcript itself, with nothing to copy.
+        if path.count == all.count, path.enumerated().allSatisfy({ $0.element == all.count - 1 - $0.offset }) {
+            return all
+        }
+        return path.reversed().map { all[$0] }
     }
 
     public func bot(_ id: String) -> Bot? {
@@ -237,6 +263,9 @@ public struct CompanionState: Sendable {
         var out: [(threadId: String, message: Message)] = []
         let activeThreads = Set(bots.flatMap { [$0.threadId] + ($0.tasks ?? []).map(\.threadId) } + rooms.map(\.threadId))
         for threadId in activeThreads {
+            // Most threads hold no open card at all; only those that do pay
+            // for working out which of them are on the visible branch.
+            guard messages[threadId]?.contains(where: { $0.card?.isPending == true }) == true else { continue }
             for message in visibleTranscript(forThread: threadId) where message.card?.isPending == true {
                 out.append((threadId: threadId, message: message))
             }
@@ -311,9 +340,14 @@ public struct CompanionState: Sendable {
     }
 
     /// Merge a search landing window into the pages already held.
+    ///
+    /// The held pages can repeat an id — they came from the computer as
+    /// they were, and hydrate merges waiting threads on every cold start —
+    /// so the last copy wins instead of trapping the launch.
     public mutating func merge(_ page: ThreadPage, intoThread threadId: String) {
         var byId = Dictionary(
-            uniqueKeysWithValues: (messages[threadId] ?? []).map { ($0.id, $0) }
+            (messages[threadId] ?? []).map { ($0.id, $0) },
+            uniquingKeysWith: { _, newest in newest }
         )
         for message in page.messages { byId[message.id] = message }
         messages[threadId] = byId.values.sorted {
@@ -622,21 +656,18 @@ public struct CompanionState: Sendable {
     }
 
     /// The harness's answer to `GET /api/live/call`, applied only if nothing
-    /// newer reached the line while the request was out: no frame folded
-    /// (the cursor is where it was) and no hang-up answer applied (the line
-    /// is what it was). A lookup that straddles a start could otherwise put
-    /// back a `null` from before the 201 and end the call that just began.
-    /// Mirrors `hydrate(_:waitingThreads:ifCursorMatches:)`.
+    /// newer reached the line while the request was out: no `live.call`
+    /// frame, hang-up answer or other lookup wrote it since `revision` was
+    /// read from `liveCallRevision`. A lookup that straddles a start could
+    /// otherwise put back a `null` from before the 201 and end the call that
+    /// just began. Frames about anything else leave the line alone, so they
+    /// do not void the answer: the stream keeps folding while it is out.
     ///
     /// Returns false when the answer was stale and dropped; the stream
     /// already carried something newer.
     @discardableResult
-    public mutating func applyLiveCallLookup(
-        _ call: LiveCallState?,
-        ifCursorMatches expectedCursor: String?,
-        lineWas expectedLine: LiveCallState?
-    ) -> Bool {
-        guard cursor == expectedCursor, liveCall == expectedLine else { return false }
+    public mutating func applyLiveCallLookup(_ call: LiveCallState?, ifRevisionIs revision: Int) -> Bool {
+        guard liveCallRevision == revision else { return false }
         liveCall = call
         return true
     }
