@@ -428,6 +428,10 @@ export interface WireMessage {
      * server-local spill paths are not exposed to clients. */
     fullResult?: boolean;
   };
+  /** A bot line a "post" webhook wrote: whoever called the webhook chose
+   * its words. On a Cloud home a conversation holding one is someone else's
+   * for lending and memory (server/cloud-lending.ts reportsFromOthers). */
+  webhookPost?: boolean;
   /** user messages sent INTO a running turn (capabilities.queueing). */
   steered?: boolean;
   /** user messages a peer bot handed to this thread's RUNNING turn through

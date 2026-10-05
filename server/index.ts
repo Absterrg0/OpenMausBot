@@ -927,7 +927,7 @@ function cloudLendingTurn(capability: Pick<InternalCapability, "botId" | "thread
     generation: capability.generation,
     thread: store.messagesFor(capability.threadId),
     starters: cloudThreadStarters(capability.threadId),
-    reportsFromOthers: store.messagesFor(capability.threadId).some(cloudOthersRoutineReport),
+    reportsFromOthers: store.messagesFor(capability.threadId).some(cloudReportFromOthers),
     ownerPerson: cloudProvenOwnerPerson,
     cardAnswerer: cloudCardAnswerer,
     routineRun: () => {
@@ -973,11 +973,12 @@ function cloudLendingView(capability: Pick<InternalCapability, "botId" | "thread
   return CLOUD_HOME !== null && cloudHomeLendingRefusal(cloudLendingTurn(capability)) === null;
 }
 
-/** On a Cloud home: a routine's report (its lifecycle card, carrying what
- * the run said) of a routine the owner did not write, as it stands now. It
- * brings someone else's instructions' results into the conversation it
- * reports to. */
-function cloudOthersRoutineReport(line: Message): boolean {
+/** On a Cloud home: a line that brings someone else's words into the
+ * conversation it lands in: a "post" webhook's payload, or a routine's
+ * report (its lifecycle card, carrying what the run said) of a routine the
+ * owner did not write, as it stands now. */
+function cloudReportFromOthers(line: Message): boolean {
+  if (line.webhookPost) return true;
   if (line.kind !== "routine.run" || !line.routineRun) return false;
   const routine = routines?.listRoutines().find((candidate) => candidate.id === line.routineRun!.routineId);
   return !routine || cloudRoutineAuthors?.authored(routine.id, routine) !== true;
@@ -997,7 +998,7 @@ function cloudOwnerOnlyThread(threadId: string): boolean {
   // A card answered later changes the answer too: key on its answerer as well.
   const lastKey = last ? `${last.id}:${last.card?.answeredBy ? JSON.stringify(last.card.answeredBy) : ""}` : undefined;
   if (cached && cached.length === thread.length && cached.last === lastKey) return cached.owner;
-  const owner = ownerOnlyConversation(thread, cloudProvenOwnerPerson, cloudCardAnswerer) && !thread.some(cloudOthersRoutineReport);
+  const owner = ownerOnlyConversation(thread, cloudProvenOwnerPerson, cloudCardAnswerer) && !thread.some(cloudReportFromOthers);
   if (ownerOnlyCache.size > 5_000) ownerOnlyCache.clear();
   ownerOnlyCache.set(threadId, { length: thread.length, last: lastKey, owner });
   return owner;
@@ -1139,14 +1140,10 @@ function approvalShape(shape: { prompt?: string; botId?: string; runOn?: string;
 /** Who opens a routine's results conversation on a Cloud home: the writer
  * of this request, else the owner for a routine that is theirs (they wrote
  * it as it stands, or they are its writer: cloud-owner.ts), else its last
- * writer, else nobody. A webhook's run is the owner's: only their own
- * devices can create, edit or rotate one (admin scope), so it runs at the
- * bot's own level, in its folder, as on the desktop. Its payload still never
- * reaches the lent Mac: cloud-lending.ts refuses every webhook run. */
+ * writer, else nobody. */
 function routineOpener(routineId: string): string {
   if (routineWriterInFlight) return routineWriterInFlight;
   const routine = routines?.listRoutines().find((candidate) => candidate.id === routineId);
-  if (!routine && CLOUD_OWNER_KEY && webhooks.list().some((hook) => hook.id === routineId)) return CLOUD_OWNER_KEY;
   if (routine && CLOUD_OWNER_KEY && cloudRoutineAuthors?.authored(routineId, routine)) return CLOUD_OWNER_KEY;
   const writer = cloudRoutineAuthors?.writer(routineId);
   if (writer && CLOUD_OWNER_KEY && writer === CLOUD_OWNER_KEY) return CLOUD_OWNER_KEY;
@@ -10919,12 +10916,18 @@ routines = new RoutineManager({
     }
     return groupIsWorking(group) || coordinator.busy ? "busy" : "ready";
   },
-  createTask: (botId, title, activate = false, routineId) => {
+  createTask: (botId, title, activate = false, run) => {
     const task = store.createTask(botId, title, activate);
     // On a Cloud home a run's conversation is opened, like its results
     // conversation, by whoever wrote the routine: a run of one that is
     // nobody's is confined to a folder of its own, never the bot's project.
-    if (task && CLOUD_HOME && routineId) threadStarters.set(task.threadId, routineOpener(routineId));
+    // A webhook's run is the owner's: only their own devices can create,
+    // edit or rotate a webhook, so it works at the bot's own level, in its
+    // folder, as on the desktop. Its payload still never reaches the lent
+    // Mac: cloud-lending.ts refuses every webhook run by its trigger.
+    if (task && CLOUD_HOME && run) {
+      threadStarters.set(task.threadId, run.triggerSource === "webhook" ? CLOUD_OWNER_KEY! : routineOpener(run.routineId));
+    }
     // The store's frame announces it. A run's task that stays in the
     // background leaves the open thread alone, so that frame carries no
     // transcript: a whole thread on every scheduled run once passed the phone
@@ -11838,7 +11841,7 @@ const webhooks = new WebhookManager({
   // that bot's selection, including a live conversation.
   post: (botId, threadId, text) => {
     if (!store.bot(botId)) return;
-    store.appendMessage(threadId, { role: "bot", kind: "text", text });
+    store.appendMessage(threadId, { role: "bot", kind: "text", text, webhookPost: true });
   },
   // Mirrors resolveResultsThread's routines wiring a few hundred lines up
   // in this same file: create-on-first-use, never activated (so it never

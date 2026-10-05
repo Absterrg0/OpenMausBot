@@ -140,7 +140,7 @@ into a conversation that is the owner's.
 A webhook is the owner's: only their own devices can create, edit or rotate
 one, so its runs work at the bot's own level, in its project folder, with its
 shell, as on the desktop. What a webhook brings in still never reaches the
-lent Mac (below).
+lent Mac, whether it starts a run or posts to chat (below).
 
 The routines a revoked session wrote are paused at that start, and the
 conversations it opened lose their working folder: their next turn works in
@@ -506,9 +506,11 @@ On the Cloud home (`server/shared-computers.ts`, `server/index.ts`):
   it and it holds nobody else's words, anywhere in it, before or during the
   turn: one line from a guest, a teammate bot or a local process (sent,
   queued, steered or handed in, or history imported with a move), one card
-  answer from someone else, or one report of a routine the owner did not
-  write, takes that conversation out of lending for good, because a resumed
-  session carries everything said in it. A conversation a guest opened (and
+  answer from someone else, one report of a routine the owner did not
+  write, or one message a webhook posted (a webhook that posts to chat
+  writes into the bot's Updates conversation), takes that conversation out
+  of lending for good, because a resumed session carries everything said in
+  it. A conversation a guest opened (and
   named) is never the owner's, whoever writes in it. The bot is told "Someone else wrote in this
   conversation, so it can't use your Mac. Start a new conversation to use it."
   and the lending switch says the same. The owner's own edits count as theirs,
