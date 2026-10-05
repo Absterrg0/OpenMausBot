@@ -39,4 +39,14 @@ describe("Settings → Connections", () => {
     expect(html).toContain("More providers for OpenCode bots");
     expect(html).toContain('<code class="font-mono">opencode auth login</code>');
   });
+
+  // A Cloud has no terminal: a key for any OpenCode provider is saved here.
+  it("offers keys for other OpenCode providers next to the OpenCode key", async () => {
+    const { SettingsModal } = await import("./SettingsModal");
+    const html = renderToStaticMarkup(createElement(SettingsModal));
+    const opencode = html.indexOf('data-api-key-row="opencodeGo"');
+    expect(opencode).toBeGreaterThan(0);
+    expect(html.indexOf("data-opencode-provider-keys")).toBeGreaterThan(opencode);
+    expect(html).toContain("Keys for other OpenCode providers");
+  });
 });

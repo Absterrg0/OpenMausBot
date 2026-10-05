@@ -8,7 +8,7 @@ import { dirname, isAbsolute, join, relative, resolve as resolvePath, sep } from
 
 import { ATTACHMENTS_DIR } from "../../attachments.ts";
 import { cloudHomeConfigured } from "../../cloud-home.ts";
-import { DATA_DIR } from "../../config.ts";
+import { DATA_DIR, OPENCODE_PROVIDER_ENV } from "../../config.ts";
 import { hostedWorkspaceConfigured } from "../../enterprise.ts";
 import { decodeInjectId, hostApiKey, localHost, mergeLocalInject } from "../local-inject.ts";
 import { createAcpDriver, offeredModels, type AccountErrorCode, type AcpSupport } from "./core.ts";
@@ -458,20 +458,8 @@ export function resetOpenCodeModelCache() {
  * from the Go-only name. */
 export const resetOpenCodeGoModelCache = resetOpenCodeModelCache;
 
-/** Provider keys OpenCode reads from its environment, as it does in a
- * terminal: with ANTHROPIC_API_KEY set, `opencode` lists Anthropic's models.
- * Keys OpenMaus saves for another engine (xAI, Mistral, the workspace
- * Anthropic key) are workspace credentials under other names and never
- * ride along. */
-export const OPENCODE_PROVIDER_ENV = [
-  "ANTHROPIC_API_KEY",
-  "OPENAI_API_KEY",
-  "GEMINI_API_KEY",
-  "GOOGLE_API_KEY",
-  "KIMI_API_KEY",
-  "MOONSHOT_API_KEY",
-  "MINIMAX_API_KEY",
-] as const;
+/** The names live in config.ts, beside the keys the owner saves for OpenCode. */
+export { OPENCODE_PROVIDER_ENV };
 
 /** Whether OpenCode may read provider keys from the server's own
  * environment. Only when that environment is the person's own shell: not on a
@@ -500,9 +488,24 @@ export function setOpenCodeProviderKeyPolicy(allowed: () => boolean): void {
   providerKeysAllowed = allowed;
 }
 
+let ownProviderKeys = (): Readonly<Record<string, string>> => ({});
+
+/** The keys the owner saved for OpenCode in Settings (config.ts
+ * openCodeProviderKeys). The server sets this beside the policy above. */
+export function setOpenCodeOwnProviderKeys(keys: () => Readonly<Record<string, string>>): void {
+  ownProviderKeys = keys;
+}
+
 function withholdProviderKeysWhenManaged(env: Record<string, string | undefined>): void {
   if (providerKeysAllowed()) return;
-  for (const key of OPENCODE_PROVIDER_ENV) delete env[key];
+  const own = ownProviderKeys();
+  for (const key of OPENCODE_PROVIDER_ENV) {
+    // A key the owner saved for OpenCode in Settings is theirs to use on any
+    // server. Only that exact value: the server's own key under the same
+    // name still stays out.
+    if (own[key] !== undefined && env[key] === own[key]) continue;
+    delete env[key];
+  }
 }
 
 function opencodeConfigDir(env: Record<string, string | undefined>): string {

@@ -191,6 +191,8 @@ import {
   onConfigSaved,
   CLAUDE_API_INSTANCE,
   liveSettingsFor,
+  mergeOpenCodeProviderKeys,
+  openCodeProviderKeys,
 } from "./config.ts";
 import { sweepThreadEventLogs, type ThreadLogRetentionCandidate } from "./thread-retention.ts";
 import { ComputerControl } from "./computer-control.ts";
@@ -248,7 +250,7 @@ import {
 import type { GroupGoalRunCardData, GroupGoalRunStatus } from "../shared/group-goal-run.ts";
 
 import { BUILT_IN_DRIVERS } from "./drivers/builtIn.ts";
-import { openCodeProviderKeysAllowed, setOpenCodeProviderKeyPolicy } from "./drivers/acp/opencode-go.ts";
+import { openCodeProviderKeysAllowed, setOpenCodeOwnProviderKeys, setOpenCodeProviderKeyPolicy } from "./drivers/acp/opencode-go.ts";
 import { getOrCreateChannel, mirrorActivity, mirrorExchange, mirrorReply, type CommsBus } from "./comms-visibility.ts";
 import { readMessageText, recallMessages, recentMessages, searchMessagesAsync, closeMessageSearch, closeMessageDb, chatFollowups, cancelledChatFollowup, settleChatFollowups, threadsReferencing } from "./message-db.ts";
 import { briefCrossingLabel, claimRecallCrossings, recallCrossingLabel } from "./recall-disclosure.ts";
@@ -1882,6 +1884,8 @@ const openCodeKeysAllowed = (): boolean => openCodeProviderKeysAllowed({
   sharedSignIn: sharedSignIn(signInAllowList()),
 });
 setOpenCodeProviderKeyPolicy(openCodeKeysAllowed);
+// Keys the owner saved for OpenCode in Settings reach it on every server.
+setOpenCodeOwnProviderKeys(() => openCodeProviderKeys(cfg));
 let openCodeKeysLastAllowed = openCodeKeysAllowed();
 /** OpenCode lists a provider's models only while it may read that
  * provider's key. When enrollment or the sign-in list changes the answer,
@@ -14911,7 +14915,8 @@ function configStatus() {
     // not a saved key
     box: boat.describeBoatAccount(cfg),
     vps: { configured: Boolean(vpsSshAlias(cfg)), sshAlias: vpsSshAlias(cfg) ?? "" },
-    opencodeGo: { configured: Boolean(cfg.opencodeGo?.apiKey) },
+    // names only: every provider key stays write-only
+    opencodeGo: { configured: Boolean(cfg.opencodeGo?.apiKey), providerKeys: Object.keys(openCodeProviderKeys(cfg)) },
     // the chosen voice is a setting, not a secret; the key is reported the
     // same configured-or-not way as every other credential
     tts: tts.describeVoice(cfg),
@@ -14993,6 +14998,7 @@ function configForAccess(status: ReturnType<typeof configStatus>, admin: boolean
     edition: { edition: status.edition.edition, features: status.edition.features },
     signIn: { admins: [], members: [] },
     vps: { configured: status.vps.configured, sshAlias: "" },
+    opencodeGo: { configured: status.opencodeGo.configured, providerKeys: [] },
     profile: { name: status.profile.name, email: "" },
     browserProfiles: status.browserProfiles.map((profile) => Object.fromEntries(Object.entries(profile).filter(([key]) => key !== "partitionId"))),
   };
@@ -24127,6 +24133,14 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       for (const provider of transitioningProviders) {
         const conflict = providerOperationConflict(provider);
         if (conflict) return json(res, 409, { error: conflict });
+      }
+      // A change names only the OpenCode provider keys it saves or removes;
+      // the rest stay. Merged with no await before the save below, so it
+      // starts from what is saved at that moment.
+      if (patch.opencodeGo?.providerKeys) {
+        const merged = mergeOpenCodeProviderKeys(cfg, patch.opencodeGo.providerKeys);
+        if (!merged.ok) return json(res, 400, { error: merged.error });
+        patch.opencodeGo = { ...patch.opencodeGo, providerKeys: merged.keys };
       }
       const browserCleanupRequests: BrowserCleanupRequest[] = [];
       if (profileControlConflict()) return json(res, 409, { error: "Release browser control before deleting its profile." });
