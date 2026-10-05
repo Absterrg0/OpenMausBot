@@ -121,8 +121,11 @@ const streamTurn = () => {
 
 // omp-chunk: the happy turn with every stream frame arriving as an
 // `rpc_chunk` sequence, the way a v2 runtime chunks any frame over 1 MiB.
-// The process exits shortly after so a client that drops the chunks fails
-// fast instead of hanging on a run that never completes.
+// Without the protocol-2 negotiation the v1 transport cannot frame them
+// and replaces each one with the bounded `rpc_frame_error` stub, so a
+// client that never negotiated sees neither turn_end nor agent_end. The
+// process exits shortly after so such a client fails fast instead of
+// hanging on a run that never completes.
 const streamChunkedTurn = () => {
   for (const frame of [
     { type: "agent_start" },
@@ -134,7 +137,8 @@ const streamChunkedTurn = () => {
     { type: "turn_end", message: { stopReason: "end_turn", usage: { input: 12, output: 3 } }, usage: { input: 12, output: 3 } },
     { type: "agent_end" },
   ]) {
-    sendChunked(frame);
+    if (negotiatedV2) sendChunked(frame);
+    else send({ type: "rpc_frame_error", originalType: frame.type, error: "RPC frame exceeded the transport limit" });
   }
   setTimeout(() => process.exit(0), 50);
 };
@@ -303,8 +307,12 @@ process.stdin.on("end", () => process.exit(0));
 function handle(cmd: any) {
   switch (cmd.type) {
     case "negotiate_protocol":
-      // Vanilla pi has no such command and ignores the unknown frame.
-      if (!ompChunkMode) return;
+      // Vanilla pi 1.0.2 answers the unknown command with an explicit
+      // refusal and keeps working; only omp-chunk negotiates v2.
+      if (!ompChunkMode) {
+        send({ id: cmd.id, type: "response", command: "negotiate_protocol", success: false, error: "Unknown command: negotiate_protocol" });
+        return;
+      }
       if (cmd.protocolVersion === 2) {
         negotiatedV2 = true;
         send({ type: "response", command: "negotiate_protocol", success: true, data: { protocolVersion: 2 } });
