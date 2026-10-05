@@ -23037,7 +23037,8 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
     // One install at a time; the config frame's browserEngine tells the rest.
     // JSON only, so a form posted from another local page cannot start it.
     if (method === "POST" && path === "/api/browser-engine/install") {
-      if (!String(req.headers["content-type"] ?? "").toLowerCase().startsWith("application/json")) {
+      const mediaType = String(req.headers["content-type"] ?? "").split(";", 1)[0].trim().toLowerCase();
+      if (mediaType !== "application/json") {
         return json(res, 415, { error: "content-type must be application/json" });
       }
       if (!browserEngineInstall) {

@@ -2978,7 +2978,7 @@ describe("harness HTTP API", () => {
     const stream = await openSse(`${BASE}/api/events`);
     try {
       writeFileSync(failureMarker, "fail");
-      for (const headers of [{ "content-type": "application/x-www-form-urlencoded" }, { "content-type": "text/plain" }, undefined]) {
+      for (const headers of [{ "content-type": "application/x-www-form-urlencoded" }, { "content-type": "text/plain" }, { "content-type": "application/jsonp" }, undefined]) {
         const refused = await fetch(`${BASE}/api/browser-engine/install`, { method: "POST", headers, body: headers ? "x=1" : undefined });
         expect(refused.status).toBe(415);
       }
