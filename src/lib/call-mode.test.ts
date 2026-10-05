@@ -26,7 +26,7 @@ describe("call mode", () => {
   // On the person's Cloud the key is saved on the Cloud, not this computer.
   it("says the OpenAI key stays on the Cloud when the chat is on the person's Cloud", () => {
     const live = callModeHint("live", { cloudHome: true });
-    expect(live).toContain("A Live call sends your voice to OpenAI, along with the chat's recent messages, the bot's answers and the details of any approval it asks for. The OpenAI key stays on your Cloud.");
+    expect(live).toContain("A Live call sends your voice to OpenAI, along with the chat's recent messages, the bot's answers and the details of any approval it asks for. The OpenAI key stays on My Cloud.");
     expect(live).not.toContain("your computer");
     expect(liveDisclosure({ cloudHome: true })).toBe(t("call.live.disclosureCloud"));
     expect(liveDisclosure({ cloudHome: false })).toBe(t("call.live.disclosure"));

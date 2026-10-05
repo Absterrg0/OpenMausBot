@@ -207,7 +207,7 @@ describe("the phone entries", () => {
   it("on this computer with a paid Cloud that is Ready: both, the Cloud first", () => {
     for (const tier of ["personal", "pro", "max"]) {
       expect(shown("computer", null, paid(tier, ready))).toEqual([
-        ["Connect your phone", "to your Cloud (always on)"],
+        ["Connect your phone", "to My Cloud (always on)"],
         ["Connect your phone", "to this computer"],
         APP,
       ]);
@@ -228,17 +228,17 @@ describe("the phone entries", () => {
   it("on this computer with a paid Cloud that is not Ready: only this computer, and a hint", () => {
     for (const machine of [undefined, { status: "provisioning" }, { status: "stopped", origin: ready.origin }, { status: "failed", origin: ready.origin }] as Array<CloudMachine | undefined>) {
       expect(shown("computer", null, paid("pro", machine))).toEqual([
-        ["Connect your phone", "to this computer", "Your Cloud shows here once it is ready."],
+        ["Connect your phone", "to this computer", "My Cloud shows here once it is ready."],
         APP,
       ]);
     }
   });
 
-  it("on the person's own Cloud: unchanged, one Connect your phone to your Cloud", () => {
-    expect(shown("cloud", admin)).toEqual([["Connect your phone", "to your Cloud"], APP]);
+  it("on the person's own Cloud: unchanged, one Connect your phone to My Cloud", () => {
+    expect(shown("cloud", admin)).toEqual([["Connect your phone", "to My Cloud"], APP]);
     // whatever the account says, the Cloud is never offered a second time from itself
-    expect(shown("cloud", admin, paid("max", ready))).toEqual([["Connect your phone", "to your Cloud"], APP]);
-    expect(shown("cloud", admin, paid("max"))).toEqual([["Connect your phone", "to your Cloud"], APP]);
+    expect(shown("cloud", admin, paid("max", ready))).toEqual([["Connect your phone", "to My Cloud"], APP]);
+    expect(shown("cloud", admin, paid("max"))).toEqual([["Connect your phone", "to My Cloud"], APP]);
   });
 
   it("on another server: to this server, and gone for a session that cannot make a pairing code", () => {
@@ -280,7 +280,7 @@ describe("choosing where the phone connects", () => {
   const readyCloud: CloudAccountState = { status: "connected", entitlement: { plan: "pro", status: "active", expiresAt: null, version: 1 }, machine: { status: "ready", origin: "https://home-7f3k2.fly.dev" } };
   const flush = async () => { for (let i = 0; i < 5; i++) await Promise.resolve(); };
 
-  it("to your Cloud opens the Cloud on its phone pairing, as Use your Cloud on your phone does, sending nothing", async () => {
+  it("to My Cloud opens the Cloud on its phone pairing, as Use My Cloud on your phone does, sending nothing", async () => {
     const bridge = { connectHomeForPhone: vi.fn().mockResolvedValue({ status: "connected" }) };
     const dispatch = vi.fn();
     selectPhoneDestination(destinations(readyCloud)[0]!, { bridge, dispatch });
@@ -289,7 +289,7 @@ describe("choosing where the phone connects", () => {
     expect(dispatch).not.toHaveBeenCalled();
   });
 
-  it("when the Cloud cannot be opened, lands on Settings → OMB Cloud, which says what to do", async () => {
+  it("when the Cloud cannot be opened, lands on Settings → OpenMausBot Cloud, which says what to do", async () => {
     const bridge = { connectHomeForPhone: vi.fn().mockRejectedValue(new Error("offline")) };
     const dispatch = vi.fn();
     selectPhoneDestination(destinations(readyCloud)[0]!, { bridge, dispatch });
@@ -338,7 +338,7 @@ describe("Get the phone app", () => {
   });
 
   it("offers every destination the menu does, in the same order", () => {
-    const html = render([to("cloud", "to your Cloud (always on)"), to("here", "to this computer")]);
+    const html = render([to("cloud", "to My Cloud (always on)"), to("here", "to this computer")]);
     expect(html.indexOf('data-phone-app-connect="cloud"')).toBeGreaterThan(-1);
     expect(html.indexOf('data-phone-app-connect="cloud"')).toBeLessThan(html.indexOf('data-phone-app-connect="here"'));
   });

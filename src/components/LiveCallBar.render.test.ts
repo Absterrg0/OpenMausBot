@@ -30,7 +30,7 @@ const renderOnCloud = (element: ReturnType<typeof createElement>) => {
   const value = { state: { ...initialState, config }, dispatch: vi.fn(), flushBotPatches: async () => null, refreshInstances: async () => {}, refreshModels: async () => {} };
   return renderToStaticMarkup(createElement(BotEditorStore, { value, children: element }));
 };
-const CLOUD_DISCLOSURE = `A Live call sends your voice to OpenAI, along with the chat&#x27;s recent messages, the bot&#x27;s answers and the details of any approval it asks for. The OpenAI key stays on your Cloud.`;
+const CLOUD_DISCLOSURE = `A Live call sends your voice to OpenAI, along with the chat&#x27;s recent messages, the bot&#x27;s answers and the details of any approval it asks for. The OpenAI key stays on My Cloud.`;
 
 afterEach(() => {
   resetLiveMedia();

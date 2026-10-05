@@ -349,12 +349,12 @@ const bridge = {
     open: () => ipcRenderer.invoke("cloud-lending:open"),
   } : undefined,
   /** The plan, read only, in Settings on the person's own Cloud: its name and
-   * whether it is active, Manage (the Cloud dashboard in the browser) and
+   * whether it is active, Manage (the Plan page in the browser) and
    * back to this computer. No arguments; a remote page acts only on a click. */
   cloudPlan: process.argv.includes("--omb-company-desktop=1") ? {
     state: () => ipcRenderer.invoke("cloud-plan:state"),
     manage: () => isLocalPage || navigator.userActivation?.isActive === true
-      ? ipcRenderer.invoke("cloud-plan:manage") : Promise.reject(new Error("Choose Manage to open your Cloud dashboard.")),
+      ? ipcRenderer.invoke("cloud-plan:manage") : Promise.reject(new Error("Choose Manage to open your Plan page.")),
     useThisComputer: () => isLocalPage || navigator.userActivation?.isActive === true
       ? ipcRenderer.invoke("cloud-plan:local") : Promise.reject(new Error("Choose Use this computer to switch.")),
   } : undefined,

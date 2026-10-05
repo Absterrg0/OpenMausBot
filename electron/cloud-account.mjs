@@ -24,7 +24,7 @@ const MAX_ENROLL_SECONDS = 1800;
 export function cloudOrigin(value = CLOUD_ORIGIN, fixture = false) {
   const url = new URL(value);
   if (value !== url.origin || (value !== CLOUD_ORIGIN && !(fixture && url.protocol === "http:" && ["127.0.0.1", "[::1]"].includes(url.hostname)))) {
-    throw new Error("Invalid OMB Cloud address.");
+    throw new Error("Invalid OpenMausBot Cloud address.");
   }
   return value;
 }
@@ -303,7 +303,7 @@ export function createCloudAccountClient({ store, openBrowser, platform, deviceN
      * removed): forget it and start a new sign-in in one step, never showing
      * "signed out" in between. */
     async signInAgain() {
-      if (state().status !== "reauth-required") throw new Error("This computer is still signed in to OMB Cloud.");
+      if (state().status !== "reauth-required") throw new Error("This computer is still signed in to OpenMausBot Cloud.");
       publish({ status: "connecting" });
       const forgotten = await forget({ quiet: true });
       if (forgotten.status === "unavailable") return forgotten;
@@ -322,7 +322,7 @@ export function createCloudAccountClient({ store, openBrowser, platform, deviceN
      * as the disk fills. `supported: false`: this Admin cannot do that yet. */
     async growDisk(sizeGb) {
       const current = grant;
-      if (!current || state().status !== "connected") throw new Error("Your Cloud is not ready yet.");
+      if (!current || state().status !== "connected") throw new Error("My Cloud is not ready yet.");
       if (!Number.isSafeInteger(sizeGb) || sizeGb < 1 || sizeGb > 10_000) throw new Error("Invalid Cloud disk size.");
       let result;
       try { result = await request("disk", { method: "POST", body: { sizeGb }, token: current.token }); } catch (error) {
@@ -338,7 +338,7 @@ export function createCloudAccountClient({ store, openBrowser, platform, deviceN
      * code is returned to main only, for one navigation; it is not kept. */
     async pairHome() {
       const target = homeTarget(), current = grant;
-      if (!target || !current) throw new Error("Your Cloud is not ready to connect yet.");
+      if (!target || !current) throw new Error("My Cloud is not ready to connect yet.");
       const result = await request("pairing", { method: "POST", body: {}, token: current.token });
       const pairing = parsePairingGrant(result, target.origin, now());
       if (!pairing) throw new Error("Invalid Cloud pairing response.");
