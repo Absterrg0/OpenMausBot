@@ -90,6 +90,12 @@ export function managedPortalOrigin(value) {
 
 /** A separate OS-encrypted record; never copy company tokens into config.json,
  * backups, renderer storage, environment variables or personal CLI homes. */
+/** Electron 43's safeStorage.decryptStringAsync (main.mjs's adapters) resolves to { shouldReEncrypt, result }, not a string;
+ * the tests' fakes resolve to the string itself. Reading `result` keeps a saved sign-in readable after a restart. */
+export function decryptedText(decrypted) {
+  return typeof decrypted === "string" ? decrypted : decrypted?.result;
+}
+
 export function createManagedDesktopStore({ file, encryption }) {
   let tail = Promise.resolve();
   const available = async () => {
@@ -103,7 +109,7 @@ export function createManagedDesktopStore({ file, encryption }) {
         const stat = await handle.stat();
         if (!stat.isFile() || stat.size > 64 * 1024) throw new Error("Invalid company connection record.");
         await available();
-        return JSON.parse(await encryption.decrypt(await handle.readFile()));
+        return JSON.parse(decryptedText(await encryption.decrypt(await handle.readFile())));
       } catch (error) { if (error?.code === "ENOENT") return null; throw new Error("Your company connection could not be read. Unlock your system keychain and try again."); }
       finally { await handle?.close(); }
     },

@@ -349,6 +349,18 @@ test("Cloud records use separate encrypted atomic storage, not plaintext or save
   unlocked = false; await assert.rejects(store.read()); await store.write(null); assert.equal(await store.read(), null);
 });
 
+test("a saved Cloud sign-in is read back after a restart with Electron 43's decrypt shape ({ shouldReEncrypt, result })", async t => {
+  const directory = await mkdtemp(join(tmpdir(), "omb-cloud-electron43-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const file = join(directory, "cloud-account.bin");
+  // Exactly what safeStorage.decryptStringAsync resolves to in Electron 43, not a bare string.
+  const electron43 = { available: async () => true, encrypt: async value => Buffer.from(value).map(byte => byte ^ 0x55),
+    decrypt: async value => ({ shouldReEncrypt: false, result: Buffer.from(value).map(byte => byte ^ 0x55).toString() }) };
+  await createCloudAccountStore({ file, encryption: electron43 }).write({ token: accessToken });
+  // A new store over the same file stands in for the next app launch.
+  assert.deepEqual(await createCloudAccountStore({ file, encryption: electron43 }).read(), { token: accessToken });
+});
+
 test("cancelling during the encrypted write queues deletion after it and cannot restore the grant", async t => {
   const directory = await mkdtemp(join(tmpdir(), "omb-cloud-cancel-")); t.after(() => rm(directory, { recursive: true, force: true }));
   let release, writing = false; const gate = new Promise(resolve => { release = resolve; });
