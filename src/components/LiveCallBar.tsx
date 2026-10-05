@@ -27,6 +27,7 @@ const DEVICE_KEY = {
   ios: "call.live.device.ios",
   android: "call.live.device.android",
   desktop: "call.live.device.desktop",
+  web: "call.live.device.web",
 } as const satisfies Record<LiveClient, string>;
 
 function clock(ms: number): string {

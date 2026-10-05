@@ -62,19 +62,25 @@ beforeEach(() => {
     throw new Error(`unexpected ${path}`);
   });
   resetLiveMedia();
-  configureLiveMedia({
-    getUserMedia: async () => ({ getTracks: () => [track], getAudioTracks: () => [track] }) as unknown as MediaStream,
-    createPeer: () => peer as unknown as RTCPeerConnection,
-    request: request as never,
-    playRemote: () => {},
-    stopRemote: () => {},
-    iceTimeoutMs: 50,
-  });
+  configureLiveMedia(fakes());
 });
+/** The fake microphone, peer and harness every call here uses. */
+const fakes = () => ({
+  getUserMedia: async () => ({ getTracks: () => [track], getAudioTracks: () => [track] }) as unknown as MediaStream,
+  createPeer: () => peer as unknown as RTCPeerConnection,
+  request: request as never,
+  playRemote: () => {},
+  stopRemote: () => {},
+  iceTimeoutMs: 50,
+});
+/** What a window says it is, as desktopCapabilitiesNow reports it. */
+const windowIs = (dictation: Partial<DesktopCapabilities["dictation"]>) => () =>
+  ({ dictation: { available: false, engine: "none", onDevice: false, ...dictation } }) as DesktopCapabilities;
 afterEach(() => { resetLiveMedia(); vi.unstubAllGlobals(); vi.useRealTimers(); });
 
 describe("live call media", () => {
   it("sends the offer as a desktop call and applies the answer", async () => {
+    configureLiveMedia({ ...fakes(), capabilities: windowIs({ available: true, engine: "apple-speech", onDevice: true }) });
     await startLiveCall({ botId: "b1", threadId: "t1" });
     expect(request).toHaveBeenCalledWith("/api/live/session", expect.objectContaining({ method: "POST" }));
     const body = JSON.parse(String(request.mock.calls[0][1].body));
@@ -84,6 +90,26 @@ describe("live call media", () => {
     expect(currentCall()).toBe("b1");
     onServerCall({ ...call, status: "live" });
     expect(liveMedia().phase).toBe("live");
+  });
+
+  // The harness names where a running call is from what the starting
+  // window said it is, so a busy line elsewhere reads true. A server's page
+  // in the desktop app (My Cloud) is still the desktop app.
+  it.each([
+    ["the Mac app's own page", "desktop", { available: true, engine: "apple-speech", onDevice: true }],
+    ["My Cloud in the desktop app", "desktop", { reasonCode: "remote-server" }],
+    ["the Windows app", "desktop", { reasonCode: "unsupported-platform" }],
+    ["a web browser", "web", { reasonCode: "desktop-app-required" }],
+  ] as const)("from %s, starts a %s call", async (_where, client, dictation) => {
+    configureLiveMedia({ ...fakes(), capabilities: windowIs(dictation) });
+    await startLiveCall({ botId: "b1", threadId: "t1" });
+    expect(JSON.parse(String(request.mock.calls[0][1].body)).client).toBe(client);
+  });
+
+  it("in a web browser, with no desktop app around it, starts a web call", async () => {
+    vi.stubGlobal("window", {});
+    await startLiveCall({ botId: "b1", threadId: "t1" });
+    expect(JSON.parse(String(request.mock.calls[0][1].body)).client).toBe("web");
   });
 
   it("asks for a key and releases the microphone", async () => {
@@ -104,6 +130,10 @@ describe("live call media", () => {
     request.mockRejectedValueOnce(new ApiError("A Live call is already running.", 409, { activeCall: { ...other, client: "desktop" } }));
     await startLiveCall({ botId: "b1", threadId: "t1" });
     expect(liveMedia().notice).toBe("Another Live call is running on this computer. Hang up there first.");
+    // a call from a web browser (a Cloud's page) is not "on this computer"
+    request.mockRejectedValueOnce(new ApiError("A Live call is already running.", 409, { activeCall: { ...other, client: "web" } }));
+    await startLiveCall({ botId: "b1", threadId: "t1" });
+    expect(liveMedia().notice).toBe("Another Live call is running in a web browser. Hang up there first.");
   });
 
   it("releases media when the server ends the call", async () => {
@@ -730,7 +760,7 @@ describe("a blocked microphone", () => {
     createPeer: () => peer as unknown as RTCPeerConnection,
     request: request as never,
     iceTimeoutMs: 50,
-    capabilities: () => ({ dictation: { available: false, engine: "none", onDevice: false, ...dictation } }) as DesktopCapabilities,
+    capabilities: windowIs(dictation),
     pageMicrophone: async () => pageMic,
   });
 

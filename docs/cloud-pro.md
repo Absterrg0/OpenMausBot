@@ -257,17 +257,32 @@ Cloud use this Mac**, below), through the shared-computer tools.
 `shared/cloud-home.ts` decides which places are offered, for the server and
 the app alike.
 
-### Live calls in the desktop app
+### Live calls
 
 A Cloud is personal, so in the desktop app its own page may use the
 microphone for a Live call, as this computer's own page does. That is the
 microphone only, never the camera or screen capture, and only for the main
 frame of the app's window at the exact origin the verified Cloud sign-in
 reports (`electron/app-permissions.mjs`, `appPermissionHandlers`). Signing out
-of Cloud takes it away at once; every other server's page stays refused. The
-OpenAI key for Live calls is saved on the Cloud, and the Live copy says so.
-Take-turns calls still need the Mac's on-device listening, so they stay on
-**This computer**.
+of Cloud takes it away at once; every other server's page stays refused. In a
+web browser, the browser asks for the microphone for the Cloud's address.
+
+- **The key is the person's own.** No Cloud plan includes Live calls: the
+  person pastes an OpenAI API key from a project with GPT-Live access. It is
+  saved on the Cloud (`PUT /api/config`, as a server page has no credential
+  store), and the Live copy says so.
+- **The voice knows where it runs.** Like the bot's own system prompt, it
+  is told it runs on the person's My Cloud, not on their own computer
+  (`liveInstructions` in `server/live-call.ts`).
+- **A busy line names the browser.** A call started from a web browser says
+  so (`client: "web"`). A second call started in another window is told
+  "Another Live call is running in a web browser. Hang up there first."
+  instead of "on this computer", and that window's call bar reads "Ada is on
+  a Live call from a web browser". The phone apps show a client they don't
+  know as "another device".
+- **Take turns stays on the Mac.** Take-turns calls listen with the Mac app's
+  on-device speech recognition, which a Cloud's page can't use. On a Cloud,
+  the call with one bot is a Live call, and a room has no call.
 
 ### Open in the app: `openmausbot://cloud`
 

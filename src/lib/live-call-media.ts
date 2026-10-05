@@ -1,8 +1,9 @@
-// The desktop half of a Live call: microphone, speaker and captions over
-// WebRTC, straight to OpenAI. It lives at app level (not in a chat view), so
-// switching chats keeps the call. Everything else about the call — what the
-// bot is asked, what the voice is told, approvals, idle hang-up — runs on the
-// harness (server/live-call-controller.ts). This module never sends appends:
+// This window's half of a Live call, in the desktop app or a web browser:
+// microphone, speaker and captions over WebRTC, straight to OpenAI. It lives
+// at app level (not in a chat view), so switching chats keeps the call.
+// Everything else about the call — what the bot is asked, what the voice is
+// told, approvals, idle hang-up — runs on the harness
+// (server/live-call-controller.ts). This module never sends appends:
 // its data channel may only send session.close.
 import { useSyncExternalStore } from "react";
 import type { LiveCallState, LiveEndReason } from "../../shared/wire";
@@ -201,6 +202,13 @@ function micBlocked(capabilities: DesktopCapabilities, pageMic: "allowed" | "ref
   return { notice: t(page === "desktop-app-required" ? "call.live.micBlockedBrowser" : "call.live.micBlocked"), action: "retry" };
 }
 
+/** Which app this window's call says holds the microphone: a web browser,
+ * or the desktop app (its own page, or a server's page in it, such as My
+ * Cloud). The harness reports it to a busy line elsewhere. */
+function liveClient(capabilities: DesktopCapabilities): "desktop" | "web" {
+  return capabilities.dictation.reasonCode === "desktop-app-required" ? "web" : "desktop";
+}
+
 export async function startLiveCall(target: { botId: string; threadId: string }): Promise<void> {
   if (isLiveCallRunning(state.phase)) return;
   release();
@@ -247,7 +255,7 @@ export async function startLiveCall(target: { botId: string; threadId: string })
     if (!sdp) throw new Error(t("call.live.noOffer"));
     const result = await deps.request<{ call: LiveCallState; transport: { sdp: string } }>("/api/live/session", {
       method: "POST",
-      body: JSON.stringify({ botId: target.botId, threadId: target.threadId, sdp, client: "desktop" }),
+      body: JSON.stringify({ botId: target.botId, threadId: target.threadId, sdp, client: liveClient(deps.capabilities()) }),
       timeoutMs: 35_000,
     });
     if (mine !== generation) {

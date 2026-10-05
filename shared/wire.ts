@@ -548,8 +548,11 @@ export interface OptionCardData {
   questionRequest?: QuestionRequestCardData;
 }
 
-/** Which app holds the microphone of a Live call. Self-declared; for display and logs only. */
-export type LiveClient = "desktop" | "ios" | "android";
+/** Which app holds the microphone of a Live call: the desktop app (its own
+ * page or a server's page in it), a web browser, or a phone. Self-declared;
+ * for display and logs only. The phone apps show a value they do not know as
+ * "another device". */
+export type LiveClient = "desktop" | "web" | "ios" | "android";
 export type LiveCallStatus = "connecting" | "live" | "ending" | "ended";
 /** Why a call ended. "signed-out": the sign-in or paired phone that started
  * it was signed out, revoked or unpaired. A client that does not know a

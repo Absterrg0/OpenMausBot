@@ -38,6 +38,10 @@ describe("liveCallBarView", () => {
     const server = { callId: "c9", botId: "b1", threadId: "t1", client: "ios", voice: "marin", startedAt: 0, status: "live" } as const;
     expect(liveCallBarView({ bot, media: idle, server, now: 0 })).toEqual({ kind: "remote", title: "Ada is on a Live call from an iPhone", callId: "c9" });
   });
+  it("shows a web browser's call on this chat", () => {
+    const server = { callId: "c9", botId: "b1", threadId: "t1", client: "web", voice: "marin", startedAt: 0, status: "live" } as const;
+    expect(liveCallBarView({ bot, media: idle, server, now: 0 })).toEqual({ kind: "remote", title: "Ada is on a Live call from a web browser", callId: "c9" });
+  });
   it("hides a phone's call while it ends, and shows one in a status it does not know, so it can be hung up", () => {
     const server = { callId: "c9", botId: "b1", threadId: "t1", client: "ios", voice: "marin", startedAt: 0, status: "live" } as const;
     expect(liveCallBarView({ bot, media: idle, server: { ...server, status: "ending" }, now: 0 })).toBeNull();
