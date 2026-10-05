@@ -45,6 +45,20 @@ struct PendingAttachmentChip: View {
     let attachment: PendingMessageAttachment
     let remove: () -> Void
 
+    @Environment(\.displayScale) private var displayScale
+    /// Decoded once per attachment, off the main actor, at the chip's own
+    /// pixel size. Decoding in `body` ran a full-resolution decode of the
+    /// photo (48 MB for 12 MP) on every composer render — each keystroke and
+    /// each 50 ms publish while a bot streamed — to draw 34 points.
+    @State private var thumbnail: UIImage?
+    @State private var thumbnailFailed = false
+
+    private static let side: CGFloat = 34
+
+    private var thumbnailKey: String {
+        "\(attachment.id)|\(Int((Self.side * displayScale).rounded(.up)))"
+    }
+
     var body: some View {
         HStack(spacing: 8) {
             preview
@@ -78,16 +92,36 @@ struct PendingAttachmentChip: View {
                 .strokeBorder(Color.secondary.opacity(0.10))
         )
         .accessibilityElement(children: .contain)
+        .task(id: thumbnailKey) { await loadThumbnail() }
+    }
+
+    private func loadThumbnail() async {
+        guard attachment.kind == .image else { return }
+        let data = attachment.data
+        let side = Int((Self.side * displayScale).rounded(.up))
+        let decoded = await Task.detached(priority: .userInitiated) {
+            ImageDownsampler.decode(data, fillingSquare: side)
+        }.value
+        guard !Task.isCancelled else { return }
+        thumbnail = decoded.map { UIImage(cgImage: $0.cgImage) }
+        thumbnailFailed = decoded == nil
     }
 
     @ViewBuilder
     private var preview: some View {
-        if attachment.kind == .image, let image = UIImage(data: attachment.data) {
-            Image(uiImage: image)
+        if attachment.kind == .image, let thumbnail {
+            Image(uiImage: thumbnail)
                 .resizable()
                 .scaledToFill()
-                .frame(width: 34, height: 34)
+                .frame(width: Self.side, height: Self.side)
                 .clipShape(RoundedRectangle(cornerRadius: 8))
+                .accessibilityHidden(true)
+        } else if attachment.kind == .image, !thumbnailFailed {
+            // The few milliseconds before the first decode lands: the chip's
+            // own tile, rather than a document icon that then turns into a photo.
+            RoundedRectangle(cornerRadius: 8)
+                .fill(Color.secondary.opacity(0.12))
+                .frame(width: Self.side, height: Self.side)
                 .accessibilityHidden(true)
         } else {
             Image(systemName: "doc.fill")
