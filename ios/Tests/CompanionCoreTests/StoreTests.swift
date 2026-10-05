@@ -32,10 +32,14 @@ final class StoreTests: XCTestCase {
         for bot in state.bots {
             XCTAssertNotNil(state.messages[bot.threadId])
         }
-        for room in state.rooms {
+        for room in try fleet().groups {
             XCTAssertEqual(state.transcript(forThread: room.threadId).count, room.messages?.count)
             XCTAssertEqual(state.hasMore[room.threadId], room.hasMore)
         }
+        // One copy of each transcript: the bots and rooms do not keep the
+        // hydrate-time page beside it.
+        XCTAssertTrue(state.bots.allSatisfy { $0.messages == nil })
+        XCTAssertTrue(state.rooms.allSatisfy { $0.messages == nil })
     }
 
     func testBackgroundLiveTailStillNeedsItsInitialPage() throws {
@@ -278,8 +282,9 @@ final class StoreTests: XCTestCase {
         state.apply(.bot(bot))
 
         XCTAssertEqual(state.bot(bot.id)?.busy, true)
-        XCTAssertEqual(state.transcript(forThread: threadId).count, count)
-        XCTAssertNotNil(state.bot(bot.id)?.messages, "the merged bot keeps the transcript it had")
+        XCTAssertEqual(state.transcript(forThread: threadId).count, count, "the thread keeps the transcript it had")
+        XCTAssertEqual(state.transcript(forThread: threadId).last?.id, "keep-me")
+        XCTAssertNil(state.bot(bot.id)?.messages, "the transcript lives in messages alone, not on a second copy")
     }
 
     func testATaskSwitchReplacesTheActiveTranscript() throws {

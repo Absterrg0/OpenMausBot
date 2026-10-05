@@ -125,8 +125,9 @@ extension CompanionState {
             return String(live.suffix(120)).replacingOccurrences(of: "\n", with: " ")
         }
         // A tool's name is often its raw command line. Only a reader who
-        // wants tool calls sees it; a status notice is for everyone.
-        if let last = visibleTranscript(forThread: threadId).last, last.kind == .activity, let tool = last.tool,
+        // wants tool calls sees it; a status notice is for everyone. Only the
+        // branch's last line matters here, so do not build the branch.
+        if let last = lastVisibleMessage(forThread: threadId), last.kind == .activity, let tool = last.tool,
            detail != .hidden || isStatusNotice(last) {
             return tool.label
         }
