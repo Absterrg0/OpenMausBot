@@ -1409,7 +1409,7 @@
   "approvalMode.edits.desc": "Approves file edits automatically; other actions can still require approval",
   "approvalMode.auto.label": "Approve for me",
   "approvalMode.auto.chip": "Auto",
-  "approvalMode.auto.desc": "Uses the provider's automatic review to approve routine actions and ask about others",
+  "approvalMode.auto.desc": "Uses the provider's automatic review to approve routine actions and ask about others. Web search is allowed without asking.",
   "approvalMode.full.label": "Full access",
   "approvalMode.full.chip": "Full access",
   "approvalMode.full.desc": "Full computer access (elevated risk)",

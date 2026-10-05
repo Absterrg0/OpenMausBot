@@ -7349,8 +7349,9 @@ bus.subscribe((event: RuntimeEvent) => {
       // A permission request here is one the provider left for a person: its
       // own mode already ran (Ask, Edits, Auto's reviewer, Custom's config).
       // Only the person's explicit Full access or exact saved command answers.
-      // The app does not guess whether the action is safe. A QUESTION
-      // always reaches the human — even Full access never invents an answer.
+      // Approve for me allows a web search. The app does not guess whether
+      // the action is safe. A QUESTION always reaches the human — even Full
+      // access never invents an answer.
       const asker = bot ?? (speaker ? store.bot(speaker.botId) : undefined);
       const unattended = permission && asker && event.requestId ? isUnattended(asker.id, event.threadId) : false;
       // A turn a guest drives on a Cloud home is Ask, room turns included,
