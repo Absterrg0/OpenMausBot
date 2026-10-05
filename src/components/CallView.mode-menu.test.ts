@@ -178,6 +178,14 @@ describe("the call mode menu", () => {
     expect(items[1]).toMatch(/^ aria-checked="true"/);
   });
 
+  it("says where the OpenAI key stays: this computer, or the person's Cloud", () => {
+    const props = { id: "m", mode: "live" as const, onChoose: vi.fn(), onClose: vi.fn() };
+    expect(renderToStaticMarkup(createElement(CallModeMenu, props))).toContain("The OpenAI key stays on your computer.");
+    const cloud = renderToStaticMarkup(createElement(CallModeMenu, { ...props, cloudHome: true }));
+    expect(cloud).toContain("The OpenAI key stays on your Cloud.");
+    expect(cloud).not.toContain("stays on your computer");
+  });
+
   it("reports the chosen mode", () => {
     const onChoose = vi.fn();
     let tree: ReactNode = null;

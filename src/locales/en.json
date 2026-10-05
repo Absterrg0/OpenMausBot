@@ -3394,6 +3394,7 @@
   "call.live.keyRemove": "Remove key",
   "call.live.cost": "Via OpenAI GPT-Live, about $0.05 per minute.",
   "call.live.disclosure": "A Live call sends your voice to OpenAI, along with the chat's recent messages, the bot's answers and the details of any approval it asks for. The OpenAI key stays on your computer.",
+  "call.live.disclosureCloud": "A Live call sends your voice to OpenAI, along with the chat's recent messages, the bot's answers and the details of any approval it asks for. The OpenAI key stays on your Cloud.",
   "call.live.device.ios": "an iPhone",
   "call.live.device.android": "an Android phone",
   "call.live.device.desktop": "another window",

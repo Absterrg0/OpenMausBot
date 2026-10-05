@@ -2435,5 +2435,6 @@
   "computer.phase.showSleepingBoat": "自動模式找到一台休眠中的雲端電腦，並未喚醒或變更它。",
   "computer.phase.showPendingBoat": "自動模式找到一台尚未就緒的現有雲端電腦，並未變更它。",
   "computer.badge.autoBoat": "雲端 Boat · Auto · 唯讀",
-  "computer.addBoatKey": "新增 Boat API 金鑰，即可為這個機器人提供雲端電腦 — 它會直接在這裡啟動。"
+  "computer.addBoatKey": "新增 Boat API 金鑰，即可為這個機器人提供雲端電腦 — 它會直接在這裡啟動。",
+  "call.live.disclosureCloud": "即時通話會將你的語音傳送給 OpenAI，同時傳送的還有此對話的近期訊息、機器人的回覆，以及其要求核准之項目的詳細資訊。OpenAI 金鑰會保留在你的 Cloud 上。"
 }

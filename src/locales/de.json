@@ -1506,5 +1506,6 @@
   "computer.phase.showSleepingBoat": "Auto hat einen schlafenden Cloud-Computer gefunden. Er wurde weder geweckt noch geändert.",
   "computer.phase.showPendingBoat": "Auto hat einen vorhandenen Cloud-Computer gefunden, der nicht bereit ist. Er wurde nicht geändert.",
   "computer.badge.autoBoat": "Cloud-Boat · Auto · nur lesen",
-  "computer.addBoatKey": "Füg einen Boat-API-Schlüssel hinzu, damit dieser Bot einen Cloud-Computer bekommt — er startet direkt hier."
+  "computer.addBoatKey": "Füg einen Boat-API-Schlüssel hinzu, damit dieser Bot einen Cloud-Computer bekommt — er startet direkt hier.",
+  "call.live.disclosureCloud": "Bei einem Live-Anruf werden deine Stimme sowie die letzten Nachrichten des Chats, die Antworten des Bots und die Details aller von ihm angefragten Freigaben an OpenAI gesendet. Der OpenAI-Schlüssel bleibt in deiner Cloud."
 }

@@ -130,6 +130,8 @@ export function CallTargetButton({
   const unavailable = !active && !liveElsewhere && !liveMode && !turnsReady;
   const voiceSetupRequired = capabilitiesReady && supported && !voiceReady;
   const liveConfigured = Boolean(state.config?.live?.configured);
+  // On the person's Cloud, the Live key is saved there, not on this computer.
+  const cloudHome = state.config?.cloudHome === true;
   const [helpOpen, setHelpOpen] = useState(false);
   // Voice set-up opens over the chat instead of the bot's full settings.
   const [voiceSetupOpen, setVoiceSetupOpen] = useState(false);
@@ -327,6 +329,7 @@ export function CallTargetButton({
           id={menuId}
           mode={mode}
           placement={placement}
+          cloudHome={cloudHome}
           onClose={closePopovers}
           onChoose={(next) => {
             // picking a mode remembers it and starts a call in it
@@ -383,7 +386,7 @@ export function CallTargetButton({
                 start("live");
               }}
               className="mt-2.5 mr-2 rounded-lg border border-hairline px-3 py-1.5 text-[12px] font-medium text-ink hover:bg-raised"
-              title={callModeHint("live")}
+              title={callModeHint("live", { cloudHome })}
             >
               {t("call.live.startInstead")}
             </button>
@@ -429,10 +432,12 @@ export function CallTargetButton({
 }
 
 /** The menu under the call button's chevron: Take turns or Live. */
-export function CallModeMenu({ id, mode, onChoose, onClose, placement = "header" }: {
+export function CallModeMenu({ id, mode, onChoose, onClose, placement = "header", cloudHome = false }: {
   id: string;
   mode: CallMode;
   placement?: CallButtonPlacement;
+  /** On the person's Cloud: the Live hint says the key stays there. */
+  cloudHome?: boolean;
   onChoose: (mode: CallMode) => void;
   onClose: () => void;
 }) {
@@ -467,7 +472,7 @@ export function CallModeMenu({ id, mode, onChoose, onClose, placement = "header"
         >
           <span className="min-w-0 flex-1">
             <span className="block text-[13px] font-medium text-ink">{t(entry.label)}</span>
-            <span className="mt-0.5 block text-[11.5px] leading-[1.4] text-ink-secondary">{callModeHint(entry.id)}</span>
+            <span className="mt-0.5 block text-[11.5px] leading-[1.4] text-ink-secondary">{callModeHint(entry.id, { cloudHome })}</span>
           </span>
           {mode === entry.id && <Check size={14} className="mt-0.5 shrink-0 text-accent" aria-hidden="true" />}
         </button>

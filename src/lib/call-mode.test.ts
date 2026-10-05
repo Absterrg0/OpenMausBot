@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { CALL_MODE_KEY, CALL_MODES, callModeHint, parseCallMode } from "./call-mode";
+import { CALL_MODE_KEY, CALL_MODES, callModeHint, liveDisclosure, parseCallMode } from "./call-mode";
 import { t } from "./i18n";
 
 describe("call mode", () => {
@@ -21,6 +21,15 @@ describe("call mode", () => {
     const live = callModeHint("live");
     expect(live).toContain("A Live call sends your voice to OpenAI, along with the chat's recent messages, the bot's answers and the details of any approval it asks for. The OpenAI key stays on your computer.");
     expect(callModeHint("turns")).toBe("You talk, then the bot answers in its own voice. Listening stays on this computer.");
+  });
+
+  // On the person's Cloud the key is saved on the Cloud, not this computer.
+  it("says the OpenAI key stays on the Cloud when the chat is on the person's Cloud", () => {
+    const live = callModeHint("live", { cloudHome: true });
+    expect(live).toContain("A Live call sends your voice to OpenAI, along with the chat's recent messages, the bot's answers and the details of any approval it asks for. The OpenAI key stays on your Cloud.");
+    expect(live).not.toContain("your computer");
+    expect(liveDisclosure({ cloudHome: true })).toBe(t("call.live.disclosureCloud"));
+    expect(liveDisclosure({ cloudHome: false })).toBe(t("call.live.disclosure"));
   });
 
   it("remembers the choice and survives storage that refuses writes", async () => {

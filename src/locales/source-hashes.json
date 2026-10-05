@@ -1509,7 +1509,8 @@
       "computer.phase.showSleepingBoat": "dfbd04c1e36d554878a6ec1366e5b381507c69da80f06b172962d79ff3e0d7a5",
       "computer.phase.showPendingBoat": "9d5fdebf99747cd6ac9a160b14440a32d39a5c164fdee27caa95babc669b5605",
       "computer.badge.autoBoat": "ea81d1b8c0f10bbb043fecfd863ba77595403e14d1acb09f23bc229cb42f9b4a",
-      "computer.addBoatKey": "fcf349af3c05d6750fdc7ebdaac778bfcf27f8514faf5084c3882479c084cc36"
+      "computer.addBoatKey": "fcf349af3c05d6750fdc7ebdaac778bfcf27f8514faf5084c3882479c084cc36",
+      "call.live.disclosureCloud": "bc95af3223557caa2c73153c2e5a9c4b65ce17d73d5b4e2efe851751da718935"
     },
     "es": {
       "pro.getPro": "12657108fe5682e937f179e5f394191b99fad614dbb3bf8759376d5da35d4992",
@@ -3001,7 +3002,8 @@
       "computer.phase.showSleepingBoat": "dfbd04c1e36d554878a6ec1366e5b381507c69da80f06b172962d79ff3e0d7a5",
       "computer.phase.showPendingBoat": "9d5fdebf99747cd6ac9a160b14440a32d39a5c164fdee27caa95babc669b5605",
       "computer.badge.autoBoat": "ea81d1b8c0f10bbb043fecfd863ba77595403e14d1acb09f23bc229cb42f9b4a",
-      "computer.addBoatKey": "fcf349af3c05d6750fdc7ebdaac778bfcf27f8514faf5084c3882479c084cc36"
+      "computer.addBoatKey": "fcf349af3c05d6750fdc7ebdaac778bfcf27f8514faf5084c3882479c084cc36",
+      "call.live.disclosureCloud": "bc95af3223557caa2c73153c2e5a9c4b65ce17d73d5b4e2efe851751da718935"
     },
     "fr": {
       "pro.getPro": "12657108fe5682e937f179e5f394191b99fad614dbb3bf8759376d5da35d4992",
@@ -4493,7 +4495,8 @@
       "computer.phase.showSleepingBoat": "dfbd04c1e36d554878a6ec1366e5b381507c69da80f06b172962d79ff3e0d7a5",
       "computer.phase.showPendingBoat": "9d5fdebf99747cd6ac9a160b14440a32d39a5c164fdee27caa95babc669b5605",
       "computer.badge.autoBoat": "ea81d1b8c0f10bbb043fecfd863ba77595403e14d1acb09f23bc229cb42f9b4a",
-      "computer.addBoatKey": "fcf349af3c05d6750fdc7ebdaac778bfcf27f8514faf5084c3882479c084cc36"
+      "computer.addBoatKey": "fcf349af3c05d6750fdc7ebdaac778bfcf27f8514faf5084c3882479c084cc36",
+      "call.live.disclosureCloud": "bc95af3223557caa2c73153c2e5a9c4b65ce17d73d5b4e2efe851751da718935"
     },
     "hi": {
       "pro.getPro": "12657108fe5682e937f179e5f394191b99fad614dbb3bf8759376d5da35d4992",
@@ -5985,7 +5988,8 @@
       "computer.phase.showSleepingBoat": "dfbd04c1e36d554878a6ec1366e5b381507c69da80f06b172962d79ff3e0d7a5",
       "computer.phase.showPendingBoat": "9d5fdebf99747cd6ac9a160b14440a32d39a5c164fdee27caa95babc669b5605",
       "computer.badge.autoBoat": "ea81d1b8c0f10bbb043fecfd863ba77595403e14d1acb09f23bc229cb42f9b4a",
-      "computer.addBoatKey": "fcf349af3c05d6750fdc7ebdaac778bfcf27f8514faf5084c3882479c084cc36"
+      "computer.addBoatKey": "fcf349af3c05d6750fdc7ebdaac778bfcf27f8514faf5084c3882479c084cc36",
+      "call.live.disclosureCloud": "bc95af3223557caa2c73153c2e5a9c4b65ce17d73d5b4e2efe851751da718935"
     },
     "ja": {
       "pro.getPro": "12657108fe5682e937f179e5f394191b99fad614dbb3bf8759376d5da35d4992",
@@ -7479,7 +7483,8 @@
       "computer.phase.showSleepingBoat": "dfbd04c1e36d554878a6ec1366e5b381507c69da80f06b172962d79ff3e0d7a5",
       "computer.phase.showPendingBoat": "9d5fdebf99747cd6ac9a160b14440a32d39a5c164fdee27caa95babc669b5605",
       "computer.badge.autoBoat": "ea81d1b8c0f10bbb043fecfd863ba77595403e14d1acb09f23bc229cb42f9b4a",
-      "computer.addBoatKey": "fcf349af3c05d6750fdc7ebdaac778bfcf27f8514faf5084c3882479c084cc36"
+      "computer.addBoatKey": "fcf349af3c05d6750fdc7ebdaac778bfcf27f8514faf5084c3882479c084cc36",
+      "call.live.disclosureCloud": "bc95af3223557caa2c73153c2e5a9c4b65ce17d73d5b4e2efe851751da718935"
     },
     "pt-br": {
       "pro.getPro": "12657108fe5682e937f179e5f394191b99fad614dbb3bf8759376d5da35d4992",
@@ -8985,7 +8990,8 @@
       "computer.phase.showSleepingBoat": "dfbd04c1e36d554878a6ec1366e5b381507c69da80f06b172962d79ff3e0d7a5",
       "computer.phase.showPendingBoat": "9d5fdebf99747cd6ac9a160b14440a32d39a5c164fdee27caa95babc669b5605",
       "computer.badge.autoBoat": "ea81d1b8c0f10bbb043fecfd863ba77595403e14d1acb09f23bc229cb42f9b4a",
-      "computer.addBoatKey": "fcf349af3c05d6750fdc7ebdaac778bfcf27f8514faf5084c3882479c084cc36"
+      "computer.addBoatKey": "fcf349af3c05d6750fdc7ebdaac778bfcf27f8514faf5084c3882479c084cc36",
+      "call.live.disclosureCloud": "bc95af3223557caa2c73153c2e5a9c4b65ce17d73d5b4e2efe851751da718935"
     },
     "zh": {
       "pro.getPro": "12657108fe5682e937f179e5f394191b99fad614dbb3bf8759376d5da35d4992",
@@ -11424,7 +11430,8 @@
       "computer.phase.showSleepingBoat": "dfbd04c1e36d554878a6ec1366e5b381507c69da80f06b172962d79ff3e0d7a5",
       "computer.phase.showPendingBoat": "9d5fdebf99747cd6ac9a160b14440a32d39a5c164fdee27caa95babc669b5605",
       "computer.badge.autoBoat": "ea81d1b8c0f10bbb043fecfd863ba77595403e14d1acb09f23bc229cb42f9b4a",
-      "computer.addBoatKey": "fcf349af3c05d6750fdc7ebdaac778bfcf27f8514faf5084c3882479c084cc36"
+      "computer.addBoatKey": "fcf349af3c05d6750fdc7ebdaac778bfcf27f8514faf5084c3882479c084cc36",
+      "call.live.disclosureCloud": "bc95af3223557caa2c73153c2e5a9c4b65ce17d73d5b4e2efe851751da718935"
     },
     "zh-tw": {
       "pro.getPro": "12657108fe5682e937f179e5f394191b99fad614dbb3bf8759376d5da35d4992",
@@ -13863,7 +13870,8 @@
       "computer.phase.showSleepingBoat": "dfbd04c1e36d554878a6ec1366e5b381507c69da80f06b172962d79ff3e0d7a5",
       "computer.phase.showPendingBoat": "9d5fdebf99747cd6ac9a160b14440a32d39a5c164fdee27caa95babc669b5605",
       "computer.badge.autoBoat": "ea81d1b8c0f10bbb043fecfd863ba77595403e14d1acb09f23bc229cb42f9b4a",
-      "computer.addBoatKey": "fcf349af3c05d6750fdc7ebdaac778bfcf27f8514faf5084c3882479c084cc36"
+      "computer.addBoatKey": "fcf349af3c05d6750fdc7ebdaac778bfcf27f8514faf5084c3882479c084cc36",
+      "call.live.disclosureCloud": "bc95af3223557caa2c73153c2e5a9c4b65ce17d73d5b4e2efe851751da718935"
     },
     "uk": {
       "pro.getPro": "12657108fe5682e937f179e5f394191b99fad614dbb3bf8759376d5da35d4992",
@@ -15904,7 +15912,8 @@
       "computer.phase.showSleepingBoat": "dfbd04c1e36d554878a6ec1366e5b381507c69da80f06b172962d79ff3e0d7a5",
       "computer.phase.showPendingBoat": "9d5fdebf99747cd6ac9a160b14440a32d39a5c164fdee27caa95babc669b5605",
       "computer.badge.autoBoat": "ea81d1b8c0f10bbb043fecfd863ba77595403e14d1acb09f23bc229cb42f9b4a",
-      "computer.addBoatKey": "fcf349af3c05d6750fdc7ebdaac778bfcf27f8514faf5084c3882479c084cc36"
+      "computer.addBoatKey": "fcf349af3c05d6750fdc7ebdaac778bfcf27f8514faf5084c3882479c084cc36",
+      "call.live.disclosureCloud": "bc95af3223557caa2c73153c2e5a9c4b65ce17d73d5b4e2efe851751da718935"
     }
   }
 }

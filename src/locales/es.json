@@ -1488,5 +1488,6 @@
   "computer.phase.showSleepingBoat": "Automático encontró un equipo en la nube en reposo. No se despertó ni se modificó.",
   "computer.phase.showPendingBoat": "Automático encontró un equipo en la nube que no está listo. No se modificó.",
   "computer.badge.autoBoat": "boat en la nube · Automático · solo lectura",
-  "computer.addBoatKey": "Añade una clave de API de Boat para darle a este bot un equipo en la nube: se levanta aquí mismo."
+  "computer.addBoatKey": "Añade una clave de API de Boat para darle a este bot un equipo en la nube: se levanta aquí mismo.",
+  "call.live.disclosureCloud": "Una llamada en directo envía tu voz a OpenAI, junto con los mensajes recientes del chat, las respuestas del bot y los detalles de cualquier aprobación que solicite. La clave de OpenAI permanece en tu Cloud."
 }

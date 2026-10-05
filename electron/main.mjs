@@ -33,7 +33,7 @@ let startupScreen = null;
 let desktopTray = null;
 import { collisionFreeDownloadPath, defaultSaveName, revealDownloadWhenDone, withSavableFile } from "./save-file.mjs";
 import { desktopViewerPermissionAllowed } from "./desktop-viewer-permissions.mjs";
-import { appPermissionAllowed, externalWebUrl } from "./app-permissions.mjs";
+import { appPermissionHandlers, externalWebUrl } from "./app-permissions.mjs";
 import {
   ensureManagedComposioCredentials,
   managedComposioAccess,
@@ -3440,15 +3440,16 @@ app.whenReady().then(async () => {
   setLocalOrigin(rendererOrigin());
   // Device permissions (microphone, notifications, clipboard) are for the
   // local UI only; privileged capabilities (camera, geolocation, USB, MIDI,
-  // serial) stay off. Client mode's loopback relay is the local UI.
-  session.defaultSession.setPermissionRequestHandler((contents, permission, callback, details) => {
-    const requesting = details?.requestingUrl ?? contents?.getURL?.() ?? "";
-    callback(appPermissionAllowed(permission, requesting, rendererOrigin(), details));
+  // serial) stay off. Client mode's loopback relay is the local UI. The
+  // person's own Cloud, open in this window, also gets the microphone (only
+  // that) for a Live call: it is theirs alone. No other server does.
+  const appPermissions = appPermissionHandlers({
+    rendererOrigin,
+    mainContents: () => (mainWindow && !mainWindow.isDestroyed() ? mainWindow.webContents : null),
+    cloudHomeOrigin: () => desktopRemoteAccess ? null : cloudAccount?.homeTarget()?.origin ?? null,
   });
-  session.defaultSession.setPermissionCheckHandler((contents, permission, requestingOrigin, details) => {
-    const requesting = requestingOrigin || contents?.getURL?.() || "";
-    return appPermissionAllowed(permission, requesting, rendererOrigin(), details);
-  });
+  session.defaultSession.setPermissionRequestHandler(appPermissions.request);
+  session.defaultSession.setPermissionCheckHandler(appPermissions.check);
   environmentsState = readEnvironments();
   // Maintainer grants never start while computer sharing is off: no poll
   // loop, no registration, no grant replay from disk. Lending to the person's
