@@ -1139,10 +1139,14 @@ function approvalShape(shape: { prompt?: string; botId?: string; runOn?: string;
 /** Who opens a routine's results conversation on a Cloud home: the writer
  * of this request, else the owner for a routine that is theirs (they wrote
  * it as it stands, or they are its writer: cloud-owner.ts), else its last
- * writer, else nobody. */
+ * writer, else nobody. A webhook's run is the owner's: only their own
+ * devices can create, edit or rotate one (admin scope), so it runs at the
+ * bot's own level, in its folder, as on the desktop. Its payload still never
+ * reaches the lent Mac: cloud-lending.ts refuses every webhook run. */
 function routineOpener(routineId: string): string {
   if (routineWriterInFlight) return routineWriterInFlight;
   const routine = routines?.listRoutines().find((candidate) => candidate.id === routineId);
+  if (!routine && CLOUD_OWNER_KEY && webhooks.list().some((hook) => hook.id === routineId)) return CLOUD_OWNER_KEY;
   if (routine && CLOUD_OWNER_KEY && cloudRoutineAuthors?.authored(routineId, routine)) return CLOUD_OWNER_KEY;
   const writer = cloudRoutineAuthors?.writer(routineId);
   if (writer && CLOUD_OWNER_KEY && writer === CLOUD_OWNER_KEY) return CLOUD_OWNER_KEY;
