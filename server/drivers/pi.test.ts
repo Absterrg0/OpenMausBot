@@ -25,6 +25,7 @@ import {
   parsePiCatalog,
   PiDriver,
   PiRpcChunks,
+  piLineReader,
   preferPiInjectRows,
   splitPiModel,
   updatePiModelCatalog,
@@ -128,6 +129,29 @@ describe("PiRpcChunks", () => {
     const [head, tail] = split("not json at all", 4);
     expect(decodePiFrame(JSON.stringify(head), chunks)).toBeNull();
     expect(decodePiFrame(JSON.stringify(tail), chunks)).toBeNull();
+  });
+
+  it("rejects empty, oversized and too-many pieces without keeping the sequence", () => {
+    const piece = (overrides: Record<string, unknown>) =>
+      JSON.stringify({ type: "rpc_chunk", chunkId: "c", index: 0, count: 2, byteLength: 2, data: "e30=", ...overrides });
+    const oversized = "A".repeat(Math.ceil(PiRpcChunks.MAX_PIECE_BYTES / 3) * 4 + 4);
+    for (const overrides of [{ data: "" }, { data: "=" }, { data: oversized }, { count: PiRpcChunks.MAX_COUNT + 1 }]) {
+      const chunks = new PiRpcChunks();
+      expect(decodePiFrame(piece(overrides), chunks)).toBeNull();
+      // the follow-up piece ("{}", which would complete the frame) finds no sequence to join
+      expect(decodePiFrame(piece({ ...overrides, index: 1, data: "e30=" }), chunks)).toBeNull();
+    }
+  });
+});
+
+describe("piLineReader", () => {
+  it("drops a line longer than the frame cap and resumes at the next newline", () => {
+    const lines: string[] = [];
+    const read = piLineReader((line) => void lines.push(line));
+    read('{"a":1}\n');
+    read("x".repeat(PiRpcChunks.MAX_BYTES + 1));
+    read('{"type":"forged"}\n\n{"b":2}\n');
+    expect(lines).toEqual(['{"a":1}', '{"b":2}']);
   });
 });
 

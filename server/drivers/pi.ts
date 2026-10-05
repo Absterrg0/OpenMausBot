@@ -224,6 +224,9 @@ export function parsePiCatalog(stdout: string, fallbackDefault = ""): ModelCatal
 export class PiRpcChunks {
   /** omp's advertised cap on one reassembled frame. */
   static readonly MAX_BYTES = 64 * 1024 * 1024;
+  /** omp's cap on one decoded piece, which also bounds the piece count. */
+  static readonly MAX_PIECE_BYTES = 256 * 1024;
+  static readonly MAX_COUNT = PiRpcChunks.MAX_BYTES / PiRpcChunks.MAX_PIECE_BYTES;
   private chunkId: string | null = null;
   private count = 0;
   private byteLength = 0;
@@ -236,8 +239,12 @@ export class PiRpcChunks {
     const { chunkId, index, count, byteLength, data } = message;
     if (
       typeof chunkId !== "string" || chunkId.length === 0 || typeof data !== "string" ||
+      // Bound the base64 before decoding it, so an oversized piece is
+      // rejected without allocating its bytes.
+      data.length === 0 || data.length > Math.ceil(PiRpcChunks.MAX_PIECE_BYTES / 3) * 4 ||
       !Number.isInteger(index) || !Number.isInteger(count) || !Number.isInteger(byteLength) ||
-      (index as number) < 0 || (count as number) < 2 || (index as number) >= (count as number) ||
+      (index as number) < 0 || (count as number) < 2 || (count as number) > PiRpcChunks.MAX_COUNT ||
+      (index as number) >= (count as number) ||
       (byteLength as number) < 0 || (byteLength as number) > PiRpcChunks.MAX_BYTES
     ) {
       this.reset();
@@ -260,7 +267,12 @@ export class PiRpcChunks {
       return null;
     }
     const part = Buffer.from(data, "base64");
-    if (index !== this.parts.length || this.bytes + part.length > this.byteLength) {
+    // Every piece must carry bytes: an empty one would let a sequence grow
+    // `parts` without ever approaching `byteLength`.
+    if (
+      index !== this.parts.length || part.length === 0 || part.length > PiRpcChunks.MAX_PIECE_BYTES ||
+      this.bytes + part.length > this.byteLength
+    ) {
       this.reset();
       return null;
     }
@@ -304,6 +316,36 @@ export function decodePiFrame(line: string, chunks: PiRpcChunks): Record<string,
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
   const frame = parsed as Record<string, unknown>;
   return frame.type === "rpc_chunk" ? chunks.accept(frame) : frame;
+}
+
+/** Longest stdout line a reader buffers: omp's cap on one whole frame. */
+const PI_MAX_LINE = PiRpcChunks.MAX_BYTES;
+
+/** Split a pi child's stdout into non-blank lines for `onLine`, which
+ *  returns true to stop reading. A line longer than PI_MAX_LINE is dropped
+ *  through its newline instead of growing the buffer without bound.
+ *  Exported for the test. */
+export function piLineReader(onLine: (line: string) => boolean | void): (chunk: string) => void {
+  let buf = "";
+  let dropping = false;
+  return (chunk) => {
+    buf += chunk;
+    let nl: number;
+    while ((nl = buf.indexOf("\n")) !== -1) {
+      const line = buf.slice(0, nl);
+      buf = buf.slice(nl + 1);
+      if (dropping) {
+        dropping = false;
+        continue;
+      }
+      if (line.length > PI_MAX_LINE || !line.trim()) continue;
+      if (onLine(line)) return;
+    }
+    if (buf.length > PI_MAX_LINE) {
+      buf = "";
+      dropping = true;
+    }
+  };
 }
 
 /** Split a picker id into pi's `{provider, modelId}`. Accepts both the
@@ -460,7 +502,6 @@ export async function fetchPiModels(
 ): Promise<ModelCatalog> {
   const child = spawnCli(cli, PI_ARGS, { stdio: ["pipe", "pipe", "pipe"], env });
   return new Promise((resolve) => {
-    let buf = "";
     let done = false;
     const fallbackDefault = readPiDefaultModel(env);
     const finish = (catalog: ModelCatalog) => {
@@ -477,20 +518,13 @@ export async function fetchPiModels(
     timer.unref?.();
     const chunks = new PiRpcChunks();
     child.stdout.setEncoding("utf8");
-    child.stdout.on("data", (chunk: string) => {
-      buf += chunk;
-      let nl: number;
-      while ((nl = buf.indexOf("\n")) !== -1) {
-        const line = buf.slice(0, nl);
-        buf = buf.slice(nl + 1);
-        if (!line.trim()) continue;
-        const frame = decodePiFrame(line, chunks);
-        if (frame?.command !== "get_available_models") continue;
-        clearTimeout(timer);
-        finish(piCatalogFromFrame(frame, fallbackDefault) ?? { default: fallbackDefault, options: [] });
-        return;
-      }
-    });
+    child.stdout.on("data", piLineReader((line) => {
+      const frame = decodePiFrame(line, chunks);
+      if (frame?.command !== "get_available_models") return false;
+      clearTimeout(timer);
+      finish(piCatalogFromFrame(frame, fallbackDefault) ?? { default: fallbackDefault, options: [] });
+      return true;
+    }));
     child.on("error", () => finish({ default: "", options: [] }));
     child.on("close", () => finish({ default: "", options: [] }));
     try {
@@ -737,7 +771,6 @@ export const PiDriver: ProviderDriver<PiConfig> = {
           throw err;
         }
       })();
-      let buf = "";
       let assistantText = "";
       // set when a compaction event arrives this turn; gates the receipt
       // write below so a compacted-around delivery is never claimed
@@ -1098,17 +1131,15 @@ export const PiDriver: ProviderDriver<PiConfig> = {
 
       const chunks = new PiRpcChunks();
       child.stdout.setEncoding("utf8");
-      child.stdout.on("data", (chunk: string) => {
-        buf += chunk;
-        let nl: number;
-        while ((nl = buf.indexOf("\n")) !== -1) {
-          const line = buf.slice(0, nl);
-          buf = buf.slice(nl + 1);
-          if (!line.trim()) continue;
-          const frame = decodePiFrame(line, chunks);
-          if (frame) onEvent(frame as unknown as PiEvent);
+      child.stdout.on("data", piLineReader((line) => {
+        const frame = decodePiFrame(line, chunks);
+        if (!frame) return;
+        try {
+          onEvent(frame as unknown as PiEvent);
+        } catch {
+          /* skip a frame the event handler can't consume */
         }
-      });
+      }));
       child.on("error", (err) => {
         const fail = describeSpawnFailure(err as NodeJS.ErrnoException, config.cli);
         rejectWaiters(new Error(fail.message));
