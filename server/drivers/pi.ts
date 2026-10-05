@@ -182,12 +182,25 @@ interface PiModelsResponse {
   data?: { models?: PiModelEntry[] };
 }
 
-/** Pure parser: turn a `get_available_models` stdout blob into a catalog.
- *  Every option is `custom` (pi is BYOK) and id is the `provider/modelId`
- *  composite the picker and `set_model` both use. Exported for the test. */
-export function parsePiCatalog(stdout: string, fallbackDefault = ""): ModelCatalog {
+/** One decoded frame → catalog, or null when it is not a successful
+ *  `get_available_models` response. Every option is `custom` (pi is BYOK)
+ *  and id is the `provider/modelId` composite the picker and `set_model`
+ *  both use. */
+function piCatalogFromFrame(frame: unknown, fallbackDefault: string): ModelCatalog | null {
+  const res = frame as PiModelsResponse;
+  if (res?.type !== "response" || res.command !== "get_available_models" || !res.success) return null;
   const options: Array<{ id: string; label: string; custom: true; provider: string }> = [];
-  let def = fallbackDefault;
+  for (const m of res.data?.models ?? []) {
+    if (!m?.provider || !m?.id) continue;
+    const id = `${m.provider}/${m.id}`;
+    options.push({ id, label: m.name ?? m.id, custom: true, provider: m.provider });
+  }
+  return { default: fallbackDefault || (options[0]?.id ?? ""), options };
+}
+
+/** Pure parser: turn a `get_available_models` stdout blob into a catalog.
+ *  Exported for the test. */
+export function parsePiCatalog(stdout: string, fallbackDefault = ""): ModelCatalog {
   for (const line of stdout.split("\n")) {
     if (!line.trim()) continue;
     let msg: unknown;
@@ -196,17 +209,10 @@ export function parsePiCatalog(stdout: string, fallbackDefault = ""): ModelCatal
     } catch {
       continue;
     }
-    const res = msg as PiModelsResponse;
-    if (res?.type !== "response" || res.command !== "get_available_models" || !res.success) continue;
-    for (const m of res.data?.models ?? []) {
-      if (!m?.provider || !m?.id) continue;
-      const id = `${m.provider}/${m.id}`;
-      options.push({ id, label: m.name ?? m.id, custom: true, provider: m.provider });
-    }
-    break;
+    const catalog = piCatalogFromFrame(msg, fallbackDefault);
+    if (catalog) return catalog;
   }
-  if (!def && options.length) def = options[0]!.id;
-  return { default: def, options };
+  return { default: fallbackDefault, options: [] };
 }
 
 /** omp's RPC v2 splits any frame larger than 1 MiB into base64 `rpc_chunk`
@@ -479,13 +485,10 @@ export async function fetchPiModels(
         buf = buf.slice(nl + 1);
         if (!line.trim()) continue;
         const frame = decodePiFrame(line, chunks);
-        if (!frame) continue;
-        const parsed = parsePiCatalog(`${JSON.stringify(frame)}\n`, fallbackDefault);
-        if (parsed.options.length || frame.command === "get_available_models") {
-          clearTimeout(timer);
-          finish(parsed);
-          return;
-        }
+        if (frame?.command !== "get_available_models") continue;
+        clearTimeout(timer);
+        finish(piCatalogFromFrame(frame, fallbackDefault) ?? { default: fallbackDefault, options: [] });
+        return;
       }
     });
     child.on("error", () => finish({ default: "", options: [] }));
@@ -769,8 +772,9 @@ export const PiDriver: ProviderDriver<PiConfig> = {
         child.stdin.write(JSON.stringify(obj) + "\n");
       };
       // Declare protocol 2 on the same stdin before the first command, so an
-      // omp-style runtime chunks any oversized frame it sends back. pi
-      // ignores the unknown frame type; nobody waits for a reply.
+      // omp-style runtime chunks any oversized frame it sends back. Vanilla
+      // pi refuses the unknown command; no waiter is keyed for the reply,
+      // so either answer is ignored.
       send(PI_NEGOTIATE_FRAME);
 
       /** Emit buffered assistant text as its own item, then clear it. */

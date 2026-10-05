@@ -82,9 +82,9 @@ const send = (obj: any) => process.stdout.write(JSON.stringify(obj) + "\n");
 const ompChunkMode = mode === "omp-chunk";
 let negotiatedV2 = false;
 let chunkSeq = 0;
-const sendChunked = (frame: any, parts = 3) => {
+const sendChunked = (frame: any) => {
   const bytes = Buffer.from(JSON.stringify(frame), "utf8");
-  const size = Math.ceil(bytes.length / parts);
+  const size = Math.ceil(bytes.length / 3);
   const count = Math.max(2, Math.ceil(bytes.length / size));
   const chunkId = `rpc-${++chunkSeq}`;
   for (let index = 0; index < count; index++) {
