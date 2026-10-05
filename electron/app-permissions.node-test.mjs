@@ -218,7 +218,9 @@ test("the Cloud's page is refused where its microphone request would be", () => 
   assert.equal(handlers.pageMicrophone(ipcFrom(state.main, `${CLOUD}/chat`)), "refused", "signed out of Cloud");
 });
 
-test("the page's answer is the request handler's answer for its microphone", () => {
+// The request may decide later (Electron's callback allows it), so the test
+// waits for its answer rather than reading it as the call returns.
+test("the page's answer is the request handler's answer for its microphone", async () => {
   const { state, handlers } = pageMicFixture();
   const local = { getURL: () => LOCAL_PAGE };
   const other = { getURL: () => `${CLOUD}/` };
@@ -227,10 +229,11 @@ test("the page's answer is the request handler's answer for its microphone", () 
     for (const contents of [state.main, local, other]) {
       for (const url of [`${CLOUD}/chat`, LOCAL_PAGE, "https://my-vps.example.com/", "http://omb-u-0123456789ab.fly.dev/"]) {
         for (const mainFrame of [true, false]) {
-          let granted;
-          handlers.request(contents, "media", (value) => { granted = value; }, { requestingUrl: url, isMainFrame: mainFrame, mediaTypes: ["audio"] });
+          const granted = await new Promise((resolve) => {
+            handlers.request(contents, "media", resolve, { requestingUrl: url, isMainFrame: mainFrame, mediaTypes: ["audio"] });
+          });
           const label = JSON.stringify({ home, page: contents.getURL(), url, mainFrame });
-          assert.equal(handlers.pageMicrophone(ipcFrom(contents, url, { mainFrame })), granted ? "allowed" : "refused", label);
+          assert.equal(await handlers.pageMicrophone(ipcFrom(contents, url, { mainFrame })), granted ? "allowed" : "refused", label);
         }
       }
     }

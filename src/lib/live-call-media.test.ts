@@ -748,6 +748,22 @@ describe("a blocked microphone", () => {
     expect(liveMedia()).toMatchObject({ phase: "failed", notice: APP_REFUSED, action: "open-in-browser" });
   });
 
+  // A server reached over plain http (a LAN or VPN address) is no secure
+  // page: neither the app nor a web browser gives it a microphone, so it is
+  // never told a web browser can make the call.
+  it("on a plain-http server's page, which has no microphone at all, offers no web browser", async () => {
+    const pageMicrophone = vi.fn(async () => "refused" as const);
+    configureLiveMedia({
+      createPeer: () => peer as unknown as RTCPeerConnection,
+      request: request as never,
+      capabilities: () => ({ dictation: { available: false, engine: "none", onDevice: false, reasonCode: "remote-server" } }) as DesktopCapabilities,
+      pageMicrophone,
+    });
+    await startLiveCall({ botId: "b1", threadId: "t1" });
+    expect(liveMedia()).toMatchObject({ phase: "failed", notice: "Live calls need microphone and WebRTC support, which this window does not have.", action: null });
+    expect(pageMicrophone).not.toHaveBeenCalled();
+  });
+
   it("allowed by this app on the person's Cloud, points at the computer's settings, then Try again", async () => {
     blockedIn({ reasonCode: "remote-server" }, { pageMic: "allowed" });
     await startLiveCall({ botId: "b1", threadId: "t1" });
