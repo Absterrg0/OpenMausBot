@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { CALL_MODE_KEY, CALL_MODES, callModeHint, liveDisclosure, parseCallMode } from "./call-mode";
+import { CALL_MODE_KEY, CALL_MODES, callModeHint, effectiveCallMode, liveDisclosure, parseCallMode } from "./call-mode";
 import { t } from "./i18n";
 
 describe("call mode", () => {
@@ -30,6 +30,18 @@ describe("call mode", () => {
     expect(live).not.toContain("your computer");
     expect(liveDisclosure({ cloudHome: true })).toBe(t("call.live.disclosureCloud"));
     expect(liveDisclosure({ cloudHome: false })).toBe(t("call.live.disclosure"));
+  });
+
+  // Where this device can't take turns (a browser, a Windows or Linux app,
+  // any server's or Cloud's page), a call that can be Live is Live, whatever
+  // was picked before: Take turns there is a button that can never start.
+  it("makes the call Live wherever taking turns can't run, and keeps the choice where it can", () => {
+    for (const stored of ["turns", "live"] as const) {
+      expect(effectiveCallMode(stored, { turnsHere: false, canLive: true }), stored).toBe("live");
+      expect(effectiveCallMode(stored, { turnsHere: true, canLive: true }), stored).toBe(stored);
+      // a room has no Live call: nothing to switch to
+      expect(effectiveCallMode(stored, { turnsHere: false, canLive: false }), stored).toBe(stored);
+    }
   });
 
   it("remembers the choice and survives storage that refuses writes", async () => {

@@ -24,7 +24,7 @@ import { useStore, visibleMessages, type Bot } from "@/state/store";
 import { cn } from "@/lib/cn";
 import { useMenuMotion } from "./MenuMotion";
 import { currentCall, deferCallCleanup, endCall, startCall, useOnCall } from "@/lib/call";
-import { CALL_MODES, callModeHint, setCallMode, useCallMode, type CallMode } from "@/lib/call-mode";
+import { CALL_MODES, callModeHint, effectiveCallMode, setCallMode, useCallMode, type CallMode } from "@/lib/call-mode";
 import { NO, YES } from "../../shared/call-consent";
 import { dismissKeyPrompt, hangUpLiveCall, isLiveCallRunning, startLiveCall, useLiveMedia } from "@/lib/live-call-media";
 import { t } from "@/lib/i18n";
@@ -39,7 +39,7 @@ import { liveLineHeldElsewhere } from "./LiveCallBar";
 import { isRoutineApproval, isSkillApproval, pendingApprovals, spokenApprovalPrompt } from "./PendingApproval";
 import { track } from "@/lib/analytics";
 import { useDesktopCapabilities } from "./DesktopCapabilities";
-import { callCapabilityHelp } from "@/lib/call-capability";
+import { callCapabilityHelp, type CallCapabilityHelp } from "@/lib/call-capability";
 import { VoiceSetupDialog } from "./VoiceSetupDialog";
 
 type Phase = "listening" | "sending" | "working" | "speaking";
@@ -124,7 +124,12 @@ export function CallTargetButton({
   const voiceReady =
     localVoice ||
     (configured && (requireExplicitVoices ? everyTargetHasVoice : Boolean(state.config?.tts?.ready || everyTargetHasVoice)));
-  const mode = useCallMode();
+  // Taking turns listens on this device, which only the Mac app's own page
+  // can do. Elsewhere (a browser, the Windows or Linux app, My Cloud) the
+  // one-to-one call is Live, and Take turns says where it works instead.
+  // Until the device is known, the picked mode holds.
+  const turnsHere = !capabilitiesReady || capabilities.dictation.available;
+  const mode = effectiveCallMode(useCallMode(), { turnsHere, canLive });
   const liveMode = canLive && mode === "live";
   const turnsReady = capabilitiesReady && supported && voiceReady;
   const unavailable = !active && !liveElsewhere && !liveMode && !turnsReady;
@@ -328,6 +333,7 @@ export function CallTargetButton({
         <CallModeMenu
           id={menuId}
           mode={mode}
+          turnsUnavailable={turnsHere ? null : capabilityHelp}
           placement={placement}
           cloudHome={cloudHome}
           onClose={closePopovers}
@@ -366,18 +372,6 @@ export function CallTargetButton({
         >
           <div className="text-[13px] font-medium text-ink">Call unavailable</div>
           <div className="mt-1 text-[12px] leading-[1.45] text-ink-secondary">{reason}</div>
-          {capabilityHelp?.action === "choose-local-workspace" && (
-            <button
-              type="button"
-              onClick={() => {
-                setHelpOpen(false);
-                void window.ogb?.workspaces?.menu();
-              }}
-              className="mt-2.5 rounded-lg bg-accent px-3 py-1.5 text-[12px] font-medium text-white hover:brightness-110"
-            >
-              Choose This computer
-            </button>
-          )}
           {canLive && (
             <button
               type="button"
@@ -431,10 +425,14 @@ export function CallTargetButton({
   );
 }
 
-/** The menu under the call button's chevron: Take turns or Live. */
-export function CallModeMenu({ id, mode, onChoose, onClose, placement = "header", cloudHome = false }: {
+/** The menu under the call button's chevron: Take turns or Live. Where this
+ * page can't take turns, Take turns stays in the menu, can't be picked, and
+ * says why. */
+export function CallModeMenu({ id, mode, onChoose, onClose, placement = "header", cloudHome = false, turnsUnavailable = null }: {
   id: string;
   mode: CallMode;
+  /** Why this page can't take turns; null where it can. */
+  turnsUnavailable?: CallCapabilityHelp | null;
   placement?: CallButtonPlacement;
   /** On the person's Cloud: the Live hint says the key stays there. */
   cloudHome?: boolean;
@@ -458,25 +456,31 @@ export function CallModeMenu({ id, mode, onChoose, onClose, placement = "header"
       }}
       className={cn("animate-pop-in absolute right-0 z-30 w-[280px] rounded-xl border border-hairline bg-panel p-1.5 text-left shadow-2xl", placement === "composer" ? "bottom-full mb-1.5" : "top-full mt-1.5")}
     >
-      {CALL_MODES.map((entry) => (
-        <button
-          key={entry.id}
-          type="button"
-          role="menuitemradio"
-          aria-checked={mode === entry.id}
-          onClick={() => onChoose(entry.id)}
-          className={cn(
-            "flex w-full items-start gap-2.5 rounded-lg px-2.5 py-2 text-left outline-none hover:bg-raised focus-visible:bg-raised",
-            mode === entry.id && "bg-raised/60",
-          )}
-        >
-          <span className="min-w-0 flex-1">
-            <span className="block text-[13px] font-medium text-ink">{t(entry.label)}</span>
-            <span className="mt-0.5 block text-[11.5px] leading-[1.4] text-ink-secondary">{callModeHint(entry.id, { cloudHome })}</span>
-          </span>
-          {mode === entry.id && <Check size={14} className="mt-0.5 shrink-0 text-accent" aria-hidden="true" />}
-        </button>
-      ))}
+      {CALL_MODES.map((entry) => {
+        const unavailable = entry.id === "turns" ? turnsUnavailable : null;
+        return (
+          <button
+            key={entry.id}
+            type="button"
+            role="menuitemradio"
+            aria-checked={mode === entry.id}
+            disabled={Boolean(unavailable)}
+            onClick={() => onChoose(entry.id)}
+            className={cn(
+              "flex w-full items-start gap-2.5 rounded-lg px-2.5 py-2 text-left outline-none hover:bg-raised focus-visible:bg-raised disabled:hover:bg-transparent",
+              mode === entry.id && "bg-raised/60",
+            )}
+          >
+            <span className="min-w-0 flex-1">
+              <span className={cn("block text-[13px] font-medium", unavailable ? "text-ink-tertiary" : "text-ink")}>{t(entry.label)}</span>
+              <span className="mt-0.5 block text-[11.5px] leading-[1.4] text-ink-secondary">
+                {unavailable ? `${unavailable.label}. ${unavailable.reason}` : callModeHint(entry.id, { cloudHome })}
+              </span>
+            </span>
+            {mode === entry.id && <Check size={14} className="mt-0.5 shrink-0 text-accent" aria-hidden="true" />}
+          </button>
+        );
+      })}
     </div>
   );
 }

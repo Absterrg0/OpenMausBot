@@ -212,6 +212,25 @@ describe("the call mode menu", () => {
     expect(cloud).not.toContain("stays on your computer");
   });
 
+  // Off the Mac's own page, Take turns stays in the menu so the person sees
+  // it exists, but it can't be picked, and it says where it works.
+  it("shows Take turns disabled with its reason where this page can't take turns", () => {
+    const turnsUnavailable = {
+      label: "Calls where you take turns need the Mac app",
+      reason: "They listen with on-device speech recognition, which only the Mac app has.",
+    };
+    const markup = renderToStaticMarkup(createElement(CallModeMenu, { id: "m", mode: "live", turnsUnavailable, onChoose: vi.fn(), onClose: vi.fn() }));
+    const [turns, live] = markup.split('role="menuitemradio"').slice(1);
+    expect(turns).toMatch(/^ aria-checked="false" disabled=""/);
+    expect(turns).toContain(">Take turns<");
+    expect(turns).toContain("Calls where you take turns need the Mac app. They listen with on-device speech recognition, which only the Mac app has.");
+    expect(turns).not.toContain("Listening stays on this computer");
+    expect(live).toMatch(/^ aria-checked="true"/);
+    expect(live).not.toContain('disabled=""');
+    // where it can take turns, both modes can be picked
+    expect(renderToStaticMarkup(createElement(CallModeMenu, { id: "m", mode: "turns", onChoose: vi.fn(), onClose: vi.fn() }))).not.toContain('disabled=""');
+  });
+
   it("reports the chosen mode", () => {
     const onChoose = vi.fn();
     let tree: ReactNode = null;

@@ -253,11 +253,16 @@ describe("setting up a voice from the call button", () => {
     expect(render(room).html).not.toContain("data-voice-setup-stub");
   });
 
-  it("keeps Choose This computer as the help when the device is the problem", () => {
+  // A server's page can't take turns, so a missing voice is no reason to
+  // stop: the call is Live, and its first press asks for the OpenAI key.
+  it("starts the Live call, not voice set-up, where the device can't take turns", () => {
     fixture.dictation = { available: false, reasonCode: "remote-server" };
     click(find(render(), "data-call-button"));
-    const help = render();
-    expect(help.html).toContain("Choose This computer");
-    expect(help.html).not.toContain("Set up voice");
+    const after = render();
+    expect(after.html).toContain("OpenAI API key for Live calls");
+    expect(after.html).not.toContain("Set up voice");
+    expect(after.html).not.toContain("Call unavailable");
+    expect(after.html).not.toContain("Choose This computer");
+    expect(fixture.startCall).not.toHaveBeenCalled();
   });
 });
