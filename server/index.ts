@@ -250,7 +250,7 @@ import {
 import type { GroupGoalRunCardData, GroupGoalRunStatus } from "../shared/group-goal-run.ts";
 
 import { BUILT_IN_DRIVERS } from "./drivers/builtIn.ts";
-import { openCodeProviderKeysAllowed, setOpenCodeOwnProviderKeys, setOpenCodeProviderKeyPolicy } from "./drivers/acp/opencode-go.ts";
+import { openCodeProviderKeysAllowed, setOpenCodeProviderKeyPolicy } from "./drivers/acp/opencode-go.ts";
 import { getOrCreateChannel, mirrorActivity, mirrorExchange, mirrorReply, type CommsBus } from "./comms-visibility.ts";
 import { readMessageText, recallMessages, recentMessages, searchMessagesAsync, closeMessageSearch, closeMessageDb, chatFollowups, cancelledChatFollowup, settleChatFollowups, threadsReferencing } from "./message-db.ts";
 import { briefCrossingLabel, claimRecallCrossings, recallCrossingLabel } from "./recall-disclosure.ts";
@@ -1888,8 +1888,6 @@ const openCodeKeysAllowed = (): boolean => openCodeProviderKeysAllowed({
   sharedSignIn: sharedSignIn(signInAllowList()),
 });
 setOpenCodeProviderKeyPolicy(openCodeKeysAllowed);
-// Keys the owner saved for OpenCode in Settings reach it on every server.
-setOpenCodeOwnProviderKeys(() => openCodeProviderKeys(cfg));
 let openCodeKeysLastAllowed = openCodeKeysAllowed();
 /** OpenCode lists a provider's models only while it may read that
  * provider's key. When enrollment or the sign-in list changes the answer,
