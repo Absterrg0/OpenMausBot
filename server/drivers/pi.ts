@@ -69,6 +69,12 @@ const DRIVER_KIND = "piAgent";
 const PI_ARGS = ["--mode", "rpc", "--no-session"];
 const PI_MODEL_UPDATE_ARGS = ["update", "--models", "--no-approve"];
 const NODE_ENV_FLAG = { ELECTRON_RUN_AS_NODE: "1" };
+/** omp's RPC transport caps one frame at 1 MiB and only chunks oversized
+ *  frames after the client negotiates protocol 2. Sent before the first
+ *  command on every spawn: stdin order guarantees the declaration lands
+ *  before the response to that command is encoded, and vanilla pi has no
+ *  handshake frame to wait for, so nobody gates on a reply. */
+const PI_NEGOTIATE_FRAME = { id: "negotiate", type: "negotiate_protocol", protocolVersion: 2 };
 /** After this many bare turns on one pi session the full prompt rides
  * again even without a compaction event: any history rewrite the events
  * miss (an older pi, a missed line) still loses at most this many turns
@@ -201,6 +207,97 @@ export function parsePiCatalog(stdout: string, fallbackDefault = ""): ModelCatal
   }
   if (!def && options.length) def = options[0]!.id;
   return { default: def, options };
+}
+
+/** omp's RPC v2 splits any frame larger than 1 MiB into base64 `rpc_chunk`
+ *  pieces: one `chunkId`/`count`/`byteLength` for the whole frame, a
+ *  sequential `index`, and `data` carrying one piece. Reassembles one
+ *  logical frame at a time; any inconsistency drops the partial sequence so
+ *  a corrupt stream can never feed a half-built frame to the parser.
+ *  Exported for the test. */
+export class PiRpcChunks {
+  /** omp's advertised cap on one reassembled frame. */
+  static readonly MAX_BYTES = 64 * 1024 * 1024;
+  private chunkId: string | null = null;
+  private count = 0;
+  private byteLength = 0;
+  private bytes = 0;
+  private parts: Buffer[] = [];
+
+  /** Feed one `rpc_chunk`; returns the reassembled frame when the last
+   *  piece arrives, or null while the sequence is incomplete or broken. */
+  accept(message: Record<string, unknown>): Record<string, unknown> | null {
+    const { chunkId, index, count, byteLength, data } = message;
+    if (
+      typeof chunkId !== "string" || chunkId.length === 0 || typeof data !== "string" ||
+      !Number.isInteger(index) || !Number.isInteger(count) || !Number.isInteger(byteLength) ||
+      (index as number) < 0 || (count as number) < 2 || (index as number) >= (count as number) ||
+      (byteLength as number) < 0 || (byteLength as number) > PiRpcChunks.MAX_BYTES
+    ) {
+      this.reset();
+      return null;
+    }
+    if (chunkId !== this.chunkId) {
+      // A new sequence may only start at index 0; a different chunkId
+      // mid-sequence means the previous one can never complete.
+      if (index !== 0) {
+        this.reset();
+        return null;
+      }
+      this.chunkId = chunkId;
+      this.count = count as number;
+      this.byteLength = byteLength as number;
+      this.parts = [];
+      this.bytes = 0;
+    } else if (count !== this.count || byteLength !== this.byteLength) {
+      this.reset();
+      return null;
+    }
+    const part = Buffer.from(data, "base64");
+    if (index !== this.parts.length || this.bytes + part.length > this.byteLength) {
+      this.reset();
+      return null;
+    }
+    this.parts.push(part);
+    this.bytes += part.length;
+    if (this.parts.length < this.count) return null;
+    const complete = this.bytes === this.byteLength;
+    const text = Buffer.concat(this.parts).toString("utf8");
+    this.reset();
+    if (!complete) return null;
+    try {
+      const frame = JSON.parse(text) as unknown;
+      return frame && typeof frame === "object" && !Array.isArray(frame)
+        ? frame as Record<string, unknown>
+        : null;
+    } catch {
+      return null;
+    }
+  }
+
+  private reset(): void {
+    this.chunkId = null;
+    this.count = 0;
+    this.byteLength = 0;
+    this.bytes = 0;
+    this.parts = [];
+  }
+}
+
+/** Decode one pi stdout line: a plain JSON frame, or one piece of an
+ *  `rpc_chunk` sequence (omp's protocol v2) with the reassembled frame
+ *  returned once complete. Non-JSON lines, scalars and broken sequences
+ *  resolve null and are skipped. Exported for the test. */
+export function decodePiFrame(line: string, chunks: PiRpcChunks): Record<string, unknown> | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(line);
+  } catch {
+    return null;
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+  const frame = parsed as Record<string, unknown>;
+  return frame.type === "rpc_chunk" ? chunks.accept(frame) : frame;
 }
 
 /** Split a picker id into pi's `{provider, modelId}`. Accepts both the
@@ -372,6 +469,7 @@ export async function fetchPiModels(
     };
     const timer = setTimeout(() => finish({ default: "", options: [] }), 15_000);
     timer.unref?.();
+    const chunks = new PiRpcChunks();
     child.stdout.setEncoding("utf8");
     child.stdout.on("data", (chunk: string) => {
       buf += chunk;
@@ -380,8 +478,10 @@ export async function fetchPiModels(
         const line = buf.slice(0, nl);
         buf = buf.slice(nl + 1);
         if (!line.trim()) continue;
-        const parsed = parsePiCatalog(line + "\n", fallbackDefault);
-        if (parsed.options.length || line.includes('"get_available_models"')) {
+        const frame = decodePiFrame(line, chunks);
+        if (!frame) continue;
+        const parsed = parsePiCatalog(`${JSON.stringify(frame)}\n`, fallbackDefault);
+        if (parsed.options.length || frame.command === "get_available_models") {
           clearTimeout(timer);
           finish(parsed);
           return;
@@ -391,6 +491,7 @@ export async function fetchPiModels(
     child.on("error", () => finish({ default: "", options: [] }));
     child.on("close", () => finish({ default: "", options: [] }));
     try {
+      child.stdin.write(`${JSON.stringify(PI_NEGOTIATE_FRAME)}\n`);
       child.stdin.write(JSON.stringify({ id: "catalog", type: "get_available_models" }) + "\n");
     } catch {
       finish({ default: "", options: [] });
@@ -667,6 +768,10 @@ export const PiDriver: ProviderDriver<PiConfig> = {
         appendNative(threadId, { dir: "out", source: "pi.rpc", msg: piNativeLogMessage(obj) });
         child.stdin.write(JSON.stringify(obj) + "\n");
       };
+      // Declare protocol 2 on the same stdin before the first command, so an
+      // omp-style runtime chunks any oversized frame it sends back. pi
+      // ignores the unknown frame type; nobody waits for a reply.
+      send(PI_NEGOTIATE_FRAME);
 
       /** Emit buffered assistant text as its own item, then clear it. */
       const flushAssistantText = () => {
@@ -987,6 +1092,7 @@ export const PiDriver: ProviderDriver<PiConfig> = {
         }
       };
 
+      const chunks = new PiRpcChunks();
       child.stdout.setEncoding("utf8");
       child.stdout.on("data", (chunk: string) => {
         buf += chunk;
@@ -995,11 +1101,8 @@ export const PiDriver: ProviderDriver<PiConfig> = {
           const line = buf.slice(0, nl);
           buf = buf.slice(nl + 1);
           if (!line.trim()) continue;
-          try {
-            onEvent(JSON.parse(line) as PiEvent);
-          } catch {
-            /* skip non-JSON line */
-          }
+          const frame = decodePiFrame(line, chunks);
+          if (frame) onEvent(frame as unknown as PiEvent);
         }
       });
       child.on("error", (err) => {

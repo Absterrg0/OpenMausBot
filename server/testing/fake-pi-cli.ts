@@ -7,7 +7,7 @@
 //
 //   FAKE_PI_MODE   happy (default) | tooluse | permission | interleave | question-select | question-input
 //                  | turn-error | no-models | exit-early | compaction | compaction-recovery
-//                  | compaction-recovery-upstream | prompt-reject
+//                  | compaction-recovery-upstream | prompt-reject | omp-chunk
 //   FAKE_PI_MODELS comma-separated provider/model pairs (default "ollama-cloud/glm-5.2,openai/gpt-4o")
 //   FAKE_PI_DUMP   path to append {argv, env} JSON, so a test can assert argv shape
 //                  and env hygiene (no leaked secrets into the pi child).
@@ -75,6 +75,32 @@ if (mode === "exit-early") {
 }
 
 const send = (obj: any) => process.stdout.write(JSON.stringify(obj) + "\n");
+// omp-chunk: omp's RPC v2 transport. The runtime announces protocol v1 with a
+// 1 MiB frame cap; a response larger than that is replaced by an overflow stub
+// unless the client negotiated protocol 2 first, and v2 responses arrive as
+// `rpc_chunk` frames the client must reassemble before parsing.
+const ompChunkMode = mode === "omp-chunk";
+let negotiatedV2 = false;
+let chunkSeq = 0;
+const sendChunked = (frame: any, parts = 3) => {
+  const bytes = Buffer.from(JSON.stringify(frame), "utf8");
+  const size = Math.ceil(bytes.length / parts);
+  const count = Math.max(2, Math.ceil(bytes.length / size));
+  const chunkId = `rpc-${++chunkSeq}`;
+  for (let index = 0; index < count; index++) {
+    send({
+      type: "rpc_chunk",
+      chunkId,
+      index,
+      count,
+      byteLength: bytes.length,
+      data: bytes.subarray(index * size, (index + 1) * size).toString("base64"),
+    });
+  }
+};
+if (ompChunkMode) {
+  send({ type: "ready", protocolVersion: 1, supportedProtocolVersions: [1, 2], maxFrameBytes: 1048576, maxReassembledFrameBytes: 67108864 });
+}
 let sessionCounter = 0;
 let currentSessionFile: string | null = null;
 // FAKE_PI_STEER_OUT_OF_ORDER parks the first steer frame until a second one
@@ -91,6 +117,26 @@ const streamTurn = () => {
   }
   send({ type: "turn_end", message: { stopReason: "end_turn", usage: { input: 12, output: 3 } }, usage: { input: 12, output: 3 } });
   send({ type: "agent_end" });
+};
+
+// omp-chunk: the happy turn with every stream frame arriving as an
+// `rpc_chunk` sequence, the way a v2 runtime chunks any frame over 1 MiB.
+// The process exits shortly after so a client that drops the chunks fails
+// fast instead of hanging on a run that never completes.
+const streamChunkedTurn = () => {
+  for (const frame of [
+    { type: "agent_start" },
+    { type: "turn_start" },
+    { type: "message_update", usage: { input: 0, output: 0 }, assistantMessageEvent: { type: "text_start", contentIndex: 0 } },
+    { type: "message_update", usage: { input: 0, output: 0 }, assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "Hello" } },
+    { type: "message_update", usage: { input: 0, output: 0 }, assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: " from" } },
+    { type: "message_update", usage: { input: 0, output: 0 }, assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: " pi" } },
+    { type: "turn_end", message: { stopReason: "end_turn", usage: { input: 12, output: 3 } }, usage: { input: 12, output: 3 } },
+    { type: "agent_end" },
+  ]) {
+    sendChunked(frame);
+  }
+  setTimeout(() => process.exit(0), 50);
 };
 
 const streamErrorTurn = () => {
@@ -256,14 +302,33 @@ process.stdin.on("end", () => process.exit(0));
 
 function handle(cmd: any) {
   switch (cmd.type) {
-    case "get_available_models":
-      send({
+    case "negotiate_protocol":
+      // Vanilla pi has no such command and ignores the unknown frame.
+      if (!ompChunkMode) return;
+      if (cmd.protocolVersion === 2) {
+        negotiatedV2 = true;
+        send({ type: "response", command: "negotiate_protocol", success: true, data: { protocolVersion: 2 } });
+      } else {
+        send({ type: "response", command: "negotiate_protocol", success: false, error: "fake pi: only protocol version 2 is supported" });
+      }
+      return;
+    case "get_available_models": {
+      const response = {
         type: "response",
         command: "get_available_models",
         success: true,
         data: { models: mode === "no-models" ? [] : modelPairs },
-      });
+      };
+      if (ompChunkMode && !negotiatedV2) {
+        // The un-negotiated v1 transport cannot frame this response and
+        // replaces it with the bounded overflow stub.
+        send({ type: "response", command: "get_available_models", success: false, error: "RPC response exceeded the transport limit" });
+        return;
+      }
+      if (ompChunkMode) sendChunked(response);
+      else send(response);
       return;
+    }
     case "new_session":
       if (mode === "session-error") {
         send({ type: "response", command: "new_session", success: false, error: "fake pi: session unavailable" });
@@ -330,6 +395,7 @@ function handle(cmd: any) {
       else if (mode === "compaction") streamCompactionTurn();
       else if (mode === "compaction-recovery") streamCompactionRecoveryTurn();
       else if (mode === "compaction-recovery-upstream") streamCompactionRecoveryUpstreamTurn();
+      else if (mode === "omp-chunk") streamChunkedTurn();
       else streamTurn();
       return;
     case "steer": {
