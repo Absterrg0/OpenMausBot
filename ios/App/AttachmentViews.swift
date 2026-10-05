@@ -152,9 +152,21 @@ struct TranscriptAttachmentView: View {
     @State private var thumbnailVisible = false
     @State private var preview: FilePreviewItem?
     @State private var previewTask: Task<Void, Never>?
+    /// The card's shape once the image has been seen. Unlike the thumbnail
+    /// it is kept when the card scrolls far away, so the card never shrinks
+    /// back to the placeholder and jumps again on the way back.
+    @State private var imageAspect: CGFloat?
 
     private var taskID: String {
         "\(threadId)\u{1F}\(messageId)\u{1F}\(attachment.path)\u{1F}\(thumbnailAttempt)\u{1F}\(thumbnailVisible)"
+    }
+
+    private var shapeKey: String {
+        "\(threadId)\u{1F}\(messageId)\u{1F}\(attachment.path)"
+    }
+
+    private var knownAspect: CGFloat? {
+        imageAspect ?? TranscriptImageShapes.aspect(for: shapeKey)
     }
 
     var body: some View {
@@ -181,7 +193,9 @@ struct TranscriptAttachmentView: View {
                 .accessibilityElement(children: .contain)
             }
         }
-        .frame(maxWidth: attachment.kind == .image ? 360 : 320, alignment: .leading)
+        // An image card sizes itself (TranscriptImageFit) and hugs its
+        // picture, so a narrow one does not stretch a picture-only bubble.
+        .frame(maxWidth: attachment.kind == .image ? nil : 320, alignment: .leading)
         .background {
             if attachment.kind == .image {
                 GeometryReader { proxy in
@@ -206,66 +220,83 @@ struct TranscriptAttachmentView: View {
         }
     }
 
+    /// The whole image at its own shape, fitted to the bubble and never
+    /// cropped, with its name beneath. The box's size comes only from the
+    /// width the bubble offers and the clamped shape (TranscriptImageFit):
+    /// the picture is drawn in an overlay and is never measured, so no image
+    /// — however wide — can push the bubble, and with it the whole chat,
+    /// past the screen's edges again.
     private var imageCard: some View {
-        Button(action: openPreview) {
-            ZStack(alignment: .bottomLeading) {
-                RoundedRectangle(cornerRadius: 13)
-                    .fill(foreground.opacity(0.12))
+        let aspect = knownAspect
+        let width = CGFloat(aspect.map { TranscriptImageFit.maximumCardWidth(aspect: Double($0)) }
+            ?? TranscriptImageFit.maximumWidth)
+        return Button(action: openPreview) {
+            VStack(alignment: .leading, spacing: 5) {
+                imageBox(aspect: aspect)
+                    .frame(maxWidth: width)
+                    .background(foreground.opacity(0.12))
+                    .overlay { imageContent }
+                    .clipShape(RoundedRectangle(cornerRadius: 13))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 13)
+                            .strokeBorder(foreground.opacity(0.18))
+                    }
 
-                if let thumbnail {
-                    Image(uiImage: thumbnail)
-                        .resizable()
-                        .scaledToFill()
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        .clipped()
-                } else if thumbnailLoading {
-                    ProgressView()
-                        .tint(foreground)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                } else {
-                    Image(systemName: "photo")
-                        .font(.system(size: 30, weight: .medium))
-                        .foregroundStyle(foreground.opacity(0.72))
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                }
-
-                LinearGradient(
-                    colors: [.clear, .black.opacity(0.68)],
-                    startPoint: .center,
-                    endPoint: .bottom
-                )
-
-                HStack(spacing: 6) {
+                HStack(spacing: 5) {
                     Image(systemName: "photo")
                         .accessibilityHidden(true)
                     Text(attachment.name)
                         .lineLimit(1)
-                    Spacer(minLength: 4)
+                        .truncationMode(.middle)
                     if previewLoading {
                         ProgressView()
-                            .controlSize(.small)
-                            .tint(.white)
+                            .controlSize(.mini)
+                            .tint(foreground)
                             .accessibilityHidden(true)
                     }
                 }
-                .font(.system(size: 12, weight: .semibold))
-                .foregroundStyle(.white)
-                .padding(10)
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(foreground.opacity(0.75))
+                .padding(.horizontal, 2)
+                .frame(maxWidth: width, alignment: .leading)
             }
-            .frame(maxWidth: .infinity)
-            .frame(height: 168)
-            .clipShape(RoundedRectangle(cornerRadius: 13))
-            .overlay {
-                RoundedRectangle(cornerRadius: 13)
-                    .strokeBorder(foreground.opacity(0.18))
-            }
-            .contentShape(RoundedRectangle(cornerRadius: 13))
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .disabled(previewLoading || thumbnailLoading)
         .accessibilityLabel("Image: \(attachment.name)")
         .accessibilityValue(thumbnail != nil ? "Loaded" : (thumbnailLoading ? "Loading" : "Unavailable"))
         .accessibilityHint(thumbnail == nil ? "Loads the image preview" : "Opens the image full screen")
+    }
+
+    /// An empty box at the card's size: the image's clamped shape once it is
+    /// known, the placeholder height until then.
+    @ViewBuilder
+    private func imageBox(aspect: CGFloat?) -> some View {
+        if let aspect {
+            Color.clear.aspectRatio(aspect, contentMode: .fit)
+        } else {
+            Color.clear.frame(height: CGFloat(TranscriptImageFit.placeholderHeight))
+        }
+    }
+
+    @ViewBuilder
+    private var imageContent: some View {
+        if let thumbnail {
+            // Fitted, so a shape outside the card's range sits whole on the
+            // backing — a phone screenshot between two bands, a panorama
+            // between two strips — instead of being cropped to fill.
+            Image(uiImage: thumbnail)
+                .resizable()
+                .scaledToFit()
+        } else if thumbnailLoading {
+            ProgressView()
+                .tint(foreground)
+        } else {
+            Image(systemName: "photo")
+                .font(.system(size: 30, weight: .medium))
+                .foregroundStyle(foreground.opacity(0.72))
+        }
     }
 
     private var fileSymbol: String {
@@ -344,12 +375,16 @@ struct TranscriptAttachmentView: View {
                 return
             }
             let decoded = await Task.detached(priority: .userInitiated) {
-                decodeAttachmentThumbnail(downloaded.data, maximumPixelSize: 720)
+                decodeAttachmentThumbnail(downloaded.data, maximumPixelSize: TranscriptImageFit.thumbnailPixelSize)
             }.value
             try Task.checkCancellation()
             guard let image = decoded.value else {
                 errorMessage = Text("This image couldn't be previewed.")
                 return
+            }
+            if let aspect = TranscriptImageFit.cardAspect(width: Double(image.width), height: Double(image.height)) {
+                imageAspect = CGFloat(aspect)
+                TranscriptImageShapes.remember(CGFloat(aspect), for: shapeKey)
             }
             thumbnail = UIImage(cgImage: image)
         } catch is CancellationError {
@@ -442,6 +477,23 @@ struct TranscriptAttachmentView: View {
         if !retentionFrame.intersects(frame), thumbnail != nil { thumbnail = nil }
     }
 
+}
+
+/// Card shapes seen this launch. A chat that is opened again builds its
+/// cards afresh; with the shape at hand each one draws at its final height
+/// straight away instead of growing out of the placeholder as it loads,
+/// which would move the transcript under the reader.
+@MainActor
+private enum TranscriptImageShapes {
+    private static var aspects: [String: CGFloat] = [:]
+
+    static func aspect(for key: String) -> CGFloat? { aspects[key] }
+
+    static func remember(_ aspect: CGFloat, for key: String) {
+        // A bound, not a cache policy: a launch rarely sees this many images.
+        if aspects.count >= 512 { aspects.removeAll(keepingCapacity: true) }
+        aspects[key] = aspect
+    }
 }
 
 struct FilePreviewItem: Identifiable {

@@ -72,6 +72,8 @@ struct ChatView: View {
     /// a scroll offset, because iOS 16 has no scroll-position API.
     @State private var viewportBottom: CGFloat = 0
     @State private var showsJumpToLatest = false
+    /// VoiceOver has heard "… is typing" for this turn.
+    @State private var typingAnnounced = false
 
     @AppStorage(PrefKey.islandIntro) private var islandIntro = IslandIntro.oncePerBot.rawValue
     @AppStorage(PrefKey.islandSeen) private var islandSeen = ""
@@ -147,6 +149,15 @@ struct ChatView: View {
         return transcriptRows(shown, detail: detail)
     }
 
+    /// The transcript ends with the typing bubble: busy, not waiting on you,
+    /// and the last row on screen is not a finished reply (`TurnTail`). A
+    /// stream bubble takes the slot instead where the detail level shows one.
+    private var showsTyping: Bool {
+        let streaming = !(session.state.streaming[threadId] ?? "").isEmpty
+            || !(session.state.reasoning[threadId] ?? "").isEmpty
+        return current.showsTyping(messages: messages, hiddenIds: live.hiddenIds, streaming: streaming)
+    }
+
     /// The status line's words: the reply as it streams, else the newest
     /// in-between message. Nil unless Hidden and the bot is working.
     private var liveStatusLine: String? {
@@ -218,8 +229,16 @@ struct ChatView: View {
             cancelThreadOpen()
         }
         .onValueChange(of: heldSends.first?.queueId) { _ in steering = false }
-        .onValueChange(of: current.busy) { busy in if !busy { steering = false } }
-        .onValueChange(of: threadId) { _ in steering = false }
+        .onValueChange(of: current.busy) { busy in
+            if !busy {
+                steering = false
+                typingAnnounced = false
+            }
+        }
+        .onValueChange(of: threadId) { _ in
+            steering = false
+            typingAnnounced = false
+        }
         .task(id: steering) { await expireSteering() }
         .onDisappear {
             dictation.stop()
@@ -353,9 +372,22 @@ struct ChatView: View {
         // `initial: true` is what opens the chat on the newest
         // message where `scrollAnchorCompat` cannot (iOS 16). On 17 the
         // anchor has already put us there and this is a no-op.
+        // The end, not the last message: the typing bubble sits under
+        // the message that started it, and landing on the message left
+        // the bubble below the composer, where nobody saw it.
         .onValueChange(of: transcript.last?.id, initial: true) { _ in
-            guard let last = transcript.last else { return }
-            withAnimation { proxy.scrollTo(last.id, anchor: .bottom) }
+            guard !transcript.isEmpty else { return }
+            withAnimation { proxy.scrollTo(Self.transcriptEndId, anchor: .bottom) }
+        }
+        // The bubble also comes and goes with no new message to follow:
+        // the turn is accepted a frame after your message lands, a tool
+        // step starts after a reply. Bring it into view then, unless you
+        // are up in the scrollback reading.
+        .onValueChange(of: showsTyping) { shown in
+            guard shown, !showsJumpToLatest else { return }
+            withAnimation(reduceMotion ? nil : .easeOut(duration: 0.2)) {
+                proxy.scrollTo(Self.transcriptEndId, anchor: .bottom)
+            }
         }
         // Neither of the above is enough on its own when the newest
         // message holds a table or a code block. Their horizontal
@@ -466,7 +498,19 @@ struct ChatView: View {
                 )
             }
         }
+        // Never wider than the column, whatever is inside. A frame with only
+        // a maximum takes its content's width when that is wider, and one
+        // over-wide row then widened the transcript, the scroll view and the
+        // whole chat screen — header and composer cut off at both edges (a
+        // wide screenshot did it). An overflowing row now overflows its own
+        // edge instead: yours to the left, a bot's to the right.
+        .frame(minWidth: 0, maxWidth: .infinity, alignment: rowAlignment(row))
         .id(row.id)
+    }
+
+    private func rowAlignment(_ row: TranscriptRow) -> Alignment {
+        if case let .message(message) = row, message.role == .user { return .trailing }
+        return .leading
     }
 
     /// The reply as it is typed. It sits after the last settled message and
@@ -474,7 +518,7 @@ struct ChatView: View {
     /// the same frame that appends the message, so there is never a beat
     /// where both are on screen.
     /// At Hidden the words go to the status line above the composer; the
-    /// transcript keeps the typing dots.
+    /// transcript keeps the typing bubble, which says the bot is still on it.
     @ViewBuilder private var liveTail: some View {
         if current.busy, detail != .hidden, let live = session.state.streaming[threadId], !live.isEmpty {
             StreamingBubble(text: live, reasoning: nil, color: current.color)
@@ -486,11 +530,21 @@ struct ChatView: View {
             // and showing both is just noise.
             StreamingBubble(text: nil, reasoning: thinking, color: current.color)
                 .id(Self.liveBubbleId)
-        } else if current.busy {
-            TypingIndicatorView(tintColor: MausPalette.color(current.color))
+        } else if showsTyping {
+            TypingIndicatorView(name: current.name)
                 .id(Self.liveBubbleId)
-                .accessibilityLabel("\(current.name) is working")
+                .onAppear(perform: announceTyping)
         }
+    }
+
+    /// VoiceOver hears "Pepper is typing" once a turn, when the bubble first
+    /// appears. It comes and goes between steps, and saying it every time
+    /// would be noise.
+    private func announceTyping() {
+        guard !typingAnnounced else { return }
+        typingAnnounced = true
+        guard UIAccessibility.isVoiceOverRunning else { return }
+        UIAccessibility.post(notification: .announcement, argument: String(localized: "\(current.name) is typing"))
     }
 
     private var transcriptEnd: some View {
@@ -586,8 +640,8 @@ struct ChatView: View {
     /// the reader has already scrolled away.
     private func settleOnEnd(_ proxy: ScrollViewProxy) async {
         try? await Task.sleep(for: .milliseconds(50))
-        guard !Task.isCancelled, !readerScrolled, let last = rows.last else { return }
-        proxy.scrollTo(last.id, anchor: .bottom)
+        guard !Task.isCancelled, !readerScrolled, !rows.isEmpty else { return }
+        proxy.scrollTo(Self.transcriptEndId, anchor: .bottom)
     }
 
     private func revealFocusedMessage(_ proxy: ScrollViewProxy, in transcript: [TranscriptRow]) {
@@ -623,6 +677,12 @@ struct ChatView: View {
         // Profile parity screenshots without automating a tap through the
         // animated island/header transition.
         if ProcessInfo.processInfo.arguments.contains("-open-profile") { showingProfile = true }
+        // `-chat-typing-preview`: the turn starts a beat after the chat
+        // opens, so the typing bubble arrives with no new message to follow.
+        if ProcessInfo.processInfo.arguments.contains("-chat-typing-preview"), !openedChat.busy {
+            try? await Task.sleep(for: .milliseconds(1500))
+            if !Task.isCancelled { session.setPreviewTurn(busy: true, threadId: openedChat.threadId) }
+        }
 #endif
     }
 
@@ -2587,6 +2647,9 @@ struct CardView: View {
     let message: Message
     @EnvironmentObject private var session: Session
     @State private var answering = false
+    /// The full request behind a short card. Collapsed until asked for, and
+    /// again whenever the card is drawn afresh.
+    @State private var showingDetails = false
 
     /// The option this card offers that means "go ahead".
     ///
@@ -2618,16 +2681,33 @@ struct CardView: View {
                         .font(.system(size: 13, weight: .semibold))
                         .foregroundStyle(tint)
                 }
-                Text(card.title)
+                headline(card)
                     .font(.system(size: 16, weight: .semibold))
                     .foregroundStyle(Color.primary)
                     .fixedSize(horizontal: false, vertical: true)
-                if !card.subtitle.isEmpty {
-                    Text(card.subtitle)
-                        .font(.system(size: 15))
-                        .foregroundStyle(Color.secondary)
-                        .textSelection(.enabled)
-                        .fixedSize(horizontal: false, vertical: true)
+                if card.presentation == .standard {
+                    // Proposals are reviewed in full before anyone confirms them.
+                    if !card.subtitle.isEmpty {
+                        Text(card.subtitle)
+                            .font(.system(size: 15))
+                            .foregroundStyle(Color.secondary)
+                            .textSelection(.enabled)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                } else {
+                    // An approval leads with one line; the request itself,
+                    // raw arguments and all, waits under Details.
+                    if !card.summaryLine.isEmpty {
+                        Text(card.summaryLine)
+                            .font(.system(size: 15))
+                            .foregroundStyle(Color.secondary)
+                            .lineLimit(3)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .accessibilityIdentifier("approval-summary")
+                    }
+                    if card.hasDetails {
+                        details(card.subtitle)
+                    }
                 }
 
                 if let skill = card.skillRequest {
@@ -2666,7 +2746,7 @@ struct CardView: View {
                     }
                 }
 
-                if let held = card.held {
+                if card.showsHeldNote, let held = card.held {
                     Label(held, systemImage: "exclamationmark.shield")
                         .font(.system(size: 13))
                         .foregroundStyle(.orange)
@@ -2727,10 +2807,16 @@ struct CardView: View {
                         .frame(maxWidth: .infinity)
                         .disabled(answering)
                     }
-                } else if let answered = card.answered {
-                    Label(answered, systemImage: "checkmark.circle")
-                        .font(.system(size: 14))
-                        .foregroundStyle(Color.secondary)
+                } else if let outcome = card.outcome {
+                    Label {
+                        outcomeText(outcome)
+                    } icon: {
+                        Image(systemName: Self.outcomeSymbol(outcome))
+                    }
+                    .font(.system(size: 14))
+                    .foregroundStyle(Color.secondary)
+                    .accessibilityElement(children: .combine)
+                    .accessibilityIdentifier("approval-outcome")
                 } else if card.expired == true {
                     Label("Expired — ask for a fresh proposal", systemImage: "clock.badge.xmark")
                         .font(.system(size: 14))
@@ -2748,6 +2834,74 @@ struct CardView: View {
                     .strokeBorder(card.isPending ? tint : .clear, lineWidth: 1.5)
             }
         }
+    }
+
+    /// "Send to Linear?" for a held send to one app, the generic question
+    /// for several, and the computer's own title for every other card.
+    private func headline(_ card: OptionCard) -> Text {
+        guard card.presentation == .outbound else { return Text(verbatim: card.title) }
+        if let app = card.outboundApp { return Text("Send to \(app)?") }
+        return Text("Send on your behalf?")
+    }
+
+    /// Long requests scroll inside a capped box; short ones just show.
+    private static let detailsScrollThreshold = 480
+
+    private func details(_ text: String) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Button {
+                withAnimation(.easeInOut(duration: 0.2)) { showingDetails.toggle() }
+            } label: {
+                HStack(spacing: 4) {
+                    Text("Details")
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 11, weight: .semibold))
+                        .rotationEffect(.degrees(showingDetails ? 90 : 0))
+                }
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(Color.secondary)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityIdentifier("approval-details-toggle")
+            .accessibilityAddTraits(showingDetails ? .isSelected : [])
+
+            if showingDetails {
+                let request = Text(verbatim: text)
+                    .font(.system(size: 12, design: .monospaced))
+                    .foregroundStyle(Color.primary)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                Group {
+                    if text.count > Self.detailsScrollThreshold {
+                        ScrollView(.vertical) { request }
+                            .frame(height: 220)
+                    } else {
+                        request.fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                .padding(10)
+                .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 10))
+                .accessibilityIdentifier("approval-details")
+            }
+        }
+    }
+
+    private func outcomeText(_ outcome: OptionCard.Outcome) -> Text {
+        switch outcome {
+        case .allowed: return Text("Allowed")
+        case .denied: return Text("Denied")
+        case .unavailable: return Text("No longer available")
+        case .remembered: return Text("Remembered")
+        case .skipped: return Text("Skipped")
+        case let .answered(text): return text.isEmpty ? Text("Answered") : Text(verbatim: text)
+        case let .chose(option, _): return Text(verbatim: option)
+        case let .other(value): return Text(verbatim: value)
+        }
+    }
+
+    private static func outcomeSymbol(_ outcome: OptionCard.Outcome) -> String {
+        outcome.isPositive ? "checkmark.circle" : "xmark.circle"
     }
 }
 
@@ -2849,9 +3003,9 @@ private struct LiveStatusLine: View {
     let text: String
 
     var body: some View {
+        // No spinner of its own: the typing bubble in the transcript says
+        // the bot is working, and this line says what at.
         HStack(spacing: 8) {
-            ProgressView()
-                .controlSize(.mini)
             Text(verbatim: text.replacingOccurrences(of: "\n", with: " "))
                 .font(.system(size: 13))
                 .foregroundStyle(Color.secondary)

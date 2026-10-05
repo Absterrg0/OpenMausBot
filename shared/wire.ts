@@ -501,7 +501,9 @@ export interface WireMessage {
 }
 
 export interface OptionCardData {
-  outboundRequest?: { tool: string; app: string | null };
+  /** calls: one per outbound call the card covers, in subtitle order. Absent
+   * on cards from older computers. */
+  outboundRequest?: { tool: string; app: string | null; calls?: Array<{ app: string | null; label: string }> };
   teamMemoryRequest?: { section: string; entryId: string; kind: string };
   title: string;
   subtitle: string;

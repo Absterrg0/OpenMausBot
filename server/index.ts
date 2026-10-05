@@ -18327,8 +18327,15 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
           const policy = currentSender.outbound ?? DEFAULT_OUTBOUND_POLICY;
           const threadId = internalCapability.threadId;
           const { app } = describeTool(outboundTool);
-          const summary = outboundCalls.map((call) => {
+          // One entry per call, in the summary's order, so a phone can say
+          // "Send to Linear? Create linear comment ×2" without parsing the
+          // raw arguments out of the subtitle.
+          const calls = outboundCalls.map((call) => {
             const described = describeTool(call.slug);
+            return { app: described.app, label: described.label };
+          });
+          const summary = outboundCalls.map((call, index) => {
+            const described = calls[index];
             const argsText = call.arguments === undefined ? "" : JSON.stringify(call.arguments);
             return `${described.app ? `${described.app} · ` : ""}${described.label}${argsText ? `\n${argsText.slice(0, 400)}${argsText.length > 400 ? "… [arguments truncated]" : ""}` : ""}`;
           }).join("\n\n");
@@ -18358,7 +18365,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
                 tool: outboundTool,
                 held: HELD_NOTE["approval.held.outbound"],
                 heldCode: "approval.held.outbound",
-                outboundRequest: { tool: outboundTool, app },
+                outboundRequest: { tool: outboundTool, app, calls },
               },
             });
             appendDecision(DATA_DIR, {

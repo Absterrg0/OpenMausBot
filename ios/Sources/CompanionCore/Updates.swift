@@ -66,7 +66,9 @@ extension CompanionState {
         for pending in pendingApprovals {
             guard let chat = chat(forThread: pending.threadId), seen.insert(chat.conversationID).inserted else { continue }
             let card = pending.message.card
-            out.append(ChatUpdate(chat: chat, kind: .needsYou, line: card?.subtitle ?? card?.title ?? "", card: card))
+            // The short form: a held send reads "Linear · Create linear
+            // comment ×2", never its raw arguments.
+            out.append(ChatUpdate(chat: chat, kind: .needsYou, line: card?.previewLine ?? "", card: card))
         }
 
         for bot in bots where bot.hidden != true {

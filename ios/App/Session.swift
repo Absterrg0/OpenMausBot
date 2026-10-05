@@ -206,7 +206,7 @@ final class Session: ObservableObject {
         let arguments = ProcessInfo.processInfo.arguments
         if (arguments.contains("-store-preview") || arguments.contains("-computer-switcher-preview")),
            let url = Bundle.main.url(
-               forResource: arguments.contains("-images-preview") ? "ImagePreview" : arguments.contains("-chat-update-preview") ? "ChatUpdatePreview" : arguments.contains("-chat-presentation-preview") ? "ChatPresentationPreview" : arguments.contains("-roster-preview") ? "RosterPreview" : arguments.contains("-threads-preview") ? "ThreadPreview" : "StorePreview",
+               forResource: arguments.contains("-images-preview") ? "ImagePreview" : arguments.contains("-approval-preview") ? "ApprovalPreview" : arguments.contains("-chat-update-preview") ? "ChatUpdatePreview" : arguments.contains("-chat-presentation-preview") ? "ChatPresentationPreview" : arguments.contains("-roster-preview") ? "RosterPreview" : arguments.contains("-threads-preview") ? "ThreadPreview" : "StorePreview",
                withExtension: "json"
            ),
            let data = try? Data(contentsOf: url),
@@ -309,6 +309,16 @@ final class Session: ObservableObject {
                 messages[index].turnTerminal = nil
                 state.messages["preview-gmail"] = messages
             }
+            // The moment after you send: your message is the newest row and
+            // the thread is idle; ChatView starts the turn a beat after the
+            // chat opens, the order the computer sends them in.
+            if arguments.contains("-chat-typing-preview"),
+               let sent = try? JSONDecoder().decode(Message.self, from: Data(
+                #"{"id":"preview-sent","role":"user","kind":"text","at":1789088460000,"text":"Can you check the Android build too?","parentId":"answer"}"#.utf8
+               )) {
+                setPreviewTurn(busy: false, threadId: "preview-gmail")
+                state.apply(.message(threadId: "preview-gmail", message: sent))
+            }
             if arguments.contains("-chat-compaction-preview"),
                var receipt = state.messages["preview-gmail"]?.last {
                 receipt.id = "preview-compaction"
@@ -357,6 +367,28 @@ final class Session: ObservableObject {
     }
 
 #if DEBUG
+    /// The preview fixtures' turn switch: flips one thread busy or idle with
+    /// the same metadata-only bot frame the computer sends.
+    func setPreviewTurn(busy: Bool, threadId: String) {
+        guard var bot = state.bots.first(where: {
+            $0.threadId == threadId || $0.tasks?.contains { $0.threadId == threadId } == true
+        }) else { return }
+        let activity = busy ? "working" : "idle"
+        if bot.threadId == threadId {
+            bot.busy = busy
+            bot.activity = activity
+        }
+        bot.tasks = bot.tasks?.map { task in
+            guard task.threadId == threadId else { return task }
+            var task = task
+            task.busy = busy
+            task.activity = activity
+            return task
+        }
+        bot.messages = nil
+        state.apply(.bot(bot))
+    }
+
     /// Ordinary chat under synthetic fleet traffic: no client, pairing,
     /// microphone or provider. Uses the same delivery/fold as the live stream.
     private func startBusyFleetPreview() {
