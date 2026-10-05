@@ -2606,11 +2606,17 @@ ipcMain.handle("desktop-viewer:state-now", localOnly("desktop-viewer:state-now",
   contextId: desktopViewerContextId,
 })));
 
-ipcMain.handle("perm:status", () => ({
+// The session's permission handlers (app-permissions.mjs), set once the app
+// is ready. perm:status asks them, so `pageMic` is the very rule that decides
+// a page's microphone request: a blocked Live call then says whether this app
+// refused the page (a web browser can make the call) or the computer did.
+let appPermissions = null;
+ipcMain.handle("perm:status", (event) => ({
   mic:
     nativeActions.appleMediaPermissions
       ? systemPreferences.getMediaAccessStatus?.("microphone") ?? "unknown"
       : "unsupported",
+  pageMic: appPermissions?.pageMicrophone(event) ?? "refused",
 }));
 ipcMain.handle("perm:request-mic", localOnly("perm:request-mic", async () => {
   if (!nativeActions.appleMediaPermissions) return false;
@@ -3443,7 +3449,7 @@ app.whenReady().then(async () => {
   // serial) stay off. Client mode's loopback relay is the local UI. The
   // person's own Cloud, open in this window, also gets the microphone (only
   // that) for a Live call: it is theirs alone. No other server does.
-  const appPermissions = appPermissionHandlers({
+  appPermissions = appPermissionHandlers({
     rendererOrigin,
     mainContents: () => (mainWindow && !mainWindow.isDestroyed() ? mainWindow.webContents : null),
     cloudHomeOrigin: () => desktopRemoteAccess ? null : cloudAccount?.homeTarget()?.origin ?? null,

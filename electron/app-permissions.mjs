@@ -109,6 +109,15 @@ export function appPermissionHandlers({ rendererOrigin, mainContents, cloudHomeO
     },
     check: (contents, permission, requestingOrigin, details) =>
       allowed(contents, permission, requestingOrigin || contents?.getURL?.() || "", details),
+    /** perm:status's `pageMic`: what `request` answers the asking page's
+     * microphone request, so a blocked Live call can say whether this app
+     * refused it (a web browser can make the call) or the computer did. */
+    pageMicrophone: (event) => {
+      const contents = event?.sender;
+      const frame = event?.senderFrame;
+      const isMainFrame = Boolean(frame) && frame === contents?.mainFrame;
+      return allowed(contents, "media", frame?.url ?? "", { isMainFrame, mediaTypes: ["audio"] }) ? "allowed" : "refused";
+    },
   };
 }
 

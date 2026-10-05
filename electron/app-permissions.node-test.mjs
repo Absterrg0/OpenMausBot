@@ -181,9 +181,66 @@ test("this computer's own page keeps its permissions through the same handlers",
   assert.equal(check("clipboard-read", "https://other.example", { isMainFrame: true }, local), false);
 });
 
+// ── What a page is told when its microphone is refused ──
+// perm:status answers `pageMic` for the asking page, so a blocked Live call
+// can say who blocked it: this app (then a web browser can make the call) or
+// the computer (then its privacy settings can). The answer is the request
+// handler's own, never a second copy of the rule.
+const ipcFrom = (contents, frameUrl, { mainFrame = true } = {}) => {
+  const frame = { url: frameUrl };
+  if (mainFrame) contents.mainFrame = frame;
+  else contents.mainFrame ??= { url: contents.getURL() };
+  return { sender: contents, senderFrame: frame };
+};
+const pageMicFixture = () => {
+  const state = { home: CLOUD, main: { getURL: () => `${CLOUD}/chat?botId=bot-1` } };
+  const handlers = appPermissionHandlers({ rendererOrigin: () => LOCAL_ORIGIN, mainContents: () => state.main, cloudHomeOrigin: () => state.home });
+  return { state, handlers };
+};
+
+test("a page asking about its microphone hears whether this app lets it use it", () => {
+  const { state, handlers } = pageMicFixture();
+  assert.equal(handlers.pageMicrophone(ipcFrom(state.main, `${CLOUD}/chat?botId=bot-1`)), "allowed", "the verified Cloud");
+  const local = { getURL: () => LOCAL_PAGE };
+  assert.equal(handlers.pageMicrophone(ipcFrom(local, LOCAL_PAGE)), "allowed", "this computer's own page");
+  state.main = { getURL: () => "https://my-vps.example.com/chat" };
+  assert.equal(handlers.pageMicrophone(ipcFrom(state.main, "https://my-vps.example.com/chat")), "refused", "another server");
+});
+
+test("the Cloud's page is refused where its microphone request would be", () => {
+  const { state, handlers } = pageMicFixture();
+  assert.equal(handlers.pageMicrophone(ipcFrom(state.main, `${CLOUD}/frame`, { mainFrame: false })), "refused", "a subframe");
+  const other = { getURL: () => `${CLOUD}/` };
+  assert.equal(handlers.pageMicrophone(ipcFrom(other, `${CLOUD}/`)), "refused", "another window");
+  assert.equal(handlers.pageMicrophone({ sender: state.main, senderFrame: null }), "refused", "a frame that is gone");
+  assert.equal(handlers.pageMicrophone(undefined), "refused", "no sender");
+  state.home = null;
+  assert.equal(handlers.pageMicrophone(ipcFrom(state.main, `${CLOUD}/chat`)), "refused", "signed out of Cloud");
+});
+
+test("the page's answer is the request handler's answer for its microphone", () => {
+  const { state, handlers } = pageMicFixture();
+  const local = { getURL: () => LOCAL_PAGE };
+  const other = { getURL: () => `${CLOUD}/` };
+  for (const home of [CLOUD, null, "https://evil.fly.dev"]) {
+    state.home = home;
+    for (const contents of [state.main, local, other]) {
+      for (const url of [`${CLOUD}/chat`, LOCAL_PAGE, "https://my-vps.example.com/", "http://omb-u-0123456789ab.fly.dev/"]) {
+        for (const mainFrame of [true, false]) {
+          let granted;
+          handlers.request(contents, "media", (value) => { granted = value; }, { requestingUrl: url, isMainFrame: mainFrame, mediaTypes: ["audio"] });
+          const label = JSON.stringify({ home, page: contents.getURL(), url, mainFrame });
+          assert.equal(handlers.pageMicrophone(ipcFrom(contents, url, { mainFrame })), granted ? "allowed" : "refused", label);
+        }
+      }
+    }
+  }
+});
+
 test("the app installs these handlers, with the Cloud the sign-in verified", () => {
   const main = readFileSync(new URL("./main.mjs", import.meta.url), "utf8");
   assert.match(main, /setPermissionRequestHandler\(appPermissions\.request\)/);
   assert.match(main, /setPermissionCheckHandler\(appPermissions\.check\)/);
+  assert.match(main, /ipcMain\.handle\("perm:status", \(event\) => \(\{[^}]*pageMic: appPermissions\?\.pageMicrophone\(event\) \?\? "refused",/s);
   assert.match(main, /cloudHomeOrigin: \(\) => desktopRemoteAccess \? null : cloudAccount\?\.homeTarget\(\)\?\.origin \?\? null/);
 });

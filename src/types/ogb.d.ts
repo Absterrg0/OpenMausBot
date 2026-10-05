@@ -226,8 +226,11 @@ const __APP_VERSION__: string;
       getPathForFile?(file: File): string;
       /** {mic} TCC status: granted|denied|not-determined|unknown. Screen
        * status is deliberately absent — macOS 15+ caches it per-process,
-       * so it lies for the whole session after a grant. */
-      permStatus(): Promise<{ mic: string }>;
+       * so it lies for the whole session after a grant. `pageMic`: whether
+       * this app lets the asking page use the microphone (this computer's
+       * page always; a server's page only on the person's own Cloud).
+       * Absent in older builds of the shell. */
+      permStatus(): Promise<{ mic: string; pageMic?: "allowed" | "refused" }>;
       /** Triggers the macOS microphone prompt; resolves true when granted. */
       permRequestMic(): Promise<boolean>;
       /** Opens System Settings on a privacy pane: mic|screen|speech|accessibility. */

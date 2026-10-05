@@ -151,23 +151,27 @@ describe("the call button", () => {
     }
   });
 
-  // The desktop app lets only the person's own Cloud use the microphone: a
-  // block there is the computer's, and on another server a browser is the way.
-  it("tells a blocked microphone on a server's page whether it is the person's Cloud", async () => {
-    for (const [cloudHome, notice] of [
-      [true, "Allow microphone access for this app in your computer's privacy settings"],
-      [false, "Open this server in your web browser to make a Live call."],
+  // The desktop app decides whether a server's page may use the microphone,
+  // so a block there says what the app answered, not what the server's own
+  // config claims: the app allowed it (the computer blocked it), or refused.
+  it("tells a blocked microphone on a server's page who blocked it, whatever the page's config says", async () => {
+    for (const [pageMic, notice] of [
+      ["allowed", "Allow microphone access for this app in your computer's privacy settings"],
+      ["refused", "Open it in your web browser to make the Live call."],
     ] as const) {
-      resetLiveMedia();
-      fixture.cloudHome = cloudHome;
-      configureLiveMedia({
-        getUserMedia: async () => { throw new DOMException("denied", "NotAllowedError"); },
-        capabilities: () => ({ dictation: { available: false, engine: "none", onDevice: false, reasonCode: "remote-server" } }) as DesktopCapabilities,
-      });
-      setCallMode("live");
-      pressPhone(vi.fn());
-      await vi.waitFor(() => expect(liveMedia().phase).toBe("failed"));
-      expect(liveMedia().notice, String(cloudHome)).toContain(notice);
+      for (const cloudHome of [true, false]) {
+        resetLiveMedia();
+        fixture.cloudHome = cloudHome;
+        configureLiveMedia({
+          getUserMedia: async () => { throw new DOMException("denied", "NotAllowedError"); },
+          capabilities: () => ({ dictation: { available: false, engine: "none", onDevice: false, reasonCode: "remote-server" } }) as DesktopCapabilities,
+          pageMicrophone: async () => pageMic,
+        });
+        setCallMode("live");
+        pressPhone(vi.fn());
+        await vi.waitFor(() => expect(liveMedia().phase).toBe("failed"));
+        expect(liveMedia().notice, `${pageMic} cloudHome=${cloudHome}`).toContain(notice);
+      }
     }
   });
 

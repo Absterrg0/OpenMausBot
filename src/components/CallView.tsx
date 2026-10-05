@@ -208,7 +208,7 @@ export function CallTargetButton({
       }
       setKeyOpen(false);
       onStart("live");
-      void startLiveCall({ botId: targetId, threadId: liveThreadId, cloudHome });
+      void startLiveCall({ botId: targetId, threadId: liveThreadId });
       return;
     }
     if (!turnsReady) {
@@ -351,7 +351,7 @@ export function CallTargetButton({
             onSaved={() => {
               setKeyOpen(false);
               onStart("live");
-              void startLiveCall({ botId: targetId, threadId: liveThreadId, cloudHome });
+              void startLiveCall({ botId: targetId, threadId: liveThreadId });
             }}
           />
         </div>
