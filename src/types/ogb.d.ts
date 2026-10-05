@@ -303,12 +303,14 @@ const __APP_VERSION__: string;
         name: "composioApiKey" | "xaiApiKey" | "boxToken" | "opencodeGoApiKey" | "ttsKey" | "fishAudioKey" | "jevApiKey" | "openaiImageApiKey" | "customImageApiKey" | "openaiLiveKey",
         value: string,
       ): Promise<ConfigStatus>;
-      /** In-app auto-update (packaged app only; dormant in dev). onState
-       * fires immediately with the current state, then on transitions. */
+      /** In-app auto-update (packaged app only; dormant in dev). Updates
+       * download by themselves. On this computer's page and the person's own
+       * Cloud page; any other server's page gets no state. onState fires
+       * with the current state, then on transitions. */
       updater?: {
         check(): Promise<void>;
-        download(): Promise<void>;
-        /** apply the download: quit-and-install, or copy the command and open a terminal */
+        /** apply the download: quit-and-install, or copy the command and open
+         * a terminal. On a server's page, only from the person's click. */
         install(): Promise<void>;
         onState(cb: (s: UpdaterState) => void): () => void;
       };
@@ -333,7 +335,6 @@ export interface UpdaterState {
   status:
     | "idle"
     | "checking"
-    | "available"
     | "downloading"
     /** downloaded bytes are being staged by the native macOS updater */
     | "preparing"

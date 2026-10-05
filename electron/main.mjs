@@ -3010,17 +3010,28 @@ ipcMain.handle("cloud-move:restore-previous", (event, id) => {
   const dest = named(moveSender("cloud-move:restore-previous", event, id, { localOnly: true }).dest);
   return ensureCloudMove().restorePrevious(dest).then(afterCloudMove(dest));
 });
-/** Local Settings, and the verified Cloud page in the main window: the Cloud's own channels. */
-const cloudPageSender = (channel, handler, { remembered = false } = {}) => (event) => {
+/** Which page in the main window asks: this computer's own ("local"), the
+ * verified Cloud's ("cloud"), or neither (null). */
+const cloudPageAsking = (event, { remembered = false } = {}) => {
   const contents = mainWindow && !mainWindow.isDestroyed() ? mainWindow.webContents : null;
-  if (senderIsLocal(event) && workspaceSenderAllowed(event, contents, environmentsState, rendererOrigin())) return handler(false);
+  if (senderIsLocal(event) && workspaceSenderAllowed(event, contents, environmentsState, rendererOrigin())) return "local";
   // `remembered`: also the Cloud this account last verified, so its Settings
   // says "checking" or "sign in again on your computer" while the sign-in is
   // being checked or has ended, never an error.
   const last = remembered && rememberedHome?.accountId && rememberedHome.accountId === cloudAccount?.state()?.account?.id ? rememberedHome.origin : undefined;
-  if (!desktopRemoteAccess && cloudPageSenderAllowed(event, { contents, homeOrigin: cloudAccount?.homeTarget()?.origin ?? last, activeOrigin: activeEnvironment(environmentsState)?.origin })) return handler(true);
-  throw new Error(`${channel} is only available in this app's window`);
+  if (!desktopRemoteAccess && cloudPageSenderAllowed(event, { contents, homeOrigin: cloudAccount?.homeTarget()?.origin ?? last, activeOrigin: activeEnvironment(environmentsState)?.origin })) return "cloud";
+  return null;
 };
+/** Local Settings, and the verified Cloud page in the main window: the Cloud's own channels. */
+const cloudPageSender = (channel, handler, options) => (event) => {
+  const asking = cloudPageAsking(event, options);
+  if (!asking) throw new Error(`${channel} is only available in this app's window`);
+  return handler(asking === "cloud");
+};
+// This app's updates: this computer's page and the person's own Cloud page
+// (the rule its Settings → Plan uses), so someone who stays on My Cloud still
+// sees "Restart to update". Any other server's page gets nothing.
+const updaterPageAllowed = event => cloudPageAsking(event, { remembered: true }) !== null;
 // The Cloud's setup checklist: "Let your Cloud use this Mac" shows the lending
 // switch, as the menu-bar item's Lending settings… does. Nothing is lent here.
 ipcMain.handle("cloud-lending:open", cloudPageSender("cloud-lending:open", () => openLendingSettings()));
@@ -3400,7 +3411,7 @@ app.whenReady().then(async () => {
   }
   registerCuaIpc();
   androidDevice.registerIpc(ipcMain);
-  registerUpdaterIpc();
+  registerUpdaterIpc({ pageAllowed: updaterPageAllowed });
   // Start the CUA daemon before the window so the harness can pick up the
   // connection descriptor on first render. Never blocks window creation on
   // failure — computer use degrades to "unavailable", the rest still works.
@@ -3501,8 +3512,8 @@ app.whenReady().then(async () => {
       return credentials;
     }).finally(syncManagedComposioCredentials);
   }
-  // in-app auto-update (packaged only) — checks GitHub releases, downloads on
-  // the user's click, installs on "Restart to update"
+  // in-app auto-update (packaged only) — checks GitHub releases and downloads
+  // by itself; only "Restart to update", the person's click, installs
   startUpdater();
   refreshApplicationMenu();
   app.on("activate", () => {

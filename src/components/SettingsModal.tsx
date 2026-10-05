@@ -204,64 +204,62 @@ function ProfileFields() {
   );
 }
 
-function UpdatesRow() {
+/** This app's updates, which download by themselves. Shown once the desktop
+ * app answers: on this computer's page and the person's own Cloud page, never
+ * on another server's, where its buttons would do nothing. */
+export function UpdatesRow() {
   const s = useUpdaterState();
-  if (!window.ogb?.updater) return null;
-  const updater = window.ogb.updater;
+  const updater = window.ogb?.updater;
+  if (!s || !updater) return null;
   const label =
-    s?.status === "checking"
+    s.status === "checking"
       ? t("settings.updates.checking")
-      : s?.status === "available"
-        ? t("settings.updates.available", { version: s.version ?? "" })
-        : s?.status === "downloading"
-          ? s.percent == null
-            ? t("settings.updates.startingDownload")
-            : t("settings.updates.downloading", { percent: Math.round(s.percent) })
-          : s?.status === "preparing"
-            ? t("settings.updates.preparing")
-            : s?.status === "downloaded"
-              ? s.installMode === "handoff"
-                ? t("settings.updates.readyInstall", { version: s.version ?? "" })
-                : t("settings.updates.ready", { version: s.version ?? "" })
-              : s?.status === "installing"
-                ? s.message ||
-                  (s.installMode === "handoff"
-                    ? t("settings.updates.openingTerminal")
-                    : t("settings.updates.restarting"))
-                : s?.status === "handed-off"
-                  ? t("settings.updates.handedOff")
-                  : s?.status === "error"
-                    ? t("settings.updates.failed", { message: s.message ?? t("settings.updates.unknownError") })
-                    : t("settings.updates.latest");
+      : s.status === "downloading"
+        ? s.percent == null
+          ? t("settings.updates.startingDownload")
+          : t("settings.updates.downloading", { percent: Math.round(s.percent) })
+        : s.status === "preparing"
+          ? t("settings.updates.preparing")
+          : s.status === "downloaded"
+            ? s.installMode === "handoff"
+              ? t("settings.updates.readyInstall", { version: s.version ?? "" })
+              : t("settings.updates.ready", { version: s.version ?? "" })
+            : s.status === "installing"
+              ? s.message ||
+                (s.installMode === "handoff"
+                  ? t("settings.updates.openingTerminal")
+                  : t("settings.updates.restarting"))
+              : s.status === "handed-off"
+                ? t("settings.updates.handedOff")
+                : s.status === "error"
+                  ? t("settings.updates.failed", { message: s.message ?? t("settings.updates.unknownError") })
+                  : t("settings.updates.latest");
   return (
     <SettingRow title={t("settings.updates.title")} subtitle={label}>
       <button
         onClick={() => {
-          if (s?.status === "available") return void updater.download();
-          if (s?.status === "downloaded") return void updater.install();
+          if (s.status === "downloaded") return void updater.install();
           void updater.check();
         }}
         disabled={
-          s?.status === "checking" || s?.status === "downloading" || s?.status === "preparing" ||
-          s?.status === "installing" || s?.retryable === false
+          s.status === "checking" || s.status === "downloading" || s.status === "preparing" ||
+          s.status === "installing" || s.retryable === false
         }
         className="ui-button"
       >
-        {s?.retryable === false
+        {s.retryable === false
           ? t("settings.updates.quitReopen")
-          : s?.status === "available"
-            ? t("settings.updates.download")
-            : s?.status === "downloaded"
-              ? s.installMode === "handoff"
-                ? t("settings.updates.install")
-                : t("settings.updates.restart")
-              : s?.status === "preparing"
-                ? t("settings.updates.preparingShort")
-                : s?.status === "installing"
-                  ? s.installMode === "handoff"
-                    ? t("settings.updates.opening")
-                    : t("settings.updates.restartingShort")
-                  : t("settings.updates.check")}
+          : s.status === "downloaded"
+            ? s.installMode === "handoff"
+              ? t("settings.updates.install")
+              : t("settings.updates.restart")
+            : s.status === "preparing"
+              ? t("settings.updates.preparingShort")
+              : s.status === "installing"
+                ? s.installMode === "handoff"
+                  ? t("settings.updates.opening")
+                  : t("settings.updates.restartingShort")
+                : t("settings.updates.check")}
       </button>
     </SettingRow>
   );
