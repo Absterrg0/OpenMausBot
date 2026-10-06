@@ -462,6 +462,7 @@ import {
   browserEngineStatus,
   browserSessionId,
   describeBrowserEngine,
+  setBrowserViewport,
 } from "./browser-engine.ts";
 import { createScreenFrameSource, type ScreenCapture } from "./screen-frame-source.ts";
 import { screenFrameHash, screenSurfaceForTool, screenTouchingTool, settledFrameIsNews } from "./screen-frame-gate.ts";
@@ -2960,6 +2961,7 @@ const browserRuntime = new BrowserRuntime({
     if (closed) browserLive.closeForSession(session);
     return closed;
   },
+  applyViewport: (spec) => setBrowserViewport(spec.command, spec.env),
 });
 const browserLive = new BrowserLive({ runtime: browserRuntime });
 // Temporary profiles last for this server run, but are never saved to disk.
