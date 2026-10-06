@@ -208,7 +208,8 @@ import { GroupUsageReader } from "./group-thread-usage.ts";
 import { ledgerCost } from "./model-prices.ts";
 import type { PriceList } from "./prices.ts";
 import type { RequestAuth } from "./request-auth.ts";
-import { checkProviderKey, PROVIDER_KEY_KINDS, type ProviderKeyKind } from "./provider-key-check.ts";
+import { checkProviderKey, PROVIDER_KEY_KINDS, providerBaseUrl, type ProviderKeyKind } from "./provider-key-check.ts";
+import { forgetKey, noteKeyAccepted, noteKeyRejected, onKeyRejectionChange } from "./key-rejections.ts";
 import { assertWithinBudget, noteSpend, spendAlertText, spendState, takeSpendAlert } from "./spend.ts";
 import { fleetAvailable, fleetRequest, fleetSocketPath } from "./fleet-client.ts";
 import { entitled } from "./enterprise.ts";
@@ -2058,6 +2059,9 @@ const managedPolicy = new ManagedDesktopPolicy({ onChange: () => {
   broadcast({ kind: "config", ...configStatus() });
   resyncOpenCodeProviderKeys();
 } });
+// A key the provider refused, or accepted again, changes what Model
+// providers and the picker show; the config event refreshes /api/instances.
+onKeyRejectionChange(() => broadcast({ kind: "config", ...configStatus() }));
 /** A computer kind this server will not use, refused before anything is
  * prepared: a Cloud home never offers this computer or a Local VM
  * (cloud-home.ts), and an enrolled organisation may disallow any kind. */
@@ -23629,7 +23633,15 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       if (key.length > 512) return json(res, 400, { error: "That does not look like an API key." });
       const url = typeof body?.url === "string" && body.url.trim() ? body.url.trim() : (saved && "url" in saved ? saved.url : undefined);
       res.setHeader("cache-control", "no-store");
-      return json(res, 200, await checkProviderKey({ provider: kind, key, url }));
+      const verdict = await checkProviderKey({ provider: kind, key, url });
+      // A Test is a real use the person chose: the engines on this key agree
+      // with its verdict. Claude runs its key through its CLI, not here.
+      if (kind !== "anthropic") {
+        const base = providerBaseUrl(kind, url);
+        if (verdict.ok) noteKeyAccepted(base, key);
+        else if (verdict.reason === "rejected") noteKeyRejected(base, key);
+      }
+      return json(res, 200, verdict);
     }
 
     if (method === "GET" && path === "/api/decisions") {
@@ -24601,6 +24613,12 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         for (const request of browserCleanupRequests) browserCleanup.abort(request);
         throw error;
       }
+      // A saved or cleared key starts over: neither it nor the key it
+      // replaced stays marked as rejected.
+      const resetKeys = PROVIDER_KEY_KINDS.flatMap((kind) => {
+        const next = patch[kind]?.key;
+        return next === undefined ? [] : [cfg[kind]?.key, next];
+      });
       let configWriteCommitted = false;
       const externalSecretStorage = url.searchParams.get("secretStorage") === "external";
       try {
@@ -24651,6 +24669,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         }
         throw error;
       }
+      for (const key of resetKeys) if (key) forgetKey(key);
       // Desktops already counting down move to the new window at once, in
       // every isolation mode; busy work still defers its expiry.
       if (patch.localVm?.idleTimeoutMinutes !== undefined) {

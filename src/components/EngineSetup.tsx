@@ -465,6 +465,10 @@ function ApiKeyEngineSetup({ instance, className, unframed }: { instance: Instan
           </p>
         </div>
       </div>
+      {/* a saved key the provider refused reads as installed but signed out */}
+      {needsSignIn(instance) && (
+        <p role="alert" className="mt-2 text-[12px] leading-relaxed text-danger">{t("engineSetup.apiKey.rejected")}</p>
+      )}
       {!remote && (
         <button
           type="button"

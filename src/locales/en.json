@@ -1604,6 +1604,7 @@
   "engineSetup.openSignIn": "Open sign-in in Terminal",
   "engineSetup.openInstall": "Open install in Terminal",
   "engineSetup.noInstaller": "There isn’t a one-line installer for this platform. Use the setup guide below.",
+  "engineSetup.apiKey.rejected": "The provider rejected the saved key.",
   "engineSetup.apiKey.title": "{name} needs an API key",
   "engineSetup.apiKey.description": "Paste your key in Settings → API keys. It saves and checks itself, and the models show up here.",
   "engineSetup.apiKey.remote": "Add the key in Settings → API keys on the computer running OpenMausBot.",

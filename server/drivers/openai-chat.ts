@@ -20,6 +20,7 @@ import { ChatProtocolError, ChatReasoningDetails, ChatToolCalls, object, type Ch
 import { appendNative } from "./native.ts";
 import { classifyError, computeBackoff, interruptibleDelay, RETRY_MAX_ATTEMPTS } from "./retry.ts";
 import { classifyContinuable, writeTurnHandoff } from "../turn-continuation.ts";
+import { KEY_REJECTED_REASON, keyRejected, noteKeyAccepted, noteKeyRejected, rejectsKey } from "../key-rejections.ts";
 
 export interface OpenAIChatMessage {
   role: "system" | "user" | "assistant" | "tool";
@@ -291,6 +292,7 @@ export function createOpenAIChatRuntime<Config>(options: RuntimeOptions<Config>)
       });
       if (!response.ok) {
         const body = await response.text().catch(() => "");
+        if (rejectsKey(response.status, body)) noteKeyRejected(options.apiUrl, options.apiKey);
         const message = `${options.httpErrorLabel} HTTP ${response.status}${body ? `: ${body.slice(0, 200)}` : ""}`;
         if (rejectsToolsParameter(response.status, body)) throw new UnsupportedChatToolsError(message);
         const refusal = refusedToolCall(response.status, body);
@@ -300,6 +302,7 @@ export function createOpenAIChatRuntime<Config>(options: RuntimeOptions<Config>)
         }
         throw new Error(message);
       }
+      noteKeyAccepted(options.apiUrl, options.apiKey);
 
       if (!stream || response.headers.get("content-type")?.includes("application/json")) {
         const json = await response.json() as CompletionJson;
@@ -829,9 +832,11 @@ export function createOpenAIChatRuntime<Config>(options: RuntimeOptions<Config>)
       return options.models();
     },
     ...(options.refreshModels ? { refreshModels: options.refreshModels } : {}),
-    snapshot: async () => options.apiKey
-      ? { state: "available", authenticated: true, version: null, ...(options.billing ? { billing: options.billing } : {}) }
-      : { state: "unavailable", reason: options.unavailableReason },
+    snapshot: async () => {
+      if (!options.apiKey) return { state: "unavailable", reason: options.unavailableReason };
+      if (keyRejected(options.apiUrl, options.apiKey)) return { state: "available", authenticated: false, reason: KEY_REJECTED_REASON, version: null };
+      return { state: "available", authenticated: true, version: null, ...(options.billing ? { billing: options.billing } : {}) };
+    },
     adapter: {
       provider: options.driverKind,
       capabilities: { ...(options.computerUse ? { computerMcp: options.tools !== false,
