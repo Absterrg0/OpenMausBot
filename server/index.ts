@@ -2482,6 +2482,9 @@ function agentsIntegration(
         const speaking = botForThread(botId, threadId) ?? store.bot(botId);
         return tts.voiceReady(cfg, speaking?.voice) && speaking?.voiceNotes !== false ? "1" : "0";
       })(),
+      // And for a role: team setup, bot creation and deletion, rooms and
+      // retries are shown only to a Chief of Staff, whom their routes require.
+      OMB_CHIEF_OF_STAFF: store.bot(botId)?.chiefOfStaff === true ? "1" : "0",
     },
   };
 }
