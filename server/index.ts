@@ -3656,6 +3656,11 @@ function checkedMemberIds(value: unknown): { ok: true; memberIds: string[] } | {
   return { ok: true, memberIds };
 }
 let bootSelection = { instanceId: "", model: "" };
+/** The engines read at start, while it runs (below). It is where the server
+ * learns what each engine supports (a Claude CLI's version and flags), so a
+ * turn waits for it, as every turn did when the server listened only after
+ * that read. */
+let enginesRead: Promise<void> | null = null;
 /** Preset bots for New bot, from shared files and the organization (presets.ts). */
 const presetStore = createPresetStore();
 const store = new Store(
@@ -3667,7 +3672,15 @@ let followupsReady = false;
 const sendSequencer = new SendSequencer();
 // Before the new-bot default is read: a saved default may name the engine.
 await retryComputerEngineMove();
-bootSelection = await defaultSelection();
+// Reading the new-bot default probes every engine CLI (each up to its
+// timeout), and at start only the first-run seed needs the answer. A later
+// start listens without waiting: the same read runs behind it, and turns
+// wait for it (enginesRead).
+if (store.needsSeed()) bootSelection = await defaultSelection();
+else enginesRead = defaultSelection().then(
+  (selection) => { bootSelection = selection; },
+  (error) => console.warn(`[engines] reading the engines at start failed: ${error instanceof Error ? error.message : String(error)}`),
+).finally(() => { enginesRead = null; });
 store.seedIfEmpty();
 hostedModels?.reconcile(store);
 // Skills library boot sweep (features.skillsLibrary): migrate per-bot
@@ -9712,6 +9725,10 @@ async function startTurn(
 
   void (async () => {
     try {
+      if (enginesRead) {
+        await enginesRead;
+        if (!directTurnClaimIsCurrent(bot.id, dispatchClaimId, threadId)) throw new DirectTurnSetupCancelled("turn stopped while the engines were read");
+      }
       // Readiness can wait on the network. Admit the task first so its busy
       // state, Stop action and watchdog own that wait just like VM setup.
       if (opts?.runOn === "cloud") {
@@ -12902,6 +12919,9 @@ async function runGroupMemberTurn(
     { id: "playbooks", label: "Playbooks", text: installedPlaybookInstructions(text, bot.playbooks) },
   ]);
 
+  // The engines read at start is part of setup (it learns what this engine
+  // supports): wait for it before the claim below.
+  if (enginesRead) await enginesRead;
   // run the turn and wait for it to settle, folding the reply text so a
   // chained @mention can be routed afterwards
   // Claim only after setup succeeded. An unavailable, busy, unsupported, or
@@ -25221,12 +25241,21 @@ restoreChannelMessages();
   if (movedAutoPins) console.log(`Works on: moved ${movedAutoPins} auto-pinned thread(s) to their bot's current Works on`);
 }
 
-server.listen(PORT, "127.0.0.1", () => {
+server.listen(PORT, "127.0.0.1", async () => {
   companyRuntimeReady();
   console.log(`openmausbot server on http://127.0.0.1:${PORT}`);
+  // Words queued before the restart start first, ahead of anything sent from
+  // now on. Their turns wait for the engines read at start like every turn.
   followupsReady = true;
   drainQueuedSends();
   drainQueuedChannelSends();
+  // The work below wakes delegators, and a woken delegator keeps its session
+  // only on an engine that records what it was handed, which that read finds
+  // out: it starts once the read is done.
+  if (enginesRead) {
+    await enginesRead;
+    if (companyShutdown) return;
+  }
   // Startup work uses the same turn dispatcher and local tool endpoint as
   // ordinary chat. Start only once every registry is initialized and the
   // endpoint is listening; earlier dispatch can hit uninitialized bindings.
