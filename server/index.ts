@@ -322,6 +322,7 @@ import { RESTART_EXIT_CODE } from "./restart.ts";
 import { holdIncludedServices } from "./included-services.ts";
 import type { ProviderInstance } from "./contracts.ts";
 import { selectDefaultModelSelection, withNewBotEffort } from "./default-model-selection.ts";
+import { threadModelFallback, type ThreadEngine } from "./thread-model.ts";
 import { computerEngineMoveText, removedComputerInstanceIds, writeComputerEngineMoveLines } from "./computer-engine-removal.ts";
 import { cancelPeerApprovalsFor, cancelPeerApprovalsForThread, dismissStalePeerCards, peerApprovalFailure, requestPeerApproval, resolvePeerComms, type ApprovalBus } from "./peer-approval.ts";
 import { peerDeliveryReceipt, type PeerDeliveryReceipt } from "./peer-delivery.ts";
@@ -624,6 +625,7 @@ import { createHostedSlackRoutes } from "./routes/hosted-slack.ts";
 import { createBotPresetRoutes } from "./routes/bot-presets.ts";
 import { createBotMemoryRoutes } from "./routes/bot-memory.ts";
 import { createDeciderRoutes } from "./routes/decider.ts";
+import { createThreadModelRoutes } from "./routes/thread-models.ts";
 import { createDesktopViewer, desktopViewerUrl } from "./routes/desktop-viewer.ts";
 import { localDesktopTarget, localVmViewerStatus, viewerTargetId } from "./desktop-viewer-targets.ts";
 import { createAntigravityLeftoverRoutes } from "./routes/antigravity-leftovers.ts";
@@ -1199,12 +1201,13 @@ function openerFrom(fromThreadId: string): string | undefined {
   return person && !cloudOwnerPerson(person) ? person : CLOUD_NOBODY_KEY;
 }
 
-/** The model a thread a bot opens from one of its own threads starts on:
- * that thread's, not the bot default the person may have moved away from
- * (#1950). Only the bot's own thread counts — a room or a teammate's thread
- * is not one of its tasks, and another bot's model belongs to another engine.
- * Approval stays the bot's, except that a level the inherited engine would
- * have to confirm on a model switch starts the new thread in Ask. */
+/** The model a thread a bot opens from one of its own threads starts on
+ * (#1950): the model a person picked in that thread, kept as the new thread's
+ * own. A thread that follows the bot opens one that follows it too. Only the
+ * bot's own thread counts — a room or a teammate's thread is not one of its
+ * tasks, and another bot's model belongs to another engine. Approval stays
+ * the bot's, except that a level the inherited engine would have to confirm
+ * on a model switch starts the new thread in Ask. */
 function parentThreadModel(botId: string, parentThreadId: string): { modelSelection?: ModelSelection; approvalMode?: "ask" } {
   // The stored profile, never a per-thread projection: the comparison is
   // against the defaults the new thread would otherwise get.
@@ -3469,6 +3472,63 @@ function checkedTaskModelSwitch(current: BotRecord, raw: unknown, updateBotDefau
   return checked;
 }
 
+/** An engine as a turn's start sees it, without waiting on its CLI: the live
+ * instance and what its last read said (registry.lastSnapshot). Before the
+ * first read it counts as available, so only what is known stops a pick. */
+function threadEngine(instanceId: string): ThreadEngine | undefined {
+  const live = registry.get(instanceId);
+  if (!live) return undefined;
+  return {
+    instanceId, driverKind: live.driverKind, enabled: live.enabled, models: live.models,
+    capabilities: { modelVariants: live.adapter.capabilities.modelVariants === true },
+    snapshot: registry.lastSnapshot(instanceId) ?? { state: "available" },
+    access: providerConfigs()[instanceId]?.access ?? registry.access(instanceId),
+  };
+}
+
+/** This thread's own model, when it gives way to its bot's now
+ * (threadModelFallback); null when the thread follows its bot or its own
+ * model runs as picked. */
+function threadModelGivingWay(botId: string, threadId: string): ModelSelection | null {
+  const bot = store.bot(botId);
+  const own = store.taskByThread(botId, threadId)?.modelSelection;
+  if (!bot || !own) return null;
+  return threadModelFallback(own, bot.modelSelection, threadEngine, {
+    refusal: policyModelRefusal,
+    ...(hostedModels ? { allows: (selection: ModelSelection) => hostedModels!.allows(selection) } : {}),
+  }) ? own : null;
+}
+
+/** The model a turn in this thread would run on now (healThreadModel). */
+function turnSelection(botId: string, threadId: string): ModelSelection | undefined {
+  return threadModelGivingWay(botId, threadId) ? store.bot(botId)?.modelSelection : store.projectBotForTask(botId, threadId)?.modelSelection;
+}
+
+/** A model as a person reads it: its catalog label, after its engine's name
+ * while that engine is here. */
+function modelName(selection: ModelSelection): string {
+  const instance = registry.get(selection.instanceId);
+  const label = instance?.models.options.find((option) => option.id === selection.model)?.label ?? selection.model;
+  return instance ? `${instance.displayName || instance.driverKind} · ${label}` : label;
+}
+
+/** A thread's own model that can't run here gives way to its bot's: the turn
+ * about to start runs on the bot's model, the thread follows the bot from
+ * then on, and one plain line in it says so. Every turn starts through
+ * startTurn (a person's message, a routine, a delegation, a webhook, a
+ * queued follow-up), so this is the one place it happens; a room turn
+ * already runs on each member's own model. */
+function healThreadModel(botId: string, threadId: string): void {
+  const bot = store.bot(botId);
+  const own = threadModelGivingWay(botId, threadId);
+  if (!bot || !own || bot.approvalGrant || threadBusy(botId, threadId)) return;
+  if (!store.followBotModel(botId, [threadId], (from, to) => hostedModels?.resetTask(from, to) ?? {}).length) return;
+  store.appendMessage(threadId, { role: "bot", kind: "activity", tool: {
+    name: `notice: This thread's model (${modelName(own)}) isn't available, so it now uses ${bot.name}'s model (${modelName(bot.modelSelection)}).`,
+    ok: true,
+  } });
+}
+
 function checkedExportSkillNames(
   value: unknown,
   bots: readonly BotRecord[],
@@ -3672,6 +3732,7 @@ const presetStore = createPresetStore();
 const store = new Store(
   () => bootSelection,
   (selection) => withNewBotEffort(selection, cfg.newBots?.effort, registry.get(selection.instanceId)?.adapter.capabilities.effortLevels),
+  (instanceId) => registry.cliTarget(instanceId)?.driverKind,
 );
 const teamComputers = new TeamComputers(join(DATA_DIR, "team-computers.json"), ENVIRONMENT_ID);
 let followupsReady = false;
@@ -3740,11 +3801,13 @@ if (browserCleanupReferencesReconciled) browserCleanup.startPending();
  * than the desktop window did. Stripped here rather than at each call site
  * so a new broadcast cannot forget. */
 let activeCoordinationForThread = (_threadId: string): boolean => false;
-const wireTask = (task: TaskRecord): WireTask => {
+/** One thread as a client sees it. `botModel` is its bot's model: a thread
+ * without a model of its own runs on it (toWireTask). */
+const wireTask = (task: TaskRecord, botModel: ModelSelection): WireTask => {
   // Time-based snoozes heal on read against the server clock — no client
   // timer, no device skew. The 0 sentinel ("until new activity") is not a
   // time and survives reads; only a wake event in the store clears it.
-  const { snoozedUntil, ...base } = toWireTask(task);
+  const { snoozedUntil, ...base } = toWireTask(task, botModel);
   const coordinated = { ...base, waitingForTeammates: activeCoordinationForThread(task.threadId) && !task.busy };
   const asleep = snoozedUntil === 0 || (snoozedUntil !== undefined && snoozedUntil > Date.now());
   return asleep ? { ...coordinated, snoozedUntil } : coordinated;
@@ -3759,7 +3822,7 @@ const wireBot = (bot: BotRecord): WireBot => {
     ? { ...rest, approvalMode: "ask" as const, autoApprove: false }
     : rest;
   return { ...visible, waitingForTeammates: activeCoordinationForThread(bot.threadId) && !threadBusy(bot.id, bot.threadId),
-    avatarUrl: visible.avatarUrl ?? null, ...(tasks ? { tasks: tasks.map(wireTask) } : {}) };
+    avatarUrl: visible.avatarUrl ?? null, ...(tasks ? { tasks: tasks.map((task) => wireTask(task, bot.modelSelection)) } : {}) };
 };
 
 function toolScopeForTurn(botId: string) {
@@ -3774,7 +3837,7 @@ function toolScopeForTurn(botId: string) {
  * can validate it before sending the confirmation that makes it effective. */
 const wireTrustedApprovalBot = (bot: NonNullable<ReturnType<typeof store.bot>>) => {
   const { resumeCursors: _resumeCursors, tasks, approvalGrant: _approvalGrant, lastProfileRequestId: _lastProfileRequestId, lastTeamSetupReceipt: _lastTeamSetupReceipt, packageBase: _packageBase, assignedSkills: _assignedSkills, ...rest } = bot;
-  return { ...rest, approvalMode: approvalModeFor(rest), avatarUrl: rest.avatarUrl ?? null, ...(tasks ? { tasks: tasks.map(wireTask) } : {}) };
+  return { ...rest, approvalMode: approvalModeFor(rest), avatarUrl: rest.avatarUrl ?? null, ...(tasks ? { tasks: tasks.map((task) => wireTask(task, bot.modelSelection)) } : {}) };
 };
 
 /** A settings-based preview, not a receipt of a dispatched turn. No
@@ -4446,7 +4509,7 @@ const storedAvatarExists = (avatarUrl: string): boolean =>
 const publicBot = (bot: NonNullable<ReturnType<typeof store.bot>>) => ({
   ...wireBot(bot),
   ...messagePage(bot.threadId, DEFAULT_PAGE),
-  tasks: store.tasks(bot.id).map(wireTask),
+  tasks: store.tasks(bot.id).map((task) => wireTask(task, bot.modelSelection)),
 });
 const publicBotQueuedMessages = () => queuedSteerSnapshot((botId, threadId) => Boolean(store.taskByThread(botId, threadId)));
 
@@ -9504,6 +9567,8 @@ async function startTurn(
       },
     };
   }
+  // A thread whose own model can't run runs on its bot's from now on.
+  healThreadModel(botId, threadId);
   const bot = store.projectBotForTask(botId, threadId);
   if (!bot) throw Object.assign(new Error("no such task"), { status: 404 });
   // Routines and legacy peer delivery already have their own completion
@@ -11414,7 +11479,11 @@ if (recoveryOwners.length > 0) {
 // after the user confirms a durable card. Keeping this beside the scheduler
 // makes the card resolvable after an app restart without involving the model.
 async function cloudRoutineReadiness(botId: string, threadId?: string): Promise<{ ready: boolean; reason?: string }> {
-  const bot = threadId ? store.projectBotForTask(botId, threadId) : store.bot(botId);
+  const projected = threadId ? store.projectBotForTask(botId, threadId) : store.bot(botId);
+  // The model its turn will run on: a thread's own model that can't run
+  // gives way to the bot's when the turn starts (healThreadModel).
+  const selection = threadId ? turnSelection(botId, threadId) : projected?.modelSelection;
+  const bot = projected && selection ? { ...projected, modelSelection: selection } : projected;
   if (!bot || bot.hidden) return { ready: false, reason: "The routine's target bot no longer exists." };
   if (!boat.boatConfigured(cfg)) {
     return {
@@ -15721,6 +15790,15 @@ ROUTES.push(createBotMemoryRoutes({
   },
 }));
 ROUTES.push(createDeciderRoutes({ decider }));
+// "Switch them too": a bot's threads on a model of their own follow its model again.
+ROUTES.push(createThreadModelRoutes({
+  bot: (id) => store.bot(id),
+  busy: (botId, threadId) => threadBusy(botId, threadId),
+  follow: (botId, threadIds) => store.followBotModel(botId, threadIds, (from, to) => hostedModels?.resetTask(from, to) ?? {}),
+  // Like updateBotDefault on a thread: on a Cloud home, the owner's alone.
+  mayChangeModel: (auth) => !CLOUD_HOME || cloudOwnerSession(auth),
+  reply: (botId) => publicBot(store.bot(botId)!),
+}));
 ROUTES.push(createAntigravityLeftoverRoutes({
   hosted: Boolean(hostedModels),
   isAntigravity: (instanceId) => registry.get(instanceId)?.driverKind === "antigravityAgent",
@@ -19290,7 +19368,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       return json(res, 200, {
         bots: shownBots.map((bot) => memberBot({
           ...wireBot(bot),
-          tasks: store.tasks(bot.id).map(wireTask),
+          tasks: store.tasks(bot.id).map((task) => wireTask(task, bot.modelSelection)),
           ...messagePage(bot.threadId, limit),
         }, visible)),
         botQueuedMessages: visible.everything ? queued : Object.fromEntries(Object.entries(queued).filter(([threadId]) => visible.thread(threadId))),
@@ -21004,9 +21082,11 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       }
       // patchBot persists first and emits the canonical bot change, which the
       // store listener above turns into the slim wire-format SSE broadcast.
+      // Every thread that follows the bot moves with it; the selected thread
+      // follows it from now on too, as if picked there.
       const bot = store.patchBot(existing.id, { modelSelection: checked.selection });
       if (!bot) return json(res, 404, { error: "no such bot" });
-      store.patchTask(bot.id, selected.threadId, { modelSelection: checked.selection,
+      store.patchTask(bot.id, selected.threadId, { modelSelection: undefined,
         ...hostedModels?.resetTask(selected.modelSelection, checked.selection) });
       return json(res, 200, { bot: wireBot(bot) });
     }
@@ -21640,7 +21720,9 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       // the next turn on each thread follows the new setting. Person-set pins
       // and pins that already match stay; returning to Auto sweeps nothing.
       if (computerSpecified && requestedComputer !== undefined) store.clearAutoSurfacePins(m[1], requestedComputer);
-      if (normalizedSelection && selectedTask) store.patchTask(bot.id, selectedTask.threadId, { modelSelection: normalizedSelection,
+      // A new bot model moves every thread that follows the bot; the selected
+      // thread follows it from now on too.
+      if (normalizedSelection && selectedTask) store.patchTask(bot.id, selectedTask.threadId, { modelSelection: undefined,
         ...hostedModels?.resetTask(selectedTask.modelSelection, normalizedSelection) });
       if (existingBot && (bot.browserProfile !== beforeBrowserProfile || bot.browser !== beforeBrowserEnabled)) {
         browserLive.closeForBot(bot.id);
@@ -22380,12 +22462,15 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       if (phoneSecretSubmissions.hasThread(bot.threadId)) {
         return json(res, 409, { error: "this task is securely saving a credential — try again when it finishes" });
       }
-      if (!registry.get(bot.modelSelection.instanceId)) {
+      // A thread's own model that can't run gives way to the bot's when the
+      // rerun starts (healThreadModel), so check the model it will run on.
+      const rerunSelection = turnSelection(bot.id, bot.threadId) ?? bot.modelSelection;
+      if (!registry.get(rerunSelection.instanceId)) {
         return json(res, 409, {
-          error: `provider instance "${bot.modelSelection.instanceId}" is unavailable — pick another model in settings`,
+          error: `provider instance "${rerunSelection.instanceId}" is unavailable — pick another model in settings`,
         });
       }
-      const rerunInstance = registry.get(bot.modelSelection.instanceId)!;
+      const rerunInstance = registry.get(rerunSelection.instanceId)!;
       const rerunRefusal = policyModelRefusal(rerunInstance);
       if (rerunRefusal) return json(res, 409, { error: rerunRefusal });
       // startTurn admits the rerun before branching. A shared-resource or
@@ -22780,7 +22865,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       if (!task) return json(res, 500, { error: "couldn't create that task" });
       // Who opened it decides who may answer its cards on a shared workspace.
       if (auth.kind === "session") threadStarters.set(task.threadId, actorKey(auth));
-      return json(res, 201, { bot: publicBot(store.bot(bot.id)!), task: wireTask(task) });
+      return json(res, 201, { bot: publicBot(store.bot(bot.id)!), task: wireTask(task, store.bot(bot.id)!.modelSelection) });
     }
     m = path.match(/^\/api\/bots\/([\w-]+)\/tasks\/([\w-]+)$/);
     if (m && method === "POST") {
@@ -22795,7 +22880,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       if (switchLimit === null) return json(res, 400, { error: "messages must be a non-negative whole number" });
       const switched = store.switchTask(bot.id, m[2]);
       if (!switched) return json(res, 404, { error: "no such task" });
-      const switchedSettings = { ...wireBot(switched), tasks: store.tasks(switched.id).map(wireTask) };
+      const switchedSettings = { ...wireBot(switched), tasks: store.tasks(switched.id).map((task) => wireTask(task, switched.modelSelection)) };
       // "0" is settings only, a positive page is a bounded transcript, and no
       // parameter is the whole thread — the one branch that materialises it.
       // Search results land through that branch (src/lib/focus-message.ts):
@@ -22865,7 +22950,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         }
         const task = store.refreshTaskPermissions(profile.id, m[2]);
         if (!task) return json(res, 404, { error: "no such task" });
-        return json(res, 200, { task: wireTask(task), bot: publicBot(store.bot(profile.id)!) });
+        return json(res, 200, { task: wireTask(task, store.bot(profile.id)!.modelSelection), bot: publicBot(store.bot(profile.id)!) });
       }
       const patch: Parameters<typeof store.patchTask>[2] = {};
       if (body.projectId !== undefined) {
@@ -22946,7 +23031,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         ? store.switchTaskModel(m[1], m[2], patch.modelSelection, body.updateBotDefault === true, body.resetApprovalToAsk === true,
           { ...patch, ...hostedModels?.resetTask(current.modelSelection, patch.modelSelection) })!
         : store.patchTask(m[1], m[2], patch)!;
-      return json(res, 200, { task: wireTask(task), bot: publicBot(store.bot(m[1])!) });
+      return json(res, 200, { task: wireTask(task, store.bot(m[1])!.modelSelection), bot: publicBot(store.bot(m[1])!) });
     }
     if (m && method === "DELETE") {
       const bot = store.bot(m[1]);
@@ -23005,7 +23090,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         if (!title) return json(res, 502, { error: "couldn't generate a title — try again, or rename the thread" });
         const task = store.retitleTask(m[1], m[2], startedFrom, title) ?? store.taskByThread(m[1], m[2]);
         if (!task) return json(res, 404, { error: "no such task" });
-        return json(res, 200, { task: wireTask(task) });
+        return json(res, 200, { task: wireTask(task, store.bot(m[1])!.modelSelection) });
       } finally {
         titleRegenerations.delete(m[2]);
       }

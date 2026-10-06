@@ -5406,7 +5406,7 @@ describe("harness HTTP API", () => {
       }
 
       const full = trustedBots.find(candidate => candidate.approvalMode === "full")!;
-      const sibling = (await isolatedApi("POST", `/api/bots/${full.id}/tasks`, { title: "Untouched" })).body.task;
+      const sibling = (await isolatedApi("POST", `/api/bots/${full.id}/tasks`, { title: "Follows the bot" })).body.task;
       for (const body of [
         { resetApprovalToAsk: true },
         { modelSelection: targetSelection, resetApprovalToAsk: "yes" },
@@ -5427,8 +5427,10 @@ describe("harness HTTP API", () => {
       expect(switched.status).toBe(200);
       expect(switched.body.bot).toMatchObject({ modelSelection: targetSelection, approvalMode: "ask", autoApprove: false });
       expect(switched.body.task).toMatchObject({ modelSelection: targetSelection, approvalMode: "ask", alwaysAllow: [] });
+      // The sibling follows the bot onto Claude. Its Full access belonged to
+      // Codex, so it goes back to Ask in the same write, never rides along.
       expect(switched.body.bot.tasks.find((task: { threadId: string }) => task.threadId === sibling.threadId))
-        .toMatchObject({ modelSelection: full.modelSelection, approvalMode: "full" });
+        .toMatchObject({ modelSelection: targetSelection, followsBotModel: true, approvalMode: "ask", alwaysAllow: [] });
       const created = await isolatedApi("POST", `/api/bots/${full.id}/tasks`, { title: "New defaults" });
       expect(created.body.task).toMatchObject({ modelSelection: targetSelection, approvalMode: "ask" });
       const refusedCustom = trustedBots.find(candidate => candidate.approvalMode === "custom")!;

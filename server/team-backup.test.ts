@@ -138,8 +138,10 @@ describe("additive portable team backups", () => {
     expect(result.bots.find((bot) => bot.name === "Archived 2")).toMatchObject({ hidden: true });
     expect(importedChief).not.toHaveProperty("cwd");
     expect(importedChief).not.toHaveProperty("alwaysAllow");
+    // Imported threads follow the imported bot's model.
     expect(importedChief.tasks?.every((task) => task.activity === "idle" && task.busy === false
-      && task.unread === false && task.modelSelection?.instanceId === selection().instanceId)).toBe(true);
+      && task.unread === false && task.modelSelection === undefined
+      && store.projectBotForTask(importedChief.id, task.threadId)?.modelSelection.instanceId === selection().instanceId)).toBe(true);
     expect(store.bot(otherChief.id)?.chiefOfStaff).toBe(true);
     expect(store.bot(archived.id)?.hidden).toBe(true);
     expect(importedScout.mascotBody).toBe(scout.mascotBody);

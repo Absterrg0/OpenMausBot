@@ -149,8 +149,14 @@ export interface WireTask {
    * "until then" and reads treat an expired value as absent, so no timer or
    * migration is ever needed. Absent = not snoozed. */
   snoozedUntil?: number;
-  /** Defaults are copied when a task is created. */
+  /** The model this thread's turns run on: its own when a person picked one
+   * in this thread, else its bot's (followsBotModel). The server stores none
+   * for a thread that follows its bot, and always sends the effective one. */
   modelSelection?: ModelSelection;
+  /** true: the thread runs on its bot's model and moves with it; false: a
+   * person picked this thread's model. Derived at projection, never stored;
+   * absent from servers older than this field. */
+  followsBotModel?: boolean;
   approvalMode?: ApprovalMode;
   autoApprove?: boolean;
   alwaysAllow?: string[];
@@ -273,7 +279,8 @@ export interface WireBot {
   avatarFocusY?: number;
   /** True when any task has unread output. */
   unread: boolean;
-  /** Default for new tasks; navigating tasks never changes this value. */
+  /** The bot's model: every thread without a model of its own runs on it
+   * and moves with it. Navigating tasks never changes this value. */
   modelSelection: ModelSelection;
   /** where the bot works ("Works on"). Unset = auto. */
   computer?: Surface | "off";

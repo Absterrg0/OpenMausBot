@@ -20,6 +20,7 @@ import type { ModelVariantOption, RuntimeEvent } from "../../shared/runtime-even
 import type { MausColor, MausMotion } from "@/lib/mascot";
 import type { BotAvatarCrop } from "../../shared/bot-avatar";
 import { approvalModeFor, type ApprovalMode } from "../../shared/approval-mode";
+import { sameModelSelection } from "../../shared/thread-model";
 import type { MascotBodyId } from "../../shared/mascot-bodies";
 import type { QuestionRequestCardData } from "../../shared/ask-question";
 import type { ProfileRequestCardData } from "../../shared/profile-request";
@@ -311,7 +312,12 @@ export interface Task {
   /** folder this task's turns run in, pinned on its first turn; null =
    * legacy home-folder session; absent = not pinned yet */
   cwd?: string | null;
+  /** The model this thread runs on: its own when a person picked one here,
+   * else its bot's (followsBotModel). */
   modelSelection?: ModelSelection;
+  /** true: runs on its bot's model and moves with it; false: a model a person
+   * picked in this thread. Absent from servers older than the field. */
+  followsBotModel?: boolean;
   approvalMode?: ApprovalMode;
   autoApprove?: boolean;
   alwaysAllow?: string[];
@@ -1215,6 +1221,8 @@ export type Action =
   | { type: "botCreationPending"; on: boolean }
   | { type: "updateTask"; botId: string; threadId: string; patch: TaskUpdatePatch }
   | { type: "refreshTaskPermissions"; botId: string; threadId: string; acknowledgeLocalAuto?: boolean }
+  /** "Switch them too": every thread of this bot on a model of its own follows the bot's. */
+  | { type: "followBotModel"; botId: string }
   | { type: "createProject"; botId: string; name: string; emoji?: string | null; onCreated?: (project: BotProject) => void; onError?: (message: string) => void }
   | { type: "updateProject"; botId: string; projectId: string; patch: ProjectUpdatePatch; onSaved?: () => void; onError?: (message: string) => void }
   | { type: "deleteProject"; botId: string; projectId: string; onDeleted?: () => void; onError?: (message: string) => void }
@@ -1982,8 +1990,13 @@ export function reducer(state: AppState, action: Action): AppState {
       return state;
     }
     case "setModel":
-      if (action.threadId) return reducer(state, { type: "updateTask", botId: action.botId, threadId: action.threadId,
-        patch: { modelSelection: action.selection, resetApprovalToAsk: action.resetApprovalToAsk } });
+      if (action.threadId) {
+        const picked = reducer(state, { type: "updateTask", botId: action.botId, threadId: action.threadId,
+          patch: { modelSelection: action.selection, resetApprovalToAsk: action.resetApprovalToAsk } });
+        // Picking the bot's model, or making the pick the bot's, is following it.
+        return updateBot(picked, action.botId, (bot) => ({ ...bot, tasks: bot.tasks?.map((task) => task.threadId !== action.threadId ? task
+          : { ...task, followsBotModel: Boolean(action.updateBotDefault) || sameModelSelection(action.selection, bot.modelSelection) }) }));
+      }
       return reconcileModelVariantSessions(updateBot(state, action.botId, (b) => ({ ...b, modelSelection: action.selection })));
     case "updateTask": {
       const patch = taskPatchFields(action.patch);
@@ -2393,6 +2406,7 @@ export function reducer(state: AppState, action: Action): AppState {
     case "markRoutineRunSeen":
     case "markAllRoutineRunsSeen":
     case "refreshTaskPermissions":
+    case "followBotModel":
       return state;
     case "sendGroup": {
       if (!action.sendId) return state;
@@ -3491,6 +3505,11 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           }).catch(showError);
           break;
         }
+        case "followBotModel":
+          void api<{ bot: BotAnnouncement }>(`/api/bots/${action.botId}/threads/follow-model`, { method: "POST", body: "{}" })
+            .then(({ bot }) => rawDispatch({ type: "botPatched", bot: withTaskWrites(bot) }))
+            .catch(showError);
+          break;
         case "createProject":
           api(`/api/bots/${action.botId}/projects`, { method: "POST", body: JSON.stringify({ name: action.name, emoji: action.emoji }) })
             .then(({ bot, project }) => {
