@@ -41,6 +41,7 @@ import { llmThreadTitlesEnabled } from "@/lib/feature-flags";
 import { BotAvatar, InitialsAvatar } from "./Avatar";
 import { stateForBot } from "@/lib/mascot";
 import { cn } from "@/lib/cn";
+import { searchMatchesThreads, useSearchDisclosure } from "@/lib/search-disclosure";
 import { useHeldMenuMotion, useMenuMotion } from "./MenuMotion";
 import { lastNonReceipt } from "@/lib/receipts";
 import { activityPreview, botEngine } from "@/lib/failed-turn";
@@ -249,8 +250,16 @@ export function GroupListItem({
 }) {
   const { state, dispatch } = useStore();
   const selected = state.activeView === "chat" && state.selectedId === group.id;
-  const [threadsOpen, setThreadsOpen] = useState(selected || Boolean(query));
-  useEffect(() => { if (selected || query) setThreadsOpen(true); }, [selected, query]);
+  // a search opens this room only when it has a matching thread to show,
+  // and clearing it puts the room back as it was (MOCA-293)
+  const [threadsOpen, setThreadsOpen] = useSearchDisclosure(`group:${group.id}`, query ?? "", searchMatchesThreads(query ?? "", group.tasks), selected);
+  const wasSelected = useRef(selected);
+  useEffect(() => {
+    // Search can unmount the selected room. Only a new selection opens it;
+    // remounting must preserve the person's remembered disclosure choice.
+    if (selected && !wasSelected.current) setThreadsOpen(true);
+    wasSelected.current = selected;
+  }, [selected]);
   // one thread is the room itself; the disclosure and the list only earn
   // their place once there is a second thread to show
   const hasThreadList = (group.tasks?.length ?? 1) > 1 || Boolean(query);
@@ -1375,8 +1384,9 @@ export const BotListItem = memo(function BotListItem(props: BotRowProps) {
   const remoteClient = typeof window !== "undefined" && window.ogb?.remoteClient?.active === true;
   const [renaming, setRenaming] = useState(false);
   const [creatingProject, setCreatingProject] = useState(false);
-  const [threadsOpen, setThreadsOpen] = useState(Boolean(query));
-  useEffect(() => { if (query && showThreads) setThreadsOpen(true); }, [query, showThreads]);
+  // a search opens this bot only when it has a matching thread or folder to
+  // show, and clearing it puts the bot back as it was (MOCA-293)
+  const [threadsOpen, setThreadsOpen] = useSearchDisclosure(`bot:${bot.id}`, showThreads ? query : "", searchMatchesThreads(query, bot.tasks, bot.projects));
   // a thread opened from a chip or #Title link: unfold this bot so the row
   // it lands on is on screen (BotThreadList scrolls it into view)
   useEffect(() => { if (reveal && showThreads) setThreadsOpen(true); }, [reveal, showThreads]);
