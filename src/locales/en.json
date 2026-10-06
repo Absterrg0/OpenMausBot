@@ -2526,6 +2526,8 @@
   "routines.nextRun": "Next {time}",
   "routines.latestRun": "Latest: {status}",
   "routines.neverRun": "Not run yet",
+  "routines.continuityLabel": "Remember the last run",
+  "routines.continuityHelp": "Each run starts with the previous run's report, so the bot knows what it found last time. Good for checks like QA or monitoring.",
   "routines.overlapLabel": "If the previous run is still working",
   "routines.overlapSkip": "Skip this occurrence",
   "routines.overlapQueue": "Queue one run",

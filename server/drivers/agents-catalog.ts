@@ -186,7 +186,7 @@ const ROUTINE_FIELDS_SCHEMA = {
   },
   continuity: {
     type: "boolean",
-    description: "Opt in to using the latest completed run's bounded report as historical context. Defaults to false; set false in an update to start fresh again. Included in the applied result or pending confirmation.",
+    description: "Opt in to using the latest completed run's bounded report as historical context. Use it for recurring work that builds on last time, such as QA passes, monitoring or follow-ups. Defaults to false; set false in an update to start fresh again. Included in the applied result or pending confirmation.",
   },
   overlap: {
     type: "string",
