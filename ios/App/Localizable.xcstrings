@@ -7195,24 +7195,24 @@
         }
       }
     },
-    "Runs the agent and its tools inside its Boat virtual machine. The VM wakes automatically for each run; keep OpenMausBot running so its scheduler can launch the job.": {
+    "Runs on this bot's own model, which uses the bot's cloud computer. The cloud computer wakes for each run; keep OpenMausBot running so its scheduler can start the job.": {
       "localizations": {
         "pt-BR": {
           "stringUnit": {
             "state": "translated",
-            "value": "Roda o agente e as ferramentas dele dentro da máquina virtual Boat. A VM acorda automaticamente a cada execução; mantenha o OpenMausBot rodando para que o agendador consiga iniciar o trabalho."
+            "value": "Roda no modelo do próprio bot, que usa o computador na nuvem dele. O computador na nuvem acorda a cada execução; mantenha o OpenMausBot rodando para que o agendador consiga iniciar o trabalho."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "在 Boat 虚拟机中运行机器人及其工具。每次运行时 VM 都会自动启动；请保持 OpenMausBot 运行，调度器才能启动工作。"
+            "value": "使用此机器人自己的模型运行，并使用它的云端电脑。每次运行时云端电脑都会自动启动；请保持 OpenMausBot 运行，调度器才能启动工作。"
           }
         },
         "zh-Hant": {
           "stringUnit": {
             "state": "translated",
-            "value": "在 Boat 虛擬機器中執行機器人及其工具。每次執行時 VM 都會自動啟動；請保持 OpenMausBot 執行，排程器才能啟動工作。"
+            "value": "使用此機器人自己的模型執行，並使用它的雲端電腦。每次執行時雲端電腦都會自動啟動；請保持 OpenMausBot 執行，排程器才能啟動工作。"
           }
         }
       }
@@ -8889,24 +8889,24 @@
         }
       }
     },
-    "This existing Cloud VM choice is preserved, but it cannot run until the paired computer has a configured Boat API key and an available Boat agent.": {
+    "This Cloud VM choice is kept, but it can't run until the paired computer has cloud computers and this bot's model can use a computer.": {
       "localizations": {
         "pt-BR": {
           "stringUnit": {
             "state": "translated",
-            "value": "Esta escolha de Cloud VM é mantida, mas não pode rodar enquanto o computador pareado não tiver uma chave de API do Boat configurada e um agente Boat disponível."
+            "value": "Esta escolha de Cloud VM é mantida, mas não pode rodar até que o computador pareado tenha computadores na nuvem e o modelo deste bot consiga usar um computador."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "已保留目前的云端 VM 选择，但必须先在已配对的电脑上设置 Boat API 密钥并备妥 Boat 代理程序，才能运行。"
+            "value": "已保留此云端 VM 选择，但必须等已配对的电脑有云端电脑，且此机器人的模型能使用电脑，才能运行。"
           }
         },
         "zh-Hant": {
           "stringUnit": {
             "state": "translated",
-            "value": "已保留目前的雲端 VM 選擇，但必須先在已配對的電腦上設定 Boat API 金鑰並備妥 Boat 代理程式，才能執行。"
+            "value": "已保留此雲端 VM 選擇，但必須等已配對的電腦有雲端電腦，且此機器人的模型能使用電腦，才能執行。"
           }
         }
       }

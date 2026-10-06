@@ -95,12 +95,12 @@ object RoutineRules {
     const val MAUS_FOOTER: String =
         "Uses this agent's selected model and computer setting on the paired computer."
     const val CLOUD_READY_FOOTER: String =
-        "Runs the agent and its tools inside its Boat virtual machine. The VM wakes " +
-            "automatically for each run; keep OpenMausBot running so its scheduler can " +
-            "launch the job."
+        "Runs on this bot's own model, which uses the bot's cloud computer. The cloud " +
+            "computer wakes for each run; keep OpenMausBot running so its scheduler can " +
+            "start the job."
     const val CLOUD_BLOCKED_FOOTER: String =
-        "This existing Cloud VM choice is preserved, but it cannot run until the paired " +
-            "computer has a configured Boat API key and an available Boat agent."
+        "This Cloud VM choice is kept, but it can't run until the paired computer has " +
+            "cloud computers and this bot's model can use a computer."
 
     /** Soonest first; a routine with no next run sorts last. */
     fun sorted(routines: List<Routine>): List<Routine> =
@@ -198,18 +198,21 @@ object RoutineRules {
         }
     }
 
+    /** [engine] is the routine bot's own engine: Cloud VM is offered for it. */
     fun cloudSelectable(
         availability: RoutineRunAvailability?,
         current: RoutineRunLocation,
-    ): Boolean = availability?.canSelect(RoutineRunLocation.CLOUD, current)
+        engine: String?,
+    ): Boolean = availability?.canSelect(RoutineRunLocation.CLOUD, current, engine)
         ?: (current == RoutineRunLocation.CLOUD)
 
     fun locationFooter(
         runOn: RoutineRunLocation,
         availability: RoutineRunAvailability?,
+        engine: String?,
     ): String = when {
         runOn == RoutineRunLocation.MAUS -> MAUS_FOOTER
-        availability?.cloudReady == true -> CLOUD_READY_FOOTER
+        availability?.cloudReady(engine) == true -> CLOUD_READY_FOOTER
         else -> CLOUD_BLOCKED_FOOTER
     }
 

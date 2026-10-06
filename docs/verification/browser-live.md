@@ -191,6 +191,4 @@ Ctrl-C closes the exact fixture and removes the copied sign-in and browser
 data. VM/cloud transport and turn-bound switching are separately covered by
 `server/group-local-vm.e2e.test.ts`, `server/vps-routing.test.ts` and
 `server/index.test.ts` with
-isolated providers. These are not evidence of real cloud provisioning. The
-Computer engine (Boat's native runner) does not expose the agents selector
-tool, so switching it away from Cloud still requires the composer selector.
+isolated providers. These are not evidence of real cloud provisioning.

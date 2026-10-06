@@ -214,17 +214,15 @@ it("does not instruct use of a selected browser when no surface is mounted", () 
 });
 
 describe("cloudPlaceDriverError", () => {
-  it("lets every engine with computer tools use either cloud backend, and the Computer engine only Boat", () => {
-    expect(cloudPlaceDriverError({ driverKind: "claude", computerMcp: true }, "box")).toBeNull();
-    expect(cloudPlaceDriverError({ driverKind: "claude", computerMcp: true }, "vps")).toBeNull();
-    expect(cloudPlaceDriverError({ driverKind: "boxAgent" }, "box")).toBeNull();
-    expect(cloudPlaceDriverError({ driverKind: "boxAgent" }, "vps")).toMatch(/^The Computer engine runs on Boat and can't use a self-hosted VPS\./);
+  it("lets every engine with computer tools use the cloud computer, whatever it runs on", () => {
+    expect(cloudPlaceDriverError({ computerMcp: true })).toBeNull();
+    expect(cloudPlaceDriverError({ computerMcp: true }, "routine")).toBeNull();
   });
 
   it("refuses an engine without computer tools with one message and the control that changes it", () => {
-    expect(cloudPlaceDriverError({ driverKind: "openaiCompat", computerMcp: false }, "box")).toBe("This model can't use a computer. Choose another model, or set Works on to Auto.");
-    expect(cloudPlaceDriverError({}, "vps", "pin")).toBe("This model can't use a computer. Choose another model, or clear this conversation's place in the composer.");
-    expect(cloudPlaceDriverError({}, "box", "routine")).toBe("This model can't use a computer. Choose another model, or change where this routine runs.");
+    expect(cloudPlaceDriverError({ computerMcp: false })).toBe("This model can't use a computer. Choose another model, or set Works on to Auto.");
+    expect(cloudPlaceDriverError({}, "pin")).toBe("This model can't use a computer. Choose another model, or clear this conversation's place in the composer.");
+    expect(cloudPlaceDriverError({}, "routine")).toBe("This model can't use a computer. Choose another model, or change where this routine runs.");
   });
 });
 

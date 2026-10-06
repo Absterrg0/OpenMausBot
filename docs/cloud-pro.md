@@ -753,7 +753,7 @@ For each service the Admin has configured, it also sets:
 
 | Variable | Fly | Value |
 | --- | --- | --- |
-| `OMB_CLOUD_BOAT_URL` | env | `https://cloud.openmausbot.com/api/cloud/services/boat/api/box/v1`, the Admin's Boat relay. It keeps Boat's own `/api/box/v1` ending, so the Computer engine's model catalog (`<root>/api/provider-models`) resolves through the relay too. |
+| `OMB_CLOUD_BOAT_URL` | env | `https://cloud.openmausbot.com/api/cloud/services/boat/api/box/v1`, the Admin's Boat relay. It keeps Boat's own `/api/box/v1` ending. Bots use it only for cloud computers, as a tool on their own engine; no turn runs on Boat's own agent, so nothing calls its `/prompt`, `/events`, `/prompts/{id}` or `/interrupt` routes. |
 | `OMB_CLOUD_BOAT_TOKEN` | secret | This machine's Boat relay token (`box_omb_…`). It is not a Boat key and works only through the relay. |
 | `OMB_CLOUD_VOICE_URL` | env | `https://cloud.openmausbot.com/api/cloud/services/voice/v1`, the Admin's voice relay. |
 | `OMB_CLOUD_VOICE_TOKEN` | secret | This machine's voice relay token (`omb_voice_…`). |

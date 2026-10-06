@@ -54,7 +54,6 @@ function makeDerived(): ReturnType<typeof import("./useBotSettingsDerived").useB
     trustedModesAvailable: false,
     canCoordinate: false,
     canUseConnectedApps: true,
-    canUseVps: false,
     connectedAppsConfigured: true,
     connectedAppsEnabled: true,
     connectorGrantState: "full",

@@ -91,9 +91,10 @@ import kotlinx.coroutines.launch
  * later at the same call site gets its own slots rather than inheriting a draft.
  *
  * The work, the agent, how long it may take, where it runs, and when. Cloud VM
- * is offered only when the paired computer reports both a Boat credential and an
- * available Boat agent, and an existing cloud routine keeps that choice while its
- * VM is unavailable rather than being silently moved back to the computer.
+ * is offered only when the paired computer has cloud computers and the chosen
+ * bot's own engine is available with computer tools, and an existing cloud
+ * routine keeps that choice while its VM is unavailable rather than being
+ * silently moved back to the computer.
  */
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
@@ -186,7 +187,10 @@ internal fun RoutineEditorSheet(
         availabilityLoaded = true
     }
 
-    val cloudSelectable = RoutineRules.cloudSelectable(availability, runOn)
+    // A cloud routine runs on its bot's own engine, so Cloud VM is offered for
+    // the bot chosen here, never for whichever bot happens to qualify.
+    val botEngine = bots.firstOrNull { it.id == agent.botId }?.modelSelection?.instanceId
+    val cloudSelectable = RoutineRules.cloudSelectable(availability, runOn, botEngine)
     val intervalMinutes = RoutineRules.intervalMinutes(intervalMinutesText)
     val canSave = RoutineRules.canSave(
         saving = saving,
@@ -291,7 +295,7 @@ internal fun RoutineEditorSheet(
 
             FormSection(
                 header = "Where does it run?",
-                footer = RoutineRules.locationFooter(runOn, availability),
+                footer = RoutineRules.locationFooter(runOn, availability, botEngine),
             ) {
                 RadioRow(
                     label = RoutineRules.locationLabel(RoutineRunLocation.MAUS),

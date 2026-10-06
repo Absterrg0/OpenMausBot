@@ -1114,7 +1114,6 @@
   "computer.err.localEngine": "यह मॉडल इस कंप्यूटर को नियंत्रित नहीं कर सकता। Claude या कोई ACP मॉडल प्रदाता चुनें।",
   "computer.err.vmEngine": "यह मॉडल लोकल VM का उपयोग नहीं कर सकता। Claude या कोई ACP मॉडल प्रदाता चुनें।",
   "computer.err.cloudEngine": "यह मॉडल कंप्यूटर का उपयोग नहीं कर सकता। कोई दूसरा मॉडल चुनें, या “काम करता है” को ऑटो पर सेट करें।",
-  "computer.err.vpsEngine": "यह मॉडल स्वयं-होस्ट किए गए VPS का उपयोग नहीं कर सकता। Claude या कोई ACP मॉडल प्रदाता चुनें, या क्लाउड बैकएंड को Boat पर बदलें।",
   "computer.err.vmNotReady": "लोकल VM तैयार नहीं है",
   "computer.err.vmOpenSettings": "{problem}। सेटिंग्स → लोकल VM खोलें।",
   "computer.err.vpsAlias": "सेटिंग्स → API कुंजियाँ में VPS का SSH कॉन्फ़िग उपनाम जोड़ें।",

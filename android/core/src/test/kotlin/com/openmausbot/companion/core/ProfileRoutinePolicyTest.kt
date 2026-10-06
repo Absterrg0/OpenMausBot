@@ -29,21 +29,30 @@ class ProfileRoutinePolicyTest {
         val unconfigured = decodeConfig("""{"box":{"configured":false}}""")
         val available = decodeInstances("available")
         val unavailable = decodeInstances("unavailable")
+        val noComputerTools = decodeInstances("available", computerMcp = false)
 
-        assertFalse(RoutineRunAvailability(unconfigured, available).cloudReady)
-        assertFalse(RoutineRunAvailability(configured, unavailable).cloudReady)
+        assertFalse(RoutineRunAvailability(unconfigured, available).cloudReady("claude"))
+        assertFalse(RoutineRunAvailability(configured, unavailable).cloudReady("claude"))
+        assertFalse(
+            RoutineRunAvailability(configured, noComputerTools).cloudReady("claude"),
+            "an engine without computer tools cannot work on the cloud computer",
+        )
 
         val ready = RoutineRunAvailability(configured, available)
-        assertTrue(ready.cloudReady)
-        assertTrue(ready.canSelect(RoutineRunLocation.CLOUD, preserving = RoutineRunLocation.MAUS))
+        assertTrue(ready.cloudReady("claude"))
+        assertTrue(ready.canSelect(RoutineRunLocation.CLOUD, preserving = RoutineRunLocation.MAUS, engine = "claude"))
+        // The routine runs on its own bot's engine, like on the desktop and
+        // the server: another bot's engine does not count.
+        assertFalse(ready.cloudReady("codex"))
+        assertFalse(ready.canSelect(RoutineRunLocation.CLOUD, preserving = RoutineRunLocation.MAUS, engine = "codex"))
 
         val offline = RoutineRunAvailability(configured, unavailable)
-        assertFalse(offline.canSelect(RoutineRunLocation.CLOUD, preserving = RoutineRunLocation.MAUS))
+        assertFalse(offline.canSelect(RoutineRunLocation.CLOUD, preserving = RoutineRunLocation.MAUS, engine = "claude"))
         assertTrue(
-            offline.canSelect(RoutineRunLocation.CLOUD, preserving = RoutineRunLocation.CLOUD),
+            offline.canSelect(RoutineRunLocation.CLOUD, preserving = RoutineRunLocation.CLOUD, engine = "claude"),
             "an existing cloud routine must not silently move",
         )
-        assertTrue(offline.canSelect(RoutineRunLocation.MAUS, preserving = RoutineRunLocation.CLOUD))
+        assertTrue(offline.canSelect(RoutineRunLocation.MAUS, preserving = RoutineRunLocation.CLOUD, engine = "claude"))
     }
 
     @Test
@@ -141,11 +150,12 @@ class ProfileRoutinePolicyTest {
 
     private fun decodeConfig(json: String): ConfigStatus = CompanionJson.decodeFromString(json)
 
-    private fun decodeInstances(state: String): List<Instance> = CompanionJson.decodeFromString<InstanceList>(
+    private fun decodeInstances(state: String, computerMcp: Boolean = true): List<Instance> = CompanionJson.decodeFromString<InstanceList>(
         """{"instances":[{
-          "instanceId":"box-1","driverKind":"boxAgent",
+          "instanceId":"claude","driverKind":"claudeAgent",
           "snapshot":{"state":"$state"},
-          "models":{"default":"model-1","options":[]}
+          "models":{"default":"model-1","options":[]},
+          "capabilities":{"computerMcp":$computerMcp}
         }]}""",
     ).instances
 }

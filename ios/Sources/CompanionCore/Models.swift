@@ -1158,10 +1158,13 @@ public struct ModelCatalog: Codable, Hashable, Sendable {
 public struct InstanceCapabilities: Codable, Hashable, Sendable {
     public var effortLevels: [String]?
     public var queueing: Bool?
+    /// The engine has computer tools, so it can work on a cloud computer.
+    public var computerMcp: Bool?
 
-    public init(effortLevels: [String]? = nil, queueing: Bool? = nil) {
+    public init(effortLevels: [String]? = nil, queueing: Bool? = nil, computerMcp: Bool? = nil) {
         self.effortLevels = effortLevels
         self.queueing = queueing
+        self.computerMcp = computerMcp
     }
 }
 
@@ -1484,24 +1487,36 @@ public enum RoutineRunLocation: String, CaseIterable, Codable, Hashable, Sendabl
 }
 
 /// Desktop-equivalent run-location availability, derived only from paired-safe
-/// status endpoints. Selecting Cloud VM requires both the host credential and
-/// an available Boat agent. An existing cloud routine remains editable without
-/// silently changing where it runs if that VM is temporarily unavailable.
+/// status endpoints. A cloud routine runs on its bot's own engine, which uses
+/// the cloud computer as a tool, so selecting Cloud VM requires the host's
+/// cloud computers and an available engine with computer tools for that bot:
+/// the rule the desktop and the server apply to the routine's bot. An existing
+/// cloud routine remains editable without silently changing where it runs if
+/// that VM is temporarily unavailable.
 public struct RoutineRunAvailability: Equatable, Sendable {
     public var cloudConfigured: Bool
-    public var cloudInstanceAvailable: Bool
+    /// The available engines that have computer tools, by instance id.
+    public var cloudEngines: Set<String>
+
+    public init(cloudConfigured: Bool, cloudEngines: Set<String>) {
+        self.cloudConfigured = cloudConfigured
+        self.cloudEngines = cloudEngines
+    }
 
     public init(config: ConfigStatus?, instances: [Instance]) {
         cloudConfigured = config?.box?.configured == true
-        cloudInstanceAvailable = instances.contains {
-            $0.driverKind == "boxAgent" && $0.snapshot.isAvailable
-        }
+        cloudEngines = Set(instances.filter {
+            $0.capabilities?.computerMcp == true && $0.snapshot.isAvailable
+        }.map(\.instanceId))
     }
 
-    public var cloudReady: Bool { cloudConfigured && cloudInstanceAvailable }
+    /// Whether a routine for the bot on this engine can run on the Cloud VM.
+    public func cloudReady(engine instanceId: String?) -> Bool {
+        cloudConfigured && instanceId.map(cloudEngines.contains) == true
+    }
 
-    public func canSelect(_ location: RoutineRunLocation, preserving current: RoutineRunLocation) -> Bool {
-        location == .maus || cloudReady || current == .cloud
+    public func canSelect(_ location: RoutineRunLocation, preserving current: RoutineRunLocation, engine instanceId: String?) -> Bool {
+        location == .maus || cloudReady(engine: instanceId) || current == .cloud
     }
 }
 

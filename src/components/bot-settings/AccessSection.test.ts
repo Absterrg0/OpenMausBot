@@ -52,7 +52,6 @@ function makeDerived(overrides: Partial<ReturnType<typeof useBotSettingsDerived>
     engine: undefined,
     canCoordinate: false,
     canUseConnectedApps: true,
-    canUseVps: false,
     connectedAppsConfigured: true,
     connectedAppsEnabled: true,
     canUseBrowser: false,

@@ -1751,7 +1751,6 @@
   "computer.err.localEngine": "這個模型無法控制這台電腦。請選擇 Claude 或 ACP 模型供應商。",
   "computer.err.vmEngine": "這個模型無法使用本機 VM。請選擇 Claude 或 ACP 模型供應商。",
   "computer.err.cloudEngine": "這個模型無法使用電腦。請選擇其他模型，或將「運作位置」設為自動。",
-  "computer.err.vpsEngine": "這個模型無法使用自行架設的 VPS。請選擇 Claude 或 ACP 模型供應商，或將雲端後端切換為 Boat。",
   "computer.err.vmNotReady": "本機 VM 尚未就緒",
   "computer.err.vmOpenSettings": "{problem}。請開啟「設定 → 本機 VM」。",
   "computer.err.vpsAlias": "請在「設定 → API 金鑰」中新增 VPS 的 SSH 設定別名。",

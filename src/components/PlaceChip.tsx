@@ -21,16 +21,15 @@ export function usePlaceAvailability(bot: Bot): PlaceAvailability {
   const { capabilities } = useDesktopCapabilities();
   const instance = state.instances.find((candidate) => candidate.instanceId === bot.modelSelection.instanceId);
   const computerMcp = instance?.capabilities?.computerMcp === true;
-  const boxAgent = instance?.driverKind === "boxAgent";
   const backend = bot.cloudBackend === "vps" ? "vps" : "box";
   // Places the enrolled organisation disallows, or this server never
   // offers (an OMB Cloud home), are not reachable.
   const allowed = state.config?.managedPolicy?.computers ?? { thisComputer: true, localVm: true, box: true, vps: true };
   return {
-    cloud: canWorkOnCloud(cloudEngineOf(instance), backend) && allowed[backend],
-    vm: Boolean(instance?.snapshot?.state === "available" && computerMcp && !boxAgent) && allowed.localVm && placeOffered("vm", state.config),
+    cloud: canWorkOnCloud(cloudEngineOf(instance)) && allowed[backend],
+    vm: Boolean(instance?.snapshot?.state === "available" && computerMcp) && allowed.localVm && placeOffered("vm", state.config),
     local: localComputerSelectable({ capabilities, providerSupportsLocal: instanceSupportsLocalComputer(state.instances, bot) }) && allowed.thisComputer && placeOffered("local", state.config),
-    browser: builtInBrowserEnabled(state.config) && browserAvailable(state.config) && instance?.capabilities?.browserMcp === true && !boxAgent,
+    browser: builtInBrowserEnabled(state.config) && browserAvailable(state.config) && instance?.capabilities?.browserMcp === true,
   };
 }
 

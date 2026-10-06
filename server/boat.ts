@@ -140,19 +140,13 @@ export interface BoatIdentityInspection {
   problem: string | null;
 }
 
-export type BoatTurnLifecycleAction = "attach" | "provision" | "wake" | "none";
+export type BoatTurnLifecycleAction = "attach" | "provision" | "wake";
 
-/** Decide lifecycle work before a turn mounts Boat. Auto may observe and
- * attach an already-ready Boat, but only explicit Cloud may create or wake. */
-export function boatTurnLifecycleAction({
-  explicitCloud,
-  state,
-}: {
-  explicitCloud: boolean;
-  state: string | null;
-}): BoatTurnLifecycleAction {
+/** Decide lifecycle work before a turn mounts Boat. Only a turn whose place
+ * is Cloud gets here (Auto never reads the Boat account), so a missing Boat
+ * is created and a sleeping one woken. */
+export function boatTurnLifecycleAction(state: string | null): BoatTurnLifecycleAction {
   if (state && READY.has(state)) return "attach";
-  if (!explicitCloud) return "none";
   return state ? "wake" : "provision";
 }
 
@@ -1115,44 +1109,13 @@ function idempotentCreateInProgress(result: Awaited<ReturnType<typeof boatJson>>
   return result.status === 409 && code === "idempotency_in_progress";
 }
 
-/** The keys this OpenMausBot already holds, as the environment its bots'
- * agents read on the boat. The boat is created with `noEnv: true`, so the
- * boat.dev account's own logins never land in the guest: the boat has exactly
- * these and nothing else (see "Whose keys" in the Boat integrated-agents docs). */
-export function boatCredentialEnv(cfg: AppConfig, env: NodeJS.ProcessEnv = process.env): Record<string, string> {
-  const out: Record<string, string> = {};
-  const put = (name: string, value: string | undefined) => {
-    if (typeof value === "string" && value.trim()) out[name] = value.trim();
-  };
-  // The workspace key only: an ANTHROPIC_API_KEY in the server's own env is
-  // never the workspace key (see loadConfig), so it is not forwarded either.
-  put("ANTHROPIC_API_KEY", cfg.anthropic?.key);
-  for (const name of BOAT_FORWARDED_CREDENTIAL_ENV) put(name, env[name]);
-  return out;
-}
-
-/** Names the boat's agents read (Claude Code, Codex, pi, OpenCode, Prime
- * Agent, Kimi), forwarded verbatim from this server's environment when set. */
-const BOAT_FORWARDED_CREDENTIAL_ENV = [
-  "CLAUDE_CODE_OAUTH_TOKEN",
-  "OPENAI_API_KEY",
-  "OPENROUTER_API_KEY",
-  "LLMGATEWAY_API_KEY",
-  "DEEPSEEK_API_KEY",
-  "MOONSHOT_API_KEY",
-  "KIMI_CODE_ACCESS_TOKEN",
-  "KIMI_CODE_REFRESH_TOKEN",
-] as const;
-
-async function requestBoatCreate(cfg: AppConfig, botId: string, ttlSeconds: number, env: Record<string, string>): Promise<BoatCreateResult> {
-  // The computer needs the user's desktop session, not the account owner's
-  // host credentials. Keep provider-side env injection off; the only keys the
-  // guest ever has are the ones this OpenMausBot forwards (`env`), which its
-  // agents need now that the turn runs on the boat. The idempotency identity
-  // stays the secret-free part: a trial-TTL retry must receive a different
-  // key, and the journal on disk never carries a credential.
+async function requestBoatCreate(cfg: AppConfig, botId: string, ttlSeconds: number): Promise<BoatCreateResult> {
+  // The computer is a desktop the bot's own engine drives from here, so it
+  // needs no AI sign-in of its own: provider-side env injection stays off and
+  // no key this OpenMausBot holds is ever sent to it. A trial-TTL retry must
+  // receive a different idempotency key, and the journal on disk never
+  // carries a credential.
   const body = JSON.stringify({ ttlSeconds, noEnv: true });
-  const wireBody = JSON.stringify({ ttlSeconds, noEnv: true, ...(Object.keys(env).length ? { env } : {}) });
   let attempt = beginBoatCreate(botId, body);
   let request = attempt.request;
   let createdThisAttempt = attempt.startedNow;
@@ -1184,7 +1147,7 @@ async function requestBoatCreate(cfg: AppConfig, botId: string, ttlSeconds: numb
         method: "POST",
         headers: { "Idempotency-Key": request.idempotencyKey },
         signal: AbortSignal.timeout(45_000),
-        body: wireBody,
+        body,
       });
     } catch (error) {
       // A dropped response is ambiguous: boat.dev may already have created
@@ -1214,11 +1177,11 @@ async function requestBoatCreate(cfg: AppConfig, botId: string, ttlSeconds: numb
   }
 }
 
-async function createBoat(cfg: AppConfig, botId: string, env: Record<string, string>) {
-  const first = await requestBoatCreate(cfg, botId, DEFAULT_BOAT_TTL_SECONDS, env);
+async function createBoat(cfg: AppConfig, botId: string) {
+  const first = await requestBoatCreate(cfg, botId, DEFAULT_BOAT_TTL_SECONDS);
   if (first.ok) return first;
   const trialTtl = trialBoatTtlSeconds(first.body);
-  return trialTtl === null ? first : requestBoatCreate(cfg, botId, trialTtl, env);
+  return trialTtl === null ? first : requestBoatCreate(cfg, botId, trialTtl);
 }
 
 /** A prior explicit delete always wins over provisioning. Reconcile/retry the
@@ -1260,10 +1223,9 @@ export async function boatStatus(cfg: AppConfig, botId: string) {
 
 /**
  * Find-or-create the bot's persistent boat, wait for ready, and mint a fresh
- * desktop URL. The boat ships its own computer-use driver and agent runner.
+ * desktop URL. The boat ships its own computer-use driver.
  */
 export async function provisionBoat(cfg: AppConfig, botId: string, _botName: string) {
-  const credentialEnv = boatCredentialEnv(cfg);
   cfg = snapshotBoatConfig(cfg);
   if (!boatConfigured(cfg)) {
     throw new Error('box provider not enabled — add {"box":{"token":"…"}} to ~/.openmausbot/config.json');
@@ -1281,7 +1243,7 @@ export async function provisionBoat(cfg: AppConfig, botId: string, _botName: str
       // Provider-side backstop: archives itself (billing pauses, disk
       // survives) if every stop path dies. Trial accounts get one narrower
       // retry when boat.dev reports their shorter TTL ceiling.
-      const createRes = await createBoat(cfg, botId, credentialEnv);
+      const createRes = await createBoat(cfg, botId);
       if (!createRes.ok || !createRes.body?.box?.id) {
         throw new Error(boatErrorMessage(createRes.status, "boat create", createRes.body, usesIncludedBoat(cfg)));
       }
@@ -1298,8 +1260,7 @@ export async function provisionBoat(cfg: AppConfig, botId: string, _botName: str
     const ready = await waitReady(cfg, boat.id);
     if (!ready) throw new Error("box did not become ready within 90s — retry in a minute");
 
-    // Nothing to install: every boat ships its own computer-use driver and
-    // registers it with every harness it runs.
+    // Nothing to install: every boat ships its own computer-use driver.
     const joinUrl = await mintDesktopUrl(cfg, boat.id);
     if (!joinUrl) throw new Error("box desktop link could not be created");
     return { boxId: boat.id, machineName: vmName, reused: !created, state: ready.state, joinUrl };
@@ -1399,14 +1360,11 @@ export async function execOnBoat(cfg: AppConfig, botId: string, command: string)
 //
 // The frame is for a person: it fills the panel and opens in the chat's
 // image viewer, so it keeps the desktop's native size up to 1080p and a
-// quality where page text stays legible. (Sizing it is now the only say
-// OpenMausBot has over any frame off this box: the turn runs on the boat's
-// own agent, so the model's own captures never pass through here.) Only
-// wider displays are scaled down, with -resize rather than -thumbnail so
-// the resample is not the fast-and-blurry kind meant for icons. The
-// pointer is drawn into the frame (scrot --pointer, ffmpeg -draw_mouse):
-// watching the bot work means seeing where its cursor is, and X11
-// captures leave it out by default.
+// quality where page text stays legible. Only wider displays are scaled
+// down, with -resize rather than -thumbnail so the resample is not the
+// fast-and-blurry kind meant for icons. The pointer is drawn into the frame
+// (scrot --pointer, ffmpeg -draw_mouse): watching the bot work means seeing
+// where its cursor is, and X11 captures leave it out by default.
 const PANEL_PATH = "/tmp/ogb-panel.jpg";
 export const PANEL_FRAME_WIDTH = 1920;
 export const PANEL_FRAME_QUALITY = 85;

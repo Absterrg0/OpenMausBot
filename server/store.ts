@@ -22,7 +22,8 @@ import { newId, type ModelSelection } from "./contracts.ts";
 import { pickBotName } from "./names.ts";
 import { redactSecretsInText } from "./redact.ts";
 import { AVATAR_FOCUS_CENTER, AVATAR_ZOOM_MIN, botAvatarProfile, clampAvatarFocus, clampAvatarZoom } from "../shared/bot-avatar.ts";
-import { approvalModeFor, isApprovalMode } from "../shared/approval-mode.ts";
+import { approvalModeFor, isApprovalMode, modelSwitchNeedsAsk } from "../shared/approval-mode.ts";
+import { REMOVED_COMPUTER_DRIVER, type ComputerEngineMove } from "./computer-engine-removal.ts";
 import type { ProfileRequestChanges } from "../shared/profile-request.ts";
 import type { TeamSetupRequest, TeamSetupResult } from "../shared/team-setup.ts";
 import type { GroupGoalRunCardData } from "../shared/group-goal-run.ts";
@@ -2224,6 +2225,78 @@ export class Store {
     if (changed.length) this.saveBots();
     for (const bot of changed) this.emit({ type: "bot", botId: bot.id });
     return changed.length;
+  }
+
+  /** The removed Computer engine's saved choices move to `replacement` in one
+   * save: each bot's model, each conversation's own model, and its backups.
+   * Native resume cursors and handed-message records of the removed engine go
+   * too; the conversations stay, and the new engine reads them from the
+   * transcript. Each conversation keeps working where it did: on Auto the
+   * removed engine always ran on the bot's own cloud computer, so where
+   * `keepCloud` says that computer is still there, a moved bot's Works on
+   * becomes Cloud, and a moved conversation of an Auto bot is pinned there the
+   * way an Auto turn records where it landed. A level the new engine would
+   * have to confirm goes back to Ask, as on every engine switch
+   * (modelSwitchNeedsAsk). Every other setting is kept. Returns one entry per
+   * moved conversation. Idempotent: nothing left names the engine. */
+  retireInstances(ids: ReadonlySet<string>, replacement: ModelSelection, options: {
+    /** The replacement's driver kind, for the approval check. */
+    driverKind?: string;
+    /** This bot, on Auto, reached its own cloud computer through the removed
+     * engine and still can: a Boat account is set, its cloud backend is Boat,
+     * and no team computer serves its section. */
+    keepCloud: (bot: BotRecord) => boolean;
+  }): ComputerEngineMove[] {
+    const retired = (selection?: { instanceId: string }) => Boolean(selection && ids.has(selection.instanceId));
+    const without = <T>(record: Record<string, T>): Record<string, T> =>
+      Object.fromEntries(Object.entries(record).filter(([key]) => !ids.has(key)));
+    const touches = (record?: Record<string, unknown>) => Boolean(record && Object.keys(record).some(key => ids.has(key)));
+    const needsAsk = (target: Parameters<typeof approvalModeFor>[0]) =>
+      modelSwitchNeedsAsk(approvalModeFor(target), REMOVED_COMPUTER_DRIVER, options.driverKind);
+    const askNow = { approvalMode: "ask" as const, autoApprove: false, alwaysAllow: [] as string[] };
+    const changed: BotRecord[] = [];
+    const moves: ComputerEngineMove[] = [];
+    for (const bot of this.bots) {
+      let dirty = false;
+      const botMoved = retired(bot.modelSelection);
+      let botAsk = false;
+      if (botMoved) {
+        if (bot.computer === undefined && options.keepCloud(bot)) bot.computer = "cloud";
+        if (needsAsk(bot)) { Object.assign(bot, structuredClone(askNow)); botAsk = true; }
+        bot.modelSelection = structuredClone(replacement);
+        dirty = true;
+      }
+      if (bot.fallback?.some(retired)) {
+        const kept = bot.fallback.filter(candidate => !retired(candidate));
+        if (kept.length) bot.fallback = kept;
+        else delete bot.fallback;
+        dirty = true;
+      }
+      if (touches(bot.resumeCursors)) { bot.resumeCursors = without(bot.resumeCursors); dirty = true; }
+      for (const task of bot.tasks ?? []) {
+        // The engine this conversation ran on: its own, else the bot's.
+        const moved = task.modelSelection ? retired(task.modelSelection) : botMoved;
+        if (moved) {
+          if (!botMoved && bot.computer === undefined && task.surface === undefined && options.keepCloud(bot)) {
+            task.surface = "cloud";
+            task.surfaceSource = "auto";
+          }
+          const ask = needsAsk(this.projectBotForTask(bot.id, task.threadId)!);
+          if (ask) Object.assign(task, structuredClone(askNow));
+          if (task.modelSelection) task.modelSelection = structuredClone(replacement);
+          const scope = botMoved && task.threadId === bot.threadId ? "bot" : "conversation";
+          moves.push({ botId: bot.id, threadId: task.threadId, scope, cloud: (task.surface ?? bot.computer) === "cloud",
+            askNow: ask || (scope === "bot" && botAsk) });
+          dirty = true;
+        }
+        if (touches(task.resumeCursors)) { task.resumeCursors = without(task.resumeCursors); dirty = true; }
+        if (task.handedMessages && touches(task.handedMessages)) { task.handedMessages = without(task.handedMessages); dirty = true; }
+      }
+      if (dirty) changed.push(bot);
+    }
+    if (changed.length) this.saveBots();
+    for (const bot of changed) this.emit({ type: "bot", botId: bot.id });
+    return moves;
   }
 
   setResumeCursor(botId: string, instanceId: string, cursor: unknown, threadId?: string) {

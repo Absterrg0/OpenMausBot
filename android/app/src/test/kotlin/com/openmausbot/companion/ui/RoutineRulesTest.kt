@@ -4,6 +4,7 @@ import androidx.compose.runtime.saveable.SaverScope
 import com.openmausbot.companion.core.ConfigFlag
 import com.openmausbot.companion.core.ConfigStatus
 import com.openmausbot.companion.core.Instance
+import com.openmausbot.companion.core.InstanceCapabilities
 import com.openmausbot.companion.core.ModelCatalog
 import com.openmausbot.companion.core.ProviderSnapshot
 import com.openmausbot.companion.core.Routine
@@ -261,66 +262,91 @@ class RoutineRulesTest {
     }
 
     @Test
-    fun `Cloud VM needs both the credential and an available agent`() {
-        val ready = RoutineRunAvailability(cloudConfigured = true, cloudInstanceAvailable = true)
-        val noAgent = RoutineRunAvailability(cloudConfigured = true, cloudInstanceAvailable = false)
+    fun `Cloud VM needs both the credential and the routine bot's own engine`() {
+        val ready = RoutineRunAvailability(cloudConfigured = true, cloudEngines = setOf("claude"))
+        val noAgent = RoutineRunAvailability(cloudConfigured = true, cloudEngines = emptySet())
 
-        assertTrue(RoutineRules.cloudSelectable(ready, RoutineRunLocation.MAUS))
-        assertFalse(RoutineRules.cloudSelectable(noAgent, RoutineRunLocation.MAUS))
+        assertTrue(RoutineRules.cloudSelectable(ready, RoutineRunLocation.MAUS, "claude"))
+        assertFalse(RoutineRules.cloudSelectable(noAgent, RoutineRunLocation.MAUS, "claude"))
+        assertFalse(
+            RoutineRules.cloudSelectable(ready, RoutineRunLocation.MAUS, "router"),
+            "another engine that can use a computer does not make this bot's engine able to",
+        )
+        assertFalse(RoutineRules.cloudSelectable(ready, RoutineRunLocation.MAUS, null), "no bot chosen yet")
     }
 
     @Test
     fun `an existing cloud routine keeps its choice while the VM is away`() {
-        val noAgent = RoutineRunAvailability(cloudConfigured = false, cloudInstanceAvailable = false)
+        val noAgent = RoutineRunAvailability(cloudConfigured = false, cloudEngines = emptySet())
 
-        assertTrue(RoutineRules.cloudSelectable(noAgent, RoutineRunLocation.CLOUD))
+        assertTrue(RoutineRules.cloudSelectable(noAgent, RoutineRunLocation.CLOUD, "claude"))
         assertTrue(
-            RoutineRules.cloudSelectable(null, RoutineRunLocation.CLOUD),
+            RoutineRules.cloudSelectable(null, RoutineRunLocation.CLOUD, "claude"),
             "status not loaded yet must not move an existing cloud routine",
         )
-        assertFalse(RoutineRules.cloudSelectable(null, RoutineRunLocation.MAUS))
+        assertFalse(RoutineRules.cloudSelectable(null, RoutineRunLocation.MAUS, "claude"))
     }
 
     @Test
     fun `the run-location footer says what the choice actually means`() {
-        val ready = RoutineRunAvailability(cloudConfigured = true, cloudInstanceAvailable = true)
-        val blocked = RoutineRunAvailability(cloudConfigured = true, cloudInstanceAvailable = false)
+        val ready = RoutineRunAvailability(cloudConfigured = true, cloudEngines = setOf("claude"))
+        val blocked = RoutineRunAvailability(cloudConfigured = true, cloudEngines = emptySet())
 
         assertEquals(
             RoutineRules.MAUS_FOOTER,
-            RoutineRules.locationFooter(RoutineRunLocation.MAUS, blocked),
+            RoutineRules.locationFooter(RoutineRunLocation.MAUS, blocked, "claude"),
         )
         assertEquals(
             RoutineRules.CLOUD_READY_FOOTER,
-            RoutineRules.locationFooter(RoutineRunLocation.CLOUD, ready),
+            RoutineRules.locationFooter(RoutineRunLocation.CLOUD, ready, "claude"),
         )
         assertEquals(
             RoutineRules.CLOUD_BLOCKED_FOOTER,
-            RoutineRules.locationFooter(RoutineRunLocation.CLOUD, blocked),
+            RoutineRules.locationFooter(RoutineRunLocation.CLOUD, ready, "router"),
         )
         assertEquals(
             RoutineRules.CLOUD_BLOCKED_FOOTER,
-            RoutineRules.locationFooter(RoutineRunLocation.CLOUD, null),
+            RoutineRules.locationFooter(RoutineRunLocation.CLOUD, blocked, "claude"),
         )
+        assertEquals(
+            RoutineRules.CLOUD_BLOCKED_FOOTER,
+            RoutineRules.locationFooter(RoutineRunLocation.CLOUD, null, "claude"),
+        )
+    }
+
+    @Test
+    fun `the cloud footers use the product's words`() {
+        // The bot's own model uses its cloud computer as a tool. On My Cloud
+        // the plan includes the computers, so no Boat key is asked for.
+        for (footer in listOf(RoutineRules.CLOUD_READY_FOOTER, RoutineRules.CLOUD_BLOCKED_FOOTER)) {
+            assertTrue(footer.contains("cloud computer"), footer)
+            assertFalse(footer.contains("Boat"), footer)
+            assertFalse(footer.contains("agent's"), footer)
+        }
     }
 
     @Test
     fun `Cloud VM availability is derived from the paired-safe status only`() {
         val instances = listOf(
-            instance(driverKind = "boxAgent", state = "available"),
+            instance(driverKind = "claudeAgent", state = "available", computerMcp = true),
+            instance(driverKind = "openai-compat", state = "available"),
             instance(driverKind = "local", state = "available"),
         )
         val configured = ConfigStatus(box = ConfigFlag(configured = true))
 
-        assertTrue(RoutineRunAvailability(configured, instances).cloudReady)
-        assertFalse(RoutineRunAvailability(configured, emptyList()).cloudReady)
-        assertFalse(RoutineRunAvailability(null, instances).cloudReady)
+        assertTrue(RoutineRunAvailability(configured, instances).cloudReady("instance-claudeAgent"))
+        assertFalse(RoutineRunAvailability(configured, emptyList()).cloudReady("instance-claudeAgent"))
+        assertFalse(RoutineRunAvailability(null, instances).cloudReady("instance-claudeAgent"))
         assertFalse(
             RoutineRunAvailability(
                 configured,
-                listOf(instance(driverKind = "boxAgent", state = "unavailable")),
-            ).cloudReady,
-            "a Boat agent that is not available is not a Cloud VM to run on",
+                listOf(instance(driverKind = "claudeAgent", state = "unavailable", computerMcp = true)),
+            ).cloudReady("instance-claudeAgent"),
+            "an engine that is not available cannot run on the Cloud VM",
+        )
+        assertFalse(
+            RoutineRunAvailability(configured, instances).cloudReady("instance-openai-compat"),
+            "a bot whose engine has no computer tools cannot work on the Cloud VM, whatever other engines can",
         )
     }
 
@@ -906,10 +932,11 @@ class RoutineRulesTest {
         createdAt = 0.0,
     )
 
-    private fun instance(driverKind: String, state: String) = Instance(
+    private fun instance(driverKind: String, state: String, computerMcp: Boolean? = null) = Instance(
         instanceId = "instance-$driverKind",
         driverKind = driverKind,
         snapshot = ProviderSnapshot(state = state),
         models = ModelCatalog(defaultModel = "model-1", options = emptyList()),
+        capabilities = computerMcp?.let { InstanceCapabilities(computerMcp = it) },
     )
 }

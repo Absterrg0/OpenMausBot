@@ -138,16 +138,9 @@ const PLACE_ACTION: Record<PlaceSource, { sentence: string; clause: string }> = 
  * place's source, or null when it can (shared/cloud-computer.ts holds the
  * rule). Checked before anything is provisioned, so a turn that cannot run
  * never creates or wakes a machine. */
-export function cloudPlaceDriverError(
-  engine: CloudEngine,
-  backend: "box" | "vps",
-  source: PlaceSource = "works-on",
-): string | null {
-  if (canWorkOnCloud(engine, backend)) return null;
-  const next = `Choose another model, or ${PLACE_ACTION[source].clause}.`;
-  return engine.driverKind === "boxAgent"
-    ? `The Computer engine runs on Boat and can't use a self-hosted VPS. ${next}`
-    : `This model can't use a computer. ${next}`;
+export function cloudPlaceDriverError(engine: CloudEngine, source: PlaceSource = "works-on"): string | null {
+  if (canWorkOnCloud(engine)) return null;
+  return `This model can't use a computer. Choose another model, or ${PLACE_ACTION[source].clause}.`;
 }
 
 /** One line, cause then next action. A bot thread's transcript row keeps

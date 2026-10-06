@@ -36,20 +36,15 @@ describe("resolveComputerPromptKind", () => {
   // agreement matrix artifact.
   it.each([
     // a VM plan is decided by the configured mode alone
-    [{ kind: "vm", driverKind: "claude", vmPrivate: false }, "vm-shared"],
-    [{ kind: "vm", driverKind: "claude", vmPrivate: true }, "vm-private"],
-    [{ kind: "vm", driverKind: "boxAgent", vmPrivate: false }, "vm-shared"],
-    // a boat plan: the Computer engine earns its own kind; every other
-    // engine drives the boat through the same computer tools
-    [{ kind: "box", driverKind: "boxAgent", vmPrivate: false }, "box-agent"],
-    [{ kind: "box", driverKind: "codex", vmPrivate: false }, "box"],
-    [{ kind: "box", driverKind: "claude", vmPrivate: false }, "box"],
+    [{ kind: "vm", vmPrivate: false }, "vm-shared"],
+    [{ kind: "vm", vmPrivate: true }, "vm-private"],
+    // a boat plan: every engine drives the boat through the same computer tools
+    [{ kind: "box", vmPrivate: false }, "box"],
     // vps and local never depended on more than the plan
-    [{ kind: "vps", driverKind: "claude", vmPrivate: false }, "vps"],
-    [{ kind: "local", driverKind: "claude", vmPrivate: false }, "local"],
-    [{ kind: "local", driverKind: "boxAgent", vmPrivate: false }, "local"],
+    [{ kind: "vps", vmPrivate: false }, "vps"],
+    [{ kind: "local", vmPrivate: false }, "local"],
     // and no plan earns no paragraph
-    [{ kind: null, driverKind: "claude", vmPrivate: true }, null],
+    [{ kind: null, vmPrivate: true }, null],
   ] as const)("resolves %j to %s", (input, expected) => {
     expect(resolveComputerPromptKind(input)).toBe(expected);
   });
@@ -58,9 +53,6 @@ describe("resolveComputerPromptKind", () => {
 describe("computerPrompt", () => {
   it("gives every kind its own paragraph plus the sign-in policy, and silence to none", () => {
     expect(computerPrompt(null)).toBe("");
-    // the boat agent already lives on the computer: no paragraph, only the
-    // shared sign-in policy still applies
-    expect(computerPrompt("box-agent")).toBe(SIGN_IN_PROMPT);
     const paragraphs: Record<string, string> = {
       "vm-private": "your own isolated Cua sandbox",
       "vm-shared": "shared, isolated Cua sandbox",
@@ -184,7 +176,6 @@ describe("computerPrompt", () => {
       expect(computerPrompt(kind).endsWith(SIGN_IN_PROMPT)).toBe(true);
       expect(computerPrompt(kind).startsWith(" ")).toBe(true);
     }
-    expect(computerPrompt("box-agent")).toBe(SIGN_IN_PROMPT);
     expect(BUILT_IN_BROWSER_SYSTEM_PROMPT.endsWith(SIGN_IN_PROMPT)).toBe(true);
   });
 

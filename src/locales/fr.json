@@ -1114,7 +1114,6 @@
   "computer.err.localEngine": "Ce modèle ne peut pas contrôler cet ordinateur. Choisissez Claude ou un fournisseur de modèles ACP.",
   "computer.err.vmEngine": "Ce modèle ne peut pas utiliser la VM locale. Choisissez Claude ou un fournisseur de modèles ACP.",
   "computer.err.cloudEngine": "Ce modèle ne peut pas utiliser d'ordinateur. Choisissez un autre modèle ou réglez « Travaille sur » sur Auto.",
-  "computer.err.vpsEngine": "Ce modèle ne peut pas utiliser un VPS auto-hébergé. Choisissez Claude ou un fournisseur de modèles ACP, ou passez le backend cloud sur Boat.",
   "computer.err.vmNotReady": "La VM locale n'est pas prête",
   "computer.err.vmOpenSettings": "{problem}. Ouvrez Paramètres → VM locale.",
   "computer.err.vpsAlias": "Ajoutez l'alias SSH du VPS dans Paramètres → Clés API.",

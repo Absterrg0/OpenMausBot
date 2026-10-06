@@ -201,9 +201,9 @@ describe("local computer UI eligibility", () => {
     expect(resolveBoatPanelAction({ ...cloud, computer: undefined, boatState: null, autoLocal: false })).toBe("auto-unavailable");
   });
 
-  it("never gives the box-native engine a passive Auto creation exception", () => {
+  it("never gives any engine a passive Auto creation exception", () => {
     // Engine kind intentionally is not an input: every engine follows the
-    // same read-only Auto rule, including boxAgent.
+    // same read-only Auto rule.
     expect(resolveBoatPanelAction({
       computer: undefined,
       configured: true,

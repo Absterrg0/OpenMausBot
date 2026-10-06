@@ -88,8 +88,8 @@ const SLEEPING_BOAT_STATES = new Set(["archived", "stopped"]);
 /** Mirror the turn router's Boat choice without letting a passive panel open
  * mutate infrastructure. Auto only reports an existing Boat's current state;
  * it never creates, wakes, bootstraps, or opens one. This is deliberately
- * independent of the engine: even the boat-native Computer engine needs an
- * explicit Cloud choice before the panel may provision. */
+ * independent of the engine: every engine needs an explicit Cloud choice
+ * before the panel may provision. */
 export function resolveBoatPanelAction({
   computer,
   configured,

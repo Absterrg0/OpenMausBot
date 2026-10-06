@@ -276,10 +276,10 @@ struct RoutineEditorView: View {
                 } footer: {
                     if runOn == .maus {
                         Text("Uses this agent's selected model and computer setting on the paired computer.")
-                    } else if runAvailability?.cloudReady == true {
-                        Text("Runs the agent and its tools inside its Boat virtual machine. The VM wakes automatically for each run; keep OpenMausBot running so its scheduler can launch the job.")
+                    } else if runAvailability?.cloudReady(engine: botEngine) == true {
+                        Text("Runs on this bot's own model, which uses the bot's cloud computer. The cloud computer wakes for each run; keep OpenMausBot running so its scheduler can start the job.")
                     } else {
-                        Text("This existing Cloud VM choice is preserved, but it cannot run until the paired computer has a configured Boat API key and an available Boat agent.")
+                        Text("This Cloud VM choice is kept, but it can't run until the paired computer has cloud computers and this bot's model can use a computer.")
                     }
                 }
 
@@ -417,8 +417,14 @@ struct RoutineEditorView: View {
         }
     }
 
+    /// A cloud routine runs on its bot's own engine, so Cloud VM is offered
+    /// for the bot chosen here, never for whichever bot happens to qualify.
+    private var botEngine: String? {
+        session.state.bot(botId)?.modelSelection.instanceId
+    }
+
     private var cloudSelectable: Bool {
-        runAvailability?.canSelect(.cloud, preserving: runOn) ?? (runOn == .cloud)
+        runAvailability?.canSelect(.cloud, preserving: runOn, engine: botEngine) ?? (runOn == .cloud)
     }
 
     private var selectedIntervalMinutes: Int? {

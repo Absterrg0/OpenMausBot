@@ -8,6 +8,7 @@ import { z } from "zod";
 import { normalizeImageGenerationUrl, type ImageGenerationConfig } from "../shared/image-generation.ts";
 
 import { writeFileAtomic } from "./atomic.ts";
+import { withoutComputerEngine } from "./computer-engine-removal.ts";
 import { newBotDefaultsSchema, type NewBotDefaults } from "./new-bot-defaults.ts";
 import { EFFORT_LEVELS, type EffortLevel, type LiveSettings } from "../shared/wire.ts";
 import { isModelVariant, type InstanceConfigMap, type ModelSelection } from "./contracts.ts";
@@ -1585,10 +1586,10 @@ export function instanceOwnsRouting(
 
 /** The credential env instanceConfigs() injects for one driver at runtime.
  * Each secret goes only to the driver that actually reads it: the API-key
- * Grok driver reads XAI_API_KEY, the Computer driver reads BOX_TOKEN, and
- * OpenCode reads OPENCODE_API_KEY. Every other engine brings its own
- * login, so handing it a key it never uses would only put that key in the
- * environment of an unrelated child process. */
+ * Grok driver reads XAI_API_KEY and OpenCode reads OPENCODE_API_KEY. Every
+ * other engine brings its own login, so handing it a key it never uses would
+ * only put that key in the environment of an unrelated child process. The
+ * Boat token reaches no engine at all: the harness alone talks to Boat. */
 function injectedEnvironment(cfg: AppConfig, instanceId: string, driver: string): Map<string, string> {
   const environment = new Map<string, string>();
   if (driver === "mistral" && cfg.mistral?.key) environment.set("MISTRAL_API_KEY", cfg.mistral.key);
@@ -1618,10 +1619,6 @@ function injectedEnvironment(cfg: AppConfig, instanceId: string, driver: string)
     if (driver === "openai-compat" && cfg.openaiCompat?.url)
       environment.set("OPENAI_COMPAT_URL", cfg.openaiCompat.url);
   }
-  // driverKind "boxAgent" and env BOX_TOKEN keep their historical names.
-  // Only the person's own token: without one the driver itself falls back
-  // to Cloud Pro's included token, which never enters an environment map.
-  if (driver === "boxAgent" && cfg.box?.token) environment.set("BOX_TOKEN", cfg.box.token);
   if (driver === "opencodeGo") {
     // Keys for OpenCode's other providers, under the names OpenCode reads.
     for (const [name, key] of Object.entries(openCodeProviderKeys(cfg))) environment.set(name, key);
@@ -1683,7 +1680,6 @@ export function instanceConfigs(cfg: AppConfig): InstanceConfigMap {
     chatgpt: { driver: "codex", displayName: "ChatGPT plan", config: { authMode: "chatgpt-plan" } },
     antigravity: { driver: "antigravityAgent" },
     opencodeGo: { driver: "opencodeGo" },
-    computer: { driver: "boxAgent" },
     openaiCompat: { driver: "openai-compat" },
     mistral: { driver: "mistral" },
     cerebras: { driver: "cerebras" },
@@ -1710,7 +1706,8 @@ export function instanceConfigs(cfg: AppConfig): InstanceConfigMap {
     ...CUSTOM_ONLY,
   } as const;
   const configured = cfg.instances && Object.keys(cfg.instances).length ? cfg.instances : null;
-  const map: InstanceConfigMap = configured ? { ...configured } : { ...DEFAULT_FLEET };
+  // A fleet saved before the Computer engine was removed may still name it.
+  const map: InstanceConfigMap = withoutComputerEngine(configured ? { ...configured } : { ...DEFAULT_FLEET });
   // Product fleets pick up newly shipped engines. A one-off test/shadow map
   // (no claude/grok/codex) is left exactly as written.
   if (

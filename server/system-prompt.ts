@@ -63,24 +63,23 @@ export function buildSystemPrompt(
 
 // The "box*" prompt kinds are Boat's historical kind literals; events and
 // persisted surfaces carry them, so only prose was renamed.
-export type ComputerPromptKind = "vm-private" | "vm-shared" | "box" | "box-agent" | "vps" | "local";
+export type ComputerPromptKind = "vm-private" | "vm-shared" | "box" | "vps" | "local";
 
 /** One ladder for the computer paragraph, so the settings preview, a direct
  * turn, and a room turn cannot disagree about which paragraph a computer plan
  * earns. Dispatch semantics are canonical: the mounts have already refused a
  * plan the engine cannot run, so the resolved kind alone decides here and no
  * capability gate is repeated. Call sites keep their own input resolution —
- * which computer, which driver — and pass the result in; `vmPrivate` keeps
- * this module pure (it is localVmMode(cfg) === "per-bot" at the call site). */
+ * which computer — and pass the result in; `vmPrivate` keeps this module pure
+ * (it is localVmMode(cfg) === "per-bot" at the call site). */
 export type ComputerPromptKindInput = {
   kind: "vm" | "box" | "vps" | "local" | null;
-  driverKind: string | undefined;
   vmPrivate: boolean;
 };
 
 export function resolveComputerPromptKind(input: ComputerPromptKindInput): ComputerPromptKind | null {
   if (input.kind === "vm") return input.vmPrivate ? "vm-private" : "vm-shared";
-  if (input.kind === "box") return input.driverKind === "boxAgent" ? "box-agent" : "box";
+  if (input.kind === "box") return "box";
   if (input.kind === "vps") return "vps";
   if (input.kind === "local") return "local";
   return null;
@@ -97,16 +96,13 @@ const COMPUTER_PARAGRAPH: Record<ComputerPromptKind, string> = {
   "vm-shared":
     " You have a shared, isolated Cua sandbox: a Linux desktop in a container on this machine. Only /home/cua/workspace is durable; save downloads, repositories, working files, and browser profiles there because everything else inside the VM is disposable. No other host folder is mounted. Run every command with vm_exec, which returns the exit code and the output as text; do not type commands into a terminal window and read screenshots. Create files there with vm_exec too (a shell heredoc or a script it runs); your host file tools cannot reach the VM. To give the user a file you made there (a report, image, audio, video, spreadsheet or slides), call attach_file with its path once it is saved; it reports an error if the file is missing. A path inside the VM cannot be opened from chat, so do not paste one as a link. Use the computer tools for the desktop, accessibility and windows. Inspect the desktop state before acting, prefer accessibility targets over raw coordinates, and work carefully.",
   box: " You control the assigned cloud computer. Inspect it with screenshots; click coordinates refer to the full image. Use the advertised computer tools for desktop actions and shell commands.",
-  "box-agent": "",
   vps:
     " You have your own self-hosted remote Linux computer through the official Cua tools. This is the user's own VPS; using it does not require a Boat API key. Its filesystem is disposable: everything on it is wiped whenever its container is recreated, so keep long-lived work somewhere durable — push it to a remote, or hand the results back in chat — instead of leaving it only on that computer. Inspect the desktop state before acting, prefer accessibility targets over raw coordinates, and act carefully.",
   local:
     " You can act on the user's computer through the computer tools. Discover the target app/window and inspect its state first. Prefer window-targeted accessibility actions with background delivery so the user can keep working in another app; do not bring OpenMausBot or another app to the front just to inspect it. Use the dedicated browser tools for browser work when available, keeping the user's intended browser profile/account, and OpenMausBot's configuration/proposal tools for supported bot setup rather than clicking through this app. Full-desktop input, app activation, and foreground delivery can move the real cursor, change focus, or switch desktops: use them only when the user asked for foreground control or agrees after background control reports it cannot perform the action. Do not silently retry a background refusal as foreground input, including through shell scripts, AppleScript/System Events, or another automation tool. If a background action unexpectedly changes focus, report it and stop that route rather than continuing to interrupt the user. Never promise that arbitrary desktop actions can run in the background.",
 };
 
-/** The computer paragraph plus the shared sign-in policy. A boat driven by
- * the boat agent has no paragraph (the agent already lives there) but the
- * sign-in policy still applies. */
+/** The computer paragraph plus the shared sign-in policy. */
 export function computerPrompt(kind: ComputerPromptKind | null): string {
   if (!kind) return "";
   return COMPUTER_PARAGRAPH[kind] + SIGN_IN_PROMPT;

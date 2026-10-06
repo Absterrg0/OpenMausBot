@@ -128,9 +128,10 @@ export type RuntimeEvent = RuntimeEventBase &
         questions?: AskQuestion[];
         /** Where the ask came from: a harness tool call ("tool" — the
          * default, and what every event before this field implied), or a
-         * block parsed out of model-authored final output ("output", the
-         * turn-held transport). Cards and logs can badge the latter as
-         * agent-composed; untrusted-input rules apply either way. */
+         * block parsed out of model-authored final output ("output", only in
+         * event logs the removed Computer engine wrote). Cards and logs can
+         * badge the latter as agent-composed; untrusted-input rules apply
+         * either way. */
         origin?: "tool" | "output";
         approvalScope?: "local-computer";
         /** Provider asks to widen its configured sandbox. Only explicit Full

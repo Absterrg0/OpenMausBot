@@ -70,8 +70,6 @@ it("keeps the bot's own engine on the cloud computer, and a failed place never b
       res.setHeader("content-type", "text/event-stream");
       return res.end(`data: ${JSON.stringify({ choices: [{ delta: { content: "Fixture reply" }, finish_reason: "stop" }] })}\n\ndata: [DONE]\n\n`);
     }
-    if (path === "/api/provider-models") return res.end(JSON.stringify({ "claude-code": { models: [{ id: "claude-fable-5" }] } }));
-    if (path === "/me") return res.end(JSON.stringify({ ok: true }));
     // Boat's own runner: the one thing a Hosted desktop turn must never reach.
     if (path.endsWith("/prompt")) {
       prompts++;
