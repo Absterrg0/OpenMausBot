@@ -176,6 +176,25 @@ function rejectsReasoningReplay(status: number, body: string): boolean {
     /\b(?:unsupported|not supported|unknown|unrecognized|unexpected|not permitted|not allowed)\b/i.test(message);
 }
 
+/** Groq checks each generated tool call against the request and fails the
+ *  completion with `tool_use_failed` when the model calls a tool it was not
+ *  offered (gpt-oss inventing a "JSON" tool to answer in JSON). */
+class RejectedToolCallError extends ChatProtocolError {}
+
+const rejectedToolCall = (error: unknown) => object(error)?.code === "tool_use_failed";
+
+function rejectsToolCall(status: number, body: string): boolean {
+  if (status !== 400) return false;
+  try { return rejectedToolCall(object(JSON.parse(body))?.error); } catch { return false; }
+}
+
+function completionError(json: CompletionJson, label: string): ChatProtocolError | null {
+  const message = providerError(json);
+  if (!message) return null;
+  const text = `provider returned a ${label}: ${message.slice(0, 200)}`;
+  return rejectedToolCall(json.error) ? new RejectedToolCallError(text) : new ChatProtocolError(text);
+}
+
 /** Shared runtime for the three providers that speak OpenAI chat completions. */
 export function createOpenAIChatRuntime<Config>(options: RuntimeOptions<Config>): ProviderInstance {
   const { input } = options;
@@ -247,6 +266,7 @@ export function createOpenAIChatRuntime<Config>(options: RuntimeOptions<Config>)
         const body = await response.text().catch(() => "");
         const message = `${options.httpErrorLabel} HTTP ${response.status}${body ? `: ${body.slice(0, 200)}` : ""}`;
         if (rejectsToolsParameter(response.status, body)) throw new UnsupportedChatToolsError(message);
+        if (rejectsToolCall(response.status, body)) throw new RejectedToolCallError(message);
         if (messages.some((entry) => entry.reasoning_content !== undefined) && rejectsReasoningReplay(response.status, body)) {
           throw new UnsupportedReasoningReplayError(message);
         }
@@ -266,8 +286,8 @@ export function createOpenAIChatRuntime<Config>(options: RuntimeOptions<Config>)
             costUsd: count(json.usage?.cost),
           });
         }
-        const bodyError = providerError(json);
-        if (bodyError) throw new ChatProtocolError(`provider returned a completion error: ${bodyError.slice(0, 200)}`);
+        const bodyError = completionError(json, "completion error");
+        if (bodyError) throw bodyError;
         const message = json.choices?.[0]?.message;
         if (!message || !object(message) || !["content", "reasoning_content", "reasoning", "reasoning_details", "tool_calls", "function_call"].some((key) => key in message)) {
           throw new ChatProtocolError("provider returned no completion message");
@@ -325,8 +345,8 @@ export function createOpenAIChatRuntime<Config>(options: RuntimeOptions<Config>)
           if (!atEof) malformedFrame = true;
           return false;
         }
-        const chunkError = providerError(chunk);
-        if (chunkError) throw new ChatProtocolError(`provider returned a streaming completion error: ${chunkError.slice(0, 200)}`);
+        const chunkError = completionError(chunk, "streaming completion error");
+        if (chunkError) throw chunkError;
         const choice = chunk.choices?.find((row) => row.index === undefined || row.index === 0);
         const delta = choice?.delta;
         if (object(delta)) sawChoice = true;
@@ -364,8 +384,8 @@ export function createOpenAIChatRuntime<Config>(options: RuntimeOptions<Config>)
             if (!sawChoice) {
               let body: CompletionJson | undefined;
               try { body = JSON.parse(buffer) as CompletionJson; } catch { body = undefined; }
-              const bodyError = body ? providerError(body) : null;
-              if (bodyError) throw new ChatProtocolError(`provider returned a completion error: ${bodyError.slice(0, 200)}`);
+              const bodyError = body ? completionError(body, "completion error") : null;
+              if (bodyError) throw bodyError;
             }
             throw new ChatProtocolError("Stream ended before completion");
           }
@@ -519,6 +539,7 @@ export function createOpenAIChatRuntime<Config>(options: RuntimeOptions<Config>)
           let completion: Completion;
           for (;;) {
             let streamed = false;
+            let answerStreamed = false;
             const pending = { assistant_text: "", reasoning_text: "" };
             const delta = (text: string, streamKind: keyof typeof pending, flush = false) => {
               let combined = pending[streamKind] + text;
@@ -540,6 +561,7 @@ export function createOpenAIChatRuntime<Config>(options: RuntimeOptions<Config>)
             try {
               completion = await complete(messages, model, true, abort.signal, (text, streamKind) => {
                 streamed = true;
+                if (streamKind === "assistant_text") answerStreamed = true;
                 delta(text, streamKind);
               }, tools.definitions);
               delta("", "assistant_text", true);
@@ -555,6 +577,14 @@ export function createOpenAIChatRuntime<Config>(options: RuntimeOptions<Config>)
               if (error instanceof UnsupportedReasoningReplayError && !streamed && !abort.signal.aborted) {
                 reasoningReplayRejected.add(model);
                 for (const message of messages) delete message.reasoning_content;
+                continue;
+              }
+              // A refused made-up tool call ran nothing, so the same request
+              // goes again; the model usually answers in plain text next time.
+              // Not once answer text streamed: the phones' live bubble would
+              // join it to the next attempt's. Streamed thinking stays thinking.
+              if (error instanceof RejectedToolCallError && !answerStreamed && !abort.signal.aborted && attempt < RETRY_MAX_ATTEMPTS - 1) {
+                emit({ ...base(turn.threadId, turnId), type: "turn.retrying", attempt: ++attempt, delayMs: 0, reason: "tool_use_failed" });
                 continue;
               }
               // Only our optional question changed a previously plain request.

@@ -142,6 +142,11 @@ explicit unsupported-tools HTTP 400/422 rejection permits one retry without
 that optional tool. Authentication, schema and network failures do not trigger
 this downgrade, nor does a response after any tool call. The next turn offers
 questions again. No fallback replays a requested operation without its tools.
+When a provider refuses a tool call the model made up (Groq's
+`tool_use_failed`, mid-stream or as HTTP 400), nothing ran, so the same request
+is sent again, up to three attempts in all, each shown as a retrying row. Once
+answer text has streamed the refusal ends the turn instead, so one reply never
+joins two attempts.
 
 Cloud routine readiness uses the executing bot’s selected runner (including a
 thread’s model override at dispatch), rather than any available cloud engine.
