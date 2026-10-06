@@ -7,6 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { ensureDirs, NATIVE_DIR } from "../config.ts";
 import type { RuntimeEvent } from "../contracts.ts";
 import { GrokDriver } from "./grok.ts";
 import { MinimaxDriver } from "./minimax.ts";
@@ -529,15 +530,28 @@ describe("createOpenAIChatRuntime refused tool calls", () => {
     expect(events.at(-1)).toMatchObject({ type: "turn.completed", ok: true });
   });
 
-  it("stops after three refusals with the provider's error", async () => {
+  it("stops after three refusals, says what happened and what to do, and logs each refusal whole", async () => {
+    ensureDirs();
+    const log = join(NATIVE_DIR, "thread.ndjson");
+    rmSync(log, { force: true });
     let requests = 0;
     const events = await runTurn(() => (requests++, refusedStream()));
     expect(requests).toBe(3);
     expect(events.filter((event) => event.type === "turn.retrying").map((event) => event.type === "turn.retrying" && event.attempt)).toEqual([1, 2]);
     expect(events.find((event) => event.type === "runtime.error")).toMatchObject({
-      message: `provider returned a streaming completion error: ${refusal.message}`,
+      message: `The model tried to use a tool it was not given ("JSON"). Nothing ran. Retry; if it keeps happening, rephrase the request or choose another model. Provider: ${refusal.message}`,
     });
     expect(events.at(-1)).toMatchObject({ type: "turn.completed", ok: false, stopReason: "error" });
+    const refusals = readFileSync(log, "utf8").trim().split("\n").map((line) => JSON.parse(line)).filter((entry) => entry.msg?.refused);
+    expect(refusals.map((entry) => entry.msg)).toEqual([1, 2, 3].map((attempt) => ({ refused: "tool_use_failed", attempt, error: refusal })));
+  });
+
+  it("does not claim a tool was made up when the provider rejected its arguments", async () => {
+    const invalid = { ...refusal, message: "Tool call validation failed: parameters for tool ask_user did not match schema: errors: [missing properties: 'questions']" };
+    const events = await runTurn(() => sse(`data: ${JSON.stringify({ error: invalid })}\n\n`));
+    expect(events.find((event) => event.type === "runtime.error")).toMatchObject({
+      message: `The model made a tool call the provider rejected. Nothing ran. Retry; if it keeps happening, rephrase the request or choose another model. Provider: ${invalid.message}`,
+    });
   });
 
   it("does not resend once answer text has streamed, so attempts never join in one reply", async () => {
@@ -548,9 +562,7 @@ describe("createOpenAIChatRuntime refused tool calls", () => {
     )));
     expect(requests).toBe(1);
     expect(events.some((event) => event.type === "turn.retrying")).toBe(false);
-    expect(events.find((event) => event.type === "runtime.error")).toMatchObject({
-      message: `provider returned a streaming completion error: ${refusal.message}`,
-    });
+    expect(events.find((event) => event.type === "runtime.error")?.message).toMatch(/^The model tried to use a tool it was not given \("JSON"\)/);
   });
 
   it("does not resend other provider errors", async () => {

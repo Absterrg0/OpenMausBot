@@ -177,22 +177,48 @@ function rejectsReasoningReplay(status: number, body: string): boolean {
 }
 
 /** Groq checks each generated tool call against the request and fails the
- *  completion with `tool_use_failed` when the model calls a tool it was not
- *  offered (gpt-oss inventing a "JSON" tool to answer in JSON). */
-class RejectedToolCallError extends ChatProtocolError {}
+ *  completion with `tool_use_failed` when the call is invalid: most often a
+ *  tool it was not offered (gpt-oss inventing a "json" tool to answer in
+ *  JSON), sometimes arguments that miss the schema. `refusal` is the
+ *  provider's whole error object, `failed_generation` included. */
+class RejectedToolCallError extends ChatProtocolError {
+  readonly refusal: Record<string, unknown>;
+  constructor(message: string, refusal: Record<string, unknown>) {
+    super(message);
+    this.refusal = refusal;
+  }
+}
 
-const rejectedToolCall = (error: unknown) => object(error)?.code === "tool_use_failed";
+const toolCallRefusal = (error: unknown) => {
+  const body = object(error);
+  return body?.code === "tool_use_failed" ? body : undefined;
+};
 
-function rejectsToolCall(status: number, body: string): boolean {
-  if (status !== 400) return false;
-  try { return rejectedToolCall(object(JSON.parse(body))?.error); } catch { return false; }
+function refusedToolCall(status: number, body: string) {
+  if (status !== 400) return undefined;
+  try { return toolCallRefusal(object(JSON.parse(body))?.error); } catch { return undefined; }
 }
 
 function completionError(json: CompletionJson, label: string): ChatProtocolError | null {
   const message = providerError(json);
   if (!message) return null;
   const text = `provider returned a ${label}: ${message.slice(0, 200)}`;
-  return rejectedToolCall(json.error) ? new RejectedToolCallError(text) : new ChatProtocolError(text);
+  const refusal = toolCallRefusal(json.error);
+  return refusal ? new RejectedToolCallError(text, refusal) : new ChatProtocolError(text);
+}
+
+/** What a failed turn says once the provider refused every attempt: what
+ *  happened, the next step, then the provider's words. The refused call ran
+ *  nothing, but tool calls from earlier steps of the turn did, and a Retry
+ *  of the whole request would repeat them. */
+function refusedToolCallFailure(error: RejectedToolCallError, earlierSteps: boolean): string {
+  const words = typeof error.refusal.message === "string" ? error.refusal.message : error.message;
+  const tool = /attempted to call tool '([^']+)'/.exec(words)?.[1];
+  const what = tool ? `tried to use a tool it was not given ("${tool}")` : "made a tool call the provider rejected";
+  const next = earlierSteps
+    ? "The steps before it already ran, so ask only for what's left."
+    : "Nothing ran. Retry; if it keeps happening, rephrase the request or choose another model.";
+  return `The model ${what}. ${next} Provider: ${words.slice(0, 200)}`;
 }
 
 /** Shared runtime for the three providers that speak OpenAI chat completions. */
@@ -266,7 +292,8 @@ export function createOpenAIChatRuntime<Config>(options: RuntimeOptions<Config>)
         const body = await response.text().catch(() => "");
         const message = `${options.httpErrorLabel} HTTP ${response.status}${body ? `: ${body.slice(0, 200)}` : ""}`;
         if (rejectsToolsParameter(response.status, body)) throw new UnsupportedChatToolsError(message);
-        if (rejectsToolCall(response.status, body)) throw new RejectedToolCallError(message);
+        const refusal = refusedToolCall(response.status, body);
+        if (refusal) throw new RejectedToolCallError(message, refusal);
         if (messages.some((entry) => entry.reasoning_content !== undefined) && rejectsReasoningReplay(response.status, body)) {
           throw new UnsupportedReasoningReplayError(message);
         }
@@ -579,13 +606,18 @@ export function createOpenAIChatRuntime<Config>(options: RuntimeOptions<Config>)
                 for (const message of messages) delete message.reasoning_content;
                 continue;
               }
-              // A refused made-up tool call ran nothing, so the same request
-              // goes again; the model usually answers in plain text next time.
-              // Not once answer text streamed: the phones' live bubble would
-              // join it to the next attempt's. Streamed thinking stays thinking.
-              if (error instanceof RejectedToolCallError && !answerStreamed && !abort.signal.aborted && attempt < RETRY_MAX_ATTEMPTS - 1) {
-                emit({ ...base(turn.threadId, turnId), type: "turn.retrying", attempt: ++attempt, delayMs: 0, reason: "tool_use_failed" });
-                continue;
+              // A refused tool call ran nothing, so the same request goes
+              // again; the model usually answers properly next time. Not once
+              // answer text streamed: the phones' live bubble would join it to
+              // the next attempt's. Streamed thinking stays thinking. Each
+              // refusal, failed_generation included, goes to the native log.
+              if (error instanceof RejectedToolCallError) {
+                native("in", { refused: "tool_use_failed", attempt: attempt + 1, error: error.refusal });
+                if (!answerStreamed && !abort.signal.aborted && attempt < RETRY_MAX_ATTEMPTS - 1) {
+                  emit({ ...base(turn.threadId, turnId), type: "turn.retrying", attempt: ++attempt, delayMs: 0, reason: "tool_use_failed" });
+                  continue;
+                }
+                if (!abort.signal.aborted) throw new ChatProtocolError(refusedToolCallFailure(error, seenCalls.size > 0));
               }
               // Only our optional question changed a previously plain request.
               // A structured parameter rejection has executed nothing; never
