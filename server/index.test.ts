@@ -1699,17 +1699,37 @@ describe("harness HTTP API", () => {
     const root = await fetch(`${BASE}/`);
     expect(root.status).toBe(200);
     expect(root.headers.get("content-type")).toBe("text/html");
+    expect(root.headers.get("cache-control")).toBe("no-cache");
     expect(await root.text()).toContain("Packaged OpenMausBot");
 
+    const index = await fetch(`${BASE}/index.html`);
+    expect(index.headers.get("cache-control")).toBe("no-cache");
+    await index.arrayBuffer();
+
+    // Content-hashed build output: the browser keeps it instead of
+    // downloading the whole bundle again on every load.
     const asset = await fetch(`${BASE}/assets/smoke.css`);
     expect(asset.status).toBe(200);
     expect(asset.headers.get("content-type")).toBe("text/css");
+    expect(asset.headers.get("cache-control")).toBe("public, max-age=31536000, immutable");
     expect(await asset.text()).toContain("color: white");
+    // That only holds while every file under /assets/ comes from Vite with a
+    // hash in its name; an unhashed public/assets/ file would be pinned too.
+    expect(existsSync(join(ROOT, "public", "assets"))).toBe(false);
 
     const spa = await fetch(`${BASE}/settings/desktop`);
     expect(spa.status).toBe(200);
     expect(spa.headers.get("content-type")).toBe("text/html");
+    expect(spa.headers.get("cache-control")).toBe("no-cache");
     expect(await spa.text()).toContain("Packaged OpenMausBot");
+
+    // A chunk an old page still asks for falls back to the page; that page
+    // must never be cached as if it were the immutable chunk.
+    const missingChunk = await fetch(`${BASE}/assets/missing-abc123.js`);
+    expect(missingChunk.status).toBe(200);
+    expect(missingChunk.headers.get("content-type")).toBe("text/html");
+    expect(missingChunk.headers.get("cache-control")).toBe("no-cache");
+    await missingChunk.arrayBuffer();
 
     const unknownApi = await api("GET", "/api/not-a-real-route");
     expect(unknownApi.status).toBe(404);

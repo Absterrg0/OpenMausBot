@@ -15670,14 +15670,21 @@ function serveStatic(res: ServerResponse, path: string): boolean {
   try {
     const data = readFileSync(file);
     const type = MIME[extname(file)] ?? "application/octet-stream";
-    res.writeHead(200, { "content-type": type, ...(type === "text/html" ? PAGE_HEADERS : {}) });
+    // Vite puts a content hash in the name of every file it writes under
+    // /assets/, so a URL there never changes: the browser keeps it instead of
+    // downloading the bundle on every load. That only holds while public/ has
+    // no assets/ dir (index.test.ts checks). Pages are revalidated, so a new
+    // build shows up on the next load.
+    const cache = type === "text/html" ? "no-cache" : safe.startsWith("/assets/") ? "public, max-age=31536000, immutable" : null;
+    res.writeHead(200, { "content-type": type, ...(type === "text/html" ? PAGE_HEADERS : {}), ...(cache ? { "cache-control": cache } : {}) });
     res.end(data);
     return true;
   } catch {
-    // SPA fallback
+    // SPA fallback. Never immutable: a missing chunk answered with the page
+    // must not stay cached under the chunk's URL.
     try {
       const data = readFileSync(join(STATIC_DIR, "index.html"));
-      res.writeHead(200, { "content-type": "text/html", ...PAGE_HEADERS });
+      res.writeHead(200, { "content-type": "text/html", "cache-control": "no-cache", ...PAGE_HEADERS });
       res.end(data);
       return true;
     } catch {
