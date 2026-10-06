@@ -19,6 +19,7 @@ import { createChatToolApproval } from "./chat-tool-approval.ts";
 import { ChatProtocolError, ChatReasoningDetails, ChatToolCalls, object, type ChatToolCall } from "./openai-chat-protocol.ts";
 import { appendNative } from "./native.ts";
 import { classifyError, computeBackoff, interruptibleDelay, RETRY_MAX_ATTEMPTS } from "./retry.ts";
+import { classifyContinuable, writeTurnHandoff } from "../turn-continuation.ts";
 
 export interface OpenAIChatMessage {
   role: "system" | "user" | "assistant" | "tool";
@@ -659,8 +660,13 @@ export function createOpenAIChatRuntime<Config>(options: RuntimeOptions<Config>)
               continue;
             }
             if (toolFailed) {
-              stopReason = "tool_error";
-              throw new ChatProtocolError("One or more tool operations failed or were denied. See the tool results; the final response is not an execution receipt.");
+              // In-turn resilience: a failed tool op must not end the turn.
+              // The model already saw the ok:false results; give it one
+              // explicit chance to retry or acknowledge, then accept whatever
+              // it answers. Bounded by MAX_CHAT_ROUNDS either way.
+              toolFailed = false;
+              messages.push({ role: "user", content: "Some tool operations in this turn failed (their tool results are marked ok:false). Re-run the failed operations with corrected inputs where possible, verify their state, and then give your final answer. Do not fabricate results." });
+              continue;
             }
             ok = true;
             break;
@@ -784,6 +790,26 @@ export function createOpenAIChatRuntime<Config>(options: RuntimeOptions<Config>)
         if (abort.signal.aborted) { ok = false; stopReason = "interrupted"; }
         if (failure && (!abort.signal.aborted || cleanupFailed)) {
           emit({ ...base(turn.threadId, turnId), type: "runtime.error", message: failure, terminal: !abort.signal.aborted });
+        }
+        // Automatic continuity: a resumable terminal (budget cap or tool
+        // errors) persists a handoff and raises cap.exhausted so the harness
+        // can start a `Continue:` thread. Interruptions and provider config
+        // errors are excluded by classifyContinuable.
+        if (!ok && !abort.signal.aborted) {
+          const continuable = classifyContinuable(stopReason, failure);
+          if (continuable) {
+            const handoffPath = writeTurnHandoff({
+              threadId: turn.threadId,
+              turnId,
+              model,
+              usage,
+              hasUsage,
+              failure,
+              toolCalls: seenCalls.size,
+              messages,
+            });
+            if (handoffPath) emit({ ...base(turn.threadId, turnId), type: "cap.exhausted", handoffPath, reason: continuable });
+          }
         }
         active.delete(turn.threadId);
         emit({ ...base(turn.threadId, turnId), type: "turn.completed", ok, stopReason, cost: null,
