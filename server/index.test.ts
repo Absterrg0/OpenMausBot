@@ -2404,6 +2404,40 @@ describe("harness HTTP API", () => {
     }
   });
 
+  it("saves a longer turn limit on one conversation and leaves the others at the group default", async () => {
+    const bot = (await api("POST", "/api/bots")).body.bot;
+    const room = (await api("POST", "/api/groups", { name: "Long runs", memberIds: [bot.id] })).body.group;
+    try {
+      const sibling = await api("POST", `/api/groups/${room.id}/tasks`, { title: "Short" });
+      const longer = await api("PATCH", `/api/groups/${room.id}/tasks/${room.threadId}`, { turnTimeoutMinutes: 30 });
+      expect(longer.status).toBe(200);
+      expect(longer.body.task.turnTimeoutMinutes).toBe(30);
+      const viewed = await api("POST", `/api/groups/${room.id}/tasks/${sibling.body.task.threadId}?messages=0`);
+      const tasks = viewed.body.group.tasks as Array<{ threadId: string; turnTimeoutMinutes?: number }>;
+      expect(tasks.find((task) => task.threadId === room.threadId)?.turnTimeoutMinutes).toBe(30);
+      expect(tasks.find((task) => task.threadId === sibling.body.task.threadId)?.turnTimeoutMinutes).toBeUndefined();
+
+      expect((await api("PATCH", `/api/groups/${room.id}`, { turnTimeoutMinutes: 30 })).status).toBe(400);
+      expect((await api("PATCH", `/api/groups/${room.id}/tasks/${room.threadId}`, { turnTimeoutMinutes: 10.5 })).status).toBe(400);
+      expect((await api("PATCH", `/api/groups/${room.id}/tasks/${room.threadId}`, { turnTimeoutMinutes: 1441 })).status).toBe(400);
+
+      const cleared = await api("PATCH", `/api/groups/${room.id}/tasks/${room.threadId}`, { turnTimeoutMinutes: null });
+      expect(cleared.status).toBe(200);
+      expect(cleared.body.task.turnTimeoutMinutes).toBeUndefined();
+
+      const dm = await api("PATCH", "/api/groups/test-dm", { turnTimeoutMinutes: 30 });
+      expect(dm.status).toBe(200);
+      expect(dm.body.group.turnTimeoutMinutes).toBe(30);
+      const reset = await api("PATCH", "/api/groups/test-dm", { turnTimeoutMinutes: null });
+      expect(reset.status).toBe(200);
+      expect(reset.body.group.turnTimeoutMinutes).toBeNull();
+    } finally {
+      await api("PATCH", "/api/groups/test-dm", { turnTimeoutMinutes: null });
+      await api("DELETE", `/api/groups/${room.id}`);
+      await api("DELETE", `/api/bots/${bot.id}`);
+    }
+  });
+
   it("lets a Chief create operators from its direct and channel tasks but not from channels it cannot access", async () => {
     const chief = (await api("POST", "/api/bots")).body.bot;
     const outsider = (await api("POST", "/api/bots")).body.bot;

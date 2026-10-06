@@ -104,7 +104,7 @@ import {
 } from "./avatar-image.ts";
 import { fitsOnOneLine, parseBotProfilePatch } from "./bot-profile.ts";
 import { groupTurnCwd } from "./room-cwd.ts";
-import { RoomTurnDeadline, RoomTurnStallRegistry, roomTurnTimeoutMessage } from "./room-turn-timeout.ts";
+import { RoomTurnDeadline, RoomTurnStallRegistry, effectiveRoomTurnTimeoutMinutes, parseConversationTurnTimeout, roomTurnTimeoutMessage } from "./room-turn-timeout.ts";
 import { roomTurnEnd, type RoomClaimEnd } from "./room-turn-end.ts";
 import { pickComputer } from "./computer-selection.ts";
 import * as boat from "./boat.ts";
@@ -4742,6 +4742,14 @@ function updateChannel(groupId: string, value: unknown): GroupRecord {
     if (!responder) throw Object.assign(new Error("invalid default responder"), { status: 400 });
     patch.defaultResponder = responder;
   }
+  if (Object.prototype.hasOwnProperty.call(body, "turnTimeoutMinutes")) {
+    if (!existing.dm) {
+      throw Object.assign(new Error("set the turn limit on that conversation"), { status: 400 });
+    }
+    const parsed = parseConversationTurnTimeout(body.turnTimeoutMinutes);
+    if (!parsed.ok) throw Object.assign(new Error(parsed.error), { status: 400 });
+    patch.turnTimeoutMinutes = parsed.minutes;
+  }
   if (body.cwd !== undefined) {
     if (existing.dm) throw Object.assign(new Error("direct-message channels cannot have a working folder"), { status: 400 });
     if (existing.pinnedCwd !== undefined) {
@@ -5024,7 +5032,14 @@ function publicGroupState(record: GroupRecord): WireGroup {
   const { installedPackage: _installedPackage, ...group } = record;
   let usage: WireGroup["usage"];
   try { usage = groupUsageReader.forThread(group.threadId); } catch { /* accounting must not block chat */ }
-  return { ...group, usage: usage ?? null, working: groupIsWorking(group) || [...roomHandoffs.nodes.values()].some(n => n.groupId === group.id && !["completed", "failed", "cancelled"].includes(n.status)) };
+  return {
+    ...group,
+    // Always present so a client can tell "back to the group default"
+    // apart from a partial patch that did not mention the field.
+    turnTimeoutMinutes: record.turnTimeoutMinutes ?? null,
+    usage: usage ?? null,
+    working: groupIsWorking(group) || [...roomHandoffs.nodes.values()].some(n => n.groupId === group.id && !["completed", "failed", "cancelled"].includes(n.status)),
+  };
 }
 
 function beginGroupTurnOperation(
@@ -13070,7 +13085,13 @@ async function runGroupMemberTurn(
     if (providerTurnId) retireProviderTurn(providerTurnId);
     else markCancelledProviderHandshake(threadId, retirementOwner);
   };
-  const timeoutMinutes = roomTurnTimeoutMinutes(cfg);
+  const liveGroup = store.group(groupId) ?? group;
+  const timeoutMinutes = effectiveRoomTurnTimeoutMinutes(
+    roomTurnTimeoutMinutes(cfg),
+    liveGroup.dm
+      ? liveGroup.turnTimeoutMinutes
+      : store.groupTaskByThread(liveGroup.id, threadId)?.turnTimeoutMinutes,
+  );
   const outcome = await new Promise<GroupMemberTurnOutcome>((resolve) => {
     let done = false;
     let unsub = () => {};
@@ -20290,25 +20311,36 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       if (!body || typeof body !== "object" || Array.isArray(body)) {
         return json(res, 400, { error: "body must be a JSON object" });
       }
-      const allowed = new Set(["title", "pinned"]);
+      const allowed = new Set(["title", "pinned", "turnTimeoutMinutes"]);
       if (Object.keys(body).some((key) => !allowed.has(key))) return json(res, 400, { error: "unsupported channel thread setting" });
       const existing = store.groupTaskByThread(group.id, m[2]);
       if (!existing) return json(res, 404, { error: "no such channel task" });
       const pinning = body.pinned !== undefined;
       const renaming = body.title !== undefined;
-      if (!pinning && !renaming) return json(res, 400, { error: "unsupported channel thread setting" });
+      const limiting = Object.prototype.hasOwnProperty.call(body, "turnTimeoutMinutes");
+      if (!pinning && !renaming && !limiting) return json(res, 400, { error: "unsupported channel thread setting" });
       if (pinning && typeof body.pinned !== "boolean") return json(res, 400, { error: "pinned must be a boolean" });
       if (renaming && typeof body.title !== "string") return json(res, 400, { error: "title must be a string" });
+      const parsedLimit = limiting ? parseConversationTurnTimeout(body.turnTimeoutMinutes) : null;
+      if (parsedLimit && !parsedLimit.ok) return json(res, 400, { error: parsedLimit.error });
       // Echoing the current title lets a newer client pin on an older server
       // without the old handler turning a missing title into "Untitled".
       // That echo is not a rename. A real rename stays blocked while working.
       const titleChange = renaming && body.title !== existing.title;
       const notYours = titleChange ? cloudThreadRefusal(auth, m[2]) : null;
       if (notYours) return json(res, 403, { error: notYours });
-      if (channelTaskBlocked(group) && !(pinning && !titleChange)) {
+      // A longer limit applies to the next turn, so it can be saved while
+      // this one is still running. A rename still waits.
+      const settingsOnly = !titleChange && (pinning || limiting);
+      if (channelTaskBlocked(group) && !settingsOnly) {
         return json(res, 409, { error: "this channel is working or waiting on you — finish that turn first" });
       }
       let task = existing;
+      if (limiting && parsedLimit?.ok) {
+        const limited = store.setGroupTaskTurnTimeout(group.id, m[2], parsedLimit.minutes);
+        if (!limited) return json(res, 404, { error: "no such channel task" });
+        task = limited;
+      }
       if (pinning) {
         const pinned = store.setGroupTaskPinned(group.id, m[2], body.pinned === true);
         if (!pinned) return json(res, 404, { error: "no such channel task" });

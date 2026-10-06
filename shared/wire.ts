@@ -652,6 +652,9 @@ export interface GroupTask {
   pinnedMessageId?: string;
   /** The person pinned this channel thread above the update-ordered list. */
   pinned?: boolean;
+  /** This conversation's own turn ceiling, in whole minutes. Absent uses
+   * the global group turn limit. Direct chats do not use this ceiling. */
+  turnTimeoutMinutes?: number;
   /** Epoch ms of the newest message, or createdAt when the thread has none. */
   updatedAt?: number;
   /** The first message already drove a title attempt for this thread, so a
@@ -702,6 +705,9 @@ export interface WireGroup {
   /** True while any member (or hand-off) is mid-turn. Computed at
    * projection time, never persisted. */
   working: boolean;
+  /** A direct-message channel's turn ceiling. Null on the wire means the
+   * global group limit. Channel conversations store theirs on each task. */
+  turnTimeoutMinutes?: number | null;
 }
 
 // ── live wire frames ───────────────────────────────────────────────────

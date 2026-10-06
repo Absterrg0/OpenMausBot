@@ -227,6 +227,27 @@ describe("additive portable team backups", () => {
     expect(restoredBot.tasks!.find((task) => task.title === "First conversation")).not.toHaveProperty("titleFromFirstMessage");
   });
 
+  it("keeps a conversation's longer turn limit through backup and restore", () => {
+    const { store, routines, chief, scout, group } = fixture();
+    const threadId = group.tasks!.find((task) => task.title === "Second room task")!.threadId;
+    store.setGroupTaskTurnTimeout(group.id, threadId, 30);
+    const dm = store.createGroup("Direct", [chief.id, scout.id], true);
+    store.patchGroup(dm.id, { turnTimeoutMinutes: 45 });
+
+    const backup = createTeamBackup(store, routines.listRoutines(), "Limits");
+    const roomTask = backup.groups.find((candidate) => candidate.key === group.id)!.tasks.find((task) => task.key === threadId)!;
+    expect(roomTask.turnTimeoutMinutes).toBe(30);
+    expect(backup.groups.find((candidate) => candidate.key === dm.id)!.tasks[0].turnTimeoutMinutes).toBe(45);
+    expect(backup.bots.every((bot) => bot.tasks.every((task) => task.turnTimeoutMinutes === undefined))).toBe(true);
+
+    const result = importTeamBackup(store, routines, JSON.parse(JSON.stringify(backup)), selection());
+    const restored = result.groups.find((candidate) => candidate.name.startsWith("Project room"))!;
+    expect(restored.tasks!.find((task) => task.title === "Second room task")!.turnTimeoutMinutes).toBe(30);
+    const restoredDm = result.groups.find((candidate) => candidate.name.startsWith("Direct"))!;
+    expect(restoredDm.turnTimeoutMinutes).toBe(45);
+    expect(restoredDm.dm).toBe(true);
+  });
+
   it.each(["unknown-version", "duplicate-bot", "cycle", "dangling-room", "dangling-task", "duplicate-chief", "oversized-soul"])("rejects %s before any writes", (corruption) => {
     const { store, routines } = fixture();
     const backup = createTeamBackup(store, routines.listRoutines(), "My team");
