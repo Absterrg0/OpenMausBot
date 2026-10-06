@@ -777,7 +777,7 @@ const ActivityChip = memo(function ActivityChip({ message, place = "auto" }: { m
           title={t("chat.openConversationWith", { name: comm.withName })}
           className="flex items-center gap-2 rounded-full border border-hairline/40 bg-panel px-3 py-1.5 text-[13px] text-ink-secondary hover:bg-raised hover:text-ink"
         >
-          <BotAvatar bot={withBot ?? { name: comm.withName, color: comm.withColor }} state="happy" size={16} />
+          <BotAvatar bot={withBot ?? { name: comm.withName, color: comm.withColor }} state="happy" size={16} animated={false} />
           <span className="max-w-[480px] truncate">{tool.name}</span>
           <ChevronRight size={13} />
         </button>
@@ -1188,6 +1188,9 @@ export function ChatView({ bot: profile }: { bot: Bot }) {
   const localVoice = localSystemVoiceActive();
   const locale = activeLocale();
   const busy = Boolean(bot.busy);
+  // The header face moves only while the bot works or plays a motion beat,
+  // as in the sidebar: a resting face left open would redraw at display rate.
+  const headerAnimated = busy || (mascotMotion?.kind ?? "none") !== "none";
   // read when a citation is clicked, so the rows need not change per message
   const branch = useRef(messages);
   branch.current = messages;
@@ -1343,6 +1346,7 @@ export function ChatView({ bot: profile }: { bot: Bot }) {
                   size={24}
                   motion={mascotMotion?.kind ?? "none"}
                   motionKey={mascotMotion?.nonce ?? 0}
+                  animated={headerAnimated}
                 />
               </button>
               <RenameTitle
@@ -1380,6 +1384,7 @@ export function ChatView({ bot: profile }: { bot: Bot }) {
                 size={24}
                 motion={mascotMotion?.kind ?? "none"}
                 motionKey={mascotMotion?.nonce ?? 0}
+                animated={headerAnimated}
               />
               <span className="min-w-0 truncate text-[14px] font-semibold text-ink">{bot.name}</span>
               {chiefOfStaffBadge(bot)}
