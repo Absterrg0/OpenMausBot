@@ -44,6 +44,45 @@ final class ImageDownsamplerTests: XCTestCase {
         XCTAssertEqual(ImageDownsampler.fillBudget(side: 0, width: 400, height: 300), 2)
     }
 
+    func testFittingAWidthDrawsTheImageThatWideAndKeepsItsShape() throws {
+        // A desktop frame drawn across a 361 pt column at 3x.
+        let wide = try XCTUnwrap(ImageDownsampler.decode(
+            encode(width: 2_560, height: 1_600, as: .png), fittingWidth: 1_083
+        ))
+        XCTAssertEqual(wide.pixelWidth, 1_083)
+        XCTAssertEqual(wide.pixelHeight, 677, accuracy: 1)
+
+        // A phone screenshot is taller than wide: its height may exceed the
+        // column width, its width must not.
+        let tall = try XCTUnwrap(ImageDownsampler.decode(
+            encode(width: 1_170, height: 2_532, as: .png), fittingWidth: 390
+        ))
+        XCTAssertEqual(tall.pixelWidth, 390, accuracy: 1)
+        XCTAssertEqual(tall.pixelHeight, 844, accuracy: 1)
+    }
+
+    func testFittingAWidthNeverScalesUpOrIgnoresAQuarterTurn() throws {
+        let small = try XCTUnwrap(ImageDownsampler.decode(
+            encode(width: 40, height: 20, as: .png), fittingWidth: 300
+        ))
+        XCTAssertEqual(small.pixelWidth, 40)
+        XCTAssertEqual(small.pixelHeight, 20)
+
+        // Stored 80 × 40 and turned a quarter: drawn 40 wide, 80 tall.
+        let turned = try XCTUnwrap(ImageDownsampler.decode(
+            encode(width: 80, height: 40, as: .jpeg, orientation: 6), fittingWidth: 20
+        ))
+        XCTAssertEqual(turned.pixelWidth, 20)
+        XCTAssertEqual(turned.pixelHeight, 40)
+    }
+
+    func testFitBudgetIsTheLongerSideAtTheDrawnWidth() {
+        XCTAssertEqual(ImageDownsampler.fitBudget(width: 1_000, across: 2_000, longer: 2_000), 1_000)
+        XCTAssertEqual(ImageDownsampler.fitBudget(width: 390, across: 1_170, longer: 2_532), 844)
+        XCTAssertEqual(ImageDownsampler.fitBudget(width: 5_000, across: 400, longer: 800), 800)
+        XCTAssertEqual(ImageDownsampler.fitBudget(width: 0, across: 0, longer: 0), 1)
+    }
+
     func testSmallerSourceIsNotScaledUp() throws {
         let decoded = try XCTUnwrap(ImageDownsampler.decode(
             encode(width: 40, height: 20, as: .png), fillingSquare: 300
