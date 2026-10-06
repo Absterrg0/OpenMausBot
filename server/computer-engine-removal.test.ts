@@ -3,10 +3,10 @@
 // it: the engine is never offered again, and saved settings that name it move
 // to the engine a new bot gets, keeping where each conversation works.
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { BUILT_IN_DRIVERS } from "./drivers/builtIn.ts";
-import { computerEngineMoveText, removedComputerInstanceIds } from "./computer-engine-removal.ts";
+import { computerEngineMoveText, removedComputerInstanceIds, writeComputerEngineMoveLines } from "./computer-engine-removal.ts";
 import { DATA_DIR, instanceConfigs, persistableInstanceConfigs, type AppConfig } from "./config.ts";
 import { SECTION_CONTEXTS_FILE } from "./section-context.ts";
 import { Store, type BotRecord } from "./store.ts";
@@ -180,7 +180,11 @@ describe("moving saved bots off the engine", () => {
     expect(reloaded.projectBotForTask(bot.id, elsewhere)).toMatchObject({
       modelSelection: { instanceId: "codex", model: "codex-model" }, approvalMode: "full", alwaysAllow: ["Bash(ls:*)"],
     });
-    expect(moves.map(move => move.threadId)).not.toContain(elsewhere);
+    // It is the bot's open conversation, so it still hears what moved: the
+    // bot's own engine and level, not its own.
+    expect(moves).toEqual([
+      { botId: bot.id, threadId: elsewhere, scope: "bot-only", cloud: false, noComputer: false, askNow: true },
+    ]);
   });
 
   it("tells a moved conversation that follows the bot's level that it is now Ask", () => {
@@ -200,8 +204,6 @@ describe("moving saved bots off the engine", () => {
   it("keeps a bot on Auto when the new engine can't use a computer, and says so", () => {
     const store = new Store(newBotDefault);
     const auto = store.createBot({ modelSelection: { instanceId: "computer", model: "claude-fable-5" } }, { seedMessages: false });
-    const cloud = store.createBot({ modelSelection: { instanceId: "computer", model: "claude-fable-5" } }, { seedMessages: false });
-    store.patchBot(cloud.id, { computer: "cloud" });
     const local = store.createBot({ modelSelection: { instanceId: "computer", model: "claude-fable-5" } }, { seedMessages: false });
     store.patchBot(local.id, { computer: "local" });
     const mixed = store.createBot({ modelSelection: { instanceId: "codex", model: "codex-model" } }, { seedMessages: false });
@@ -213,14 +215,60 @@ describe("moving saved bots off the engine", () => {
     const reloaded = new Store(newBotDefault);
     // Works on: Cloud would refuse every turn on this engine, so Auto stays Auto.
     expect(reloaded.bot(auto.id)?.computer).toBeUndefined();
-    expect(moves.find(move => move.botId === auto.id)).toMatchObject({ cloud: false, noComputer: true });
+    expect(moves.find(move => move.botId === auto.id)).toMatchObject({ cloud: false, noComputer: "auto" });
     expect(reloaded.taskByThread(mixed.id, mixedConversation.threadId)?.surface).toBeUndefined();
-    expect(moves.find(move => move.botId === mixed.id)).toMatchObject({ scope: "conversation", cloud: false, noComputer: true });
-    // A chosen place stays chosen; the line still never claims the cloud computer.
-    expect(reloaded.bot(cloud.id)?.computer).toBe("cloud");
-    expect(moves.find(move => move.botId === cloud.id)).toMatchObject({ cloud: false, noComputer: true });
+    expect(moves.find(move => move.botId === mixed.id)).toMatchObject({ scope: "conversation", cloud: false, noComputer: "auto" });
     // The removed engine never ran on This computer, so nothing was lost there.
     expect(moves.find(move => move.botId === local.id)).toMatchObject({ cloud: false, noComputer: false });
+  });
+
+  it("tells a Cloud the person chose apart from Auto when the new engine can't use a computer", () => {
+    const store = new Store(newBotDefault);
+    // Works on: Cloud, set by the person.
+    const cloud = store.createBot({ modelSelection: { instanceId: "computer", model: "claude-fable-5" } }, { seedMessages: false });
+    store.patchBot(cloud.id, { computer: "cloud" });
+    // Auto, with one conversation the person set to the cloud computer.
+    const pinned = store.createBot({ modelSelection: { instanceId: "computer", model: "claude-fable-5" } }, { seedMessages: false });
+    store.patchTask(pinned.id, pinned.threadId, { surface: "cloud", surfaceSource: "user" });
+
+    const moves = store.retireInstances(removed, replacement, chatOnly);
+
+    const reloaded = new Store(newBotDefault);
+    // A chosen place stays chosen, and each turn there is refused until it
+    // or the model changes: the line names the one setting to change.
+    expect(reloaded.bot(cloud.id)?.computer).toBe("cloud");
+    expect(moves.find(move => move.botId === cloud.id)).toMatchObject({ scope: "bot", cloud: false, noComputer: "works-on" });
+    expect(reloaded.bot(pinned.id)?.computer).toBeUndefined();
+    expect(reloaded.taskByThread(pinned.id, pinned.threadId)).toMatchObject({ surface: "cloud", surfaceSource: "user" });
+    expect(moves.find(move => move.botId === pinned.id)).toMatchObject({ scope: "bot", cloud: false, noComputer: "pin" });
+  });
+
+  it("clears a moved conversation's Auto-recorded cloud pin when the new engine can't use a computer", () => {
+    const store = new Store(newBotDefault);
+    const auto = store.createBot({ modelSelection: { instanceId: "computer", model: "claude-fable-5" } }, { seedMessages: false });
+    store.patchTask(auto.id, auto.threadId, { surface: "cloud", surfaceSource: "auto" });
+    // Works on: Cloud matches the pin, so it is the setting that still applies.
+    const cloud = store.createBot({ modelSelection: { instanceId: "computer", model: "claude-fable-5" } }, { seedMessages: false });
+    store.patchBot(cloud.id, { computer: "cloud" });
+    store.patchTask(cloud.id, cloud.threadId, { surface: "cloud", surfaceSource: "auto" });
+    // A conversation that stays on its own engine keeps its pin.
+    const kept = store.createTask(auto.id, "On Codex", false)!;
+    store.patchTask(auto.id, kept.threadId, { modelSelection: { instanceId: "codex", model: "codex-model" }, surface: "cloud", surfaceSource: "auto" });
+
+    const moves = store.retireInstances(removed, replacement, chatOnly);
+
+    const reloaded = new Store(newBotDefault);
+    const place = (botId: string, threadId: string) => {
+      const task = reloaded.taskByThread(botId, threadId)!;
+      return { surface: task.surface, surfaceSource: task.surfaceSource };
+    };
+    // The machine's memory of where Auto landed gives way, so the next turn
+    // runs on Auto instead of being refused there once.
+    expect(place(auto.id, auto.threadId)).toEqual({ surface: undefined, surfaceSource: undefined });
+    expect(moves.find(move => move.threadId === auto.threadId)).toMatchObject({ cloud: false, noComputer: "auto" });
+    expect(place(cloud.id, cloud.threadId)).toEqual({ surface: undefined, surfaceSource: undefined });
+    expect(moves.find(move => move.threadId === cloud.threadId)).toMatchObject({ cloud: false, noComputer: "works-on" });
+    expect(place(auto.id, kept.threadId)).toEqual({ surface: "cloud", surfaceSource: "auto" });
   });
 
   it("changes nothing when the save fails, so the next try moves the bot", () => {
@@ -252,13 +300,47 @@ describe("the line a moved conversation shows", () => {
       "This conversation now uses Claude. The Computer choice in the model list was removed. It still works on Scout's cloud computer.");
   });
 
-  it("says the cloud computer is out of reach when the new engine can't use a computer", () => {
-    expect(computerEngineMoveText({ scope: "bot", cloud: false, noComputer: true, askNow: false }, "Scout", "Mistral")).toBe(
+  it("says the cloud computer is out of reach on Auto when the new engine can't use a computer", () => {
+    expect(computerEngineMoveText({ scope: "bot", cloud: false, noComputer: "auto", askNow: false }, "Scout", "Mistral")).toBe(
       "Scout now uses Mistral. The Computer choice in the model list was removed. Mistral can't use a computer, " +
       "so Scout no longer works on its cloud computer. To use it again, choose a model that can use a computer.");
-    expect(computerEngineMoveText({ scope: "conversation", cloud: false, noComputer: true, askNow: true }, "Scout", "Mistral")).toBe(
+    expect(computerEngineMoveText({ scope: "conversation", cloud: false, noComputer: "auto", askNow: true }, "Scout", "Mistral")).toBe(
       "This conversation now uses Mistral. The Computer choice in the model list was removed. Mistral can't use a computer, " +
       "so it no longer works on Scout's cloud computer. To use it again, choose a model that can use a computer. " +
       "Its permissions are now Ask.");
+  });
+
+  it("says turns stop, and the one setting to change, where the person chose Cloud", () => {
+    expect(computerEngineMoveText({ scope: "bot", cloud: false, noComputer: "works-on", askNow: false }, "Scout", "Mistral")).toBe(
+      "Scout now uses Mistral. The Computer choice in the model list was removed. Mistral can't use a computer, " +
+      "so Scout can't reply on Mistral while its Works on is Cloud computer. Choose a model that can use a computer, or set Works on to Auto.");
+    expect(computerEngineMoveText({ scope: "conversation", cloud: false, noComputer: "pin", askNow: false }, "Scout", "Mistral")).toBe(
+      "This conversation now uses Mistral. The Computer choice in the model list was removed. Mistral can't use a computer, " +
+      "so Scout can't reply here while this conversation is pinned to its cloud computer. " +
+      "Choose a model that can use a computer, or clear this conversation's place in the composer.");
+  });
+
+  it("tells the bot's open conversation on its own engine about the bot, not about itself", () => {
+    expect(computerEngineMoveText({ scope: "bot-only", cloud: true, noComputer: false, askNow: true }, "Scout", "Claude")).toBe(
+      "Scout now uses Claude; this conversation keeps its own model. The Computer choice in the model list was removed. " +
+      "Scout still works on its cloud computer. Scout's permissions are now Ask, but this conversation's stay as they were.");
+  });
+});
+
+describe("writing the moved conversations' lines", () => {
+  it("writes every other line when one fails", () => {
+    const move = (threadId: string) => ({ botId: "bot", threadId, scope: "bot" as const, cloud: false, noComputer: false as const, askNow: false });
+    const written: string[] = [];
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      writeComputerEngineMoveLines([move("first"), move("second")], ({ threadId }) => {
+        if (threadId === "first") throw new Error("disk full");
+        written.push(threadId);
+      });
+      expect(written).toEqual(["second"]);
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining("disk full"));
+    } finally {
+      warn.mockRestore();
+    }
   });
 });

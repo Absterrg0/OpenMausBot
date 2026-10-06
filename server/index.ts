@@ -320,7 +320,7 @@ import { RESTART_EXIT_CODE } from "./restart.ts";
 import { holdIncludedServices } from "./included-services.ts";
 import type { ProviderInstance } from "./contracts.ts";
 import { selectDefaultModelSelection, withNewBotEffort } from "./default-model-selection.ts";
-import { computerEngineMoveText, removedComputerInstanceIds } from "./computer-engine-removal.ts";
+import { computerEngineMoveText, removedComputerInstanceIds, writeComputerEngineMoveLines } from "./computer-engine-removal.ts";
 import { cancelPeerApprovalsFor, cancelPeerApprovalsForThread, dismissStalePeerCards, peerApprovalFailure, requestPeerApproval, resolvePeerComms, type ApprovalBus } from "./peer-approval.ts";
 import { peerDeliveryReceipt, type PeerDeliveryReceipt } from "./peer-delivery.ts";
 import { peerProvenanceNote, withPeerProvenance } from "./peer-provenance.ts";
@@ -3297,17 +3297,18 @@ async function moveOffComputerEngine(): Promise<void> {
     canWorkOnCloud: canWorkOnCloud(cloudEngine(instance)),
     keepCloud: (bot) => boat.boatConfigured(cfg) && bot.cloudBackend !== "vps" && !inheritedTeamComputer(bot),
   });
-  for (const move of moves) {
+  writeComputerEngineMoveLines(moves, (move) => {
     const bot = store.bot(move.botId);
-    if (!bot) continue;
-    store.appendMessage(move.threadId, { role: "bot", kind: "activity", tool: { name: computerEngineMoveText(move, bot.name, engine), ok: true } });
-  }
+    if (bot) store.appendMessage(move.threadId, { role: "bot", kind: "activity", tool: { name: computerEngineMoveText(move, bot.name, engine), ok: true } });
+  });
 }
 let computerEngineMoveRunning: Promise<void> | null = null;
 /** The move, once at a time; it returns at once when nothing names the
  * removed engine any more. A failure is logged and never rejects, so it never
  * stops this server from listening. Bots whose save failed are unchanged and
- * move the next time the engines are read (describeInstances). */
+ * move the next time the engines are read (describeInstances) or a turn
+ * reaches one of them (startTurn), so a server no app reads the engines from
+ * still moves them. */
 function retryComputerEngineMove(): Promise<void> {
   computerEngineMoveRunning ??= moveOffComputerEngine()
     .catch((error) => console.warn(`[engines] moving bots off the removed Computer engine failed: ${error instanceof Error ? error.message : String(error)}`))
@@ -9473,6 +9474,9 @@ async function startTurn(
   const plan = turnSurfacePlan(bot, opts?.runOn, threadId);
   const instance = registry.get(bot.modelSelection.instanceId);
   if (!instance) {
+    // Still on the removed Computer engine: its move failed or found no
+    // engine. Try it again now, so the next message runs on the new engine.
+    if (removedComputerInstanceIds(cfg.instances).has(bot.modelSelection.instanceId)) void retryComputerEngineMove();
     throw Object.assign(
       new Error(`provider instance "${bot.modelSelection.instanceId}" is unavailable — pick another model in settings`),
       { status: 409 },

@@ -46,6 +46,10 @@ function install(home: string, boatPort: () => number) {
     return result;
   };
   const control = (args: string[]) => runControlOmb([...args, "--url", base]) as Promise<any>;
+  /** A person's message, whatever the server answers. */
+  const send = (botId: string, threadId: string, text: string) => fetch(`${base}/api/bots/${botId}/messages`, {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ text, threadId }),
+  }).then(response => response.status);
   const bots = async (): Promise<any[]> => (await api("GET", "/api/bots?messages=0")).bots;
   const bot = async (botId: string) => (await bots()).find(entry => entry.id === botId);
   const savedBots = (): any[] => JSON.parse(readFileSync(join(data, "bots.json"), "utf8"));
@@ -108,7 +112,7 @@ function install(home: string, boatPort: () => number) {
     child = null;
     await waitForExit(proc, { signal: "SIGTERM" });
   }
-  return { data, dumpFile, api, bots, bot, editSavedBot, editConfig, lines, moveLines, turn, start, stop, log: () => output };
+  return { data, dumpFile, api, send, bots, bot, editSavedBot, editConfig, lines, moveLines, turn, start, stop, log: () => output };
 }
 
 /** The fake Claude CLI as this install's engine. */
@@ -362,9 +366,11 @@ describe("removing the Computer engine", () => {
     expect((await server.bot(starter.id)).modelSelection.instanceId).toBe("computer");
     expect(await server.moveLines(starter.threadId)).toEqual([]);
 
-    // Once the file is readable, the next look at the engines moves the bot.
+    // Once the file is readable, the next message to the bot moves it, with
+    // no app reading the engines (a headless server). That message is
+    // refused; the move line tells the person what changed.
     rmSync(teams);
-    await server.api("GET", "/api/instances");
+    await server.send(starter.id, starter.threadId, "hello");
     await expect.poll(async () => (await server.bot(starter.id)).modelSelection.instanceId, { timeout: 15_000 }).toBe("claude");
     expect((await server.bot(starter.id)).computer).toBe("cloud");
     expect(await server.moveLines(starter.threadId)).toEqual([
