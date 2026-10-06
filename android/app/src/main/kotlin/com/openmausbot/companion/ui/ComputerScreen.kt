@@ -160,7 +160,7 @@ fun ComputerScreen(botId: String, onBack: () -> Unit, onOpenBrowser: (String) ->
                 OutlinedButton(
                     onClick = { onOpenBrowser(botId) },
                     modifier = Modifier.fillMaxWidth(),
-                ) { Text("Open browser") }
+                ) { Text(localizedMobileCopy("Open browser")) }
             }
         }
 
@@ -185,7 +185,7 @@ fun ComputerScreen(botId: String, onBack: () -> Unit, onOpenBrowser: (String) ->
                 OutlinedButton(
                     onClick = { onOpenBrowser(botId) },
                     modifier = Modifier.fillMaxWidth(),
-                ) { Text("Open browser") }
+                ) { Text(localizedMobileCopy("Open browser")) }
                 Button(
                     onClick = { confirming = true },
                     enabled = !opening,
@@ -229,7 +229,7 @@ fun ComputerScreen(botId: String, onBack: () -> Unit, onOpenBrowser: (String) ->
                                 failure = environment.openCloudDesktop(session.cloudDesktop(bot))
                             } catch (error: Throwable) {
                                 if (error is kotlinx.coroutines.CancellationException) throw error
-                                failure = error.message ?: "Could not open the cloud desktop."
+                                failure = error.message ?: CLOUD_DESKTOP_FAILED
                             } finally {
                                 opening = false
                             }
@@ -272,3 +272,6 @@ private fun Waiting(headline: String, explanation: String?) {
         }
     }
 }
+
+// English source; shown through localizedMobileCopy (MOCA-291).
+private const val CLOUD_DESKTOP_FAILED = "Could not open the cloud desktop."

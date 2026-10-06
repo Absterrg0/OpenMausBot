@@ -96,12 +96,13 @@ private val NOTICE_END_INSET = 8.dp
 
 @Composable
 private fun LocalBar(model: LiveCallBarModel.Local, actions: LiveCallBarActions, modifier: Modifier) {
+    val callLabel = localizedMobileCopy("Live call")
     Column(
         modifier = modifier
             .clip(RoundedCornerShape(18.dp))
             .background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f))
             .padding(start = 12.dp, end = 4.dp, top = 4.dp, bottom = 4.dp)
-            .semantics { contentDescription = "Live call" },
+            .semantics { contentDescription = callLabel },
         verticalArrangement = Arrangement.spacedBy(2.dp),
     ) {
         if (model.phase == LiveCallPhase.ENDED) {
@@ -114,15 +115,15 @@ private fun LocalBar(model: LiveCallBarModel.Local, actions: LiveCallBarActions,
         } else {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 BarTitle(text = model.title, tint = LIVE_GREEN, maxLines = 1, modifier = Modifier.weight(1f), clock = model.clock)
-                BarIcon(contentDescription = "Live call settings", onClick = actions.onSettings, icon = Icons.Filled.Settings)
+                BarIcon(contentDescription = localizedMobileCopy("Live call settings"), onClick = actions.onSettings, icon = Icons.Filled.Settings)
                 BarIcon(
-                    contentDescription = if (model.muted) "Unmute" else "Mute",
+                    contentDescription = localizedMobileCopy(if (model.muted) "Unmute" else "Mute"),
                     onClick = { actions.onMute(!model.muted) },
                     painter = painterResource(if (model.muted) R.drawable.ic_live_mic_off else R.drawable.ic_mic),
                     tint = if (model.muted) MaterialTheme.colorScheme.error else Color.Unspecified,
                 )
                 BarIcon(
-                    contentDescription = "Hang up",
+                    contentDescription = localizedMobileCopy("Hang up"),
                     onClick = actions.onHangUp,
                     painter = painterResource(R.drawable.ic_live_hang_up),
                     tint = MaterialTheme.colorScheme.error,
@@ -165,10 +166,10 @@ private fun BarTitle(text: String, tint: Color, maxLines: Int, modifier: Modifie
             Icon(imageVector = Icons.Filled.Call, contentDescription = null, tint = tint, modifier = Modifier.size(16.dp))
         }
         if (clock != null) {
-            NameAndClock(title = text, clock = clock, modifier = Modifier.padding(start = 8.dp))
+            NameAndClock(title = localizedMobileCopy(text), clock = clock, modifier = Modifier.padding(start = 8.dp))
         } else {
             Text(
-                text = text,
+                text = localizedMobileCopy(text),
                 fontSize = 15.sp,
                 lineHeight = TITLE_LINE_HEIGHT,
                 fontWeight = FontWeight.SemiBold,
@@ -230,8 +231,8 @@ private fun EndedRow(notice: String, canRetry: Boolean, actions: LiveCallBarActi
         content = {
             BarTitle(text = notice, tint = MaterialTheme.colorScheme.error, maxLines = NOTICE_MAX_LINES)
             Row(verticalAlignment = Alignment.CenterVertically) {
-                if (canRetry) TextButton(onClick = actions.onRetry) { Text("Try again") }
-                BarIcon(contentDescription = "Dismiss", onClick = actions.onDismiss, icon = Icons.Filled.Close)
+                if (canRetry) TextButton(onClick = actions.onRetry) { Text(localizedMobileCopy("Try again")) }
+                BarIcon(contentDescription = localizedMobileCopy("Dismiss"), onClick = actions.onDismiss, icon = Icons.Filled.Close)
             }
         },
     ) { (title, buttons), constraints ->
@@ -268,19 +269,20 @@ private fun EndedRow(notice: String, canRetry: Boolean, actions: LiveCallBarActi
  */
 @Composable
 private fun RemoteBar(model: LiveCallBarModel.Remote, onHangUp: () -> Unit, modifier: Modifier) {
+    val callLabel = localizedMobileCopy("Live call on another device")
     Column(
         modifier = modifier
             .clip(RoundedCornerShape(18.dp))
             .background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f))
             .padding(start = 12.dp, end = 4.dp, top = 2.dp, bottom = 4.dp)
-            .semantics { contentDescription = "Live call on another device" },
+            .semantics { contentDescription = callLabel },
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             BarTitle(text = model.title, tint = LIVE_GREEN, maxLines = 1, modifier = Modifier.weight(1f), clock = model.clock)
-            TextButton(onClick = onHangUp) { Text("Hang up", color = MaterialTheme.colorScheme.error) }
+            TextButton(onClick = onHangUp) { Text(localizedMobileCopy("Hang up"), color = MaterialTheme.colorScheme.error) }
         }
         Text(
-            text = model.device,
+            text = localizedMobileCopy(model.device),
             fontSize = 13.sp,
             color = secondaryTint,
             maxLines = 1,

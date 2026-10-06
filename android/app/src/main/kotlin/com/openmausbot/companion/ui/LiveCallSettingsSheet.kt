@@ -115,9 +115,9 @@ internal fun LiveCallSettingsForm(
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(18.dp)) {
         Box(modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp)) {
-            TextButton(onClick = onDone, modifier = Modifier.align(Alignment.CenterStart)) { Text("Done") }
+            TextButton(onClick = onDone, modifier = Modifier.align(Alignment.CenterStart)) { Text(localizedMobileCopy("Done")) }
             Text(
-                text = "Live call settings",
+                text = localizedMobileCopy("Live call settings"),
                 fontSize = 17.sp,
                 fontWeight = FontWeight.SemiBold,
                 modifier = Modifier.align(Alignment.Center),
@@ -139,7 +139,7 @@ internal fun LiveCallSettingsForm(
             )
             if (settings == null) {
                 Text(
-                    text = "Loading…",
+                    text = localizedMobileCopy("Loading…"),
                     fontSize = 15.sp,
                     color = secondaryTint,
                     modifier = Modifier.padding(horizontal = 20.dp),
@@ -147,11 +147,11 @@ internal fun LiveCallSettingsForm(
                 return@Column
             }
             // The route gives a connected headset the call over this choice (`LiveCallAudioRouting`).
-            FormSection(header = "Sound output", footer = "A connected headset takes the call instead.") {
-                ChoiceRow(label = "Speaker", selected = speaker, onSelect = { onSpeaker(true) })
-                ChoiceRow(label = "Earpiece", selected = !speaker, onSelect = { onSpeaker(false) })
+            FormSection(header = localizedMobileCopy("Sound output"), footer = localizedMobileCopy("A connected headset takes the call instead.")) {
+                ChoiceRow(label = localizedMobileCopy("Speaker"), selected = speaker, onSelect = { onSpeaker(true) })
+                ChoiceRow(label = localizedMobileCopy("Earpiece"), selected = !speaker, onSelect = { onSpeaker(false) })
             }
-            FormSection(header = "Voice", footer = LiveCallRules.VOICE_APPLIES_NEXT_CALL) {
+            FormSection(header = localizedMobileCopy("Voice"), footer = localizedMobileCopy(LiveCallRules.VOICE_APPLIES_NEXT_CALL)) {
                 val current = settings.voice.ifBlank { LiveCallRules.VOICE_OPTIONS.first().id }
                 LiveCallRules.VOICE_OPTIONS.forEach { option ->
                     ChoiceRow(
@@ -162,21 +162,21 @@ internal fun LiveCallSettingsForm(
                     )
                 }
             }
-            FormSection(header = "During a call", footer = LiveCallRules.TYPED_REPLIES_FOOTER) {
+            FormSection(header = localizedMobileCopy("During a call"), footer = localizedMobileCopy(LiveCallRules.TYPED_REPLIES_FOOTER)) {
                 SwitchRow(
-                    label = "Read replies to typed messages",
+                    label = localizedMobileCopy("Read replies to typed messages"),
                     checked = settings.readTypedReplies,
                     enabled = !saving,
                     onCheckedChange = onReadTypedReplies,
                 )
             }
             FormSection(
-                header = "Hang up after silence",
-                footer = "Minutes without speech before the call ends on its own.",
+                header = localizedMobileCopy("Hang up after silence"),
+                footer = localizedMobileCopy("Minutes without speech before the call ends on its own."),
             ) {
                 LiveCallRules.idleChoices(settings.idleMinutes).forEach { minutes ->
                     ChoiceRow(
-                        label = if (minutes == 1) "1 minute" else "$minutes minutes",
+                        label = localizedMobileCopy(if (minutes == 1) "1 minute" else "$minutes minutes"),
                         selected = minutes == settings.idleMinutes,
                         enabled = !saving,
                         onSelect = { onIdleMinutes(minutes) },
@@ -185,7 +185,7 @@ internal fun LiveCallSettingsForm(
             }
             error?.let {
                 Text(
-                    text = it,
+                    text = localizedMobileCopy(it),
                     fontSize = 13.sp,
                     color = MaterialTheme.colorScheme.error,
                     modifier = Modifier.padding(horizontal = 20.dp),
@@ -225,6 +225,6 @@ internal fun LiveCallDisclosureDialog(onStart: () -> Unit, onCancel: () -> Unit)
         onDismissRequest = onCancel,
         text = { Text(LiveCallRules.DISCLOSURE) },
         confirmButton = { TextButton(onClick = onStart) { Text(LiveCallRules.START_CALL) } },
-        dismissButton = { TextButton(onClick = onCancel) { Text("Cancel") } },
+        dismissButton = { TextButton(onClick = onCancel) { Text(localizedMobileCopy("Cancel")) } },
     )
 }

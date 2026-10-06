@@ -629,12 +629,74 @@ private val localizedCopyResources = mapOf(
     "Your chats, in your pocket" to R.string.mobile_your_chats_in_your_pocket_91291d76,
     "Your computer could not open its credential store, so it cannot say which accounts are connected. Nothing has been disconnected — restarting OpenMausBot on your computer usually clears this." to R.string.mobile_your_computer_could_not_open_its_c_fa640d75,
     "Your computer's built-in voices are unavailable" to R.string.mobile_profile_builtin_voices_unavailable,
-    "Your computer's built-in voices need no key, and it reports none it can use. Switch the voice engine in OpenMausBot on the computer to turn speech back on." to R.string.mobile_profile_system_voice_unconfigured_footer
+    "Your computer's built-in voices need no key, and it reports none it can use. Switch the voice engine in OpenMausBot on the computer to turn speech back on." to R.string.mobile_profile_system_voice_unconfigured_footer,
+    "Live call" to R.string.mobile_live_call_bcf57db6,
+    "Live call settings" to R.string.mobile_live_call_settings_7815e15d,
+    "Unmute" to R.string.mobile_unmute_7044c310,
+    "Mute" to R.string.mobile_mute_0f097348,
+    "Hang up" to R.string.mobile_hang_up_66be99b5,
+    "Live call on another device" to R.string.mobile_live_call_on_another_device_a409b541,
+    "Loading…" to R.string.mobile_loading_33ce4174,
+    "Sound output" to R.string.mobile_sound_output_c5a6a914,
+    "A connected headset takes the call instead." to R.string.mobile_a_connected_headset_takes_the_call_6cd6402e,
+    "Speaker" to R.string.mobile_speaker_7c23b0d9,
+    "Earpiece" to R.string.mobile_earpiece_90fd41e5,
+    "During a call" to R.string.mobile_during_a_call_2f0e111c,
+    "Read replies to typed messages" to R.string.mobile_read_replies_to_typed_messages_ce3147a1,
+    "Hang up after silence" to R.string.mobile_hang_up_after_silence_e7896ad8,
+    "Minutes without speech before the call ends on its own." to R.string.mobile_minutes_without_speech_before_the_call_282b7e72,
+    "Touch" to R.string.mobile_touch_e3f139ab,
+    "Pad" to R.string.mobile_pad_41e96472,
+    "Type into the page" to R.string.mobile_type_into_the_page_ac55de53,
+    "Hand back" to R.string.mobile_hand_back_05fabff5,
+    "Take control" to R.string.mobile_take_control_f33a57b9,
+    "The active connection is no longer available." to R.string.mobile_the_active_connection_is_no_longer_ee542832,
+    "This browser is already open on your computer. Close it there, then try again." to R.string.mobile_this_browser_is_already_open_on_84740d88,
+    "Browser control is off for this device. Enable it on your computer." to R.string.mobile_browser_control_is_off_for_this_2cc9eee0,
+    "The browser stream stopped." to R.string.mobile_the_browser_stream_stopped_8c601f57,
+    "Open browser" to R.string.mobile_open_browser_4f505ae5,
+    "Set up Live calls on your computer first." to R.string.mobile_set_up_live_calls_on_your_7c1804c5,
+    "Live calls need Microphone access. Enable it in Settings → MausBot." to R.string.mobile_live_calls_need_microphone_access_enable_f2aafa6d,
+    "Could not connect the call audio." to R.string.mobile_could_not_connect_the_call_audio_847141e6,
+    "Call dropped: the audio could not connect." to R.string.mobile_call_dropped_the_audio_could_not_ab5c1792,
+    "Could not start the call." to R.string.mobile_could_not_start_the_call_cf866fcf,
+    "Your last call is still ending on your computer. Try again in a moment." to R.string.mobile_your_last_call_is_still_ending_0f314cd5,
+    "Call ended: another app took the audio." to R.string.mobile_call_ended_another_app_took_the_8cd6de6b,
+    "Call ended: you were signed out." to R.string.mobile_call_ended_you_were_signed_out_284d3e4c,
+    "Hanging up…" to R.string.mobile_hanging_up_4fdb4594,
+    "Call ended." to R.string.mobile_call_ended_ad3bb04c,
+    "Call dropped." to R.string.mobile_call_dropped_81b41938,
+    "Takes effect on the next call." to R.string.mobile_takes_effect_on_the_next_call_8adda04e,
+    "When this is off, messages you type during a call and the bot's answers to them are not sent to OpenAI." to R.string.mobile_when_this_is_off_messages_you_e87ef334,
+    "Call ended after a long silence." to R.string.mobile_call_ended_after_a_long_silence_5ffe4ae2,
+    "Call ended: it reached OpenAI's time limit." to R.string.mobile_call_ended_it_reached_openais_time_fcb83c06,
+    "OpenAI ended the call under its content rules." to R.string.mobile_openai_ended_the_call_under_its_3d25b7aa,
+    "Call ended: the chat was deleted." to R.string.mobile_call_ended_the_chat_was_deleted_e0c3ee2c,
+    "Call ended: OpenMausBot restarted." to R.string.mobile_call_ended_openmausbot_restarted_2e993461,
+    "From your computer" to R.string.mobile_from_your_computer_7f368610,
+    "From an iPhone" to R.string.mobile_from_an_iphone_6588e9c4,
+    "From another phone" to R.string.mobile_from_another_phone_619cc34e,
+    "From another device" to R.string.mobile_from_another_device_69802f59,
+    "A Live call is already running from your computer. Hang up there first." to R.string.mobile_a_live_call_is_already_running_909a97ff,
+    "A Live call is already running from an iPhone. Hang up there first." to R.string.mobile_a_live_call_is_already_running_dbb4216f,
+    "A Live call is already running from another phone. Hang up there first." to R.string.mobile_a_live_call_is_already_running_25e6d963,
+    "A Live call is already running from another device. Hang up there first." to R.string.mobile_a_live_call_is_already_running_c86eb553,
+    "Could not read the Live settings from your computer." to R.string.mobile_could_not_read_the_live_settings_8c7bf24d,
+    "Could not save that setting." to R.string.mobile_could_not_save_that_setting_b274915a,
+    "1 minute" to R.string.mobile_1_minute_62957ecf,
+    "Connecting…" to R.string.mobile_connecting_fd3e7969,
+    "Chief of Staff" to R.string.mobile_chief_of_staff_ab970bed
 )
 
 @Composable
 internal fun localizedMobileCopy(source: String): String {
     localizedCopyResources[source]?.let { return stringResource(it) }
+    Regex("""^Live with (.+) · (\d+:\d{2}(?::\d{2})?)$""")
+        .matchEntire(source)?.let { return stringResource(R.string.mobile_live_with_bot, it.groupValues[1]) + " · " + it.groupValues[2] }
+    Regex("""^Live with (.+)$""")
+        .matchEntire(source)?.let { return stringResource(R.string.mobile_live_with_bot, it.groupValues[1]) }
+    Regex("""^(\d+) minutes$""")
+        .matchEntire(source)?.let { return stringResource(R.string.mobile_minutes_count, it.groupValues[1].toInt()) }
     Regex("""^Ask (.+)$""")
         .matchEntire(source)?.let { return stringResource(R.string.mobile_composer_ask_bot, it.groupValues[1]) }
     Regex("""^Answer (.+)…$""")

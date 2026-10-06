@@ -878,7 +878,7 @@ private fun Spinner(size: Dp, label: String = WORKING) {
 private fun ChiefBadge() {
     Icon(
         painter = painterResource(R.drawable.ic_crown),
-        contentDescription = "Chief of Staff",
+        contentDescription = localizedMobileCopy("Chief of Staff"),
         tint = MaterialTheme.colorScheme.primary,
         modifier = Modifier
             .size(glyph(14.sp))

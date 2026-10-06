@@ -8,6 +8,8 @@ package com.openmausbot.companion.ui
 //
 // Mirrors iOS's BrowserControlView.
 
+import com.openmausbot.companion.R
+import androidx.compose.ui.res.stringResource
 import android.graphics.BitmapFactory
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -139,7 +141,7 @@ fun BrowserControlScreen(botId: String, onBack: () -> Unit) {
         if (!foreground) return@LaunchedEffect
         val live = transport
         if (live == null) {
-            failure = "The active connection is no longer available."
+            failure = CONNECTION_GONE
             streamEnded = true
             return@LaunchedEffect
         }
@@ -262,12 +264,12 @@ fun BrowserControlScreen(botId: String, onBack: () -> Unit) {
             FilterChip(
                 selected = mode == GestureMode.DIRECT,
                 onClick = { mode = GestureMode.DIRECT },
-                label = { Text("Touch") },
+                label = { Text(localizedMobileCopy("Touch")) },
             )
             FilterChip(
                 selected = mode == GestureMode.TRACKPAD,
                 onClick = { mode = GestureMode.TRACKPAD },
-                label = { Text("Pad") },
+                label = { Text(localizedMobileCopy("Pad")) },
             )
         }
 
@@ -375,7 +377,7 @@ fun BrowserControlScreen(botId: String, onBack: () -> Unit) {
                     }
                 },
                 singleLine = true,
-                placeholder = { Text("Type into the page") },
+                placeholder = { Text(localizedMobileCopy("Type into the page")) },
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp),
             )
         }
@@ -433,10 +435,10 @@ fun BrowserControlScreen(botId: String, onBack: () -> Unit) {
                         }
                     },
                     modifier = Modifier.weight(1f),
-                ) { Text("Hand back") }
+                ) { Text(localizedMobileCopy("Hand back")) }
             } else if (streamEnded) {
                 Button(onClick = { attempt++ }, modifier = Modifier.weight(1f)) {
-                    Text(failure?.let { "Try again — $it" } ?: "Try again")
+                    Text(failure?.let { stringResource(R.string.mobile_try_again_reason, localizedMobileCopy(it)) } ?: localizedMobileCopy("Try again"))
                 }
             } else {
                 Button(
@@ -460,10 +462,10 @@ fun BrowserControlScreen(botId: String, onBack: () -> Unit) {
                     },
                     enabled = status.connected && viewerId != null && !changingControl && foreground,
                     modifier = Modifier.weight(1f),
-                ) { Text("Take control") }
+                ) { Text(localizedMobileCopy("Take control")) }
             }
         }
-        failure?.let { Text(it, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(12.dp)) }
+        failure?.let { Text(localizedMobileCopy(it), color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(12.dp)) }
     }
 }
 
@@ -471,10 +473,10 @@ fun BrowserControlScreen(botId: String, onBack: () -> Unit) {
  * not a generic failure worth shrugging at. */
 private fun explainBrowserFailure(error: Throwable): String = when {
     error is APIError.Status && error.code == 429 ->
-        "This browser is already open on your computer. Close it there, then try again."
+        BROWSER_ALREADY_OPEN
     error is APIError.Status && error.code == 403 ->
-        error.serverMessage ?: "Browser control is off for this device. Enable it on your computer."
-    else -> error.message ?: "The browser stream stopped."
+        error.serverMessage ?: BROWSER_CONTROL_OFF
+    else -> error.message ?: BROWSER_STREAM_STOPPED
 }
 
 private val NAMED_KEYS = listOf(
@@ -496,3 +498,9 @@ private fun ModifierChip(label: String, bit: Int, latched: Int, onToggle: (Int) 
         label = { Text(label) },
     )
 }
+
+// English sources; screens show them through localizedMobileCopy (MOCA-291).
+private const val CONNECTION_GONE = "The active connection is no longer available."
+private const val BROWSER_ALREADY_OPEN = "This browser is already open on your computer. Close it there, then try again."
+private const val BROWSER_CONTROL_OFF = "Browser control is off for this device. Enable it on your computer."
+private const val BROWSER_STREAM_STOPPED = "The browser stream stopped."

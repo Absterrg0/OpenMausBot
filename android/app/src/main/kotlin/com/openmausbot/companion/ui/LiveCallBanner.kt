@@ -56,7 +56,7 @@ fun LiveCallBanner(title: String, onOpen: () -> Unit, onHangUp: (() -> Unit)?, m
     ) {
         Icon(imageVector = Icons.Filled.Call, contentDescription = null, tint = LIVE_GREEN, modifier = Modifier.size(16.dp))
         Text(
-            text = title,
+            text = localizedMobileCopy(title),
             fontSize = 14.sp,
             fontWeight = FontWeight.Medium,
             maxLines = 1,
@@ -66,7 +66,7 @@ fun LiveCallBanner(title: String, onOpen: () -> Unit, onHangUp: (() -> Unit)?, m
                 .padding(start = 8.dp),
         )
         if (onHangUp != null) {
-            TextButton(onClick = onHangUp) { Text("Hang up", color = MaterialTheme.colorScheme.error) }
+            TextButton(onClick = onHangUp) { Text(localizedMobileCopy("Hang up"), color = MaterialTheme.colorScheme.error) }
         } else {
             // The button's height, so the strip keeps its size while it says "Hanging up…".
             Spacer(Modifier.height(40.dp))
