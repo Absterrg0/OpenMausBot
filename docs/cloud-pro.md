@@ -33,12 +33,16 @@ Contract version: `1` (`cloudContractVersion` on the wire).
    the card offers **Open My Cloud**. One click opens the machine in the
    app window, signed in. There is no second confirmation.
 4. The first thing the Cloud shows is its engine sign-in
-   (`src/components/CloudEngineSignIn.tsx`), with three choices:
+   (`src/components/CloudEngineSignIn.tsx`), with these choices:
    - **Sign in to Claude**: the existing paste-code flow (open Anthropic's
      page, paste the code back);
    - **Sign in to ChatGPT (Codex)**: the existing device-code flow;
+   - **Sign in to Grok**: the same device-code flow for Grok Build on a
+     grok.com subscription (`grok login --device-auth`, run on the Cloud
+     computer), offered only when the image carries the Grok CLI;
    - **Use an API key**: the existing model-provider keys in **Settings →
-     API keys** (Anthropic, or an OpenAI-compatible key such as OpenRouter).
+     API keys** (Anthropic, xAI, or an OpenAI-compatible key such as
+     OpenRouter).
 
    It says plainly that the person's AI plan limits apply to bots that work
    around the clock, and that Anthropic's Claude Max plan or an API key works
@@ -46,7 +50,9 @@ Contract version: `1` (`cloudContractVersion` on the wire).
 5. Until one of those engines can run, every bot on the Cloud, including the
    default one, shows this sign-in rather than a chat that fails its first
    turn. Once one can run, the chat takes its place. Sign-ins stay on the
-   machine's volume (`~/.claude`, `~/.codex`, the server's own config).
+   machine's volume (`~/.claude`, `~/.codex`, `~/.grok`, the server's own
+   config). On an older image without the Grok CLI, Grok's setup card says
+   so in one line and offers an xAI key instead.
 
 The Cloud's `GET /api/auth/session` answers `"cloudHome": true` for a paired
 session; that is how the web UI knows to open the engine sign-in instead of
@@ -657,6 +663,11 @@ the `list_shared_computers` and `shared_computer` tools.
 
 - the engine CLIs from `ENGINES` (default Claude Code and Codex; the base
   image already carries agent-browser and its Chrome);
+- Grok Build (`/usr/local/bin/grok`) from xAI's own installer, pinned by
+  `GROK_VERSION` to the version the Grok driver is verified against. The
+  build fails if the installer cannot be reached, rather than shipping an
+  image whose Grok sign-in cannot run; `--build-arg GROK_VERSION=` leaves it
+  out on purpose;
 - Caddy, as the only listener the network can reach (`0.0.0.0:8080`);
 - `server/cloud-home-start.ts` (bundled to `dist-server/cloud-home-start.js`)
   as the entry point.
@@ -699,8 +710,8 @@ refuses to start if Node, itself, the server's entry point, Caddy or its
 config (or any folder above them) is not root's, is writable by others, or
 is on the volume. Only the `/data` volume is `maus`'s.
 
-`HOME=/data`, so `~/.claude`, `~/.codex` and OpenMausBot's own data
-(`/data/.openmausbot`) persist on the volume.
+`HOME=/data`, so `~/.claude`, `~/.codex`, `~/.grok` and OpenMausBot's own
+data (`/data/.openmausbot`) persist on the volume.
 
 ### Why the server stays on loopback
 
@@ -1050,7 +1061,7 @@ section is only what the Cloud adds.
 
 Every push to `main` and every release tag publishes the home machine image as
 `ghcr.io/milind-soni/openmausbot-cloud-home`, tagged `latest` (main only), `sha-<commit>` and the release tag.
-It is built from `deploy/fly/Dockerfile` on top of the server image for the same commit, with Claude Code and
-Codex installed. The Docker workflow's summary prints the digest. Set it in the Admin as
+It is built from `deploy/fly/Dockerfile` on top of the server image for the same commit, with Claude Code,
+Codex and Grok installed. The Docker workflow's summary prints the digest. Set it in the Admin as
 `OMB_CLOUD_HOME_IMAGE=ghcr.io/milind-soni/openmausbot-cloud-home@sha256:…`; changing it rolls the new image
 out to existing machines one at a time, reverting automatically on a failed health check.

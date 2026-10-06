@@ -2,7 +2,7 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { api, ApiError } from "@/state/store";
-import { chatgptPlanLink, codexDeviceLink, deviceFlowUnavailable, DeviceSignInProgress, type DeviceSignInStatus } from "./CodexDeviceSignIn";
+import { chatgptPlanLink, codexDeviceLink, deviceFlowUnavailable, DeviceSignInProgress, deviceSignInProvider, type DeviceSignInStatus } from "./DeviceSignIn";
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -105,5 +105,55 @@ describe("ChatGPT plan browser sign-in", () => {
   it("has browser-specific cancellation and expiry text", () => {
     expect(renderBrowser({ ...waiting, phase: "cancelled" })).not.toContain("new code");
     expect(renderBrowser({ ...waiting, phase: "expired" })).not.toContain("code expired");
+  });
+});
+
+describe("Grok Build device sign-in UI", () => {
+  const grok: DeviceSignInStatus = { ...waiting, authorizationUrl: "https://accounts.x.ai/device", userCode: "WDJB-MJHT" };
+  const renderGrok = (auth: DeviceSignInStatus) => renderToStaticMarkup(createElement(DeviceSignInProgress, { auth, provider: "grok" }));
+
+  it("shows the code and xAI's own page, in Grok's words, not ChatGPT's", () => {
+    expect(deviceSignInProvider("grokAgent")).toBe("grok");
+    expect(deviceSignInProvider("codex")).toBe("codex");
+    const html = renderGrok(grok);
+    expect(html).toContain("WDJB-MJHT");
+    expect(html).toContain('href="https://accounts.x.ai/device"');
+    expect(html).toContain('rel="noopener noreferrer"');
+    expect(html).toContain("Enter this one-time code on xAI&#x27;s sign-in page");
+    expect(html).toContain("Open Grok sign-in");
+    expect(html).toContain("grok.com subscription");
+    expect(html).not.toMatch(/ChatGPT|OpenAI/);
+  });
+
+  it("follows the page that carries the code, only for that code", () => {
+    const complete = "https://accounts.x.ai/device?user_code=WDJB-MJHT";
+    expect(renderGrok({ ...grok, authorizationUrl: complete })).toContain(`href="${complete}"`);
+    expect(renderGrok({ ...grok, authorizationUrl: "https://accounts.x.ai/device?user_code=ZZZZ-ZZZZ" })).not.toContain("href=");
+  });
+
+  it.each([
+    "https://x.ai.evil.test/device",
+    "https://accounts.x.ai/device?token=secret",
+    "https://accounts.x.ai/device#token",
+    "https://auth.openai.com/codex/device",
+    "javascript:alert(1)",
+  ])("does not expose an unexpected Grok sign-in URL: %s", (url) => {
+    const html = renderGrok({ ...grok, authorizationUrl: url });
+    expect(html).toContain('role="alert"');
+    expect(html).toContain("Grok did not return a valid xAI sign-in link and code");
+    expect(html).not.toContain("href=");
+    expect(html).not.toContain(grok.userCode);
+  });
+
+  it.each([
+    ["failed", { message: "Grok sign-in was declined in the browser. Start sign-in again to try once more." }, "declined in the browser"],
+    ["expired", {}, "This code expired"],
+    ["cancelled", {}, "Sign-in cancelled"],
+    ["succeeded", {}, "Grok connected"],
+  ] as const)("ends a %s sign-in with one plain line and no code", (phase, extra, line) => {
+    const html = renderGrok({ ...grok, phase, ...extra });
+    expect(html).toContain(line);
+    expect(html).not.toContain(grok.userCode);
+    expect(html).not.toContain("href=");
   });
 });

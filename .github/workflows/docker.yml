@@ -283,7 +283,7 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
       # The Cloud Pro home machine (deploy/fly/Dockerfile) on top of the server image just
-      # pushed, with Claude Code and Codex baked in. The Admin pins it by digest
+      # pushed, with Claude Code, Codex and Grok baked in. The Admin pins it by digest
       # (OMB_CLOUD_HOME_IMAGE=ghcr.io/milind-soni/openmausbot-cloud-home@sha256:...).
       - id: repo
         # Image references must be lowercase; the repository name is not.

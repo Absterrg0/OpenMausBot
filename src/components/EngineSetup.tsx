@@ -6,7 +6,7 @@ import { AlertTriangle, Check, Copy, Download, ExternalLink, KeyRound, Loader2, 
 import { api, type EngineInstall, type InstanceInfo, useStore } from "@/state/store";
 import { cn } from "@/lib/cn";
 import { t } from "@/lib/i18n";
-import { CodexDeviceSignIn } from "./CodexDeviceSignIn";
+import { DEVICE_SIGN_IN_COPY, DeviceSignIn, deviceSignInProvider } from "./DeviceSignIn";
 import { ClaudeSignIn } from "./ClaudeSignIn";
 
 type Platform = "darwin" | "win32" | "linux";
@@ -44,6 +44,21 @@ export function offersSignIn(instance: InstanceInfo | undefined): boolean {
  * Local-model injection still requires an available engine, but no cloud sign-in. */
 export function needsCli(instance: InstanceInfo | undefined): boolean {
   return instance?.snapshot.state !== "available";
+}
+
+/** A terminal opened from this page runs on the machine the server runs on:
+ * the desktop app's own window on its own server. Never a browser, a paired
+ * remote client, or My Cloud, where a terminal command is a dead end. */
+export function serverTerminal(cloudHome: boolean): boolean {
+  return Boolean(window.ogb?.openInstallTerminal) && window.ogb?.remoteClient?.active !== true && !cloudHome;
+}
+
+/** Grok Build cannot run here (no Grok CLI on this server, an older Cloud
+ * computer image for one) and nobody here can install it. Its models are
+ * still an xAI API key away, so the card says that instead of handing over
+ * an install command that cannot run. */
+export function grokKeyInstead(instance: InstanceInfo, cloudHome: boolean): boolean {
+  return instance.driverKind === "grokAgent" && needsCli(instance) && !serverTerminal(cloudHome);
 }
 
 export function CommandRow({
@@ -408,6 +423,32 @@ function apiKeySetup(instance: InstanceInfo): boolean {
     && (instance.snapshot.state !== "available" || instance.snapshot.authenticated === false);
 }
 
+function GrokKeyInstead({ className, unframed }: { className?: string; unframed: boolean }) {
+  const { dispatch } = useStore();
+  const remote = window.ogb?.remoteClient?.active === true;
+  return (
+    <div data-engine-setup-key-instead className={cn(!unframed && "rounded-xl border border-hairline/40 bg-control/30 p-3", className)}>
+      <div className="flex items-start gap-2.5">
+        <span className="mt-0.5 flex size-7 shrink-0 items-center justify-center rounded-lg bg-inset text-ink-secondary">
+          <KeyRound size={14} />
+        </span>
+        <p className="min-w-0 text-[12.5px] leading-relaxed text-ink">{t("engineSetup.grok.notInstalled")}</p>
+      </div>
+      {/* a remote client's Settings has no API keys to open (ApiKeyEngineSetup) */}
+      {!remote && (
+        <button
+          type="button"
+          onClick={() => dispatch({ type: "toggleAppSettings", open: true, section: "connections" })}
+          className="mt-3 flex items-center gap-1.5 rounded-lg bg-raised px-3 py-1.5 text-[12.5px] font-medium text-ink hover:bg-raised-hover"
+        >
+          <KeyRound size={13} aria-hidden="true" />
+          {t("engineSetup.grok.addKey")}
+        </button>
+      )}
+    </div>
+  );
+}
+
 function ApiKeyEngineSetup({ instance, className, unframed }: { instance: InstanceInfo; className?: string; unframed: boolean }) {
   const { dispatch } = useStore();
   const remote = window.ogb?.remoteClient?.active === true;
@@ -455,6 +496,8 @@ export function EngineSetup({
    * model that runs this CLI with the organisation's access). */
   description?: string;
 }) {
+  const { state } = useStore();
+  const cloudHome = state.config?.cloudHome === true;
   const install = instance.install;
   const installCommand = installCommandFor(install);
   const signInCommand = install?.signInCommand;
@@ -462,6 +505,7 @@ export function EngineSetup({
   const deviceSignIn = signInOnly && instance.authentication?.method === "device-code";
   const browserSignIn = signInOnly && instance.authentication?.method === "browser-pkce";
   const pasteSignIn = signInOnly && instance.authentication?.method === "paste-code";
+  const provider = deviceSignInProvider(instance.driverKind);
   const command = signInOnly ? signInCommand : installCommand;
   const title = signInOnly
     ? t("engineSetup.signInTitle", { name: instance.displayName })
@@ -470,7 +514,7 @@ export function EngineSetup({
     ? browserSignIn
       ? t("engineSetup.chatgpt.description")
       : deviceSignIn
-      ? t("engineSetup.device.description")
+      ? t(DEVICE_SIGN_IN_COPY[provider].description)
       : pasteSignIn
       ? t("engineSetup.claude.description")
       : install?.managed
@@ -488,6 +532,10 @@ export function EngineSetup({
 
   if (apiKeySetup(instance)) {
     return <ApiKeyEngineSetup instance={instance} className={className} unframed={unframed} />;
+  }
+
+  if (intent === "cloud" && grokKeyInstead(instance, cloudHome)) {
+    return <GrokKeyInstead className={className} unframed={unframed} />;
   }
 
   // Some engines are configured elsewhere (for example, a cloud computer
@@ -522,7 +570,17 @@ export function EngineSetup({
       )}
 
       {deviceSignIn || browserSignIn ? (
-        <CodexDeviceSignIn key={instance.instanceId} instanceId={instance.instanceId} browserPkce={browserSignIn} />
+        <>
+          <DeviceSignIn key={instance.instanceId} instanceId={instance.instanceId} browserPkce={browserSignIn} provider={provider} />
+          {/* Grok keeps its terminal sign-in for people who prefer one, where
+              a terminal runs on this server; the code above needs none. */}
+          {deviceSignIn && provider === "grok" && signInCommand && serverTerminal(cloudHome) && (
+            <details className="mt-2 rounded-lg border border-hairline/50 bg-app px-2.5 py-2 text-[11.5px] text-ink-secondary">
+              <summary className="cursor-pointer select-none">{t("engineSetup.preferTerminal")}</summary>
+              <CommandRow command={signInCommand} actionLabel={t("engineSetup.openSignIn")} compact />
+            </details>
+          )}
+        </>
       ) : pasteSignIn ? (
         <ClaudeSignIn key={instance.instanceId} instanceId={instance.instanceId} />
       ) : install.server && !signInOnly ? (

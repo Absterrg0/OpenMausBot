@@ -16,6 +16,7 @@ import { t } from "@/lib/i18n";
 import { EngineSetup, EngineUpdateNotice, EngineWarningNotice } from "./EngineSetup";
 import { AddClaudeAccount, ClaudeAccountSettings } from "./ClaudeAccountSettings";
 import { AddChatGptAccount, CodexAccountSettings } from "./CodexAccountSettings";
+import { DEVICE_SIGN_IN_COPY, deviceSignInProvider } from "./DeviceSignIn";
 import { AntigravityFreeSpace } from "./AntigravityFreeSpace";
 
 interface ProbeResult {
@@ -271,8 +272,10 @@ function EngineRow({ instance }: { instance: InstanceInfo }) {
       {instance.snapshot.warning && <EngineWarningNotice warning={instance.snapshot.warning} className="mt-3" />}
       {instance.claudeAccount && <ClaudeAccountSettings instance={instance} />}
       {engineReady(instance) && instance.snapshot.authenticated === true && (
-        instance.authentication?.method === "device-code" || instance.authentication?.method === "browser-pkce"
+        (instance.authentication?.method === "device-code" || instance.authentication?.method === "browser-pkce") && deviceSignInProvider(instance.driverKind) === "codex"
           ? <CodexAccountSettings instance={instance} />
+          : instance.authentication?.method === "device-code"
+          ? <p className="flex items-center gap-1.5 text-[12px] text-success"><Check size={13} />{t(DEVICE_SIGN_IN_COPY[deviceSignInProvider(instance.driverKind)].connectedAccount)}</p>
           : instance.authentication?.method === "paste-code" && !instance.claudeAccount && (
             <p className="flex items-center gap-1.5 text-[12px] text-success"><Check size={13} />{t("engineSetup.claude.connectedAccount")}</p>
           )

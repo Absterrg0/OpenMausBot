@@ -5,8 +5,8 @@
 #   docker build -t openmausbot .
 #   docker build -f deploy/fly/Dockerfile --build-arg BASE_IMAGE=openmausbot -t omb-cloud-home .
 #
-# HOME is the /data volume, so Claude Code and Codex sign-ins (~/.claude,
-# ~/.codex) and OpenMausBot's own state (~/.openmausbot) persist.
+# HOME is the /data volume, so Claude Code, Codex and Grok sign-ins (~/.claude,
+# ~/.codex, ~/.grok) and OpenMausBot's own state (~/.openmausbot) persist.
 ARG BASE_IMAGE=ghcr.io/milind-soni/openmausbot:latest
 FROM caddy:2.10.2 AS edge
 
@@ -18,6 +18,23 @@ ENV HOME=/tmp/omb-build-home
 # image already carries agent-browser and its Chrome.
 ARG ENGINES="@anthropic-ai/claude-code @openai/codex"
 RUN if [ -n "$ENGINES" ]; then npm install -g $ENGINES; fi
+# Grok Build, the grok.com subscription engine: xAI's own installer, pinned to
+# the version the Grok driver is verified against (server/drivers/acp/grok.ts).
+# People sign it in from the app with a device code; its login lands in
+# ~/.grok on the volume. Only the binary goes to /usr/local/bin, on every
+# user's PATH and out of the volume; the installer's PATH links and shell
+# setup stay in a throwaway home. If xAI's installer cannot be reached, the
+# build fails: an image without Grok would offer a sign-in that cannot run.
+# GROK_VERSION= (empty) leaves Grok out on purpose.
+ARG GROK_VERSION=1.0.41
+RUN if [ -n "$GROK_VERSION" ]; then \
+      mkdir -p /tmp/grok-install \
+      && curl -fsSL https://x.ai/cli/install.sh -o /tmp/grok-install/install.sh \
+      && HOME=/tmp/grok-install PATH="/tmp/grok-install/.grok/bin:$PATH" bash /tmp/grok-install/install.sh "$GROK_VERSION" \
+      && install -m 0755 "$(readlink -f /tmp/grok-install/.grok/bin/grok)" /usr/local/bin/grok \
+      && HOME=/tmp/grok-install grok --version | grep -qF "grok $GROK_VERSION " \
+      && rm -rf /tmp/grok-install; \
+    fi
 COPY --from=edge /usr/bin/caddy /usr/local/bin/caddy
 # Official Caddy carries a privileged-port file capability. The edge uses the
 # unprivileged 8080, and a plain copy to a fresh inode drops the capability.

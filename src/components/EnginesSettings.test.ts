@@ -67,6 +67,36 @@ describe("Settings → Engines → Codex", () => {
   });
 });
 
+describe("Settings → Engines → Grok", () => {
+  function renderGrok(authenticated: boolean): string {
+    vi.stubGlobal("window", {});
+    vi.stubGlobal("navigator", { userAgent: "Linux" });
+    fixture.instances = [{
+      instanceId: "grok", driverKind: "grokAgent", displayName: "Grok", cliDefault: "grok",
+      snapshot: { state: "available", authenticated, version: "grok 1.0.41" },
+      models: { default: "grok-4.7", options: [] },
+      authentication: { method: "device-code", signOut: false },
+      install: { command: { linux: "curl -fsSL https://x.ai/cli/install.sh | bash" }, signInCommand: "grok login" },
+    }];
+    fixture.bots = [];
+    return renderToStaticMarkup(createElement(EnginesSettings));
+  }
+
+  it("signs in from Settings with a code, never ChatGPT's card", () => {
+    const html = renderGrok(false);
+    expect(html).toContain('data-device-sign-in="grok"');
+    expect(html).toContain("Sign in to Grok");
+    expect(html).not.toContain("ChatGPT");
+  });
+
+  it("says Grok is connected once it is, in Grok's words", () => {
+    const html = renderGrok(true);
+    expect(html).toContain("Grok connected on this server");
+    expect(html).not.toContain("ChatGPT");
+    expect(html).not.toContain("Sign in to Grok");
+  });
+});
+
 describe("Settings → Engines → setup cards", () => {
   it("shows every Company provider as read-only while preserving personal controls", () => {
     vi.stubGlobal("window", {});

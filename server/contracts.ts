@@ -402,7 +402,9 @@ export interface ProviderSnapshot {
 //
 // Installing is rarely the whole job — most CLIs then need an interactive
 // sign-in, which is why signInCommand exists and why the UI sends people to a
-// terminal rather than trying to shell out silently.
+// terminal rather than trying to shell out silently. A CLI with a device-code
+// login (Codex, Grok) signs in from the app instead (drivers/device-auth.ts),
+// and signInCommand stays its terminal route.
 export interface EngineInstall {
   /** One-liner per platform. Omit a platform that has no such command —
    * the UI falls back to docsUrl rather than offering something that
