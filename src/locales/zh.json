@@ -2433,6 +2433,5 @@
   "computer.phase.showSleepingBoat": "自动找到了一台休眠的云电脑。它没有被唤醒或更改。",
   "computer.phase.showPendingBoat": "自动找到了一台尚未就绪的云电脑。它没有被更改。",
   "computer.badge.autoBoat": "云端电脑 · 自动 · 只读",
-  "computer.addBoatKey": "添加 Boat API 密钥即可为此机器人提供云电脑——它就在这里启动。",
-  "call.live.disclosureCloud": "实时通话会将你的语音连同此聊天的近期消息、机器人的回复以及其请求审批的详细信息一并发送给 OpenAI。OpenAI 密钥始终保存在 My Cloud 上。"
+  "computer.addBoatKey": "添加 Boat API 密钥即可为此机器人提供云电脑——它就在这里启动。"
 }

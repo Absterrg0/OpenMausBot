@@ -85,14 +85,38 @@ export function cloudPlanDisk(state) {
 }
 
 /** The person's Cloud address, remembered for their account while a check
- * with OMB Cloud is pending or has failed, so the Server menu still knows
- * "My Cloud" is theirs. Forgotten on sign-out or another account. */
+ * with OpenMausBot Cloud is pending or has failed, or the sign-in has ended,
+ * so the Server menu still knows "My Cloud" is theirs. Forgotten on sign-out,
+ * another account, or a check that names no machine for this account (a
+ * machine named without its address, stopped, keeps it). */
 export function rememberedCloudHome(previous, state) {
   const accountId = state?.account?.id ?? null;
   if (!accountId) return null;
-  const origin = state.status === "connected" ? state.machine?.origin ?? null : null;
+  if (state.status === "connected" && !state.machine) return null;
+  const origin = state.status === "connected" ? state.machine.origin ?? null : null;
   if (origin) return { accountId, origin };
   return previous?.accountId === accountId ? previous : null;
+}
+
+/** The one rule for "this page is my Cloud": the Cloud page's own channels
+ * (Settings → Plan, its setup checklist) and the microphone for a Live call
+ * both ask it. The machine the sign-in verified or, failing that, the one this
+ * same account last verified (rememberedCloudHome): while a check is pending
+ * or has failed, and after the sign-in has ended or expired, when its Settings
+ * → Plan says "sign in again on your computer". None when signed out, for
+ * another account, after a check that names no machine, after a restart until
+ * a check succeeds (it is kept in memory only), or in companion client mode,
+ * where this app has no Cloud of its own.
+ *
+ * @param {{ account: { homeTarget(): { origin: string } | null, state(): { account?: { id: string } } } | null,
+ *   remembered: { accountId: string, origin: string } | null, remoteAccess: unknown }} known
+ * @returns {string | null} */
+export function myCloudOrigin({ account, remembered, remoteAccess }) {
+  if (remoteAccess || !account) return null;
+  const verified = account.homeTarget()?.origin;
+  if (verified) return verified;
+  const accountId = account.state()?.account?.id;
+  return accountId && remembered?.accountId === accountId ? remembered.origin : null;
 }
 
 /** Whether choosing this Server entry means "open my Cloud", which goes

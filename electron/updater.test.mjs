@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import vm from "node:vm";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { cloudPageSenderAllowed } from "./cloud-move.mjs";
+import { myCloudOrigin } from "./cloud-home.mjs";
 import environments from "./environments.cjs";
 import localOriginModule from "./local-origin.cjs";
 
@@ -40,7 +41,7 @@ function mainRule() {
   const window = { isDestroyed: () => false, webContents: null };
   const context = vm.createContext({
     ipcMain: { handle: () => {} },
-    senderIsLocal: localOriginModule.isLocalSender, workspaceSenderAllowed: environments.workspaceSenderAllowed, cloudPageSenderAllowed,
+    senderIsLocal: localOriginModule.isLocalSender, workspaceSenderAllowed: environments.workspaceSenderAllowed, cloudPageSenderAllowed, myCloudOrigin,
     activeEnvironment: environments.activeEnvironment, rendererOrigin: () => LOCAL, desktopRemoteAccess: false,
     mainWindow: window,
     environmentsState: { environments: [], activeId: environments.LOCAL_ID },

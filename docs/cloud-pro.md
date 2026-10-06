@@ -262,10 +262,22 @@ the app alike.
 A Cloud is personal, so in the desktop app its own page may use the
 microphone for a Live call, as this computer's own page does. That is the
 microphone only, never the camera or screen capture, and only for the main
-frame of the app's window at the exact origin the verified Cloud sign-in
-reports (`electron/app-permissions.mjs`, `appPermissionHandlers`). Signing out
-of Cloud takes it away at once; every other server's page stays refused. In a
-web browser, the browser asks for the microphone for the Cloud's address.
+frame of the app's window at the exact origin of the person's Cloud
+(`electron/app-permissions.mjs`, `appPermissionHandlers`). One rule says which
+Cloud that is, for the microphone and the Cloud page's Settings → Plan alike
+(`electron/cloud-home.mjs`, `myCloudOrigin`): the machine the Cloud sign-in
+verified or, failing that, the one this same account last verified in this
+app session. That last one counts while a check is pending or has failed, and
+also after the sign-in has ended or expired, when Settings → Plan on the Cloud
+says "sign in again on your computer". A check that names no machine for the
+account ends it (a stopped machine named without its address does not). A
+call placed while a saved sign-in is still restoring, in the first seconds
+after launch, waits for it (at most 5 seconds) rather than being refused.
+Signing out of OpenMausBot Cloud takes it away at once, and so do another
+account, companion client mode and restarting the app before a check succeeds
+(the last verified Cloud is kept in memory only); every other server's page
+stays refused. In a web browser, the browser asks for the microphone for
+the Cloud's address.
 
 - **The key is the person's own.** No Cloud plan includes Live calls: the
   person pastes an OpenAI API key from a project with GPT-Live access. It is
@@ -946,7 +958,8 @@ shows the plan read only (`cloud-plan:*`: its name and whether it is active,
 **Manage in your browser** and **Switch to this computer**). It is listed only
 on an OMB Cloud home (`config.cloudHome`), never on another server open in the
 window. Main answers it for the Cloud this account verified, or last verified
-while a check is failing or the sign-in has ended, so that page says
+while a check is failing or the sign-in has ended (`myCloudOrigin`, the rule
+the Cloud's microphone uses too), so that page says
 "checking" or "sign in again on your computer" rather than an error; where the
 app cannot vouch for the Cloud it only says the plan is managed in the app on
 the computer.
