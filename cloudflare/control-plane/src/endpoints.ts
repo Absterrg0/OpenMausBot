@@ -879,7 +879,7 @@ export async function provisionManagedEndpoint(
       capacity,
     }));
     if (capacity) {
-      await recordCapacityRejection(env, code).catch(() => undefined);
+      await recordCapacityRejection(env, config, code).catch(() => undefined);
       return capacityResponse();
     }
     if (code === "cf_rate_limited") return rateLimitedResponse(retryAfterSeconds(error));
@@ -1074,7 +1074,7 @@ export async function sweepManagedEndpointCleanup(
   ));
 
   if (summary.deleted > 0) {
-    await clearCapacityRejection(env).catch(() => undefined);
+    await clearCapacityRejection(env, config).catch(() => undefined);
   }
   if (summary.candidates > 0) {
     console.log(JSON.stringify({

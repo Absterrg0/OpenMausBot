@@ -151,7 +151,7 @@ export function createWorker(cloudflareFetch: CloudflareFetch = fetch) {
         // `ok` keeps meaning "this Worker is correctly configured"; desktops
         // gate hosted sign-in on it. Provider capacity is reported beside it
         // so a full quota never hides sign-in, recovery, or local pairing.
-        const capacity = await capacityHealth(env, healthConfig).catch(() => null);
+        const capacity = await capacityHealth(env, healthConfig, ctx).catch(() => null);
         return secureResponse(json({
           ok: true,
           service: "openmausbot-control-plane",

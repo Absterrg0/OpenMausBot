@@ -206,7 +206,9 @@ on them; a full quota must not hide sign-in or recovery) and adds a
 ```
 
 `status` is `full` while a recent quota rejection is gating allocations,
-`unknown` when the snapshot is more than 30 minutes old.
+`unknown` when the snapshot is more than 30 minutes old. Each Cloudflare data
+center reuses one read of the snapshot for up to two minutes, so `capacity`
+can trail D1 by that long; allocation gating always reads D1.
 
 ## Local checks
 

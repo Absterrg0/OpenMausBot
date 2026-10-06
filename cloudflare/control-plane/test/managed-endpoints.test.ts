@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { CloudflareAPI, CloudflareAPIError, type CloudflareFetch } from "../src/cloudflare-api";
 import { createAuth } from "../src/auth";
 import { readConfig } from "../src/config";
-import { cleanupEndpointRow } from "../src/endpoints";
+import { cleanupEndpointRow, sweepManagedEndpointCleanup } from "../src/endpoints";
 import { createWorker } from "../src/index";
 
 const BASE_URL = "https://auth.openmausbot.test";
@@ -1696,6 +1696,40 @@ describe("managed endpoint provider capacity", () => {
       method: "POST",
       token: second.credential,
     })).status).toBe(200);
+    vi.restoreAllMocks();
+  });
+
+  it("reports a quota rejection and its clearing in /healthz without waiting for the cached copy", async () => {
+    const cloudflare = new FakeCloudflare();
+    const worker = createWorker(cloudflare.fetch);
+    const owner = await signIn(worker, "capacity-health@example.com");
+    const installation = await createInstallation(worker, owner.token, "capacity-health");
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    vi.spyOn(console, "log").mockImplementation(() => undefined);
+    type Health = { capacity: { providerRejectedAt: number | null; status: string } };
+    const health = async () => (await (await call(worker, "/healthz")).json<Health>()).capacity;
+
+    expect(await health()).toMatchObject({ providerRejectedAt: null, status: "unknown" });
+    cloudflare.providerErrors.set("create_tunnel", 1_045);
+    expect((await call(worker, "/v1/installations/self/endpoint", {
+      method: "POST",
+      token: installation.credential,
+    })).status).toBe(503);
+    expect(await health()).toMatchObject({ providerRejectedAt: expect.any(Number), status: "full" });
+
+    // The sweep alone (no scan) frees a resource and clears the rejection.
+    cloudflare.providerErrors.clear();
+    const now = Date.now();
+    const tunnelName = `omb-c-${"f".repeat(32)}`;
+    cloudflare.tunnels.set(tunnelName, { id: "60000000-0000-4000-8000-000000000002", name: tunnelName });
+    await env.DB.prepare(
+      `INSERT INTO installation_endpoints
+        (installation_id, hostname, tunnel_name, status, delete_requested_at, created_at, updated_at)
+       VALUES ('orphan-health', ?, ?, 'deleting', ?, ?, ?)`,
+    ).bind(`c-${"f".repeat(32)}.openmausbot.test`, tunnelName, now, now, now).run();
+    const swept = await sweepManagedEndpointCleanup(env, readConfig(env), cloudflare.fetch, crypto.randomUUID());
+    expect(swept.deleted).toBe(1);
+    expect(await health()).toMatchObject({ providerRejectedAt: null, status: "unknown" });
     vi.restoreAllMocks();
   });
 

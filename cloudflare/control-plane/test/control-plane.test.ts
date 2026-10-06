@@ -158,6 +158,42 @@ describe("control-plane migrations and health", () => {
     expect(response.headers.get("access-control-allow-origin")).toBeNull();
   });
 
+  it("answers repeated health checks from one capacity read per data center", async () => {
+    const prepare = vi.spyOn(env.DB, "prepare");
+    const first = await call("/healthz");
+    const second = await call("/healthz");
+    await expect(second.json()).resolves.toEqual(await first.json());
+    expect(prepare).toHaveBeenCalledTimes(1);
+    // The public response stays uncached; only the internal copy expires on
+    // its own, which bounds how far the report can trail D1.
+    expect(second.headers.get("cache-control")).toBe("no-store");
+    const cache = await caches.open("healthz-capacity");
+    const copy = await cache.match(new URL("/__internal/healthz-capacity-row/v1", env.BETTER_AUTH_URL));
+    expect(copy?.headers.get("cache-control")).toBe("max-age=120");
+    prepare.mockRestore();
+  });
+
+  it("reads capacity from D1 when the data-center cache is unavailable", async () => {
+    await env.DB.prepare(
+      "UPDATE managed_endpoint_capacity SET tunnel_count = 950, checked_at = ? WHERE id = 1",
+    ).bind(Date.now()).run();
+    const unavailable = () => Promise.reject(new Error("cache unavailable"));
+    const brokenCache = { delete: unavailable, match: unavailable, put: unavailable } as unknown as Cache;
+    const open = vi.spyOn(caches, "open")
+      .mockImplementationOnce(unavailable)
+      .mockResolvedValueOnce(brokenCache);
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const response = await call("/healthz");
+      expect(response.status).toBe(200);
+      await expect(response.json()).resolves.toMatchObject({
+        ok: true,
+        capacity: { status: "high", tunnels: { used: 950, limit: 1000 } },
+      });
+    }
+    expect(open).toHaveBeenCalledTimes(2);
+    open.mockRestore();
+  });
+
   it("validates capacity tuning variables and keeps safe defaults when they are absent", () => {
     const base = { ...env } as Record<string, unknown>;
     for (const name of [
