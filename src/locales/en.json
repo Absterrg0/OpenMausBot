@@ -3377,7 +3377,7 @@
   "call.live.micBlockedBrowser": "The microphone is blocked. Allow it for this site in your browser, then try again.",
   "call.live.micMissing": "No microphone was found. Connect one, then try again.",
   "call.live.micAppRefused": "The app didn't let this page use the microphone. Open it in your web browser to make the Live call.",
-  "call.live.unsupported": "Live calls need microphone and WebRTC support, which this window does not have.",
+  "call.live.unsupported": "Live calls need a microphone, and this window can't use one. Open OpenMausBot at a secure https address to make the call.",
   "call.live.noOffer": "The call could not start: no connection offer.",
   "call.live.clickToHear": "Click anywhere in the window to hear the call.",
   "call.live.with": "Live with {name}",

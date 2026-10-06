@@ -55,6 +55,7 @@ vi.mock("./MenuMotion", async (importOriginal) => ({
 }));
 
 const { CallButton, CallTargetButton } = await import("./CallView");
+const { configureLiveMedia, liveMedia, resetLiveMedia } = await import("@/lib/live-call-media");
 
 const bot: Bot = {
   id: "pepper", threadId: "t", name: "Pepper", title: "", description: "", color: "green",
@@ -97,7 +98,10 @@ beforeEach(() => {
   fixture.dispatch.mockClear();
   vi.stubGlobal("window", { ogb: { speechStart: () => {} } });
 });
-afterEach(() => { vi.unstubAllGlobals(); });
+afterEach(() => {
+  resetLiveMedia();
+  vi.unstubAllGlobals();
+});
 
 describe("composer call button", () => {
   it("is a Send-sized filled circle with a waveform, labelled for the bot", () => {
@@ -146,11 +150,16 @@ describe("composer call button", () => {
   // call, never a take-turns call that can't start.
   it("is a Live call on a device that can't take turns", () => {
     fixture.dictation = false;
+    const getUserMedia = vi.fn(() => new Promise<MediaStream>(() => {}));
+    configureLiveMedia({ getUserMedia });
     const { html, button } = render();
     expect(button.props["aria-label"]).toBe("Live call with Pepper");
     expect(html).not.toContain("bg-warning");
     button.props.onClick!();
-    expect(fixture.startCall).not.toHaveBeenCalled();
+    // a Live call: the microphone first, then the call bar; no overlay
+    expect(getUserMedia).toHaveBeenCalledTimes(1);
+    expect(liveMedia()).toMatchObject({ phase: "starting", botId: "pepper" });
+    expect(fixture.track).toHaveBeenCalledWith("call_started", { driver: "codex", mode: "live" });
   });
 
   // A server's page (My Cloud) in either app: the call is Live, with no help

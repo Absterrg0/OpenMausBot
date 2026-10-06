@@ -540,24 +540,28 @@ posixOnly("Live call on the person's Cloud", () => {
   it("saves the owner's OpenAI key on the Cloud, and a Live call starts with it", async () => {
     const before = await request("GET", "/api/config");
     expect(before.body).toMatchObject({ cloudHome: true, live: { configured: false } });
-    const refused = await request("POST", "/api/live/session", { botId: "nobody", sdp: SDP, client: "desktop" });
-    expect(refused.status).toBe(404);
+    const created = await request("POST", "/api/bots", { name: "Ada", modelSelection: { instanceId: "claude", model: "claude-fake" } });
+    expect(created.status, JSON.stringify(created.body)).toBe(201);
+    const { id: botId, threadId } = created.body.bot as { id: string; threadId: string };
+
+    // No key yet: the Cloud says so (the page then shows the key form), and
+    // nothing reaches GPT-Live.
+    const refused = await request("POST", "/api/live/session", { botId, sdp: SDP, client: "desktop" });
+    expect(refused, JSON.stringify(refused.body)).toMatchObject({ status: 409, body: { needsKey: true } });
+    expect(live.sessions).toHaveLength(0);
 
     const saved = await request("PUT", "/api/config", { live: { key: OWNER_KEY } });
     expect(saved.status, JSON.stringify(saved.body)).toBe(200);
     expect(saved.body).toMatchObject({ cloudHome: true, live: { configured: true } });
     expect(JSON.stringify(saved.body)).not.toContain(OWNER_KEY);
 
-    const created = await request("POST", "/api/bots", { name: "Ada", modelSelection: { instanceId: "claude", model: "claude-fake" } });
-    expect(created.status, JSON.stringify(created.body)).toBe(201);
-    const { id: botId, threadId } = created.body.bot as { id: string; threadId: string };
-    const before201 = live.sessions.length;
     const started = await request("POST", "/api/live/session", { botId, sdp: SDP, client: "desktop" });
     expect(started.status, JSON.stringify(started.body)).toBe(201);
     expect(started.body).toMatchObject({ call: { botId, threadId }, transport: { type: "webrtc", sdp: expect.any(String) } });
-    // the call reached GPT-Live and its sideband attached
-    const session = live.sessions[before201];
-    expect(session).toBeDefined();
+    // the call reached GPT-Live with the owner's own key, and its sideband attached
+    expect(live.sessions).toHaveLength(1);
+    const [session] = live.sessions;
+    expect(session.key).toBe(OWNER_KEY);
     await live.waitForAttach(session.id);
 
     const ended = await request("POST", "/api/live/call/end", { callId: started.body.call.callId });

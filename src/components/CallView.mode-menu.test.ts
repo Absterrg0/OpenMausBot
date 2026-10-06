@@ -99,14 +99,20 @@ describe("the call button", () => {
     expect(onStart).toHaveBeenCalledWith("live");
   });
 
-  it("asks for a key instead of calling when Live has none", () => {
+  // The microphone comes first, even with no key: a page that can't have
+  // one says so before anyone pastes a key. The harness's "no key" answer
+  // (needsKey) then opens the key form.
+  it("asks for the microphone before the key when Live has none", () => {
     fixture.liveConfigured = false;
     setCallMode("live");
+    const getUserMedia = vi.fn(() => new Promise<MediaStream>(() => {}));
+    configureLiveMedia({ getUserMedia });
     const onStart = vi.fn();
     pressPhone(onStart);
-    expect(liveMedia().phase).toBe("idle");
-    expect(currentCall()).toBeNull();
-    expect(onStart).not.toHaveBeenCalled();
+    expect(getUserMedia).toHaveBeenCalledTimes(1);
+    expect(liveMedia()).toMatchObject({ phase: "starting", botId: "atlas", threadId: "thread-atlas" });
+    expect(renderButton()).not.toContain("OpenAI API key");
+    expect(onStart).toHaveBeenCalledWith("live");
   });
 
   it("hangs up this window's Live call", () => {
@@ -221,14 +227,16 @@ describe("the call mode menu", () => {
     };
     const markup = renderToStaticMarkup(createElement(CallModeMenu, { id: "m", mode: "live", turnsUnavailable, onChoose: vi.fn(), onClose: vi.fn() }));
     const [turns, live] = markup.split('role="menuitemradio"').slice(1);
-    expect(turns).toMatch(/^ aria-checked="false" disabled=""/);
+    // aria-disabled, not disabled: the arrow keys still reach it and its reason
+    expect(turns).toMatch(/^ aria-checked="false" aria-disabled="true"/);
+    expect(turns).not.toContain('disabled=""');
     expect(turns).toContain(">Take turns<");
     expect(turns).toContain("Calls where you take turns need the Mac app. They listen with on-device speech recognition, which only the Mac app has.");
     expect(turns).not.toContain("Listening stays on this computer");
     expect(live).toMatch(/^ aria-checked="true"/);
-    expect(live).not.toContain('disabled=""');
+    expect(live).not.toMatch(/aria-disabled="true"|disabled=""/);
     // where it can take turns, both modes can be picked
-    expect(renderToStaticMarkup(createElement(CallModeMenu, { id: "m", mode: "turns", onChoose: vi.fn(), onClose: vi.fn() }))).not.toContain('disabled=""');
+    expect(renderToStaticMarkup(createElement(CallModeMenu, { id: "m", mode: "turns", onChoose: vi.fn(), onClose: vi.fn() }))).not.toMatch(/aria-disabled="true"|disabled=""/);
   });
 
   it("reports the chosen mode", () => {

@@ -16,7 +16,7 @@ const TURNS_NEED_MAC: CallCapabilityHelp = {
  * leaving would leave the bot being called, and this page's call is Live. */
 const TURNS_ON_THIS_COMPUTER: CallCapabilityHelp = {
   label: "Calls where you take turns work on This computer",
-  reason: "They listen with your Mac's on-device speech recognition, which a server's page can't use.",
+  reason: "They listen with your Mac's own speech recognition, which only This computer can use.",
 };
 
 /** Explain why this renderer cannot take turns (or start a call at all).
