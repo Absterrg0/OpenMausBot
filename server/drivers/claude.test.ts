@@ -390,6 +390,40 @@ describe("ClaudeDriver.decodeConfig", () => {
   );
 
   it.skipIf(process.platform === "win32")(
+    "keeps a large non-ASCII ask whole across socket reads",
+    async () => {
+      const dir = mkdtempSync(join(tmpdir(), "omb-broker-utf8-"));
+      const socketPath = join(dir, "broker.sock");
+      const asks: Array<{ input: unknown }> = [];
+      const broker = await createPermissionBroker({
+        socketPaths: [socketPath],
+        onAsk: (ask) => asks.push(ask),
+        onResolve: () => {},
+      });
+      try {
+        // A Write ask carries the whole file, so one line spans many reads,
+        // and most read boundaries fall inside a three-byte character.
+        const content = "中文ok€".repeat(150_000);
+        const conn = connect(socketPath);
+        await new Promise<void>((resolve, reject) => {
+          conn.on("connect", resolve);
+          conn.on("error", reject);
+        });
+        conn.write(JSON.stringify({ t: "ask", id: "ask-utf8", tool: "Write", input: { file_path: "notes.md", content } }) + "\n");
+        await expect.poll(() => asks.length, { timeout: 20_000 }).toBe(1);
+        const received = (asks[0]!.input as { content: string }).content;
+        expect(received.includes("\uFFFD")).toBe(false);
+        expect(received === content).toBe(true);
+        conn.destroy();
+      } finally {
+        broker.close();
+        rmSync(dir, { recursive: true, force: true });
+      }
+    },
+    30_000,
+  );
+
+  it.skipIf(process.platform === "win32")(
     "rejects instead of returning an occupied path when every candidate is unavailable",
     async () => {
       const dir = mkdtempSync(join(tmpdir(), "omb-broker-unavailable-"));
