@@ -39,6 +39,13 @@ import kotlinx.coroutines.flow.asStateFlow
  * a previous session after stop/start; an attempt counter discards callbacks
  * from a superseded engine while the same session degrades.
  *
+ * A client error from the recognizer is a failed engine, not the user letting
+ * go of the mic. Our own cancel already sets [stopping] before
+ * [SpeechRecognizer.cancel], so that callback is ignored. An empty result
+ * before the recognizer is ready fails the same way. An empty result after it
+ * was ready is silence, and composer dictation keeps listening until the mic
+ * is pressed again.
+ *
  * Bind to the chat screen's [LifecycleOwner] (the Activity). [onStop] covers
  * backgrounding — the Android shape of iOS `scenePhase != .active` — without
  * registering a permanent ProcessLifecycle observer that would leak across
@@ -78,6 +85,8 @@ class SpeechDictation internal constructor(
     private var generation: Int = 0
     private var attempt: Int = 0
     private var stopping: Boolean = false
+    /** True while an empty result is already opening the next listen. */
+    private var restarting: Boolean = false
 
     private val _isListening = MutableStateFlow(false)
     private val _isStarting = MutableStateFlow(false)
@@ -224,10 +233,12 @@ class SpeechDictation internal constructor(
     ) {
         if (gen != generation || stopping) {
             _isStarting.value = false
+            _isListening.value = false
             return
         }
         if (openerIndex >= openers.size) {
             _isStarting.value = false
+            _isListening.value = false
             _error.value = NO_RECOGNIZER_MESSAGE
             return
         }
@@ -248,6 +259,7 @@ class SpeechDictation internal constructor(
         if (!focus.request(onInterrupted = { onAudioInterrupted(gen) })) {
             next.destroy()
             _isStarting.value = false
+            _isListening.value = false
             _error.value = START_FAILED_MESSAGE
             return
         }
@@ -256,6 +268,10 @@ class SpeechDictation internal constructor(
         val attemptId = attempt
         engine = next
         val language = locales[localeIndex].toLanguageTag()
+        // Listening is true before start returns so a result or error delivered
+        // on this same call — a recognizer that ends as it opens — is not
+        // dropped, and is not undone by the lines after start().
+        _isListening.value = true
         try {
             // Never force EXTRA_PREFER_OFFLINE on the default fallback — that
             // would refuse the network path iOS keeps open when on-device is off.
@@ -276,10 +292,10 @@ class SpeechDictation internal constructor(
             if (gen != generation || stopping) {
                 teardownLocked(abandonFocus = true)
                 _isStarting.value = false
+                _isListening.value = false
                 return
             }
             _isStarting.value = false
-            _isListening.value = true
         } catch (_: Exception) {
             teardownLocked(abandonFocus = true)
             // startListening threw — try the next locale, then the next engine.
@@ -318,6 +334,57 @@ class SpeechDictation internal constructor(
         attemptLocked(openers, locales, openerIndex, localeIndex, gen)
     }
 
+    /** The recognizer failed. Try the next engine, or say so when none remain. */
+    private fun runtimeFailureLocked(
+        openers: List<EngineOpener>,
+        locales: List<Locale>,
+        openerIndex: Int,
+        gen: Int,
+    ) {
+        if (gen != generation || stopping) return
+        if (openerIndex + 1 < openers.size) {
+            degradeLocked(
+                openers,
+                locales,
+                openerIndex = openerIndex + 1,
+                localeIndex = 0,
+                gen = gen,
+            )
+        } else {
+            _error.value = TRANSCRIBE_FAILED_MESSAGE
+            stopLocked()
+        }
+    }
+
+    /**
+     * The recognizer finalized with no words after it was actually listening.
+     * Open the same engine again and leave the mic pressed. A result that
+     * arrives again before this call returns is a broken engine, not silence,
+     * and falls through to the next recognizer.
+     */
+    private fun keepListeningLocked(
+        openers: List<EngineOpener>,
+        locales: List<Locale>,
+        openerIndex: Int,
+        localeIndex: Int,
+        gen: Int,
+    ) {
+        if (gen != generation || stopping) return
+        if (restarting) {
+            runtimeFailureLocked(openers, locales, openerIndex, gen)
+            return
+        }
+        restarting = true
+        try {
+            teardownLocked(abandonFocus = true)
+            _isListening.value = true
+            _isStarting.value = true
+            attemptLocked(openers, locales, openerIndex, localeIndex, gen)
+        } finally {
+            restarting = false
+        }
+    }
+
     private inner class EngineListener(
         private val gen: Int,
         private val attemptId: Int,
@@ -326,8 +393,17 @@ class SpeechDictation internal constructor(
         private val openerIndex: Int,
         private val localeIndex: Int,
     ) : SpeechEngine.Listener {
+        private var ready: Boolean = false
+
         private fun live(): Boolean =
             gen == generation && attemptId == attempt && !stopping
+
+        override fun onReady() {
+            synchronized(lock) {
+                if (!live() || !_isListening.value) return
+                ready = true
+            }
+        }
 
         override fun onPartial(text: String) {
             synchronized(lock) {
@@ -339,9 +415,20 @@ class SpeechDictation internal constructor(
         override fun onFinal(text: String) {
             synchronized(lock) {
                 if (!live() || !_isListening.value) return
-                if (text.isNotEmpty()) _transcript.value = Dictation.updateTranscript(_transcript.value, text)
-                // Composer dictation does not wait for a later final beyond
-                // this — matching iOS stopping when the recognizer finalizes.
+                if (text.isEmpty()) {
+                    // onResults ended this listen. An empty bundle before the
+                    // recognizer was ready is the immediate failure that used
+                    // to release the mic. After it was ready, keep listening.
+                    if (!ready) {
+                        runtimeFailureLocked(openers, locales, openerIndex, gen)
+                    } else {
+                        keepListeningLocked(openers, locales, openerIndex, localeIndex, gen)
+                    }
+                    return
+                }
+                _transcript.value = Dictation.updateTranscript(_transcript.value, text)
+                // A phrase with words is the end of this listen, matching iOS
+                // stopping when the recognizer finalizes.
                 stopLocked()
             }
         }
@@ -365,22 +452,8 @@ class SpeechDictation internal constructor(
                             gen = gen,
                         )
                     }
-                    SpeechEngine.ErrorKind.FAILED -> {
-                        if (openerIndex + 1 < openers.size) {
-                            // On-device (or any earlier opener) failed at runtime —
-                            // degrade to the next factory opener (default recognizer).
-                            degradeLocked(
-                                openers,
-                                locales,
-                                openerIndex = openerIndex + 1,
-                                localeIndex = 0,
-                                gen = gen,
-                            )
-                        } else {
-                            _error.value = TRANSCRIBE_FAILED_MESSAGE
-                            stopLocked()
-                        }
-                    }
+                    SpeechEngine.ErrorKind.FAILED ->
+                        runtimeFailureLocked(openers, locales, openerIndex, gen)
                 }
             }
         }
@@ -423,6 +496,8 @@ interface SpeechEngine {
     fun destroy()
 
     interface Listener {
+        /** The recognizer can hear. Empty results before this are a failed start. */
+        fun onReady() {}
         fun onPartial(text: String)
         fun onFinal(text: String)
         fun onError(kind: ErrorKind)
@@ -481,6 +556,10 @@ internal class PlatformSpeechEngine(
     }
 
     override fun cancel() {
+        // Drop the listener first. cancel() reports ERROR_CLIENT, and that
+        // must not be read as the engine failing — the controller already
+        // decided to stop.
+        listener = null
         try {
             recognizer.cancel()
         } catch (_: Exception) {
@@ -518,7 +597,9 @@ internal class PlatformSpeechEngine(
         }
 
     private inner class PlatformListener : RecognitionListener {
-        override fun onReadyForSpeech(params: Bundle?) = Unit
+        override fun onReadyForSpeech(params: Bundle?) {
+            listener?.onReady()
+        }
         override fun onBeginningOfSpeech() = Unit
         override fun onRmsChanged(rmsdB: Float) = Unit
         override fun onBufferReceived(buffer: ByteArray?) = Unit
@@ -536,15 +617,7 @@ internal class PlatformSpeechEngine(
         }
 
         override fun onError(error: Int) {
-            val kind = when (error) {
-                SpeechRecognizer.ERROR_CLIENT -> SpeechEngine.ErrorKind.CANCELLED
-                SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS -> SpeechEngine.ErrorKind.PERMISSION
-                SpeechRecognizer.ERROR_LANGUAGE_NOT_SUPPORTED,
-                SpeechRecognizer.ERROR_LANGUAGE_UNAVAILABLE,
-                -> SpeechEngine.ErrorKind.LANGUAGE
-                else -> SpeechEngine.ErrorKind.FAILED
-            }
-            listener?.onError(kind)
+            listener?.onError(speechErrorKind(error))
         }
 
         private fun firstResult(bundle: Bundle?): String? {
@@ -554,6 +627,36 @@ internal class PlatformSpeechEngine(
     }
 }
 
+/**
+ * Maps a [SpeechRecognizer] error onto the controller's kinds.
+ *
+ * [SpeechRecognizer.ERROR_CLIENT] is not a user cancel. The platform reports
+ * it when the on-device recognizer cannot start (no model, bind failure) and
+ * also when this process calls cancel. Cancel clears the listener first.
+ * Treating a spontaneous client error as cancel released the mic and skipped
+ * the default recognizer.
+ */
+internal fun speechErrorKind(error: Int): SpeechEngine.ErrorKind = when (error) {
+    SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS -> SpeechEngine.ErrorKind.PERMISSION
+    SpeechRecognizer.ERROR_LANGUAGE_NOT_SUPPORTED,
+    SpeechRecognizer.ERROR_LANGUAGE_UNAVAILABLE,
+    -> SpeechEngine.ErrorKind.LANGUAGE
+    else -> SpeechEngine.ErrorKind.FAILED
+}
+
+/** Transient, not exclusive: the recognizer has to be able to open the mic. */
+internal const val DICTATION_FOCUS_GAIN: Int = AudioManager.AUDIOFOCUS_GAIN_TRANSIENT
+
+/** Media, not voice-communication, so a call's communication focus is not fought. */
+internal const val DICTATION_FOCUS_USAGE: Int = AudioAttributes.USAGE_MEDIA
+
+/**
+ * True only for a permanent loss. Transient loss is the recognizer taking the
+ * microphone; stopping on it released the button as soon as it was pressed.
+ */
+internal fun dictationFocusLossStops(change: Int): Boolean =
+    change == AudioManager.AUDIOFOCUS_LOSS
+
 internal class DictationAudioFocusGate(
     context: Context,
 ) : DictationAudioFocus {
@@ -561,20 +664,15 @@ internal class DictationAudioFocusGate(
     private var focusRequest: AudioFocusRequest? = null
 
     private val attributes: AudioAttributes = AudioAttributes.Builder()
-        .setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
+        .setUsage(DICTATION_FOCUS_USAGE)
         .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
         .build()
 
     override fun request(onInterrupted: () -> Unit): Boolean {
-        val request = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_EXCLUSIVE)
+        val request = AudioFocusRequest.Builder(DICTATION_FOCUS_GAIN)
             .setAudioAttributes(attributes)
             .setOnAudioFocusChangeListener { change ->
-                when (change) {
-                    AudioManager.AUDIOFOCUS_LOSS,
-                    AudioManager.AUDIOFOCUS_LOSS_TRANSIENT,
-                    AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK,
-                    -> onInterrupted()
-                }
+                if (dictationFocusLossStops(change)) onInterrupted()
             }
             .build()
         focusRequest = request

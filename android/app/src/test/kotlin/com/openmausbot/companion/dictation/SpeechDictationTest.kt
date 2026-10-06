@@ -1,5 +1,7 @@
 package com.openmausbot.companion.dictation
 
+import android.media.AudioManager
+import android.speech.SpeechRecognizer
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.LifecycleRegistry
@@ -399,6 +401,89 @@ class SpeechDictationTest {
     }
 
     @Test
+    fun transientFocusLossDoesNotStopDictation() {
+        assertFalse(dictationFocusLossStops(AudioManager.AUDIOFOCUS_LOSS_TRANSIENT))
+        assertFalse(dictationFocusLossStops(AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK))
+        assertTrue(dictationFocusLossStops(AudioManager.AUDIOFOCUS_LOSS))
+        assertEquals(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT, DICTATION_FOCUS_GAIN)
+        assertEquals(android.media.AudioAttributes.USAGE_MEDIA, DICTATION_FOCUS_USAGE)
+    }
+
+    @Test
+    fun clientErrorIsAFailedEngineNotACancel() {
+        assertEquals(SpeechEngine.ErrorKind.FAILED, speechErrorKind(SpeechRecognizer.ERROR_CLIENT))
+        assertEquals(
+            SpeechEngine.ErrorKind.PERMISSION,
+            speechErrorKind(SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS),
+        )
+        assertEquals(
+            SpeechEngine.ErrorKind.LANGUAGE,
+            speechErrorKind(SpeechRecognizer.ERROR_LANGUAGE_UNAVAILABLE),
+        )
+    }
+
+    @Test
+    fun emptyFinalBeforeReadyDegradesToTheNextRecognizer() {
+        // The on-device recognizer ends as it opens. That used to release the
+        // mic with no message and never try the default recognizer.
+        val fake = FakeEngineFactory(
+            FakeEngineFactory.OpenerSpec(isOnDevice = true),
+            FakeEngineFactory.OpenerSpec(isOnDevice = false),
+        )
+        val dictation = newDictation(fake, granted = true)
+        dictation.toggle(capturing = "hello")
+        fake.engine!!.listener!!.onFinal("")
+        assertTrue(dictation.isListening.value)
+        assertEquals(2, fake.created)
+        assertFalse(fake.engine!!.isOnDevice)
+        assertNull(dictation.error.value)
+        assertEquals("", dictation.transcript.value)
+    }
+
+    @Test
+    fun emptyFinalBeforeReadyOnTheOnlyEngineSurfaces() {
+        val fake = FakeEngineFactory()
+        val dictation = newDictation(fake, granted = true)
+        dictation.toggle(capturing = "hello")
+        fake.engine!!.listener!!.onFinal("")
+        assertFalse(dictation.isListening.value)
+        assertEquals(SpeechDictation.TRANSCRIBE_FAILED_MESSAGE, dictation.error.value)
+    }
+
+    @Test
+    fun emptyFinalAfterReadyKeepsTheMicPressed() {
+        val fake = FakeEngineFactory()
+        val dictation = newDictation(fake, granted = true)
+        dictation.toggle(capturing = "hello")
+        val first = fake.engine!!
+        first.listener!!.onReady()
+        first.listener!!.onFinal("")
+        assertTrue(dictation.isListening.value)
+        assertNull(dictation.error.value)
+        assertEquals("", dictation.transcript.value)
+        assertEquals(2, fake.created)
+        assertEquals(1, first.cancels)
+        // The new listen is a fresh session of the same engine, still waiting.
+        fake.engine!!.listener!!.onReady()
+        fake.engine!!.listener!!.onPartial("logs")
+        assertEquals("logs", dictation.transcript.value)
+        assertTrue(dictation.isListening.value)
+    }
+
+    @Test
+    fun recognizerThatEndsAgainWhileRestartingFallsThrough() {
+        val fake = FakeEngineFactory(
+            FakeEngineFactory.OpenerSpec(isOnDevice = true, emptyFinalOnStart = true),
+            FakeEngineFactory.OpenerSpec(isOnDevice = false),
+        )
+        val dictation = newDictation(fake, granted = true)
+        dictation.toggle(capturing = "spin")
+        assertTrue(dictation.isListening.value)
+        assertFalse(fake.engine!!.isOnDevice)
+        assertNull(dictation.error.value)
+    }
+
+    @Test
     fun generationBumpsAcrossStopAndRestart() {
         val fake = FakeEngineFactory()
         val dictation = newDictation(fake, granted = true)
@@ -457,6 +542,7 @@ class SpeechDictationTest {
             val isOnDevice: Boolean = false,
             val failOpen: Boolean = false,
             val failStart: Boolean = false,
+            val emptyFinalOnStart: Boolean = false,
         )
 
         private val engines = mutableListOf<FakeEngine>()
@@ -469,8 +555,11 @@ class SpeechDictationTest {
             return list.map { spec ->
                 EngineOpener(isOnDevice = spec.isOnDevice) {
                     if (spec.failOpen) error("open failed")
-                    FakeEngine(isOnDevice = spec.isOnDevice, failStart = spec.failStart)
-                        .also { engines += it }
+                    FakeEngine(
+                        isOnDevice = spec.isOnDevice,
+                        failStart = spec.failStart,
+                        emptyFinalOnStart = spec.emptyFinalOnStart,
+                    ).also { engines += it }
                 }
             }
         }
@@ -479,6 +568,7 @@ class SpeechDictationTest {
     private class FakeEngine(
         override val isOnDevice: Boolean,
         private val failStart: Boolean = false,
+        private val emptyFinalOnStart: Boolean = false,
     ) : SpeechEngine {
         var listener: SpeechEngine.Listener? = null
             private set
@@ -493,6 +583,10 @@ class SpeechDictationTest {
             if (failStart) error("start failed")
             lastRequest = request
             this.listener = listener
+            if (emptyFinalOnStart) {
+                listener.onReady()
+                listener.onFinal("")
+            }
         }
 
         override fun cancel() {
