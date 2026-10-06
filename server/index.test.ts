@@ -929,6 +929,23 @@ beforeAll(async () => {
           },
         }));
       }
+      // Google's answer when the connection lacks a permission the action
+      // needs, as Composio relays it (MOCA-273).
+      const calledTool = body && typeof body === "object" ? ((body as { params?: { name?: unknown } }).params?.name) : undefined;
+      if (calledTool === "GMAIL_CREATE_FILTER") {
+        res.writeHead(200, { "content-type": "application/json" });
+        return res.end(JSON.stringify({
+          jsonrpc: "2.0",
+          id: requestId,
+          result: {
+            content: [{ type: "text", text: JSON.stringify({
+              successful: false,
+              error: "403 Forbidden: {\"error\":{\"code\":403,\"message\":\"Request had insufficient authentication scopes.\",\"status\":\"PERMISSION_DENIED\",\"details\":[{\"reason\":\"ACCESS_TOKEN_SCOPE_INSUFFICIENT\",\"domain\":\"googleapis.com\"}]}}",
+            }) }],
+            isError: true,
+          },
+        }));
+      }
       res.writeHead(200, { "content-type": "application/json" });
       return res.end(JSON.stringify({
         jsonrpc: "2.0",
@@ -11024,6 +11041,35 @@ describe("harness HTTP API", () => {
       await new Promise((resolve) => setTimeout(resolve, 200));
     }
   };
+
+  it("explains a missing Google permission instead of passing the bare 403 to the bot", async () => {
+    // MOCA-273: GMAIL_CREATE_FILTER needs gmail.settings.basic, which the
+    // default Composio Gmail connection never asks for. Reconnecting cannot
+    // fix it, so the bot must learn what can, and stop retrying.
+    expect((await api("PUT", "/api/config", { composio: { apiKey: "" } })).status).toBe(200);
+    const bot = (await api("POST", "/api/bots")).body.bot;
+    try {
+      expect((await api("PATCH", `/api/bots/${bot.id}`, { composio: true })).status).toBe(200);
+      const token = await mintTestCapability(BASE, bot.id, bot.threadId, { kind: "connectors" });
+      const response = await fetch(`${BASE}/api/internal/connectors/mcp`, {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
+        body: JSON.stringify({ jsonrpc: "2.0", id: 21, method: "tools/call", params: { name: "GMAIL_CREATE_FILTER", arguments: {} } }),
+      });
+      expect(response.status).toBe(200);
+      const body = await response.json() as { result: { content: Array<{ text: string }>; isError?: boolean } };
+      const texts = body.result.content.map((item) => item.text);
+      // Google's own error is still there, untouched.
+      expect(texts[0]).toContain("ACCESS_TOKEN_SCOPE_INSUFFICIENT");
+      expect(body.result.isError).toBe(true);
+      const hint = texts.slice(1).join("\n");
+      expect(hint).toContain("https://www.googleapis.com/auth/gmail.settings.basic");
+      expect(hint).toContain("Reconnecting");
+      expect(hint).toContain("Do not retry");
+    } finally {
+      await api("DELETE", `/api/bots/${bot.id}`);
+    }
+  });
 
   it("enforces per-bot connector tool grants on relayed tool calls", async () => {
     // Clear any project key an earlier test left behind, so the relay uses
