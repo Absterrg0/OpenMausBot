@@ -3603,5 +3603,7 @@
   "botAccess.tools.busy": "Wait until this bot finishes all active tasks before changing its tool selection.",
   "botAccess.tools.saving": "Saving tool selection…",
   "botAccess.tools.save": "Save tool selection",
-  "botAccess.tools.examples": "Examples and engine support"
+  "botAccess.tools.examples": "Examples and engine support",
+  "screenLoad.failed": "This screen couldn’t load. Reload the window to open it.",
+  "screenLoad.reload": "Reload"
 }
