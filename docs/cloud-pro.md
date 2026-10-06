@@ -283,18 +283,22 @@ the Cloud's address.
   person pastes an OpenAI API key from a project with GPT-Live access. It is
   saved on the Cloud (`PUT /api/config`, as a server page has no credential
   store), and the Live copy says so.
-- **The voice knows where it runs.** Like the bot's own system prompt, it
-  is told it runs on the person's My Cloud, not on their own computer
-  (`liveInstructions` in `server/live-call.ts`).
-- **A busy line names the browser.** A call started from a web browser says
-  so (`client: "web"`). A second call started in another window is told
-  "Another Live call is running in a web browser. Hang up there first."
-  instead of "on this computer", and that window's call bar reads "Ada is on
-  a Live call from a web browser". The phone apps show a client they don't
-  know as "another device".
+- **The voice knows where it runs.** In the bot's own words
+  (`CLOUD_HOME_PLACE` in `server/system-prompt.ts`), it is told it runs on
+  the person's My Cloud, not on their own computer, and that the bot changes
+  things on My Cloud (`liveInstructions` in `server/live-call.ts`).
+- **A busy line names the app, never "this computer".** A Cloud is reachable
+  from any machine, so a call is named by the app that holds it: a web
+  browser (`client: "web"`) or the desktop app (`"desktop"`, on This
+  computer or My Cloud). A second call is told "Another Live call is running
+  in a web browser. Hang up there first." or "…in the desktop app…", and a
+  browser's call shows in other windows' call bars as "Ada is on a Live call
+  from a web browser". The phone apps show a client they don't know as
+  "another device".
 - **Take turns stays on the Mac.** Take-turns calls listen with the Mac app's
   on-device speech recognition, which a Cloud's page can't use. On a Cloud,
-  the call with one bot is a Live call, and a room has no call.
+  the call with one bot is a Live call, and a room has no call
+  (`effectiveCallMode` in `src/lib/call-mode.ts`, `GroupCallButton`).
 
 ### Open in the app: `openmausbot://cloud`
 

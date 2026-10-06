@@ -144,6 +144,22 @@ describe("one name per thing", () => {
     expect(staleKeys).toEqual([]);
   });
 
+  // The public guide (apps/docs, published from main) calls the person's
+  // Cloud and the plan what the app calls them. Only those names are checked
+  // there: its Boat and Works on pages wait for their own rewrite.
+  it("the public docs name My Cloud and OpenMausBot Cloud as the app does", () => {
+    const cloudNames = RETIRED.filter(([, , use]) => /My Cloud|OpenMausBot Cloud/.test(use));
+    const pages = (dir: string): string[] => readdirSync(dir).flatMap((name) => {
+      const path = join(dir, name);
+      return statSync(path).isDirectory() ? pages(path) : /\.mdx?$/.test(name) ? [path] : [];
+    });
+    const offending = pages(join(ROOT, "apps/docs/content")).flatMap((path) =>
+      readFileSync(path, "utf8").split("\n").flatMap((text, index) => cloudNames
+        .filter(([, pattern]) => pattern.test(text))
+        .map(([word, , use]) => `${relative(ROOT, path).split("\\").join("/")}:${index + 1}: "${word}" (say ${use})`)));
+    expect(offending).toEqual([]);
+  });
+
   it("copy that points at a control names it exactly as the control is labelled", () => {
     const e = en as Record<string, string>;
     const source = (file: string) => readFileSync(join(ROOT, file), "utf8");

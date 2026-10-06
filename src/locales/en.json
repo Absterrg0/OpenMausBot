@@ -3369,7 +3369,7 @@
   "call.live.endedDeleted": "Call ended: the chat was deleted.",
   "call.live.endedShutdown": "Call ended: OpenMausBot restarted.",
   "call.live.endedSignedOut": "Call ended: you were signed out.",
-  "call.live.busy.desktop": "Another Live call is running on this computer. Hang up there first.",
+  "call.live.busy.desktop": "Another Live call is running in the desktop app. Hang up there first.",
   "call.live.busy.web": "Another Live call is running in a web browser. Hang up there first.",
   "call.live.busy.ios": "Another Live call is running on an iPhone. Hang up there first.",
   "call.live.busy.android": "Another Live call is running on an Android phone. Hang up there first.",

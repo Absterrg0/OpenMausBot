@@ -108,13 +108,17 @@ export function computerPrompt(kind: ComputerPromptKind | null): string {
   return COMPUTER_PARAGRAPH[kind] + SIGN_IN_PROMPT;
 }
 
+/** Where a Cloud home's bot runs, in the one wording its prompts share: the
+ * bot's own (cloudHomePrompt) and its Live call voice's (server/live-call.ts). */
+export const CLOUD_HOME_PLACE = "the user's My Cloud, their always-on OpenMausBot in the cloud, not on their own computer";
+
 /** Every turn on a Cloud home (server/cloud-home.ts). The bot runs in the
  * cloud, so asked about the person's own computer it says what is true instead
  * of sending them to set up places that cannot exist there. Their Mac is
  * reachable only when they lend it (docs/cloud-pro.md), through the
  * shared-computer tools, so only a turn that has those tools is told to use them. */
 export function cloudHomePrompt(sharedComputerTools: boolean): string {
-  return " You run on the user's My Cloud, their always-on OpenMausBot in the cloud, not on their own computer." + (sharedComputerTools
+  return ` You run on ${CLOUD_HOME_PLACE}.` + (sharedComputerTools
     ? " If they ask for something on their own Mac or PC, check list_shared_computers: a Mac they lend to My Cloud is reachable through shared_computer, within the folders and apps it allows. If none is lent and online, say so in one sentence: they can turn on Let My Cloud use this Mac under Settings → OpenMausBot Cloud in the desktop app on that Mac."
     : " You cannot see or use their Mac or PC, its screen or its files from here. If they ask for something on it, say so in one sentence.")
     + " Offer what works here: the built-in browser and their cloud computer, a desktop in the cloud. Call it their cloud computer, as the app does. Never ask them to set up this computer or a Local VM; neither exists here.";
