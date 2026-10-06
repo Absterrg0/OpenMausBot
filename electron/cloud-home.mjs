@@ -125,6 +125,14 @@ export function isCloudHomeEntry(entry, { homeOrigin = null, remembered = null }
   return Boolean(entry?.origin) && (entry.origin === homeOrigin || entry.origin === remembered?.origin);
 }
 
+/** The saved server listed as "My Cloud" (withCloudHome): all this app knows
+ * of the person's Cloud before their saved sign-in has been restored at
+ * launch. A hint, never a verified Cloud. */
+export function savedCloudHomeOrigin(state) {
+  const saved = Array.isArray(state?.environments) ? state.environments : [];
+  return saved.find((entry) => entry?.name === CLOUD_HOME_NAME)?.origin ?? null;
+}
+
 /** Validate `POST /api/cloud/desktop/pairing` for the machine it was asked for. */
 export function parsePairingGrant(input, origin, now) {
   if (!input || typeof input !== "object" || input.cloudContractVersion !== 1 || input.origin !== origin) return null;

@@ -674,7 +674,7 @@ function mainIpc(extra = {}) {
   localOrigin.setLocalOrigin(LOCAL);
   const describe = dest => ({ id: dest.id, name: dest.name, origin: dest.origin, kind: dest.kind, grant: typeof dest.grant, grows: typeof dest.grow === "function" });
   const context = vm.createContext({
-    ipcMain: { handle: (channel, handler) => handlers.set(channel, handler) },
+    ipcMain: { handle: (channel, handler) => handlers.set(channel, handler), on: () => {} },
     senderIsLocal: localOrigin.isLocalSender, workspaceSenderAllowed: environments.workspaceSenderAllowed, cloudPageSenderAllowed, moveSenderDestination,
     activeEnvironment: environments.activeEnvironment, rendererOrigin: () => LOCAL, desktopRemoteAccess: false,
     mainWindow: { isDestroyed: () => false, webContents: localContents },
@@ -854,7 +854,7 @@ test("the Cloud's setup checklist can open the lending switch here, and nothing 
   const cloudFrame = { url: `${ORIGIN}/` }, cloudContents = { mainFrame: cloudFrame };
   localOrigin.setLocalOrigin(LOCAL);
   const context = vm.createContext({
-    ipcMain: { handle: (channel, handler) => handlers.set(channel, handler) },
+    ipcMain: { handle: (channel, handler) => handlers.set(channel, handler), on: () => {} },
     senderIsLocal: localOrigin.isLocalSender, workspaceSenderAllowed: environments.workspaceSenderAllowed, cloudPageSenderAllowed,
     activeEnvironment: environments.activeEnvironment, rendererOrigin: () => LOCAL, desktopRemoteAccess: false,
     mainWindow: { isDestroyed: () => false, webContents: localContents },
@@ -897,7 +897,7 @@ test("Settings on the person's own Cloud shows the plan read only, and can only 
   const account = { status: "connected", account: { id: "a1", email: "person@example.test" }, deviceId: "d1",
     entitlement: { plan: "pro", tier: "max", status: "active", expiresAt: 1, version: 1 }, machine: { status: "ready", origin: ORIGIN } };
   const context = vm.createContext({
-    ipcMain: { handle: (channel, handler) => handlers.set(channel, handler) },
+    ipcMain: { handle: (channel, handler) => handlers.set(channel, handler), on: () => {} },
     senderIsLocal: localOrigin.isLocalSender, workspaceSenderAllowed: environments.workspaceSenderAllowed, cloudPageSenderAllowed,
     activeEnvironment: environments.activeEnvironment, rendererOrigin: () => LOCAL, desktopRemoteAccess: false,
     mainWindow: { isDestroyed: () => false, webContents: cloudContents },

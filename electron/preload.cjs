@@ -40,11 +40,18 @@ const isLocalPage = !localOrigin || location.origin === localOrigin;
 // its Settings → Backups); its Copy opens this computer's Settings on that
 // server's copy, except on the person's own verified Cloud. cloudLending and
 // cloudPlan: only that verified Cloud (its setup checklist, its plan line).
-// updater: this app's updates, answered on that verified Cloud too, so the
-// person sees "Restart to update" there; a remote page restarts only on a click.
 /** A saved server's id, forwarded only from this computer's own page. */
 const savedServer = id => isLocalPage && typeof id === "string" && /^[\w-]{1,64}$/.test(id) ? [id] : [];
-const REMOTE_SAFE = new Set(["platform", "getCapabilities", "onCapabilitiesChanged", "applySkin", "setUnreadCount", "permStatus", "workspaces", "cloudMove", "cloudLending", "cloudPlan", "updater"]);
+const REMOTE_SAFE = new Set(["platform", "getCapabilities", "onCapabilitiesChanged", "applySkin", "setUnreadCount", "permStatus", "workspaces", "cloudMove", "cloudLending", "cloudPlan"]);
+// updater: this app's updates, so the person sees "Restart to update" on My
+// Cloud too; a remote page restarts only on a click. Main says, once as the
+// page loads, whether it answers this page: pages built before it answered My
+// Cloud read the bridge alone as "You're up to date", so no other server's
+// page gets it. Main always answers, false on any doubt.
+function updaterOffered() {
+  try { return ipcRenderer.sendSync("update:offered") === true; } catch { return false; }
+}
+const remoteKeys = isLocalPage ? REMOTE_SAFE : new Set([...REMOTE_SAFE, ...(updaterOffered() ? ["updater"] : [])]);
 
 // Sandboxed preload cannot import TS or sibling modules. Keep this list in
 // parity with shared/workspace-backup-client.ts (covered by the preload test).
@@ -402,5 +409,5 @@ const bridge = {
 
 contextBridge.exposeInMainWorld(
   "ogb",
-  isLocalPage ? bridge : Object.fromEntries(Object.entries(bridge).filter(([key]) => REMOTE_SAFE.has(key))),
+  isLocalPage ? bridge : Object.fromEntries(Object.entries(bridge).filter(([key]) => remoteKeys.has(key))),
 );

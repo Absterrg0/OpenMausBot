@@ -14,6 +14,7 @@ import { completionPatch } from "@/lib/onboarding";
 import { AnthropicEveryClaudeBot, ApiKeyRow, OpenAiCompatUrl, OpenCodeProviderKeys, VpsConnection } from "./ApiKeys";
 import { DecisionModelSettings } from "./DecisionModelSettings";
 import { useUpdaterState } from "@/lib/updater";
+import { brand } from "../lib/brand";
 import { EnginesSettings } from "./EnginesSettings";
 import { LocalComputerSection } from "./LocalComputerSection";
 import { CompanionSection } from "./CompanionSection";
@@ -206,7 +207,8 @@ function ProfileFields() {
 
 /** This app's updates, which download by themselves. Shown once the desktop
  * app answers: on this computer's page and the person's own Cloud page, never
- * on another server's, where its buttons would do nothing. */
+ * on another server's, where its buttons would do nothing. "Ready" names the
+ * app: on My Cloud's Settings it is this app that restarts, not the Cloud. */
 export function UpdatesRow() {
   const s = useUpdaterState();
   const updater = window.ogb?.updater;
@@ -222,8 +224,8 @@ export function UpdatesRow() {
           ? t("settings.updates.preparing")
           : s.status === "downloaded"
             ? s.installMode === "handoff"
-              ? t("settings.updates.readyInstall", { version: s.version ?? "" })
-              : t("settings.updates.ready", { version: s.version ?? "" })
+              ? t("settings.updates.readyInstall", { app: brand().name, version: s.version ?? "" })
+              : t("settings.updates.ready", { app: brand().name, version: s.version ?? "" })
             : s.status === "installing"
               ? s.message ||
                 (s.installMode === "handoff"
