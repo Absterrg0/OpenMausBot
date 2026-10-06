@@ -332,6 +332,7 @@ import {
   roomResponders,
   sectionKey,
   Store,
+  threadTitleFrom,
   titleFromLlm,
   type BotRecord,
   type GroupDefaultResponder,
@@ -10933,6 +10934,9 @@ function routineSourceOwner(run: Pick<RoutineRun, "botId" | "sourceThreadId" | "
       ? { bot, group: undefined, threadId: task.threadId }
       : null;
   }
+  // Without a results snapshot (a run from before every routine reported to
+  // its bot's main thread, or a bot with no visible thread) the chat that
+  // made the routine is the destination.
   const threadId = run.sourceThreadId?.trim();
   if (!threadId) return null;
   // Validate before messagesFor(): Store lazily opens transcript storage, so
@@ -10950,6 +10954,25 @@ function routineSourceOwner(run: Pick<RoutineRun, "botId" | "sourceThreadId" | "
   }
   const group = store.groupByThread(threadId);
   return group?.memberIds.includes(bot.id) ? { bot, group, threadId } : null;
+}
+
+/** There is no durable "main thread" (bot.threadId is only the UI
+ * selection), so a routine reports into the bot's oldest open conversation:
+ * the one it was created with until that is deleted or archived. Deleting
+ * the last one already gives the bot a fresh conversation (Store.deleteTask). */
+function botMainThread(botId: string): string | undefined {
+  const visible = store.tasks(botId).filter((task) => !task.routineRunId);
+  const open = visible.filter((task) => task.archivedAt === undefined);
+  return (open.length ? open : visible).reduce<TaskRecord | undefined>(
+    (oldest, task) => (!oldest || task.createdAt < oldest.createdAt ? task : oldest), undefined,
+  )?.threadId;
+}
+
+/** Routines without a chosen thread used to get an automatic "<name> ·
+ * Results" thread. One nobody renamed is that automatic default, not a
+ * choice: new runs move to the main thread, and the old thread stays. */
+function legacyResultsThread(routineName: string, task: TaskRecord): boolean {
+  return task.title.endsWith(" · Results") || task.title === threadTitleFrom(`${routineName} · Results`);
 }
 
 function routineSourceThread(run: RoutineRun): string | null {
@@ -11192,19 +11215,29 @@ routines = new RoutineManager({
     return Boolean(bot && !bot.hidden && task && !task.routineRunId);
   },
   resolveResultsThread: (routine, forceNew) => {
-    // A trusted chat source is already snapshotted as sourceThreadId on each
-    // run. Keep it distinct: it can belong to a teammate or room, whereas an
-    // explicit resultsThreadId must be a visible task owned by the running bot.
-    if (!forceNew && routineSourceOwner(routine)) return routine.resultsThreadId;
+    // Every run reports into the routine's bot's main thread, wherever the
+    // routine was made (chat, editor, API, or a teammate's request). A run
+    // still executes in its own hidden task, which Run logs and Open run use.
+    // A thread the person chose in "Post results to" keeps winning.
+    const bot = store.bot(routine.botId);
+    const chosen = !forceNew && routine.resultsThreadId && bot && !bot.hidden
+      ? store.taskByThread(bot.id, routine.resultsThreadId) : undefined;
+    // On a Cloud home a routine reports only where its writer may write: a
+    // guest's (or nobody's) keeps a results conversation opened as theirs.
+    const opener = CLOUD_HOME ? routineOpener(routine.id) : undefined;
+    const main = bot && !bot.hidden ? botMainThread(bot.id) : undefined;
+    const mainAllowed = main && (!CLOUD_HOME || (opener === CLOUD_OWNER_KEY && !cloudGuestOpened(main)));
+    const keepChosen = chosen && !chosen.routineRunId && !(mainAllowed && legacyResultsThread(routine.name, chosen));
+    if (keepChosen) return chosen.threadId;
+    if (mainAllowed || !CLOUD_HOME) return main;
     const threadId = store.createTask(routine.botId, `${routine.name} · Results`, false)?.threadId;
-    // On a Cloud home the results conversation is opened by whoever wrote the
-    // routine: it carries their name for it (cloudGuestOpened).
-    if (threadId && CLOUD_HOME) threadStarters.set(threadId, routineOpener(routine.id));
+    if (threadId) threadStarters.set(threadId, opener!);
     return threadId;
   },
   discardResultsThread: (botId, threadId) => {
     const task = store.taskByThread(botId, threadId);
-    if (task && !task.busy && !task.routineRunId && store.messagesFor(threadId).length === 0) {
+    // The main thread is reused, never allocated, so a failed write keeps it.
+    if (task && threadId !== botMainThread(botId) && !task.busy && !task.routineRunId && store.messagesFor(threadId).length === 0) {
       store.deleteTask(botId, threadId);
       handoffs.forget(threadId);
     }
@@ -12086,10 +12119,9 @@ const webhooks = new WebhookManager({
     if (!store.bot(botId)) return;
     store.appendMessage(threadId, { role: "bot", kind: "text", text, webhookPost: true });
   },
-  // Mirrors resolveResultsThread's routines wiring a few hundred lines up
-  // in this same file: create-on-first-use, never activated (so it never
-  // steals the bot's live selection the way POST /api/bots/:id/tasks
-  // does), reused forever after via trigger.resultsThreadId.
+  // Create-on-first-use, never activated (so it never steals the bot's
+  // live selection the way POST /api/bots/:id/tasks does), reused forever
+  // after via trigger.resultsThreadId.
   resolvePostThread: (trigger, forceNew) => {
     if (!forceNew && trigger.resultsThreadId) return trigger.resultsThreadId;
     return store.createTask(trigger.botId, "Updates", false)?.threadId;

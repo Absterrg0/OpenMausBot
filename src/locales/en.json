@@ -2605,6 +2605,8 @@
   "routines.runsOn.teamCloudHome": "My Cloud, with the whole group",
   "routines.results.dedicated": "Its own results thread",
   "routines.results.missing": "A thread that no longer exists",
+  "routines.results.main": "The bot's main thread",
+  "routines.results.mainHelp": "Each run starts with fresh context. Dated results collect here, in the bot's main thread unless you choose another; full execution details stay in Run logs.",
   "routines.runNow": "Run now",
   "routines.starting": "Starting…",
   "routines.pause": "Pause",
