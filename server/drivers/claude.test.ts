@@ -6,7 +6,7 @@
 // These used to be POSIX-only: the fake CLI is a shebang script Windows
 // cannot exec, and the broker is a unix socket. Both now go through
 // resolveCliSpawn / permissionSocketPath, so they run everywhere.
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createServer as createHttpServer, type IncomingHttpHeaders } from "node:http";
 import { connect, createServer as createNetServer, type AddressInfo, type Socket } from "node:net";
 import { tmpdir } from "node:os";
@@ -1136,6 +1136,32 @@ describe("ClaudeDriver turns (fake CLI)", () => {
     expect(seen.argv[seen.argv.indexOf("--permission-mode") + 1]).toBe(approvalMode === "auto" ? "auto" : "default");
     expect(seen.argv).toContain("--permission-prompt-tool");
     expect(seen.mcpConfig.mcpServers.ogb.alwaysLoad).toBe(true);
+  });
+
+  // The harness hands the same per-session bearer to every turn; rewriting
+  // the file each time cost an fsync on the event loop. A rotated bearer
+  // must still be on disk before the CLI reads it.
+  it("rewrites the hook token file only when the bearer changes", async () => {
+    await create();
+    const threadId = "t-hook-token";
+    const file = hookTokenFile(threadId, "b-hook");
+    const turn = async (token: string) => {
+      const { turnId } = await instance.adapter.sendTurn({
+        threadId, botId: "b-hook", text: "hi",
+        integrations: { hooks: { url: "http://127.0.0.1:1/hooks", token } },
+      });
+      await recorder.until((e) => e.type === "turn.completed" && e.turnId === turnId);
+    };
+
+    await turn("bearer-one");
+    const saved = statSync(file).ino;
+    await turn("bearer-one");
+    expect(statSync(file).ino).toBe(saved);
+    expect(readFileSync(file, "utf8")).toBe("bearer-one");
+
+    await turn("bearer-two");
+    expect(readFileSync(file, "utf8")).toBe("bearer-two");
+    if (process.platform !== "win32") expect(statSync(file).mode & 0o777).toBe(0o600);
   });
 
   it("keeps the session alive when only the volatile half of the prompt changed", async () => {
