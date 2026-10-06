@@ -142,6 +142,8 @@ class FakeCloudflare {
   /** Provider error codes returned (HTTP 400) for an operation. */
   readonly providerErrors = new Map<string, number>();
   readonly rateLimited = new Set<string>();
+  /** Retry-After header sent with a rate-limited response, if any. */
+  rateLimitRetryAfter: string | null = null;
   readonly afterHooks = new Map<string, () => void>();
   readonly tunnels = new Map<string, FakeTunnel>();
   dnsTotalCount: number | null = null;
@@ -174,7 +176,10 @@ class FakeCloudflare {
         messages: [],
         result: null,
         success: false,
-      }, { status: 429 });
+      }, {
+        headers: this.rateLimitRetryAfter === null ? {} : { "retry-after": this.rateLimitRetryAfter },
+        status: 429,
+      });
     }
     const providerError = this.providerErrors.get(operation);
     if (providerError !== undefined) {
@@ -1727,6 +1732,56 @@ describe("managed endpoint provider capacity", () => {
       "SELECT capacity_rejected_at FROM managed_endpoint_capacity WHERE id = 1",
     ).first<{ capacity_rejected_at: number | null }>();
     expect(gate?.capacity_rejected_at).toBeNull();
+    vi.restoreAllMocks();
+  });
+
+  it("reports a Cloudflare API 429 as endpoint_rate_limited with a bounded Retry-After", async () => {
+    const cloudflare = new FakeCloudflare();
+    const worker = createWorker(cloudflare.fetch);
+    const owner = await signIn(worker, "rate-limited@example.com");
+    const logged = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    cloudflare.rateLimited.add("create_tunnel");
+
+    // [Cloudflare's Retry-After, what the desktop is told]
+    const cases: Array<[string | null, string]> = [
+      [null, "60"],
+      ["120", "120"],
+      ["1", "30"],
+      ["3600", "300"],
+      ["Wed, 21 Oct 2026 07:28:00 GMT", "60"],
+    ];
+    for (const [index, [providerRetryAfter, expected]] of cases.entries()) {
+      cloudflare.rateLimitRetryAfter = providerRetryAfter;
+      const installation = await createInstallation(worker, owner.token, `rate-limited-${index}`);
+      const limited = await call(worker, "/v1/installations/self/endpoint", {
+        method: "POST",
+        token: installation.credential,
+      });
+      expect(limited.status).toBe(503);
+      expect(limited.headers.get("retry-after")).toBe(expected);
+      await expect(limited.json()).resolves.toEqual({ error: "endpoint_rate_limited" });
+      expect(await endpointState(installation.installation.id)).toMatchObject({
+        last_error_code: "cf_rate_limited",
+        status: "error",
+      });
+    }
+    expect(loggedJSON(logged, "managed endpoint reconcile failed")[0]).toMatchObject({
+      capacity: false,
+      errorCode: "cf_rate_limited",
+    });
+    // A rate limit is not a quota: it must not close the capacity gate.
+    const gate = await env.DB.prepare(
+      "SELECT capacity_rejected_at FROM managed_endpoint_capacity WHERE id = 1",
+    ).first<{ capacity_rejected_at: number | null }>();
+    expect(gate?.capacity_rejected_at).toBeNull();
+
+    // Once Cloudflare stops pushing back, the next attempt provisions.
+    cloudflare.rateLimited.clear();
+    const recovered = await createInstallation(worker, owner.token, "rate-limited-recovered");
+    expect((await call(worker, "/v1/installations/self/endpoint", {
+      method: "POST",
+      token: recovered.credential,
+    })).status).toBe(200);
     vi.restoreAllMocks();
   });
 
