@@ -3277,6 +3277,7 @@ async function moveOffComputerEngine(): Promise<void> {
   const engine = instance?.displayName ?? instance?.driverKind ?? replacement.instanceId;
   const moves = store.retireInstances(removed, replacement, {
     driverKind: instance?.driverKind,
+    canWorkOnCloud: canWorkOnCloud(cloudEngine(instance)),
     keepCloud: (bot) => boat.boatConfigured(cfg) && bot.cloudBackend !== "vps" && !inheritedTeamComputer(bot),
   });
   for (const move of moves) {
@@ -3286,12 +3287,15 @@ async function moveOffComputerEngine(): Promise<void> {
   }
 }
 let computerEngineMoveRunning: Promise<void> | null = null;
-/** The move again, once at a time; it returns at once when nothing names the
- * removed engine any more. */
-function retryComputerEngineMove(): void {
+/** The move, once at a time; it returns at once when nothing names the
+ * removed engine any more. A failure is logged and never rejects, so it never
+ * stops this server from listening. Bots whose save failed are unchanged and
+ * move the next time the engines are read (describeInstances). */
+function retryComputerEngineMove(): Promise<void> {
   computerEngineMoveRunning ??= moveOffComputerEngine()
     .catch((error) => console.warn(`[engines] moving bots off the removed Computer engine failed: ${error instanceof Error ? error.message : String(error)}`))
     .finally(() => { computerEngineMoveRunning = null; });
+  return computerEngineMoveRunning;
 }
 
 function checkedModelSelection(
@@ -3606,7 +3610,7 @@ const teamComputers = new TeamComputers(join(DATA_DIR, "team-computers.json"), E
 let followupsReady = false;
 const sendSequencer = new SendSequencer();
 // Before the new-bot default is read: a saved default may name the engine.
-await moveOffComputerEngine();
+await retryComputerEngineMove();
 bootSelection = await defaultSelection();
 store.seedIfEmpty();
 hostedModels?.reconcile(store);
@@ -15094,7 +15098,7 @@ async function describeInstances() {
   // Reading the engines is where this server learns one became available
   // (an install, a sign-in, a key or a Company engine), so a bot still on the
   // removed Computer engine moves now rather than at the next start.
-  retryComputerEngineMove();
+  void retryComputerEngineMove();
   return (await registry.describe()).map((instance) => {
     const entry = configs[instance.instanceId];
     const described = {

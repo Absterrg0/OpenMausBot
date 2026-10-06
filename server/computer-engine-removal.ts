@@ -43,18 +43,30 @@ export interface ComputerEngineMove {
   scope: "bot" | "conversation";
   /** It works on the bot's cloud computer after the move, as it did before. */
   cloud: boolean;
+  /** It worked on the bot's cloud computer, and the new engine can't use a
+   * computer (canWorkOnCloud), so it no longer does. */
+  noComputer: boolean;
   /** Its permissions went back to Ask, as on any switch to another engine. */
   askNow: boolean;
 }
 
 /** The line a moved conversation shows, in plain words. It names the removed
  * choice as people saw it in the model list ("Computer", not the panel's
- * Computer tab) and claims a cloud computer only where one is still used. */
-export function computerEngineMoveText(move: Pick<ComputerEngineMove, "scope" | "cloud" | "askNow">, botName: string, engine: string): string {
+ * Computer tab), claims a cloud computer only where one is still used, and
+ * says so when the new engine can't use the one it had. */
+export function computerEngineMoveText(
+  move: Pick<ComputerEngineMove, "scope" | "cloud" | "askNow"> & Partial<Pick<ComputerEngineMove, "noComputer">>,
+  botName: string,
+  engine: string,
+): string {
   const removed = "The Computer choice in the model list was removed.";
-  const head = move.scope === "bot" ? `${botName} now uses ${engine}.` : `This conversation now uses ${engine}.`;
-  const place = !move.cloud ? "" : move.scope === "bot"
-    ? ` ${botName} still works on its cloud computer.`
-    : ` It still works on ${botName}'s cloud computer.`;
+  const bot = move.scope === "bot";
+  const head = bot ? `${botName} now uses ${engine}.` : `This conversation now uses ${engine}.`;
+  const place = move.cloud
+    ? bot ? ` ${botName} still works on its cloud computer.` : ` It still works on ${botName}'s cloud computer.`
+    : move.noComputer
+      ? ` ${engine} can't use a computer, so ${bot ? `${botName} no longer works on its` : `it no longer works on ${botName}'s`}` +
+        " cloud computer. To use it again, choose a model that can use a computer."
+      : "";
   return `${head} ${removed}${place}${move.askNow ? " Its permissions are now Ask." : ""}`;
 }

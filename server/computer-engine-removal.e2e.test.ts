@@ -108,8 +108,19 @@ function install(home: string, boatPort: () => number) {
     child = null;
     await waitForExit(proc, { signal: "SIGTERM" });
   }
-  return { data, dumpFile, api, bots, bot, editSavedBot, editConfig, lines, moveLines, turn, start, stop };
+  return { data, dumpFile, api, bots, bot, editSavedBot, editConfig, lines, moveLines, turn, start, stop, log: () => output };
 }
+
+/** The fake Claude CLI as this install's engine. */
+const claudeEntry = (dumpFile: string) => ({
+  driver: "claudeAgent", displayName: ENGINE_NAME, config: { cli: FAKE_CLI }, environment: { FAKE_CLAUDE_DUMP: dumpFile },
+});
+const onEngine = (model: string) => ({ instanceId: "computer", model });
+/** A bot (and each of its conversations) as v0.1.94 saved it on the engine. */
+const savedOnEngine = (saved: any) => {
+  saved.modelSelection = onEngine("claude-fable-5");
+  for (const task of saved.tasks) task.modelSelection = onEngine("claude-fable-5");
+};
 
 describe("removing the Computer engine", () => {
   const homes: string[] = [];
@@ -168,9 +179,6 @@ describe("removing the Computer engine", () => {
 
   it("moves bots off it once, keeps each conversation where it worked, and never hands a turn to Boat's own agent", async () => {
     const { server } = fresh();
-    const claudeEntry = (dumpFile: string) => ({
-      driver: "claudeAgent", displayName: ENGINE_NAME, config: { cli: FAKE_CLI }, environment: { FAKE_CLAUDE_DUMP: dumpFile },
-    });
     server.editConfig(config => Object.assign(config, { box: { token: "box_verification_fixture" }, instances: { claude: claudeEntry(server.dumpFile) } }));
     await server.start();
     const [starter] = await server.bots();
@@ -191,7 +199,6 @@ describe("removing the Computer engine", () => {
       newBotDefaults: { profile: { modelSelection: { instanceId: "computer", model: "claude-fable-5" } } },
       automaticRecovery: { enabled: true, backup: { instanceId: "computer", model: "sonnet" } },
     }));
-    const onEngine = (model: string) => ({ instanceId: "computer", model });
     // The starter: on the engine with Works on Cloud, another conversation
     // and a backup on it, and Boat's run id.
     server.editSavedBot(starter.id, saved => {
@@ -326,6 +333,61 @@ describe("removing the Computer engine", () => {
       .toEqual({ instanceId: "later", model });
     expect(await server.moveLines(starter.threadId)).toEqual([
       `${starter.name} now uses ${ENGINE_NAME}. ${REMOVED} ${starter.name} still works on its cloud computer.`,
+    ]);
+    await server.stop();
+  }, 120_000);
+
+  it("keeps serving when the move fails at start, and moves the bots on a later try", async () => {
+    const { server } = fresh();
+    const teams = join(server.data, "section-contexts.json");
+    server.editConfig(config => Object.assign(config, { box: { token: "box_verification_fixture" }, instances: { claude: claudeEntry(server.dumpFile) } }));
+    await server.start();
+    const [starter] = await server.bots();
+    await server.stop();
+    server.editConfig(config => Object.assign(config, { instances: { claude: claudeEntry(server.dumpFile), computer: { driver: "boxAgent" } } }));
+    server.editSavedBot(starter.id, savedOnEngine);
+    // An unreadable teams file stops every save of the bots, the move's too.
+    writeFileSync(teams, "not json");
+
+    await server.start();
+    expect(server.log()).toContain("[engines] moving bots off the removed Computer engine failed");
+    // Nothing moved halfway: the bot still names the engine, and no line claims a move.
+    expect((await server.bot(starter.id)).modelSelection.instanceId).toBe("computer");
+    expect(await server.moveLines(starter.threadId)).toEqual([]);
+
+    // Once the file is readable, the next look at the engines moves the bot.
+    rmSync(teams);
+    await server.api("GET", "/api/instances");
+    await expect.poll(async () => (await server.bot(starter.id)).modelSelection.instanceId, { timeout: 15_000 }).toBe("claude");
+    expect((await server.bot(starter.id)).computer).toBe("cloud");
+    expect(await server.moveLines(starter.threadId)).toEqual([
+      `${starter.name} now uses ${ENGINE_NAME}. ${REMOVED} ${starter.name} still works on its cloud computer.`,
+    ]);
+    await server.stop();
+  }, 120_000);
+
+  it("keeps a bot on Auto when the engine it moves to can't use a computer, and says so", async () => {
+    const { server } = fresh();
+    // An OpenAI-compatible endpoint with tools off: it answers, but has no computer.
+    const chat = {
+      driver: "openai-compat", displayName: "Chat Only",
+      config: { url: "http://127.0.0.1:9/v1", key: "sk-verification-fixture", tools: false, model: "chat-model" },
+    };
+    server.editConfig(config => Object.assign(config, { box: { token: "box_verification_fixture" }, instances: { chat } }));
+    await server.start();
+    const [starter] = await server.bots();
+    await server.stop();
+    server.editConfig(config => Object.assign(config, { instances: { chat, computer: { driver: "boxAgent" } } }));
+    server.editSavedBot(starter.id, saved => { savedOnEngine(saved); delete saved.computer; });
+
+    await server.start();
+    const moved = await server.bot(starter.id);
+    expect(moved.modelSelection).toEqual({ instanceId: "chat", model: "chat-model" });
+    // Works on: Cloud would refuse every turn on this engine.
+    expect(moved.computer).toBeUndefined();
+    expect(await server.moveLines(starter.threadId)).toEqual([
+      `${starter.name} now uses Chat Only. ${REMOVED} Chat Only can't use a computer, so ${starter.name} no longer works ` +
+      "on its cloud computer. To use it again, choose a model that can use a computer.",
     ]);
     await server.stop();
   }, 120_000);
