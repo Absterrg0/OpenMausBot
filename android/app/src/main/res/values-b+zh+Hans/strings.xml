@@ -398,6 +398,57 @@
     <string name="mobile_settings_unpair_this_phone">取消此手机配对</string>
     <string name="mobile_settings_invalid_address">请输入安全的 https:// 地址，例如 192.168.1.42:8810 或 macbook.tail1234.ts.net。</string>
 
+    <!-- MOCA-291: copy that was hard-coded in Kotlin. -->
+    <string name="mobile_chat_call_bot">与 %1$s 通话</string>
+    <string name="mobile_message_via_call">来自通话</string>
+    <string name="mobile_voice_note_unavailable">语音留言无法使用</string>
+    <string name="mobile_voice_note_play">播放语音留言</string>
+    <string name="mobile_voice_note_pause">暂停语音留言</string>
+    <string name="mobile_voice_note_seek">语音留言进度</string>
+    <string name="mobile_activity_success">成功</string>
+    <string name="mobile_activity_error">错误</string>
+    <string name="mobile_question_agent_composed">由机器人撰写的问题</string>
+    <string name="mobile_queued_edit">编辑这条排队的消息</string>
+    <string name="mobile_search_hit_yours">你的消息</string>
+    <string name="mobile_search_hit_from">来自 %1$s 的消息</string>
+    <string name="mobile_roster_create_thread_failed">无法创建对话。请检查连接后重试。</string>
+    <string name="mobile_webhook_task">Webhook 任务</string>
+    <string name="mobile_webhook_event_payload">事件数据</string>
+    <string name="mobile_table_one_row">1 行</string>
+    <string name="mobile_table_rows">%1$d 行</string>
+    <string name="mobile_routine_run_untitled">例行工作</string>
+    <string name="mobile_routine_run_show_report">显示报告</string>
+    <string name="mobile_routine_run_show_less">收起</string>
+    <string name="mobile_routine_run_nothing_recorded">这一轮没有记录任何内容。</string>
+    <string name="mobile_settings_appearance">外观</string>
+    <string name="mobile_settings_skin">主题</string>
+    <string name="mobile_settings_choose_skin">选择主题</string>
+    <string name="mobile_claude_update_offer">此模型需要较新版本的 Claude Code。我可以帮你更新 Claude。</string>
+    <string name="mobile_claude_update_do_it">帮我更新 Claude</string>
+    <string name="mobile_claude_update_myself">我自己来</string>
+    <string name="mobile_claude_update_updating">正在更新 Claude Code…可能需要一分钟。</string>
+    <string name="mobile_claude_update_updated">Claude 已更新至 %1$s。请重新发送你的消息。</string>
+    <string name="mobile_claude_update_manual">请在电脑的终端中运行以下命令，然后重新发送你的消息：</string>
+    <string name="mobile_claude_update_try_again">再次尝试更新</string>
+    <string name="mobile_tasks_agent_threads">机器人对话</string>
+    <string name="mobile_tasks_group_threads">群组对话</string>
+    <string name="mobile_tasks_context_footer">一个对话就是一次交谈及其结果。每个例行工作都会把结果保存在同一个对话中。</string>
+    <string name="mobile_routines_header_thread">对话 = 一次交谈及其结果</string>
+    <string name="mobile_routines_header_routine">例行工作 = 排定的工作，结果集中在一个对话中</string>
+    <string name="mobile_routines_header_footer">无需 cron 语法。每次运行都使用机器人现有的模型、工具、权限、电脑和已连接的应用程序。时间以已配对电脑的本地时区为准。</string>
+    <string name="mobile_routine_waiting_on_you">此对话正在等待你的回答。</string>
+    <string name="mobile_routine_unknown_schedule_note">此例行工作使用较新版 OpenMausBot 添加的调度。保存前请选择“单次”、“指定日期”或“每隔 X 分钟”。</string>
+    <string name="mobile_routines_webhooks_footer">创建或轮替 webhook 会变更可从互联网连接的触发器与签署密钥，因此 webhook 管理仍须在已配对的电脑上进行。Webhook 运行回执仍会显示于上方。</string>
+    <string name="mobile_overview_failed">无法加载概览。</string>
+    <string name="mobile_profile_connected_apps_footer">工具授权由电脑上的 OpenMausBot 分配。此手机仅以只读方式显示。</string>
+    <string name="mobile_profile_preview_during_call">实时通话期间已关闭语音预览。</string>
+    <string name="mobile_computer_vnc_note">交互式 VNC 会话。必须在电脑的“手机”设置中为此手机开启访问权限。</string>
+    <string name="mobile_computer_confirm_message">这会让此手机完全控制云端电脑，包括已在其中登录的任何账户。</string>
+    <string name="mobile_live_call_disclosure">实时通话会将你的语音连同聊天的近期消息、机器人的回答，以及它请求审批的详细信息一起发送至 OpenAI。OpenAI 密钥会保留在你的电脑上。</string>
+    <string name="mobile_discovery_access_off">本地网络访问已关闭。请开启“附近的设备”权限，或在下方输入 Tailscale 地址。</string>
+    <string name="mobile_discovery_unavailable">本地网络发现目前不可用。请在下方输入“手机”设置中显示的地址。</string>
+    <string name="mobile_discovery_keeps_failing">此手机上的本地网络发现一再中断。请在下方输入“手机”设置中显示的地址。</string>
+
     <string name="mobile_roster_no_bots_yet">还没有机器人</string>
     <string name="mobile_roster_nothing_matches">没有匹配项</string>
     <string name="mobile_roster_empty_description">你在电脑上创建的机器人会显示在这里。</string>

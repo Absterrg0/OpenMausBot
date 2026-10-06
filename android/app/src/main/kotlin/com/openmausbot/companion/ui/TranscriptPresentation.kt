@@ -32,13 +32,13 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
-import androidx.compose.ui.semantics.semantics
-import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.openmausbot.companion.R
 import com.openmausbot.companion.core.Chat
 import com.openmausbot.companion.core.DisplayedMessageAttachment
 import com.openmausbot.companion.core.DownloadedFile
@@ -68,7 +68,7 @@ fun AssistantTurnChip(
                     onToggle()
                     haptics.play(TactileAction.TOGGLE_ACTIVITY_RUN)
                 }
-                .semantics { stateDescription = if (expanded) "Expanded" else "Collapsed" },
+                .localizedSemantics(stateDescription = { stringResource(if (expanded) R.string.mobile_a11y_expanded else R.string.mobile_a11y_collapsed) }),
             contentAlignment = Alignment.CenterStart,
         ) {
             Row(
@@ -79,7 +79,7 @@ fun AssistantTurnChip(
             ) {
                 Icon(Icons.Filled.Check, contentDescription = null, tint = secondaryTint, modifier = Modifier.size(14.dp))
                 Text(turn.label, fontSize = 13.sp, fontWeight = FontWeight.Medium)
-                Text(if (expanded) "Hide" else "Show", fontSize = 12.sp, color = secondaryTint)
+                Text(stringResource(if (expanded) R.string.mobile_hide_34d8b60f else R.string.mobile_show_d97d1ee3), fontSize = 12.sp, color = secondaryTint)
             }
         }
         if (expanded) turn.items.forEach { message ->
@@ -105,7 +105,7 @@ fun AssistantTurnChip(
 fun WebhookMessageBody(content: WebhookMessageContent) {
     var expanded by remember(content) { mutableStateOf(false) }
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Text("Webhook task", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = BubbleColor.mineText)
+        Text(stringResource(R.string.mobile_webhook_task), fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = BubbleColor.mineText)
         SelectionContainer {
             Text(content.task, fontSize = 17.sp, color = BubbleColor.mineText)
         }
@@ -113,10 +113,10 @@ fun WebhookMessageBody(content: WebhookMessageContent) {
             Row(
                 modifier = Modifier.fillMaxWidth().heightIn(min = MIN_TOUCH_TARGET)
                     .clickable(role = Role.Button) { expanded = !expanded }
-                    .semantics { stateDescription = if (expanded) "Expanded" else "Collapsed" },
+                    .localizedSemantics(stateDescription = { stringResource(if (expanded) R.string.mobile_a11y_expanded else R.string.mobile_a11y_collapsed) }),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Text("Event payload", fontSize = 13.sp, color = BubbleColor.mineText, modifier = Modifier.weight(1f))
+                Text(stringResource(R.string.mobile_webhook_event_payload), fontSize = 13.sp, color = BubbleColor.mineText, modifier = Modifier.weight(1f))
                 Icon(
                     if (expanded) Icons.Filled.KeyboardArrowUp else Icons.Filled.KeyboardArrowDown,
                     contentDescription = null, tint = BubbleColor.mineText,

@@ -251,9 +251,9 @@ fun SettingsScreen(
                 Footnote(rosterDensity.caption)
             }
 
-            SettingsSection("Appearance") {
-                SettingsRow("Skin", appearanceSkin.label)
-                SettingsButton("Choose skin") { choosingAppearance = true }
+            SettingsSection(stringResource(R.string.mobile_settings_appearance)) {
+                SettingsRow(stringResource(R.string.mobile_settings_skin), appearanceSkin.label)
+                SettingsButton(stringResource(R.string.mobile_settings_choose_skin)) { choosingAppearance = true }
             }
 
             // Routine schedules live on the computer this phone is bound to.
@@ -420,7 +420,7 @@ fun SettingsScreen(
     if (choosingAppearance) {
         AlertDialog(
             onDismissRequest = { choosingAppearance = false },
-            title = { Text("Choose skin") },
+            title = { Text(stringResource(R.string.mobile_settings_choose_skin)) },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     AppearanceSkin.entries.forEach { skin ->
@@ -447,7 +447,7 @@ fun SettingsScreen(
                 }
             },
             confirmButton = {},
-            dismissButton = { TextButton(onClick = { choosingAppearance = false }) { Text("Cancel") } },
+            dismissButton = { TextButton(onClick = { choosingAppearance = false }) { Text(stringResource(R.string.mobile_cancel_77dfd213)) } },
         )
     }
 

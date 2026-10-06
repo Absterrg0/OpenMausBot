@@ -398,6 +398,57 @@
     <string name="mobile_settings_unpair_this_phone">取消此手機配對</string>
     <string name="mobile_settings_invalid_address">請輸入安全的 https:// 位址，例如 192.168.1.42:8810 或 macbook.tail1234.ts.net。</string>
 
+    <!-- MOCA-291: copy that was hard-coded in Kotlin. -->
+    <string name="mobile_chat_call_bot">與 %1$s 通話</string>
+    <string name="mobile_message_via_call">來自通話</string>
+    <string name="mobile_voice_note_unavailable">語音留言無法使用</string>
+    <string name="mobile_voice_note_play">播放語音留言</string>
+    <string name="mobile_voice_note_pause">暫停語音留言</string>
+    <string name="mobile_voice_note_seek">語音留言進度</string>
+    <string name="mobile_activity_success">成功</string>
+    <string name="mobile_activity_error">錯誤</string>
+    <string name="mobile_question_agent_composed">由機器人撰寫的問題</string>
+    <string name="mobile_queued_edit">編輯這則佇列中的訊息</string>
+    <string name="mobile_search_hit_yours">你的訊息</string>
+    <string name="mobile_search_hit_from">來自 %1$s 的訊息</string>
+    <string name="mobile_roster_create_thread_failed">無法建立對話。請檢查連線後再試一次。</string>
+    <string name="mobile_webhook_task">Webhook 任務</string>
+    <string name="mobile_webhook_event_payload">事件資料</string>
+    <string name="mobile_table_one_row">1 列</string>
+    <string name="mobile_table_rows">%1$d 列</string>
+    <string name="mobile_routine_run_untitled">例行工作</string>
+    <string name="mobile_routine_run_show_report">顯示報告</string>
+    <string name="mobile_routine_run_show_less">收合</string>
+    <string name="mobile_routine_run_nothing_recorded">這一回合沒有記錄任何內容。</string>
+    <string name="mobile_settings_appearance">外觀</string>
+    <string name="mobile_settings_skin">外觀主題</string>
+    <string name="mobile_settings_choose_skin">選擇外觀主題</string>
+    <string name="mobile_claude_update_offer">此模型需要較新版本的 Claude Code。我可以幫你更新 Claude。</string>
+    <string name="mobile_claude_update_do_it">幫我更新 Claude</string>
+    <string name="mobile_claude_update_myself">我自己來</string>
+    <string name="mobile_claude_update_updating">正在更新 Claude Code…可能需要一分鐘。</string>
+    <string name="mobile_claude_update_updated">Claude 已更新至 %1$s。請重新傳送你的訊息。</string>
+    <string name="mobile_claude_update_manual">請在電腦的終端機中執行以下指令，然後重新傳送你的訊息：</string>
+    <string name="mobile_claude_update_try_again">再次嘗試更新</string>
+    <string name="mobile_tasks_agent_threads">機器人對話</string>
+    <string name="mobile_tasks_group_threads">群組對話</string>
+    <string name="mobile_tasks_context_footer">一個對話就是一次交談及其結果。每個例行工作都會把結果保存在同一個對話中。</string>
+    <string name="mobile_routines_header_thread">對話 = 一次交談及其結果</string>
+    <string name="mobile_routines_header_routine">例行工作 = 排定的工作，結果集中在一個對話中</string>
+    <string name="mobile_routines_header_footer">無需 cron 語法。每次執行都使用機器人現有的模型、工具、權限、電腦和已連線的應用程式。時間以已配對電腦的本機時區為準。</string>
+    <string name="mobile_routine_waiting_on_you">此對話正在等待你的回答。</string>
+    <string name="mobile_routine_unknown_schedule_note">此例行工作使用較新版 OpenMausBot 新增的排程。儲存前請選擇「單次」、「指定日期」或「每隔 X 分鐘」。</string>
+    <string name="mobile_routines_webhooks_footer">建立或輪替 webhook 會變更可從網際網路連線的觸發器與簽署密鑰，因此 webhook 管理仍須在已配對的電腦上進行。Webhook 執行回執仍會顯示於上方。</string>
+    <string name="mobile_overview_failed">無法載入概覽。</string>
+    <string name="mobile_profile_connected_apps_footer">工具授權由電腦上的 OpenMausBot 指派。此手機僅以唯讀方式顯示。</string>
+    <string name="mobile_profile_preview_during_call">即時通話期間已關閉語音預覽。</string>
+    <string name="mobile_computer_vnc_note">互動式 VNC 工作階段。必須在電腦的「手機」設定中為此手機啟用存取權。</string>
+    <string name="mobile_computer_confirm_message">這會讓此手機完全控制雲端電腦，包括已在其中登入的任何帳戶。</string>
+    <string name="mobile_live_call_disclosure">即時通話會將你的語音連同聊天的近期訊息、機器人的回答，以及它請求的任何核准的詳細資訊一起傳送至 OpenAI。OpenAI 金鑰會保留在你的電腦上。</string>
+    <string name="mobile_discovery_access_off">區域網路存取權已關閉。請開啟「鄰近裝置」權限，或在下方輸入 Tailscale 位址。</string>
+    <string name="mobile_discovery_unavailable">區域網路探索目前無法使用。請在下方輸入「手機」設定中顯示的位址。</string>
+    <string name="mobile_discovery_keeps_failing">此手機上的區域網路探索一再中斷。請在下方輸入「手機」設定中顯示的位址。</string>
+
     <string name="mobile_roster_no_bots_yet">還沒有機器人</string>
     <string name="mobile_roster_nothing_matches">沒有符合項目</string>
     <string name="mobile_roster_empty_description">你在電腦上建立的機器人會顯示在這裡。</string>

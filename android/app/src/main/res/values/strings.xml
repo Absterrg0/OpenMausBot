@@ -399,6 +399,57 @@
     <string name="mobile_settings_unpair_this_phone">Unpair this phone</string>
     <string name="mobile_settings_invalid_address">Enter a secure https:// address, 192.168.1.42:8810, or a name like macbook.tail1234.ts.net.</string>
 
+    <!-- MOCA-291: copy that was hard-coded in Kotlin. -->
+    <string name="mobile_chat_call_bot">Call %1$s</string>
+    <string name="mobile_message_via_call">via call</string>
+    <string name="mobile_voice_note_unavailable">Voice note unavailable</string>
+    <string name="mobile_voice_note_play">Play voice note</string>
+    <string name="mobile_voice_note_pause">Pause voice note</string>
+    <string name="mobile_voice_note_seek">Seek voice note</string>
+    <string name="mobile_activity_success">Success</string>
+    <string name="mobile_activity_error">Error</string>
+    <string name="mobile_question_agent_composed">Agent-composed question</string>
+    <string name="mobile_queued_edit">Edit this queued message</string>
+    <string name="mobile_search_hit_yours">Your message</string>
+    <string name="mobile_search_hit_from">Message from %1$s</string>
+    <string name="mobile_roster_create_thread_failed">Couldn\'t create a thread. Check the connection and try again.</string>
+    <string name="mobile_webhook_task">Webhook task</string>
+    <string name="mobile_webhook_event_payload">Event payload</string>
+    <string name="mobile_table_one_row">1 row</string>
+    <string name="mobile_table_rows">%1$d rows</string>
+    <string name="mobile_routine_run_untitled">Routine</string>
+    <string name="mobile_routine_run_show_report">Show report</string>
+    <string name="mobile_routine_run_show_less">Show less</string>
+    <string name="mobile_routine_run_nothing_recorded">Nothing was recorded for this turn.</string>
+    <string name="mobile_settings_appearance">Appearance</string>
+    <string name="mobile_settings_skin">Skin</string>
+    <string name="mobile_settings_choose_skin">Choose skin</string>
+    <string name="mobile_claude_update_offer">This model needs a newer Claude Code. I can update Claude for you.</string>
+    <string name="mobile_claude_update_do_it">Update Claude for me</string>
+    <string name="mobile_claude_update_myself">I\'ll do it myself</string>
+    <string name="mobile_claude_update_updating">Updating Claude Code… this can take a minute.</string>
+    <string name="mobile_claude_update_updated">Claude updated — %1$s. Send your message again.</string>
+    <string name="mobile_claude_update_manual">Run this in Terminal on your computer, then send your message again:</string>
+    <string name="mobile_claude_update_try_again">Try updating again</string>
+    <string name="mobile_tasks_agent_threads">Agent threads</string>
+    <string name="mobile_tasks_group_threads">Group threads</string>
+    <string name="mobile_tasks_context_footer">A thread is one conversation and result. Each routine keeps its results in one thread.</string>
+    <string name="mobile_routines_header_thread">Thread = one conversation and result</string>
+    <string name="mobile_routines_header_routine">Routine = scheduled work with one results thread</string>
+    <string name="mobile_routines_header_footer">No cron syntax. Every run uses the agent\'s existing model, tools, permissions, computer, and connected apps. Times follow the paired computer\'s local timezone.</string>
+    <string name="mobile_routine_waiting_on_you">This thread is waiting for your answer.</string>
+    <string name="mobile_routine_unknown_schedule_note">This routine uses a schedule added by a newer OpenMausBot. Choose One time, Selected days, or Every X minutes before saving.</string>
+    <string name="mobile_routines_webhooks_footer">Creating or rotating a webhook changes an internet-reachable trigger and signing secret, so webhook management remains on the paired computer. Webhook run receipts still appear above.</string>
+    <string name="mobile_overview_failed">Couldn\'t load the overview.</string>
+    <string name="mobile_profile_connected_apps_footer">Tool grants are assigned in OpenMausBot on your computer. This phone shows them read-only.</string>
+    <string name="mobile_profile_preview_during_call">Voice preview is off during a Live call.</string>
+    <string name="mobile_computer_vnc_note">Interactive VNC session. Access must be enabled for this phone in the computer\'s Phone settings.</string>
+    <string name="mobile_computer_confirm_message">This gives this phone full control of the cloud computer, including anything signed in inside it.</string>
+    <string name="mobile_live_call_disclosure">A Live call sends your voice to OpenAI, along with the chat\'s recent messages, the bot\'s answers and the details of any approval it asks for. The OpenAI key stays on your computer.</string>
+    <string name="mobile_discovery_access_off">Local Network access is off. Enable nearby devices permission, or enter a Tailscale address below.</string>
+    <string name="mobile_discovery_unavailable">Local discovery isn\'t available right now. Enter the address shown in Phone settings below.</string>
+    <string name="mobile_discovery_keeps_failing">Local discovery keeps getting interrupted on this phone. Enter the address shown in Phone settings below.</string>
+
     <string name="mobile_roster_no_bots_yet">No bots yet</string>
     <string name="mobile_roster_nothing_matches">Nothing matches</string>
     <string name="mobile_roster_empty_description">Bots you create on your computer show up here.</string>

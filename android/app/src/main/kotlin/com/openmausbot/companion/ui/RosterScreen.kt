@@ -699,7 +699,7 @@ private fun CompactGroupsTitle(title: String, onCreate: (() -> Unit)?, spacing: 
     ) {
         SectionLabel(title, Modifier.weight(1f))
         if (onCreate != null) {
-            TouchTarget(onClick = onCreate, contentDescription = "New group", modifier = Modifier.padding(end = 4.dp)) {
+            TouchTarget(onClick = onCreate, contentDescription = stringResource(R.string.mobile_new_group_f9850c0b), modifier = Modifier.padding(end = 4.dp)) {
                 Icon(
                     imageVector = Icons.Filled.Add,
                     contentDescription = null,
@@ -1167,7 +1167,7 @@ private fun SearchHitRow(hit: SearchHit, onClick: () -> Unit) {
             } else {
                 painterResource(R.drawable.ic_maus_mark)
             },
-            contentDescription = SearchHitRole.contentDescription(hit.role, hit.name),
+            contentDescription = localizedMobileCopy(SearchHitRole.contentDescription(hit.role, hit.name)),
             tint = secondaryTint,
             modifier = Modifier
                 .size(26.dp)

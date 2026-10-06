@@ -173,7 +173,7 @@ internal fun QuestionCardView(chat: Chat, message: Message, haptics: Haptics) {
         }
 
         if (QuestionCardRules.agentComposed(message)) {
-            Text("Agent-composed question", fontSize = 12.sp, color = secondaryTint)
+            Text(stringResource(R.string.mobile_question_agent_composed), fontSize = 12.sp, color = secondaryTint)
         }
 
         if (questions.size > 1) {

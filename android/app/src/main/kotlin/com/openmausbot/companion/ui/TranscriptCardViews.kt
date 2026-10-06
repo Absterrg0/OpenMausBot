@@ -306,7 +306,7 @@ fun DataTableCard(card: TranscriptCard.Table, modifier: Modifier = Modifier) {
                 modifier = Modifier.weight(1f),
             )
             Text(
-                text = if (card.rows.size == 1) "1 row" else "${card.rows.size} rows",
+                text = if (card.rows.size == 1) stringResource(R.string.mobile_table_one_row) else stringResource(R.string.mobile_table_rows, card.rows.size),
                 fontSize = 12.sp,
                 fontWeight = FontWeight.Medium,
                 color = secondaryTint,
@@ -500,7 +500,7 @@ fun ThoughtChamber(
                 .background(secondaryTint.copy(alpha = 0.12f), CircleShape)
                 .clickable(
                     role = Role.Button,
-                    onClickLabel = if (expanded) "Collapse" else "Expand",
+                    onClickLabel = stringResource(if (expanded) R.string.mobile_collapse_9cf188d3 else R.string.mobile_expand_9869e506),
                     onClick = {
                         haptics.play(HapticCue.SELECT)
                         expanded = !expanded
@@ -589,7 +589,7 @@ private fun Disclosure(expanded: Boolean, label: String, onToggle: () -> Unit) {
             .clip(RoundedCornerShape(8.dp))
             .clickable(
                 role = Role.Button,
-                onClickLabel = if (expanded) "Collapse" else "Expand",
+                onClickLabel = stringResource(if (expanded) R.string.mobile_collapse_9cf188d3 else R.string.mobile_expand_9869e506),
                 onClick = onToggle,
             )
             .localizedSemantics(stateDescription = {

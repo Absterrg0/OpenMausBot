@@ -32,6 +32,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.ClipEntry
 import androidx.compose.ui.platform.LocalClipboard
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
@@ -39,6 +40,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.openmausbot.companion.R
 import com.openmausbot.companion.core.ClaudeUpdateResult
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -99,16 +101,16 @@ fun ClaudeUpdateCard(messageId: String, instanceId: String) {
         when (val current = phase) {
             ClaudeUpdatePhase.Ask -> {
                 Text(
-                    "This model needs a newer Claude Code. I can update Claude for you.",
+                    stringResource(R.string.mobile_claude_update_offer),
                     fontSize = 15.sp,
                 )
                 FlowRow(
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                     verticalArrangement = Arrangement.spacedBy(4.dp),
                 ) {
-                    Button(onClick = ::update) { Text("Update Claude for me") }
+                    Button(onClick = ::update) { Text(stringResource(R.string.mobile_claude_update_do_it)) }
                     TextButton(onClick = { phase = ClaudeUpdatePhase.Manual }) {
-                        Text("I'll do it myself")
+                        Text(stringResource(R.string.mobile_claude_update_myself))
                     }
                 }
             }
@@ -122,7 +124,7 @@ fun ClaudeUpdateCard(messageId: String, instanceId: String) {
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 Text(
-                    "Updating Claude Code… this can take a minute.",
+                    stringResource(R.string.mobile_claude_update_updating),
                     fontSize = 15.sp,
                     color = secondaryTint,
                 )
@@ -134,7 +136,7 @@ fun ClaudeUpdateCard(messageId: String, instanceId: String) {
                 val green = Color(MausPalette.argb("green"))
                 Icon(Icons.Filled.Check, contentDescription = null, tint = green, modifier = Modifier.size(16.dp))
                 Text(
-                    "Claude updated — ${current.version}. Send your message again.",
+                    stringResource(R.string.mobile_claude_update_updated, current.version),
                     fontSize = 15.sp,
                 )
             }
@@ -145,7 +147,7 @@ fun ClaudeUpdateCard(messageId: String, instanceId: String) {
                     }
                 }
                 Text(
-                    "Run this in Terminal on your computer, then send your message again:",
+                    stringResource(R.string.mobile_claude_update_manual),
                     fontSize = 15.sp,
                     color = secondaryTint,
                 )
@@ -169,10 +171,10 @@ fun ClaudeUpdateCard(messageId: String, instanceId: String) {
                                 copied = true
                             }
                         },
-                    ) { Text(if (copied) "Copied" else "Copy", fontWeight = FontWeight.Medium) }
+                    ) { Text(stringResource(if (copied) R.string.mobile_copied_8e3df45a else R.string.mobile_copy_af74f7c5), fontWeight = FontWeight.Medium) }
                 }
                 if (current is ClaudeUpdatePhase.Failed) {
-                    Button(onClick = ::update) { Text("Try updating again") }
+                    Button(onClick = ::update) { Text(stringResource(R.string.mobile_claude_update_try_again)) }
                 }
             }
         }

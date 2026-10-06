@@ -11,6 +11,31 @@ private val localizedCopyResources = mapOf(
     "Change list density" to R.string.mobile_change_list_density,
     "Comfortable" to R.string.mobile_density_comfortable,
     "Compact" to R.string.mobile_density_compact,
+    // MOCA-291: policy copy that reached localizedMobileCopy with no entry here.
+    "Success" to R.string.mobile_activity_success,
+    "Error" to R.string.mobile_activity_error,
+    "Agent threads" to R.string.mobile_tasks_agent_threads,
+    "Group threads" to R.string.mobile_tasks_group_threads,
+    "A thread is one conversation and result. Each routine keeps its results in one thread." to R.string.mobile_tasks_context_footer,
+    "Thread = one conversation and result" to R.string.mobile_routines_header_thread,
+    "Routine = scheduled work with one results thread" to R.string.mobile_routines_header_routine,
+    "No cron syntax. Every run uses the agent's existing model, tools, permissions, computer, and connected apps. Times follow the paired computer's local timezone." to R.string.mobile_routines_header_footer,
+    "This thread is waiting for your answer." to R.string.mobile_routine_waiting_on_you,
+    "This routine uses a schedule added by a newer OpenMausBot. Choose One time, Selected days, or Every X minutes before saving." to R.string.mobile_routine_unknown_schedule_note,
+    "Creating or rotating a webhook changes an internet-reachable trigger and signing secret, so webhook management remains on the paired computer. Webhook run receipts still appear above." to R.string.mobile_routines_webhooks_footer,
+    "Couldn't load the overview." to R.string.mobile_overview_failed,
+    "Connected apps" to R.string.mobile_connected_apps_8ab72a8e,
+    "Tool grants are assigned in OpenMausBot on your computer. This phone shows them read-only." to R.string.mobile_profile_connected_apps_footer,
+    "Voice preview is off during a Live call." to R.string.mobile_profile_preview_during_call,
+    "Interactive VNC session. Access must be enabled for this phone in the computer's Phone settings." to R.string.mobile_computer_vnc_note,
+    "This gives this phone full control of the cloud computer, including anything signed in inside it." to R.string.mobile_computer_confirm_message,
+    "A Live call sends your voice to OpenAI, along with the chat's recent messages, the bot's answers and the details of any approval it asks for. The OpenAI key stays on your computer." to R.string.mobile_live_call_disclosure,
+    "The downloaded file couldn't be previewed." to R.string.mobile_chat_download_preview_failed,
+    "Couldn't create a thread. Check the connection and try again." to R.string.mobile_roster_create_thread_failed,
+    "Your message" to R.string.mobile_search_hit_yours,
+    "Local Network access is off. Enable nearby devices permission, or enter a Tailscale address below." to R.string.mobile_discovery_access_off,
+    "Local discovery isn't available right now. Enter the address shown in Phone settings below." to R.string.mobile_discovery_unavailable,
+    "Local discovery keeps getting interrupted on this phone. Enter the address shown in Phone settings below." to R.string.mobile_discovery_keeps_failing,
     "Larger faces, with each bot's latest message under its name." to R.string.mobile_density_comfortable_caption,
     "One line per bot. Bots with more than one active thread show how many; tap the number to list them." to R.string.mobile_density_compact_caption,
     "%1\$d active" to R.string.mobile_updates_active_count,
@@ -648,5 +673,7 @@ internal fun localizedMobileCopy(source: String): String {
         .matchEntire(source)?.let { return stringResource(R.string.mobile_share_text_items, it.groupValues[1].toInt()) }
     Regex("""^(\d+) unsupported items were left out\.$""")
         .matchEntire(source)?.let { return stringResource(R.string.mobile_share_items_omitted, it.groupValues[1].toInt()) }
+    Regex("""^Message from (.+)$""")
+        .matchEntire(source)?.let { return stringResource(R.string.mobile_search_hit_from, it.groupValues[1]) }
     return source
 }

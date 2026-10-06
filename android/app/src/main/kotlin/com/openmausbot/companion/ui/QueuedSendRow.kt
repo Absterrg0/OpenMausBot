@@ -114,7 +114,7 @@ fun QueuedSendRow(
         }
         Icon(
             imageVector = Icons.Filled.Edit,
-            contentDescription = "Edit this queued message",
+            contentDescription = stringResource(R.string.mobile_queued_edit),
             tint = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier
                 .clip(RoundedCornerShape(50))
