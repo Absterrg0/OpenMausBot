@@ -23,6 +23,7 @@ import { evictStartupCacheOnce } from "./startup-cache-eviction.mjs";
 import { activateExistingWindow, releaseSingleInstanceLock } from "./single-instance.mjs";
 import { pollServerIdentity } from "./server-boot-probe.mjs";
 import { createServerSupervisor } from "./server-supervisor.mjs";
+import { serverChildLaunch } from "./server-child-launch.mjs";
 import { packageUrlFromCommandLine, packageUrlFromDeepLink } from "./package-link.mjs";
 import { createOrganizationEntry, isOrganizationDeepLink, takeOrganizationDeepLink, organizationRestartIntent, withOrganizationRestartIntent, withoutOrganizationRestartIntent } from "./organization-entry.mjs";
 import { windowChromeOptions } from "./window-chrome.mjs";
@@ -1302,7 +1303,12 @@ function receivePhoneSecretSave(proc, rawMessage) {
 
 async function startServerOn(port) {
   if (desktopShutdownStarted) return { proc: null, abort: true };
-  const entry = path.join(process.resourcesPath, "server", "index.js");
+  // A bootstrap beside index.js that turns on Node's compile cache for this
+  // child, so a relaunch skips recompiling the server bundle.
+  const { entry, compileCacheDir } = serverChildLaunch({
+    resourcesPath: process.resourcesPath,
+    userData: app.getPath("userData"),
+  });
   const childEnv = managedComposioChildEnvironment(composioBrokerUrl(), secureCredentials, {
     ...process.env,
     // The desktop parent owns the durable data-directory lease. Each utility
@@ -1332,6 +1338,11 @@ async function startServerOn(port) {
     ...workspaceCredentialEnv(secureCredentials),
   });
   delete childEnv.OMB_BROWSER_CONNECTION;
+  // Set here or not at all, never inherited from the launching shell. The
+  // bootstrap removes it before the server runs, so nothing the server
+  // spawns sees it.
+  delete childEnv.OMB_SERVER_COMPILE_CACHE;
+  if (compileCacheDir) childEnv.OMB_SERVER_COMPILE_CACHE = compileCacheDir;
   slog(`fork ${entry} port=${port}`);
   const proc = utilityProcess.fork(entry, [], {
     env: childEnv,
