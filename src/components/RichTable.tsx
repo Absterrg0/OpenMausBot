@@ -65,7 +65,7 @@ export function RichTable({ columns, rows, name = t("table.title"), expanded = f
         <label className="flex min-w-24 flex-1 items-center gap-2 px-1 text-ink-secondary">
           <Search size={13} aria-hidden="true" />
           <input value={query} onChange={(event) => setQuery(event.target.value)} aria-label={t("table.search")}
-            placeholder={t("table.search")} className="w-full min-w-0 bg-transparent py-1 text-xs text-ink outline-none placeholder:text-ink-secondary/70 focus-visible:ring-1 focus-visible:ring-accent" />
+            placeholder={t("table.search")} className="w-full min-w-0 bg-transparent py-1 text-xs text-ink outline-none placeholder:text-ink-tertiary focus-visible:ring-1 focus-visible:ring-accent" />
         </label>
         <button type="button" className="table-action" aria-label={t("table.wrap")} title={t("table.wrap")} aria-pressed={wrap} onClick={() => setWrap(!wrap)}><WrapText size={14} /></button>
         <button type="button" className="table-action" aria-label={t("table.copy")} title={t("table.copy")} onClick={() => void copy()}>{copyState === "copied" ? <Check size={14} /> : <Copy size={14} />}</button>
