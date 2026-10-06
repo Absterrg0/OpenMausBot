@@ -142,6 +142,20 @@ explicit unsupported-tools HTTP 400/422 rejection permits one retry without
 that optional tool. Authentication, schema and network failures do not trigger
 this downgrade, nor does a response after any tool call. The next turn offers
 questions again. No fallback replays a requested operation without its tools.
+When a provider refuses a tool call (Groq's `tool_use_failed`, mid-stream or
+as HTTP 400: a tool the model was not given, or arguments that miss the
+schema), nothing ran, so the same request is sent again, up to three attempts
+in all, each shown as a retrying row. Once answer text has streamed the refusal
+ends the turn instead, so one reply never joins two attempts. A turn that runs
+out of attempts says in plain words what happened and what to do next,
+followed by the provider's message. With no earlier tool call in the turn,
+nothing ran and the chat's Retry sends it again; after earlier calls ran, it
+asks only for what's left, since a Retry of the whole request would repeat
+them. A resend never repeats an earlier call: its result is already in the
+request.
+Each refusal's full error object, `failed_generation` included, is written to
+the thread's redacted native log (`native/THREAD.ndjson` in the data
+directory), next to the tool names every request offered.
 
 Cloud routine readiness uses the executing bot’s selected runner (including a
 thread’s model override at dispatch), rather than any available cloud engine.

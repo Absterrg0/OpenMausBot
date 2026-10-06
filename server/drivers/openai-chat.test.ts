@@ -7,6 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { ensureDirs, NATIVE_DIR } from "../config.ts";
 import type { RuntimeEvent } from "../contracts.ts";
 import { GrokDriver } from "./grok.ts";
 import { MinimaxDriver } from "./minimax.ts";
@@ -15,8 +16,13 @@ import { MistralDriver } from "./mistral.ts";
 
 afterEach(() => vi.unstubAllGlobals());
 
-async function runTurn(body: string, driver: "openai-compat" | "minimax" = "openai-compat") {
-  vi.stubGlobal("fetch", vi.fn(async () => new Response(body, { status: 200, headers: { "content-type": "text/event-stream" } })));
+const sse = (body: string) => new Response(body, { status: 200, headers: { "content-type": "text/event-stream" } });
+
+/** `body` is the stream every request gets, or a factory for each chat
+ * completion request (the model catalog fetch then gets a 404). */
+async function runTurn(body: string | (() => Response), driver: "openai-compat" | "minimax" = "openai-compat") {
+  vi.stubGlobal("fetch", vi.fn(async (url: string | URL) => typeof body === "string" ? sse(body)
+    : String(url).endsWith("/chat/completions") ? body() : new Response("", { status: 404 })));
   const instance = driver === "minimax"
     ? await MinimaxDriver.create({
         instanceId: "minimax", displayName: "MiniMax", enabled: true,
@@ -493,5 +499,77 @@ describe("createOpenAIChatRuntime stream termination", () => {
       .toEqual(["reasoning_text", "assistant_text"]);
     expect(events.find((event) => event.type === "item.completed")).toMatchObject({ text: "Hello!" });
     expect(events.at(-1)).toMatchObject({ type: "turn.completed", ok: true, usage: { input: 5, output: 9 } });
+  });
+});
+
+describe("createOpenAIChatRuntime refused tool calls", () => {
+  // Groq's reply when gpt-oss calls a tool it was never offered (#2166).
+  const refusal = {
+    message: "Tool call validation failed: tool call validation failed: attempted to call tool 'JSON' which was not in request",
+    type: "invalid_request_error",
+    code: "tool_use_failed",
+    failed_generation: '{"name":"JSON","arguments":{"restam":7}}',
+  };
+  const refusedStream = () => sse(
+    `data: ${JSON.stringify({ choices: [{ index: 0, delta: { reasoning: "They want JSON." } }] })}\n\n` +
+      `data: ${JSON.stringify({ error: refusal })}\n\n`,
+  );
+  const refusedRequest = () => new Response(JSON.stringify({ error: refusal }), { status: 400, headers: { "content-type": "application/json" } });
+  const answer = () => sse('data: {"choices":[{"index":0,"finish_reason":"stop","delta":{"content":"{\\"restam\\":7}"}}]}\n\ndata: [DONE]\n\n');
+
+  it.each([
+    ["mid-stream", refusedStream],
+    ["as HTTP 400", refusedRequest],
+  ])("sends the request again when the provider refuses a made-up tool call %s", async (_label, refused) => {
+    let requests = 0;
+    const events = await runTurn(() => ++requests === 1 ? refused() : answer());
+    expect(requests).toBe(2);
+    expect(events.find((event) => event.type === "turn.retrying")).toMatchObject({ attempt: 1, delayMs: 0, reason: "tool_use_failed" });
+    expect(events.some((event) => event.type === "runtime.error")).toBe(false);
+    expect(events.find((event) => event.type === "item.completed")).toMatchObject({ text: '{"restam":7}' });
+    expect(events.at(-1)).toMatchObject({ type: "turn.completed", ok: true });
+  });
+
+  it("stops after three refusals, says what happened and what to do, and logs each refusal whole", async () => {
+    ensureDirs();
+    const log = join(NATIVE_DIR, "thread.ndjson");
+    rmSync(log, { force: true });
+    let requests = 0;
+    const events = await runTurn(() => (requests++, refusedStream()));
+    expect(requests).toBe(3);
+    expect(events.filter((event) => event.type === "turn.retrying").map((event) => event.type === "turn.retrying" && event.attempt)).toEqual([1, 2]);
+    expect(events.find((event) => event.type === "runtime.error")).toMatchObject({
+      message: `The model tried to use a tool it was not given ("JSON"). Nothing ran. Retry; if it keeps happening, rephrase the request or choose another model. Provider: ${refusal.message}`,
+    });
+    expect(events.at(-1)).toMatchObject({ type: "turn.completed", ok: false, stopReason: "error" });
+    const refusals = readFileSync(log, "utf8").trim().split("\n").map((line) => JSON.parse(line)).filter((entry) => entry.msg?.refused);
+    expect(refusals.map((entry) => entry.msg)).toEqual([1, 2, 3].map((attempt) => ({ refused: "tool_use_failed", attempt, error: refusal })));
+  });
+
+  it("does not claim a tool was made up when the provider rejected its arguments", async () => {
+    const invalid = { ...refusal, message: "Tool call validation failed: parameters for tool ask_user did not match schema: errors: [missing properties: 'questions']" };
+    const events = await runTurn(() => sse(`data: ${JSON.stringify({ error: invalid })}\n\n`));
+    expect(events.find((event) => event.type === "runtime.error")).toMatchObject({
+      message: `The model made a tool call the provider rejected. Nothing ran. Retry; if it keeps happening, rephrase the request or choose another model. Provider: ${invalid.message}`,
+    });
+  });
+
+  it("does not resend once answer text has streamed, so attempts never join in one reply", async () => {
+    let requests = 0;
+    const events = await runTurn(() => (requests++, sse(
+      'data: {"choices":[{"index":0,"delta":{"content":"Sobram"}}]}\n\n' +
+        `data: ${JSON.stringify({ error: refusal })}\n\n`,
+    )));
+    expect(requests).toBe(1);
+    expect(events.some((event) => event.type === "turn.retrying")).toBe(false);
+    expect(events.find((event) => event.type === "runtime.error")?.message).toMatch(/^The model tried to use a tool it was not given \("JSON"\)/);
+  });
+
+  it("does not resend other provider errors", async () => {
+    let requests = 0;
+    const events = await runTurn(() => (requests++, sse(`data: ${JSON.stringify({ error: { ...refusal, code: "invalid_request_error" } })}\n\n`)));
+    expect(requests).toBe(1);
+    expect(events.some((event) => event.type === "turn.retrying")).toBe(false);
+    expect(events.at(-1)).toMatchObject({ type: "turn.completed", ok: false });
   });
 });

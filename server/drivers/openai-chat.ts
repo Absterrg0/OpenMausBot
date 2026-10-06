@@ -176,6 +176,51 @@ function rejectsReasoningReplay(status: number, body: string): boolean {
     /\b(?:unsupported|not supported|unknown|unrecognized|unexpected|not permitted|not allowed)\b/i.test(message);
 }
 
+/** Groq checks each generated tool call against the request and fails the
+ *  completion with `tool_use_failed` when the call is invalid: most often a
+ *  tool it was not offered (gpt-oss inventing a "json" tool to answer in
+ *  JSON), sometimes arguments that miss the schema. `refusal` is the
+ *  provider's whole error object, `failed_generation` included. */
+class RejectedToolCallError extends ChatProtocolError {
+  readonly refusal: Record<string, unknown>;
+  constructor(message: string, refusal: Record<string, unknown>) {
+    super(message);
+    this.refusal = refusal;
+  }
+}
+
+const toolCallRefusal = (error: unknown) => {
+  const body = object(error);
+  return body?.code === "tool_use_failed" ? body : undefined;
+};
+
+function refusedToolCall(status: number, body: string) {
+  if (status !== 400) return undefined;
+  try { return toolCallRefusal(object(JSON.parse(body))?.error); } catch { return undefined; }
+}
+
+function completionError(json: CompletionJson, label: string): ChatProtocolError | null {
+  const message = providerError(json);
+  if (!message) return null;
+  const text = `provider returned a ${label}: ${message.slice(0, 200)}`;
+  const refusal = toolCallRefusal(json.error);
+  return refusal ? new RejectedToolCallError(text, refusal) : new ChatProtocolError(text);
+}
+
+/** What a failed turn says once the provider refused every attempt: what
+ *  happened, the next step, then the provider's words. The refused call ran
+ *  nothing, but tool calls from earlier steps of the turn did, and a Retry
+ *  of the whole request would repeat them. */
+function refusedToolCallFailure(error: RejectedToolCallError, earlierSteps: boolean): string {
+  const words = typeof error.refusal.message === "string" ? error.refusal.message : error.message;
+  const tool = /attempted to call tool '([^']+)'/.exec(words)?.[1];
+  const what = tool ? `tried to use a tool it was not given ("${tool}")` : "made a tool call the provider rejected";
+  const next = earlierSteps
+    ? "The steps before it already ran, so ask only for what's left."
+    : "Nothing ran. Retry; if it keeps happening, rephrase the request or choose another model.";
+  return `The model ${what}. ${next} Provider: ${words.slice(0, 200)}`;
+}
+
 /** Shared runtime for the three providers that speak OpenAI chat completions. */
 export function createOpenAIChatRuntime<Config>(options: RuntimeOptions<Config>): ProviderInstance {
   const { input } = options;
@@ -247,6 +292,8 @@ export function createOpenAIChatRuntime<Config>(options: RuntimeOptions<Config>)
         const body = await response.text().catch(() => "");
         const message = `${options.httpErrorLabel} HTTP ${response.status}${body ? `: ${body.slice(0, 200)}` : ""}`;
         if (rejectsToolsParameter(response.status, body)) throw new UnsupportedChatToolsError(message);
+        const refusal = refusedToolCall(response.status, body);
+        if (refusal) throw new RejectedToolCallError(message, refusal);
         if (messages.some((entry) => entry.reasoning_content !== undefined) && rejectsReasoningReplay(response.status, body)) {
           throw new UnsupportedReasoningReplayError(message);
         }
@@ -266,8 +313,8 @@ export function createOpenAIChatRuntime<Config>(options: RuntimeOptions<Config>)
             costUsd: count(json.usage?.cost),
           });
         }
-        const bodyError = providerError(json);
-        if (bodyError) throw new ChatProtocolError(`provider returned a completion error: ${bodyError.slice(0, 200)}`);
+        const bodyError = completionError(json, "completion error");
+        if (bodyError) throw bodyError;
         const message = json.choices?.[0]?.message;
         if (!message || !object(message) || !["content", "reasoning_content", "reasoning", "reasoning_details", "tool_calls", "function_call"].some((key) => key in message)) {
           throw new ChatProtocolError("provider returned no completion message");
@@ -325,8 +372,8 @@ export function createOpenAIChatRuntime<Config>(options: RuntimeOptions<Config>)
           if (!atEof) malformedFrame = true;
           return false;
         }
-        const chunkError = providerError(chunk);
-        if (chunkError) throw new ChatProtocolError(`provider returned a streaming completion error: ${chunkError.slice(0, 200)}`);
+        const chunkError = completionError(chunk, "streaming completion error");
+        if (chunkError) throw chunkError;
         const choice = chunk.choices?.find((row) => row.index === undefined || row.index === 0);
         const delta = choice?.delta;
         if (object(delta)) sawChoice = true;
@@ -364,8 +411,8 @@ export function createOpenAIChatRuntime<Config>(options: RuntimeOptions<Config>)
             if (!sawChoice) {
               let body: CompletionJson | undefined;
               try { body = JSON.parse(buffer) as CompletionJson; } catch { body = undefined; }
-              const bodyError = body ? providerError(body) : null;
-              if (bodyError) throw new ChatProtocolError(`provider returned a completion error: ${bodyError.slice(0, 200)}`);
+              const bodyError = body ? completionError(body, "completion error") : null;
+              if (bodyError) throw bodyError;
             }
             throw new ChatProtocolError("Stream ended before completion");
           }
@@ -519,6 +566,7 @@ export function createOpenAIChatRuntime<Config>(options: RuntimeOptions<Config>)
           let completion: Completion;
           for (;;) {
             let streamed = false;
+            let answerStreamed = false;
             const pending = { assistant_text: "", reasoning_text: "" };
             const delta = (text: string, streamKind: keyof typeof pending, flush = false) => {
               let combined = pending[streamKind] + text;
@@ -540,6 +588,7 @@ export function createOpenAIChatRuntime<Config>(options: RuntimeOptions<Config>)
             try {
               completion = await complete(messages, model, true, abort.signal, (text, streamKind) => {
                 streamed = true;
+                if (streamKind === "assistant_text") answerStreamed = true;
                 delta(text, streamKind);
               }, tools.definitions);
               delta("", "assistant_text", true);
@@ -556,6 +605,19 @@ export function createOpenAIChatRuntime<Config>(options: RuntimeOptions<Config>)
                 reasoningReplayRejected.add(model);
                 for (const message of messages) delete message.reasoning_content;
                 continue;
+              }
+              // A refused tool call ran nothing, so the same request goes
+              // again; the model usually answers properly next time. Not once
+              // answer text streamed: the phones' live bubble would join it to
+              // the next attempt's. Streamed thinking stays thinking. Each
+              // refusal, failed_generation included, goes to the native log.
+              if (error instanceof RejectedToolCallError) {
+                native("in", { refused: "tool_use_failed", attempt: attempt + 1, error: error.refusal });
+                if (!answerStreamed && !abort.signal.aborted && attempt < RETRY_MAX_ATTEMPTS - 1) {
+                  emit({ ...base(turn.threadId, turnId), type: "turn.retrying", attempt: ++attempt, delayMs: 0, reason: "tool_use_failed" });
+                  continue;
+                }
+                if (!abort.signal.aborted) throw new ChatProtocolError(refusedToolCallFailure(error, seenCalls.size > 0));
               }
               // Only our optional question changed a previously plain request.
               // A structured parameter rejection has executed nothing; never
