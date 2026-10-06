@@ -59,7 +59,8 @@ describe("classifyContinuable", () => {
   it.each([
     ["budget cap message", "error", "Stopped after 64 steps without a final answer. The steps so far already ran, so ask only for what's left.", "cap"],
     ["legacy limit message", "error", "model-call limit reached before a final response", "cap"],
-    ["tool_error terminal", "tool_error", "One or more tool operations failed or were denied. See the tool results; the final response is not an execution receipt.", "tool_error"],
+    // A tool error includes a person's denial: never continued by itself.
+    ["tool_error terminal", "tool_error", "One or more tool operations failed or were denied. See the tool results; the final response is not an execution receipt.", null],
     ["provider config 400 (non-multimodal)", "error", "upstream HTTP 400: {\"error\":{\"message\":\"deepseek-ai/DeepSeek-V4-Flash-0731 is not a multimodal model\"}}", null],
     ["unknown model", "error", "Model \"nope\" does not exist", null],
     ["no failure text", "error", undefined, null],

@@ -78,7 +78,7 @@ export type RuntimeEvent = RuntimeEventBase &
         /** Absolute path to the persisted handoff for the dead turn. */
         handoffPath: string;
         /** What stopped the turn without a final answer. */
-        reason: "cap" | "tool_error";
+        reason: "cap";
       }
     | {
         type: "turn.wait_started";

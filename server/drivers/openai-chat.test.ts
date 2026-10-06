@@ -176,10 +176,9 @@ describe("createOpenAIChatRuntime tool approvals", () => {
       const withheld = bodies[1].messages.find((message: any) => message.role === "tool" && message.tool_call_id === "withheld");
       expect(JSON.parse(withheld.content)).toMatchObject({ ok: false });
       expect(withheld.content).toMatch(/tool selection excludes/i);
-      // A withheld (failed) tool result must not end the turn: the runtime
-      // feeds it back and accepts the model's final answer.
-      expect(events.some((event) => event.type === "runtime.error" && /One or more tool operations failed/.test((event as any).message ?? ""))).toBe(false);
-      expect(events.at(-1)).toMatchObject({ type: "turn.completed", ok: true });
+      // A withheld (failed) tool result ends the turn: the final answer is not
+      // an execution receipt.
+      expect(events.at(-1)).toMatchObject({ type: "turn.completed", ok: false });
     } finally { await instance.dispose(); }
   }, 20_000);
 
@@ -269,10 +268,11 @@ describe("createOpenAIChatRuntime tool approvals", () => {
     expect(events.at(-1)).toMatchObject({ type: "turn.completed", ok: true });
   }, 20_000);
 
-  it("does not end the turn on a failed tool call — it feeds the failure back and accepts the final answer", async () => {
-    // A failed tool op used to terminate the whole turn with tool_error even
-    // when the model then produced a final answer. It must instead get one
-    // corrective round and complete ok.
+  it("ends the turn on a failed tool call, never asks the model to run it again, and does not continue it by itself", async () => {
+    // A failed or denied tool op ends the turn with tool_error, even when the
+    // model then writes a confident final answer. No corrective round asks it
+    // to re-run the operation (it may be one a person refused), and a
+    // tool_error is not continued in a new unattended thread.
     const dir = mkdtempSync(join(tmpdir(), "omb-chat-toolerr-")); mcpDir.push(dir);
     const script = join(dir, "fake-fail-mcp.mjs");
     writeFileSync(script, `#!/usr/bin/env node
@@ -314,14 +314,15 @@ describe("createOpenAIChatRuntime tool approvals", () => {
         threadId: "toolerr", text: "Use the tool, then answer.", approvalMode: "full",
         integrations: { custom: { fx: { command: script, args: [], env: {} } } },
       });
-      await vi.waitFor(() => expect(bodies.length).toBeGreaterThanOrEqual(3), { timeout: 10_000 });
-      const corrective = bodies[2]!.messages.findLast((message: any) => message.role === "user");
-      expect(String(corrective?.content)).toMatch(/tool operations .*failed|ok:false/i);
       await vi.waitFor(() => expect(events.some((event) => event.type === "turn.completed")).toBe(true), { timeout: 10_000 });
+      // Two requests: the tool call, then the model's answer to its result.
+      expect(bodies).toHaveLength(2);
+      expect(bodies.flatMap((body) => body.messages).some((message: any) => message.role === "user" && /re-run the failed/i.test(String(message.content)))).toBe(false);
       const completed = events.find((event) => event.type === "turn.completed") as any;
-      expect(completed.ok).toBe(true);
-      expect(completed.stopReason).not.toBe("tool_error");
-      expect(events.some((event) => event.type === "runtime.error" && /One or more tool operations failed/.test((event as any).message ?? ""))).toBe(false);
+      expect(completed.ok).toBe(false);
+      expect(completed.stopReason).toBe("tool_error");
+      expect(events.some((event) => event.type === "runtime.error" && /One or more tool operations failed/.test((event as any).message ?? ""))).toBe(true);
+      expect(events.some((event) => event.type === "cap.exhausted")).toBe(false);
     } finally {
       await instance.dispose();
     }

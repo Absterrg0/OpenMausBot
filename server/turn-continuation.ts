@@ -100,13 +100,14 @@ export function writeTurnHandoff(input: HandoffInput): string | null {
 const NOT_RESUMABLE = /not a multimodal model|unknown model|does not support|tool arguments do not match/i;
 
 /** Classify a terminal turn as resumable. Returns the reason for the
- * continuation (`cap` = budget exhausted, `tool_error` = tool failures), or
- * null when the turn must not be auto-continued. */
-export function classifyContinuable(stopReason: string | null | undefined, failure: string | undefined): "cap" | "tool_error" | null {
+ * continuation (`cap` = budget exhausted), or null when the turn must not be
+ * auto-continued. A tool error is never continued: it includes a person's or
+ * the approval policy's denial, and a new unattended thread would retry what
+ * was refused. */
+export function classifyContinuable(_stopReason: string | null | undefined, failure: string | undefined): "cap" | null {
   if (!failure) return null;
   if (NOT_RESUMABLE.test(failure)) return null;
   if (/limit reached|stopped after \d+ steps|without a final answer/i.test(failure)) return "cap";
-  if (stopReason === "tool_error") return "tool_error";
   return null;
 }
 
