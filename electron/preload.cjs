@@ -273,6 +273,9 @@ const bridge = {
       const message = String(error?.message ?? error);
       throw new Error(message.replace(/^Error invoking remote method '[^']*':\s*(?:Error:\s*)?/, ""));
     }),
+  /** Point the file manager at a file a bot linked outside its workspace,
+   * without opening it. Resolves "shown", "missing" or "invalid". */
+  revealInFolder: (filePath) => ipcRenderer.invoke("desktop:reveal-file", filePath),
   /** Store a provider credential with OS-backed encryption. */
   setCredential: (name, value) => ipcRenderer.invoke("credential:set", name, value),
 

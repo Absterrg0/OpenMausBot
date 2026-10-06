@@ -32,7 +32,7 @@ import { repairMarkdownTables } from "../lib/markdown-tables";
 import { TRANSCRIPT_WINDOW_SIZE } from "../lib/transcript-window";
 import { windowsPathDestinations } from "../../shared/markdown-windows-paths";
 import { looksLikeThreadRefUrl, parseThreadRefUrl, resolveThreadRefAddress, remarkThreadRefs } from "../lib/thread-refs";
-import { MarkdownImagePreview, useLocalFileSave, type MessageAttachmentContext } from "./AttachmentPreview";
+import { MarkdownImagePreview, OutsideWorkspaceFile, useLocalFileSave, type MessageAttachmentContext } from "./AttachmentPreview";
 import { ThreadLink, ThreadRefsContext, threadLinkFromProps, type ThreadRefsValue } from "./ThreadRefs";
 import { MarkdownTable } from "./MarkdownTable";
 import { TableFileButton } from "./TableFilePreview";
@@ -623,6 +623,11 @@ function LocalFileLink({ filePath, children, message }: { filePath: string; chil
           className={`text-[12px] ${save.state === "saved" ? "text-success" : save.state === "failed" ? "text-danger" : "text-ink-secondary"}`}
         >
           {save.state === "failed" ? save.reason : label}
+        </span>
+      )}
+      {save.state === "failed" && save.outsideWorkspace && (
+        <span className="inline-flex flex-wrap items-center gap-x-1.5 text-[12px]">
+          <OutsideWorkspaceFile filePath={filePath} />
         </span>
       )}
     </span>
