@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   cloudPlaceDriverError,
+  computerToolsError,
   parseSurface,
   placeFailureMessage,
   placeUnavailable,
@@ -223,6 +224,22 @@ describe("cloudPlaceDriverError", () => {
     expect(cloudPlaceDriverError({ computerMcp: false })).toBe("This model can't use a computer. Choose another model, or set Works on to Auto.");
     expect(cloudPlaceDriverError({}, "pin")).toBe("This model can't use a computer. Choose another model, or clear this conversation's place in the composer.");
     expect(cloudPlaceDriverError({}, "routine")).toBe("This model can't use a computer. Choose another model, or change where this routine runs.");
+  });
+});
+
+describe("computerToolsError", () => {
+  it("refuses a Tool selection without the computer with one action: the setting that changes it", () => {
+    const line = "Scout's Tool selection leaves out the computer. Allow it in Scout's Access settings.";
+    expect(computerToolsError({ deny: ["mcp:computer:*"] }, "Scout")).toBe(line);
+    // The same one action whatever chose the place: never a second one, and
+    // never "Set Works on to Auto".
+    expect(computerToolsError({ allow: ["native:*"] }, "Scout")).toBe(line);
+  });
+
+  it("lets every selection that keeps a computer tool through", () => {
+    expect(computerToolsError(undefined, "Scout")).toBeNull();
+    expect(computerToolsError({ allow: ["native:*", "mcp:computer:screenshot"] }, "Scout")).toBeNull();
+    expect(computerToolsError({ deny: ["mcp:computer:exec"] }, "Scout")).toBeNull();
   });
 });
 

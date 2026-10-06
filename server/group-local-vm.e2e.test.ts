@@ -98,7 +98,9 @@ beforeAll(async () => {
   const boatPort = (boatServer.address() as { port: number }).port;
   writeFileSync(join(data, "config.json"), JSON.stringify({ instances: { claude: {
     driver: "claudeAgent", config: { cli: join(ROOT, "server/testing/fake-claude-cli.ts") },
-    environment: { FAKE_CLAUDE_MODE: "slow", FAKE_CLAUDE_DUMP: dumpFile, FAKE_CLAUDE_SLOW_FINISH_GATE: finishFile },
+    // A turn on the cloud computer uses it, so its first computer call is
+    // what creates or wakes the Boat, as with a real model.
+    environment: { FAKE_CLAUDE_MODE: "slow", FAKE_CLAUDE_DUMP: dumpFile, FAKE_CLAUDE_SLOW_FINISH_GATE: finishFile, FAKE_CLAUDE_USES_CLOUD_COMPUTER: "1" },
   } } }));
   const port = await freePortBlock([0, 1]);
   base = `http://127.0.0.1:${port}`;
@@ -550,7 +552,7 @@ describe("Group Local VM ownership on the real isolated server", () => {
       await api("DELETE", `/api/bots/${bot.id}`);
       await api("PUT", "/api/config", { box: { token: "" } });
     }
-  });
+  }, 45_000);
 
   it("lets a chat tool select Auto, replaces tools after completion, and continues the same user message once", async () => {
     vmState(); rmSync(dumpFile, { force: true }); rmSync(finishFile, { force: true });
@@ -832,7 +834,7 @@ describe("Group Local VM ownership on the real isolated server", () => {
       await api("PATCH", `/api/bots/${bots[0].id}`, { computer: "vm" });
       await api("PUT", "/api/config", { box: { token: "" } });
     }
-  });
+  }, 45_000);
 
   it("releases a failed readiness claim so the bot and room can run again", async () => {
     const { bots, group } = await room();

@@ -179,6 +179,13 @@ describe("removing the Computer engine", () => {
 
   it("moves bots off it once, keeps each conversation where it worked, and never hands a turn to Boat's own agent", async () => {
     const { server } = fresh();
+    // A turn on the cloud computer uses it: its first computer call is what
+    // creates the Boat, as with a real model. So this test's engine is the
+    // file's claudeEntry plus a fake Claude that uses the cloud computer.
+    const claudeEntry = (dumpFile: string) => ({
+      driver: "claudeAgent", displayName: ENGINE_NAME, config: { cli: FAKE_CLI },
+      environment: { FAKE_CLAUDE_DUMP: dumpFile, FAKE_CLAUDE_USES_CLOUD_COMPUTER: "1" },
+    });
     server.editConfig(config => Object.assign(config, { box: { token: "box_verification_fixture" }, instances: { claude: claudeEntry(server.dumpFile) } }));
     await server.start();
     const [starter] = await server.bots();

@@ -35,6 +35,7 @@ import {
 import type { Routine, RoutineInput, RoutineRun, RoutineRunStatusFilter } from "@/lib/routines";
 import type { WebhookAttempt, WebhookIngressStatus, WebhookTrigger } from "@/lib/webhooks";
 import { botShowsUnread } from "@/lib/bot-unread";
+import type { ComputerStart } from "@/lib/computer-start";
 import { answerResponse, dismissResponse } from "@/lib/card-answer";
 import { currentCall } from "@/lib/call";
 import { showNotification, type NotificationTarget } from "@/lib/notify";
@@ -970,8 +971,8 @@ export interface AppState {
   botSettingsSection: BotSettingsSection;
   /** True only when the open action named a section — accordion expands that row. */
   botSettingsExpandAccordion: boolean;
-  /** bots whose cloud computer is being provisioned */
-  provisioning: Record<string, boolean>;
+  /** bots whose computer is starting for a turn (src/lib/computer-start.ts) */
+  computerStarts: Record<string, ComputerStart>;
   /** Bot removals waiting for the server to verify that no persistent
    * computer would be orphaned. The bot stays visible until that succeeds. */
   deletingBots: Record<string, true>;
@@ -1225,7 +1226,7 @@ export type Action =
   /** `restoreLeafId` puts back the branch an optimistic edit replaced; a
    * plain send falls back to the removed row's parent. */
   | { type: "optimisticMessageRemoved"; threadId: string; sendId: string; restoreLeafId?: string | null }
-  | { type: "provisioning"; botId: string; on: boolean }
+  | { type: "computerStart"; botId: string; start: ComputerStart | null }
   | { type: "computerControl"; botId: string; held: boolean; helpReason: string | null }
   | { type: "modelVariantRuntime"; event: RuntimeEvent }
   | { type: "setModel"; botId: string; selection: ModelSelection; threadId?: string; updateBotDefault?: boolean; resetApprovalToAsk?: boolean }
@@ -1739,7 +1740,10 @@ export function reducer(state: AppState, action: Action): AppState {
             : action.bot.busy === false && before?.busy
               ? "celebrate"
               : null;
-      const animated = kind ? withMascotMotion(state, action.bot.id, kind) : state;
+      const motioned = kind ? withMascotMotion(state, action.bot.id, kind) : state;
+      // A start that failed never sends a first frame: its line ends with the turn.
+      const animated = action.bot.busy === false && before?.busy && motioned.computerStarts[action.bot.id]
+        ? reducer(motioned, { type: "computerStart", botId: action.bot.id, start: null }) : motioned;
       const next = action.bot.chiefOfStaff
         ? {
             ...animated,
@@ -1934,11 +1938,13 @@ export function reducer(state: AppState, action: Action): AppState {
         messages: b.messages.map((m) => (m.id === action.message.id ? action.message : m)),
       }));
     }
-    case "provisioning":
+    case "computerStart": {
+      const { [action.botId]: _ended, ...others } = state.computerStarts;
       return {
-        ...(action.on ? withMascotMotion(state, action.botId, "launch") : state),
-        provisioning: { ...state.provisioning, [action.botId]: action.on },
+        ...(action.start ? withMascotMotion(state, action.botId, "launch") : state),
+        computerStarts: action.start ? { ...others, [action.botId]: action.start } : others,
       };
+    }
     case "computerControl":
       return {
         ...state,
@@ -2447,7 +2453,7 @@ export const initialState: AppState = {
   tourOpen: false,
   botSettingsSection: "overview",
   botSettingsExpandAccordion: false,
-  provisioning: {},
+  computerStarts: {},
   deletingBots: {},
   computerControl: {},
   focusMessage: null,
@@ -3907,12 +3913,13 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         case "screen":
           // The picture went to the Computer panel (publishLiveFrame). For
           // the store, a first frame only means the computer is set up.
-          if (stateRef.current.provisioning[frame.botId]) {
-            rawDispatch({ type: "provisioning", botId: frame.botId, on: false });
+          if (stateRef.current.computerStarts[frame.botId]) {
+            rawDispatch({ type: "computerStart", botId: frame.botId, start: null });
           }
           break;
         case "computer":
-          rawDispatch({ type: "provisioning", botId: frame.botId, on: frame.state === "provisioning" });
+          rawDispatch({ type: "computerStart", botId: frame.botId,
+            start: { state: frame.state, ...(frame.place ? { place: frame.place } : {}) } });
           break;
         case "computer-control":
           rawDispatch({

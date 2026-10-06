@@ -98,7 +98,9 @@ it("keeps the bot's own engine on the cloud computer, and a failed place never b
   if (!address || typeof address === "string") throw new Error("fixture failed to bind");
   const origin = `http://127.0.0.1:${address.port}`;
   const gate = join(await import("node:os").then(os => os.tmpdir()), `omb-hosted-desktop-gate-${process.pid}-${Date.now()}`);
-  const fixture = await launchVerificationServer({ FAKE_CLAUDE_MODE: "slow", FAKE_CLAUDE_SLOW_FINISH_GATE: gate },
+  // Each turn on the cloud computer uses it, as a real model would: its first
+  // computer call is what creates or wakes the Boat.
+  const fixture = await launchVerificationServer({ FAKE_CLAUDE_MODE: "slow", FAKE_CLAUDE_SLOW_FINISH_GATE: gate, FAKE_CLAUDE_USES_CLOUD_COMPUTER: "1" },
     undefined, undefined, undefined, undefined, undefined, [], origin).catch(async error => {
     upstream.closeAllConnections(); await new Promise<void>(resolve => upstream.close(() => resolve())); throw error;
   });
@@ -112,7 +114,9 @@ it("keeps the bot's own engine on the cloud computer, and a failed place never b
     return result.body;
   };
   const control = (args: string[]) => runControlOmb([...args, "--url", fixture.info.url]) as Promise<any>;
+  // The rows a person reads; a turn's digest comes after them.
   const lastRows = async (thread: string) => (await apiOk("GET", `/api/threads/${thread}/messages?limit=30`)).messages
+    .filter((message: any) => message.kind !== "digest")
     .map((message: any) => message.kind === "activity" ? String(message.tool?.name) : `${message.role}:${message.kind}`);
   const task = async (botId: string, threadId: string) =>
     (await apiOk("GET", "/api/bots")).bots.find((bot: any) => bot.id === botId).tasks.find((entry: any) => entry.threadId === threadId);

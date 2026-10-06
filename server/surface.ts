@@ -10,6 +10,7 @@
  * from the person's seat they are the same "cloud computer" panel. */
 import type { Surface } from "../shared/wire.ts";
 import { canWorkOnCloud, type CloudEngine } from "../shared/cloud-computer.ts";
+import { canUseMcpServer } from "../shared/tool-scope.ts";
 export type { Surface };
 
 /** The bot's "Works on" setting; undefined = Auto. */
@@ -141,6 +142,17 @@ const PLACE_ACTION: Record<PlaceSource, { sentence: string; clause: string }> = 
 export function cloudPlaceDriverError(engine: CloudEngine, source: PlaceSource = "works-on"): string | null {
   if (canWorkOnCloud(engine)) return null;
   return `This model can't use a computer. Choose another model, or ${PLACE_ACTION[source].clause}.`;
+}
+
+/** Why this bot's Tool selection keeps it off a computer, or null: one line,
+ * the cause and the one setting that changes it, the same whatever chose the
+ * place (a turn's refusal and select_computer's reason alike). Engines reach
+ * every desktop through the "computer" MCP server, so a selection without it
+ * has nothing to work with there. Checked with the engine rule, before
+ * anything is created or woken. */
+export function computerToolsError(toolScope: unknown, botName: string): string | null {
+  if (canUseMcpServer(toolScope, "computer")) return null;
+  return `${botName}'s Tool selection leaves out the computer. Allow it in ${botName}'s Access settings.`;
 }
 
 /** One line, cause then next action. A bot thread's transcript row keeps

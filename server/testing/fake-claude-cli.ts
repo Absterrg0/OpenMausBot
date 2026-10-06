@@ -60,6 +60,12 @@
 //                      one tool_use (fresh id, that name and input) followed
 //                      by its tool_result (is_error unless ok, default true).
 //                      Unset, a turn makes the single default Bash call.
+//   FAKE_CLAUDE_USES_CLOUD_COMPUTER 1: a turn launched with the cloud
+//                      computer's tools (the harness-mcp-proxy `computer`
+//                      server in --mcp-config) first takes one screenshot
+//                      through them, over stdio, the way a model's first
+//                      computer call does; the call and its result are
+//                      reported like any tool call before the reply.
 //   FAKE_CLAUDE_HOOKS  1: honour the `hooks` block of the --settings file the
 //                      way the real CLI does — after each tool_result run
 //                      every PostToolUse command with the event JSON on
@@ -504,6 +510,26 @@ const readLaunchFiles = (): Record<string, unknown> => {
   return { systemPrompt, mcpConfig, settings, settingsMode };
 };
 
+/** One screenshot through the launched cloud computer server, if this turn
+ * has one: the server answers once the harness has created or woken the
+ * computer (or refused to). Synchronous, like the turn loop around it. */
+const useCloudComputer = () => {
+  launchFiles ??= readLaunchFiles();
+  const server = (launchFiles.mcpConfig as { mcpServers?: Record<string, { command?: string; args?: string[]; env?: Record<string, string> }> } | null)
+    ?.mcpServers?.computer;
+  if (!server?.command || server.args?.at(-1) !== "computer" || !/harness-mcp-proxy/.test(server.args[0] ?? "")) return;
+  const id = `tu-${process.pid}-${++toolUseCount}`;
+  out({ type: "assistant", message: { content: [{ type: "tool_use", id, name: "mcp__computer__screenshot", input: {} }] } });
+  const ran = spawnSync(server.command, server.args, {
+    input: `${JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "screenshot", arguments: {} } })}\n`,
+    env: { ...process.env, ...server.env }, encoding: "utf8", timeout: 150_000,
+  });
+  let reply: { result?: { isError?: boolean; content?: unknown }; error?: { message?: string } } = {};
+  try { reply = JSON.parse(ran.stdout.trim().split("\n")[0] ?? ""); } catch { reply = { error: { message: ran.stderr || "no answer" } }; }
+  out({ type: "user", message: { content: [{ type: "tool_result", tool_use_id: id,
+    is_error: Boolean(reply.error || reply.result?.isError), content: reply.result?.content ?? reply.error?.message ?? "" }] } });
+};
+
 const playTurn = (prompt: JsonValue, late = false) => {
   turnRunning = true;
   lateContinuation = late;
@@ -673,6 +699,8 @@ const playTurn = (prompt: JsonValue, late = false) => {
       event: { type: "content_block_delta", delta: { type: "text_delta", text: "SUBAGENT NOISE" } },
     });
   }
+
+  if (process.env.FAKE_CLAUDE_USES_CLOUD_COMPUTER === "1") useCloudComputer();
 
   let replyParts = nextScriptedReply();
   const defaultToolId = `tu-${process.pid}-${++toolUseCount}`;

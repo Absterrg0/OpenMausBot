@@ -132,7 +132,9 @@ describe("surface pin provenance against the real server", () => {
     boatApi = `http://127.0.0.1:${(boatServer.address() as { port: number }).port}`;
     writeFileSync(join(data, "config.json"), JSON.stringify({ instances: { claude: {
       driver: "claudeAgent", config: { cli: join(ROOT, "server/testing/fake-claude-cli.ts") },
-      environment: { FAKE_CLAUDE_MODE: "slow", FAKE_CLAUDE_DUMP: dumpFile, FAKE_CLAUDE_SLOW_FINISH_GATE: finishFile },
+      // A turn on the cloud computer uses it: its first computer call is
+      // what reaches the Boat, as with a real model.
+      environment: { FAKE_CLAUDE_MODE: "slow", FAKE_CLAUDE_DUMP: dumpFile, FAKE_CLAUDE_SLOW_FINISH_GATE: finishFile, FAKE_CLAUDE_USES_CLOUD_COMPUTER: "1" },
     } } }));
   });
   afterAll(async () => {
@@ -355,9 +357,10 @@ describe("surface pin provenance against the real server", () => {
     const { bot } = await apiOk("POST", "/api/bots", { name: "Failed place bot" });
     const { task } = await apiOk("POST", `/api/bots/${bot.id}/tasks`, {});
     await apiOk("PUT", "/api/config", { box: { token: "box_fixture" } });
+    // The last row a person reads; a turn's digest comes after it.
     const lastRow = async () => {
       const { messages } = await apiOk("GET", `/api/threads/${task.threadId}/messages?limit=30`);
-      return String(messages.at(-1)?.tool?.name ?? "");
+      return String(messages.filter((message: any) => message.kind !== "digest").at(-1)?.tool?.name ?? "");
     };
     resetTurn();
     await apiOk("POST", `/api/bots/${bot.id}/messages`, { text: "Open Chrome on the cloud computer.", threadId: task.threadId });
@@ -366,7 +369,7 @@ describe("surface pin provenance against the real server", () => {
     const selected = await fetch(base + "/api/internal/computer/select", { method: "POST",
       headers: { authorization: `Bearer ${token}`, "content-type": "application/json" }, body: JSON.stringify({ surface: "cloud" }) });
     expect(await selected.json()).toMatchObject({ status: "pending", surface: "cloud" });
-    // The Boat goes down before the continuation can attach it.
+    // The Boat goes down before the continuation's first computer call.
     boatDown = true;
     writeFileSync(finishFile, "finish");
     await until(() => lastRow(), row => row.startsWith("error:"));

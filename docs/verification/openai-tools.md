@@ -111,6 +111,23 @@ capabilities and in-flight cancellation without replay. The hosted-desktop
 fixture runs the same tools for a Claude bot and proves Boat's own runner is
 never asked.
 
+`pnpm exec vitest run server/cloud-computer-lazy.e2e.test.ts server/cloud-computer-slow-start.e2e.test.ts server/computer-selection.test.ts server/room-turn-end.test.ts server/boat-wait-ready.test.ts src/components/ComputerPanel.lazy.test.ts`
+proves a cloud computer starts only when the bot uses it. Against a loopback
+relay that counts every request, a plain chat ("hi") on Works on: Cloud
+computer, in a bot's chat or a room, makes no relay call; choosing Cloud
+computer or opening the Computer panel creates and wakes nothing; the first
+computer call creates the computer once (or wakes a sleeping one, waiting for
+the wake), with one progress line in the chat. A signed-out engine fails with
+the usual sign-in row and a Tool selection without the computer is refused,
+both with no relay call. A relay that accepts a readiness poll and never
+answers ends the wait inside its budget. select_computer counts the cloud
+computer a turn starts on its first call as already selected, so the request
+is not restarted or pinned. A start the relay refuses is reported with its
+cause: in a room, once, under the member's name; on a cloud routine, as the
+run's error. A first start slower than one call's wait answers "still
+starting" and a later call works with one create; a start that stalls ends at
+the start budget with one row.
+
 Model screenshots use native resolution and a separate file from panel frames.
 Every action rechecks the harness control gate. Commands run with an isolated
 environment; the Boat credential stays in the harness, and the agent process

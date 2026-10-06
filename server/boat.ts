@@ -459,29 +459,37 @@ async function mintDesktopUrl(cfg: AppConfig, boxId: string, { vncBudgetMs = 60_
 
 async function waitReady(cfg: AppConfig, boxId: string, budgetMs = 90_000) {
   assertBoatNotDeleting(boxId);
-  const t0 = Date.now();
+  const deadline = Date.now() + budgetMs;
+  // Every request ends with the budget: a relay that accepts the connection
+  // and then stalls must not hold a turn's start past it.
+  const untilDeadline = () => AbortSignal.timeout(Math.max(1, deadline - Date.now()));
+  const outOfTime = (error: unknown) => error instanceof Error && error.name === "TimeoutError";
   // Boat's words for the last failed resume, if the wait runs out on them.
   let resumeFailure: string | null = null;
-  while (Date.now() - t0 < budgetMs) {
-    assertBoatNotDeleting(boxId);
-    const { body } = await boatJson(cfg, `/boxes/${boxId}`);
-    const state = body?.box?.state;
-    if (READY.has(state)) return body.box;
-    if (state === "error") return null;
-    // an archiving boat can't resume until the snapshot lands — nudge after.
-    // A refusal (a plan limit, say) is final: report it now. A server error
-    // is retried on the next poll, as Boat asks; 409 is a state race with a
-    // wake already under way.
-    if (state === "archived") {
-      const resumed = await boatJson(cfg, `/boxes/${boxId}/resume`, { method: "POST" });
-      if (resumed.ok) resumeFailure = null;
-      else if (resumed.status !== 409) {
-        const message = boatErrorMessage(resumed.status, "waking the cloud computer", resumed.body, usesIncludedBoat(cfg));
-        if (resumed.status < 500) throw new Error(message);
-        resumeFailure = message;
+  try {
+    while (Date.now() < deadline) {
+      assertBoatNotDeleting(boxId);
+      const { body } = await boatJson(cfg, `/boxes/${boxId}`, { signal: untilDeadline() });
+      const state = body?.box?.state;
+      if (READY.has(state)) return body.box;
+      if (state === "error") return null;
+      // an archiving boat can't resume until the snapshot lands — nudge after.
+      // A refusal (a plan limit, say) is final: report it now. A server error
+      // is retried on the next poll, as Boat asks; 409 is a state race with a
+      // wake already under way.
+      if (state === "archived") {
+        const resumed = await boatJson(cfg, `/boxes/${boxId}/resume`, { method: "POST", signal: untilDeadline() });
+        if (resumed.ok) resumeFailure = null;
+        else if (resumed.status !== 409) {
+          const message = boatErrorMessage(resumed.status, "waking the cloud computer", resumed.body, usesIncludedBoat(cfg));
+          if (resumed.status < 500) throw new Error(message);
+          resumeFailure = message;
+        }
       }
+      await new Promise((r) => setTimeout(r, Math.min(2500, Math.max(0, deadline - Date.now()))));
     }
-    await new Promise((r) => setTimeout(r, 2500));
+  } catch (error) {
+    if (!outOfTime(error)) throw error;
   }
   if (resumeFailure) throw new Error(resumeFailure);
   return null;

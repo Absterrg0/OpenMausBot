@@ -750,7 +750,10 @@ export type ServerFrame =
   | { kind: "webhook.deleted"; webhookId: string }
   | { kind: "runtime"; event: RuntimeEvent }
   | { kind: "screen"; botId: string; threadId: string; png: string; mime?: string }
-  | { kind: "computer"; botId: string; state: "provisioning" | "waking" }
+  /** A bot's computer is being set up or woken for a turn; the chat shows
+   * one progress line until its first screen frame. `place` names a cloud
+   * computer (absent: a Local VM). */
+  | { kind: "computer"; botId: string; state: "provisioning" | "waking"; place?: "cloud" }
   | { kind: "computer-control"; botId: string; held: boolean; helpReason: string | null }
   | { kind: "bot.deleted"; botId: string }
   | { kind: "live.call"; botId: string; threadId: string; call: LiveCallState | null }
