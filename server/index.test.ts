@@ -10940,6 +10940,12 @@ describe("harness HTTP API", () => {
       const [work, other, duplicate] = requested.body.messageIds;
       expect(work).toBe(duplicate);
       expect(other).not.toBe(work);
+      // Older phones draw an unknown kind by its text, so each card carries
+      // a plain line naming the app and the account it is waiting on.
+      const stored = (await api("GET", `/api/threads/${bot.threadId}/messages`)).body.messages as any[];
+      const workCard = stored.find((message) => message.id === work);
+      expect(workCard).toMatchObject({ kind: "connector", connector: { alias: "work", status: "required" } });
+      expect(workCard.text).toBe(`Connect ${workCard.connector.label} as “work” to continue.`);
       expect((await create([{ slug: "gmail", alias: "work" }])).body.messageIds).toEqual([work]);
       const card = (id: string, action: string) => `/api/bots/${bot.id}/connector-cards/${id}/${action}`;
       expect((await api("POST", card(work, "authorize"), { threadId: bot.threadId })).body.url).toBe("https://connect.composio.dev/fixture-only");
@@ -10979,6 +10985,9 @@ describe("harness HTTP API", () => {
       });
       expect(response.status).toBe(200);
       const { messageIds } = await response.json() as { messageIds: string[] };
+      const stored = (await api("GET", `/api/threads/${bot.threadId}/messages`)).body.messages as any[];
+      const slackCard = stored.find((message) => message.id === messageIds[0]);
+      expect(slackCard.text).toBe(`Connect ${slackCard.connector.label} to continue.`);
       const card = `/api/bots/${bot.id}/connector-cards/${messageIds[0]}/authorize`;
       const paths = ["/api/connectors/slack/authorize", card, card];
       const before = connectorLinkRequests.length;

@@ -124,6 +124,7 @@ import {
 } from "./cloud-backend.ts";
 import * as composio from "./composio.ts";
 import { connectorCallFromFrame, connectorRefusalText, connectorUnrecognizedText, evaluateConnectorTools } from "./connector-verdict.ts";
+import { connectorCardText } from "./connector-card-text.ts";
 import { chiefOfStaffSystemPrompt } from "./chief-of-staff.ts";
 import { buildRecall } from "./recall.ts";
 import { createMemoryUpkeep, upkeepEnabled } from "./memory-upkeep.ts";
@@ -18886,6 +18887,9 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
           const message = store.appendMessage(threadId, {
             role: "bot",
             kind: "connector",
+            // Read only by clients that predate the card (older phones draw
+            // an unknown kind by its text); see connector-card-text.ts.
+            text: connectorCardText(toolkit.label, item.alias),
             ...(owner.group ? { from: { botId: owner.bot.id, name: owner.bot.name, color: owner.bot.color } } : {}),
             connector: {
               slug: item.slug,
