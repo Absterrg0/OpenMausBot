@@ -935,33 +935,37 @@ class Session(
                         return
                     }
                 }
+                // Frames arrive in windows (`inBatches`): a busy fleet sends
+                // about seventy a second, and one publish per frame kept the
+                // home list re-deriving on nearly every drawn frame.
                 eventsFn(activeClient, cursor, screenWatchers > 0)
-                    .collect { frame ->
+                    .inBatches()
+                    .collect { batch ->
                         currentCoroutineContext().ensureActive()
 
-                        when (val payload = frame.frame) {
-                            is Frame.Hello -> {
-                                receivedHello = true
-                                if (!payload.resumed) {
-                                    hydrate(generation)
-                                    _state.update { it.resetCursor(payload.cursor) }
-                                }
-                                _status.value = Status.Live
-                                promoteWorkingRoute()
-                                refreshConnectionMetadata(activeClient)
+                        val first = batch.first()
+                        val hello = first.frame as? Frame.Hello
+                        if (hello != null) {
+                            receivedHello = true
+                            if (!hello.resumed) {
+                                hydrate(generation)
+                                _state.update { it.resetCursor(hello.cursor) }
                             }
-                            else -> {
-                                // A frame after hello is the stream working. Only that
-                                // resets the backoff, so hello-then-close slows down.
-                                reconnectDelaySeconds = 0
-                                framesAfterHello += 1
-                                _state.update { it.apply(frame) }
-                                if (payload is Frame.Notify) {
-                                    notificationSink.deliver(payload.notification, frame.seq)
+                            _status.value = Status.Live
+                            promoteWorkingRoute()
+                            refreshConnectionMetadata(activeClient)
+                        } else {
+                            // A frame after hello is the stream working. Only that
+                            // resets the backoff, so hello-then-close slows down.
+                            reconnectDelaySeconds = 0
+                            framesAfterHello += batch.size
+                            _state.update { state -> batch.fold(state) { next, frame -> next.apply(frame).advance(frame.seq) } }
+                            batch.forEach { frame ->
+                                (frame.frame as? Frame.Notify)?.let {
+                                    notificationSink.deliver(it.notification, frame.seq)
                                 }
-                                notificationSink.setBadge(_state.value.unreadCount)
-                                _state.update { it.advance(frame.seq) }
                             }
+                            notificationSink.setBadge(_state.value.unreadCount)
                         }
                     }
                 // A live stream may close normally and should reopen on the working route.

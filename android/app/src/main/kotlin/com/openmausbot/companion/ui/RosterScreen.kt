@@ -169,36 +169,44 @@ fun RosterScreen(navigator: CompanionNavigator) {
         }
     }
 
+    // Tokens and the stream cursor change the state on nearly every frame of a
+    // busy fleet, and nothing below but the Updates pill reads them. So the
+    // list's folds are keyed on this: the same state object until a field they
+    // do read changes (bots, groups, transcripts, branches, edits, queues).
+    val fleet = remember(
+        state.bots, state.rooms, state.messages, state.activeLeafIds, state.pendingEdits, state.pendingQueued,
+    ) { state }
     // Folding the fleet walks every thread's transcript, so it is keyed on the
-    // state and the activity level alone: typing filters the fold instead of
+    // fleet and the activity level alone: typing filters the fold instead of
     // repeating it.
-    val summaries = remember(state, activityDetail) { state.chatSummaries(activityDetail) }
+    val summaries = remember(fleet, activityDetail) { fleet.chatSummaries(activityDetail) }
     // Only a search has rows to filter; the unsearched roster is assembled
     // section by section below.
-    val rows = remember(summaries, query, state.queuedThreadIds) {
-        rosterThreadRows(summaries, query, state.queuedThreadIds)
+    val rows = remember(summaries, query, fleet.queuedThreadIds) {
+        rosterThreadRows(summaries, query, fleet.queuedThreadIds)
     }
-    val approvals = remember(state) { state.pendingApprovals }
-    val waiting = remember(state, approvals) { RosterLayout.waitingChats(state, approvals) }
+    val approvals = remember(fleet) { fleet.pendingApprovals }
+    val waiting = remember(fleet, approvals) { RosterLayout.waitingChats(fleet, approvals) }
     // One pass over the fleet rather than one per row: resolving a face walks the
     // chat's visible transcript.
-    val faces = remember(state, summaries) {
-        summaries.associate { it.id to MausState.forChat(it.chat, state) }
+    val faces = remember(fleet, summaries) {
+        summaries.associate { it.id to MausState.forChat(it.chat, fleet) }
     }
     val summariesById = remember(summaries) { summaries.associateBy { it.id } }
     // Hoisted out of the list: read inside a lazy item, `state` would make that
     // item's recompose scope the whole fleet.
-    val rooms = state.rooms
-    val tiles = remember(state) {
-        rooms.associate { it.id to RosterLayout.memberBots(state, it) }
+    val rooms = fleet.rooms
+    val tiles = remember(fleet) {
+        rooms.associate { it.id to RosterLayout.memberBots(fleet, it) }
     }
     // Read by the bar over the list and by nothing inside it, so the rows never
     // recompose for it. `approvals` is handed over rather than walked again.
+    // The one fold keyed on the whole state: a working line quotes the stream.
     val updates = remember(state, approvals, activityDetail) { state.updates(approvals, activityDetail) }
     // The cross-bot Needs attention section rides above every roster section.
-    val attention = remember(state) { state.crossBotAttention() }
+    val attention = remember(fleet) { fleet.crossBotAttention() }
 
-    val queuedThreadIds = state.queuedThreadIds
+    val queuedThreadIds = fleet.queuedThreadIds
     val toggleBot: (String) -> Unit = { botId ->
         haptics.play(HapticCue.SELECT)
         expandedBots = if (botId in expandedBots) expandedBots - botId else expandedBots + botId
@@ -347,13 +355,13 @@ fun RosterScreen(navigator: CompanionNavigator) {
                             }
                             items(attention, key = { "attention-${it.id}" }) { entry ->
                                 AttentionRow(entry = entry, onOpen = {
-                                    state.bots.firstOrNull { it.id == entry.botId }
+                                    fleet.bots.firstOrNull { it.id == entry.botId }
                                         ?.let { bot -> Chat.BotChat(bot.forTask(entry.task.threadId) ?: bot) }
                                         ?.let(navigator::open)
                                 })
                             }
                         }
-                        state.unsectionedChief?.let { chief ->
+                        fleet.unsectionedChief?.let { chief ->
                             summariesById[chief.id]?.let { summary ->
                                 item(key = "chief-${chief.id}") {
                                     // A one-line row right under Needs attention
@@ -365,7 +373,7 @@ fun RosterScreen(navigator: CompanionNavigator) {
                                 }
                             }
                         }
-                        val pinned = state.pinnedBots.mapNotNull { summariesById[it.id] }
+                        val pinned = fleet.pinnedBots.mapNotNull { summariesById[it.id] }
                         if (pinned.isNotEmpty()) {
                             item(key = "pinned-label") {
                                 // a compact row above it leaves little air of its own
@@ -388,28 +396,28 @@ fun RosterScreen(navigator: CompanionNavigator) {
                             item(key = "groups-title") {
                                 CompactGroupsTitle(stringResource(R.string.mobile_groups_ae9629f4), onCreate = startNewGroup, spacing = sectionSpacing)
                             }
-                            items(state.unsectionedChannels, key = { "group-${it.id}" }) { compactRoom(it) }
-                            if (state.botChats.isNotEmpty()) {
+                            items(fleet.unsectionedChannels, key = { "group-${it.id}" }) { compactRoom(it) }
+                            if (fleet.botChats.isNotEmpty()) {
                                 item(key = "bot-chats-title") {
                                     CompactGroupsTitle(stringResource(R.string.mobile_bot_threads_ec81acf2), onCreate = null, spacing = sectionSpacing)
                                 }
-                                items(state.botChats, key = { "bot-chat-${it.id}" }) { compactRoom(it) }
+                                items(fleet.botChats, key = { "bot-chat-${it.id}" }) { compactRoom(it) }
                             }
                         } else {
                             item(key = "channels") {
                                 GroupsStrip(
                                     title = stringResource(R.string.mobile_groups_ae9629f4),
-                                    rooms = state.unsectionedChannels,
+                                    rooms = fleet.unsectionedChannels,
                                     members = tiles,
                                     onOpen = { navigator.open(Chat.RoomChat(it)) },
                                     onCreate = startNewGroup,
                                 )
                             }
-                            if (state.botChats.isNotEmpty()) {
+                            if (fleet.botChats.isNotEmpty()) {
                                 item(key = "bot-chats") {
                                     GroupsStrip(
                                         title = stringResource(R.string.mobile_bot_threads_ec81acf2),
-                                        rooms = state.botChats,
+                                        rooms = fleet.botChats,
                                         members = tiles,
                                         onOpen = { navigator.open(Chat.RoomChat(it)) },
                                         onCreate = null,
@@ -417,7 +425,7 @@ fun RosterScreen(navigator: CompanionNavigator) {
                                 }
                             }
                         }
-                        val unsectioned = state.unsectionedBots.mapNotNull { summariesById[it.id] }
+                        val unsectioned = fleet.unsectionedBots.mapNotNull { summariesById[it.id] }
                         if (unsectioned.isNotEmpty()) {
                             item(key = "bots-label") {
                                 SectionLabel(stringResource(R.string.mobile_bots_4ca88ea4), Modifier.padding(top = sectionSpacing, bottom = 4.dp))
@@ -428,7 +436,7 @@ fun RosterScreen(navigator: CompanionNavigator) {
                         }
                         // Chiefs, then the section's channels, then its bots —
                         // the order of `rosterSections` in `ChatListView.swift`.
-                        state.sidebarSections.forEach { section ->
+                        fleet.sidebarSections.forEach { section ->
                             item(key = "section-${section.id}") {
                                 SectionLabel(section.name, Modifier.padding(top = sectionSpacing, bottom = 4.dp))
                             }
@@ -558,7 +566,7 @@ fun RosterScreen(navigator: CompanionNavigator) {
             },
             // The same rule the sheet picks from: two copies of "which bots can
             // be sectioned" could disagree about a hidden one.
-            canCreateSection = remember(state) { SectionRules.selectable(state).isNotEmpty() },
+            canCreateSection = remember(fleet) { SectionRules.selectable(fleet).isNotEmpty() },
             modifier = Modifier
                 .align(Alignment.BottomCenter)
                 .testTag("roster-bottom-bar")

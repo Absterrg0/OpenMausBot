@@ -7,6 +7,7 @@ import com.openmausbot.companion.audio.VoicePreviewController
 import com.openmausbot.companion.audio.VoicePreviewPlayer
 import com.openmausbot.companion.avatar.AvatarImageStore
 import com.openmausbot.companion.core.APIError
+import com.openmausbot.companion.core.FRAME_BATCH_WINDOW_MILLIS
 import com.openmausbot.companion.core.Fleet
 import com.openmausbot.companion.core.Frame
 import com.openmausbot.companion.core.Message
@@ -383,6 +384,8 @@ class SessionLingerTest {
 
         stream.emit(delta("t1", "The report", seq = 4))
         stream.emit(delta("t1", " is ready.", seq = 5))
+        // Tokens ride the stream's batch window.
+        advanceTimeBy(FRAME_BATCH_WINDOW_MILLIS + 1)
         runCurrent()
         assertEquals("The report is ready.", session.state.value.streaming["t1"])
 

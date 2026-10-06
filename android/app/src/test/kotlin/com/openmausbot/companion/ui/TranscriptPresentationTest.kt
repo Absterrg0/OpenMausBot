@@ -1,6 +1,7 @@
 package com.openmausbot.companion.ui
 
 import android.graphics.Bitmap
+import android.os.Looper
 import androidx.activity.ComponentActivity
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.collectAsState
@@ -19,6 +20,7 @@ import com.openmausbot.companion.core.Chat
 import com.openmausbot.companion.core.CompanionJson
 import com.openmausbot.companion.core.Compaction
 import com.openmausbot.companion.core.Connection
+import com.openmausbot.companion.core.FRAME_BATCH_WINDOW_MILLIS
 import com.openmausbot.companion.core.Fleet
 import com.openmausbot.companion.core.Frame
 import com.openmausbot.companion.core.Message
@@ -27,6 +29,7 @@ import com.openmausbot.companion.core.SearchHit
 import com.openmausbot.companion.core.StreamFrame
 import com.openmausbot.companion.core.target
 import java.io.File
+import java.time.Duration
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
@@ -43,6 +46,7 @@ import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
+import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
 
@@ -288,6 +292,12 @@ class TranscriptPresentationTest {
         }
         compose.runOnIdle { scene.session.connect() }
         compose.waitUntil(5_000) { scene.session.state.value.bot(fixture.id) != null }
+        // The live reasoning rides one stream batch window after the hello, on
+        // the main looper's clock, which only moves when told to.
+        if (reasoning) {
+            shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(FRAME_BATCH_WINDOW_MILLIS + 1))
+            compose.waitUntil(5_000) { scene.session.state.value.reasoning[fixture.threadId] != null }
+        }
         compose.waitForIdle()
     }
 

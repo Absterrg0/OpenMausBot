@@ -1640,6 +1640,8 @@ class SessionTest {
                 seq = 2,
             ),
         )
+        // A screen frame rides the stream's batch window.
+        advanceTimeBy(FRAME_BATCH_WINDOW_MILLIS + 1)
         runCurrent()
         assertEquals(listOf<Pair<String?, Boolean>>(null to false), opens)
         assertTrue(session.state.value.screens.containsKey("b1"))
@@ -1678,6 +1680,53 @@ class SessionTest {
             opens,
         )
         assertTrue(session.state.value.screens.isEmpty())
+    }
+
+    @Test
+    fun aBurstOfStreamFramesLandsAsOnePublishAndANotificationDoesNotWait() = runTest {
+        // A busy fleet sends about seventy frames a second. They fold into the
+        // state once per window, not once each; a notification closes it early.
+        val hang = MutableSharedFlow<StreamFrame>(extraBufferCapacity = 16)
+        val notifications = RecordingNotifications()
+        val session = session(
+            connectionStore = FakeConnectionStore(
+                Connection(id = "c1", name = "Mac", host = "127.0.0.1", port = 8810),
+            ),
+            tokenStore = FakeTokenStore().apply { saved["c1"] = "tok" },
+            events = { _, _ -> hang },
+            hydrate = { Fleet(bots = listOf(sampleBot(id = "b1", threadId = "t1")), groups = emptyList()) },
+            notifications = notifications,
+        )
+        session.awaitRestored()
+        session.connect()
+        runCurrent()
+        hang.tryEmit(StreamFrame(Frame.Hello(cursor = "stream:1", resumed = false), seq = 0))
+        runCurrent()
+        yield()
+        runCurrent()
+        val published = mutableListOf<CompanionState>()
+        backgroundScope.launch(kotlinx.coroutines.test.UnconfinedTestDispatcher(testScheduler)) {
+            session.state.collect { published += it }
+        }
+        published.clear()
+
+        for (seq in 2..4) {
+            hang.tryEmit(StreamFrame(Frame.Runtime(RuntimeEvent("content.delta", "t1", "w$seq ", "assistant_text")), seq))
+        }
+        runCurrent()
+        assertEquals("stream:1", session.state.value.cursor, "tokens wait out their window")
+        advanceTimeBy(FRAME_BATCH_WINDOW_MILLIS + 1)
+        runCurrent()
+        assertEquals("w2 w3 w4 ", session.state.value.streaming["t1"])
+        assertEquals("stream:4", session.state.value.cursor)
+        assertEquals(1, published.size, "three frames, one publish")
+
+        hang.tryEmit(StreamFrame(Frame.Runtime(RuntimeEvent("content.delta", "t1", "w5", "assistant_text")), 5))
+        hang.tryEmit(StreamFrame(Frame.Notify(NotificationFrame("reply", "b1", "b1", "t1", "b1", "Done")), 6))
+        runCurrent()
+        assertEquals("stream:6", session.state.value.cursor, "a notification is not held for the window")
+        assertEquals(listOf(6), notifications.delivered.map { it.second })
+        assertEquals(2, published.size)
     }
 
     @Test
