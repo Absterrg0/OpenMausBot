@@ -465,7 +465,7 @@ async function waitReady(cfg: AppConfig, boxId: string, budgetMs = 90_000) {
   const untilDeadline = () => AbortSignal.timeout(Math.max(1, deadline - Date.now()));
   const outOfTime = (error: unknown) => error instanceof Error && error.name === "TimeoutError";
   // Boat's words for the last failed resume, if the wait runs out on them.
-  let resumeFailure: string | null = null;
+  let resumeFailure: Error | null = null;
   try {
     while (Date.now() < deadline) {
       assertBoatNotDeleting(boxId);
@@ -481,9 +481,9 @@ async function waitReady(cfg: AppConfig, boxId: string, budgetMs = 90_000) {
         const resumed = await boatJson(cfg, `/boxes/${boxId}/resume`, { method: "POST", signal: untilDeadline() });
         if (resumed.ok) resumeFailure = null;
         else if (resumed.status !== 409) {
-          const message = boatErrorMessage(resumed.status, "waking the cloud computer", resumed.body, usesIncludedBoat(cfg));
-          if (resumed.status < 500) throw new Error(message);
-          resumeFailure = message;
+          const refusal = boatRefusal(resumed.status, "waking the cloud computer", resumed.body, usesIncludedBoat(cfg));
+          if (resumed.status < 500) throw refusal;
+          resumeFailure = refusal;
         }
       }
       await new Promise((r) => setTimeout(r, Math.min(2500, Math.max(0, deadline - Date.now()))));
@@ -491,7 +491,7 @@ async function waitReady(cfg: AppConfig, boxId: string, budgetMs = 90_000) {
   } catch (error) {
     if (!outOfTime(error)) throw error;
   }
-  if (resumeFailure) throw new Error(resumeFailure);
+  if (resumeFailure) throw resumeFailure;
   return null;
 }
 
@@ -1091,6 +1091,18 @@ export function boatErrorMessage(status: number, what: string, body?: any, inclu
   return theirs ? `${what} failed: ${theirs}` : `${what} failed (${status})`;
 }
 
+/** A refused start as an error that keeps the provider's status and code
+ * (the Admin's own, such as subscription_inactive), so a failed place is
+ * read from the code first and from the words only until every refusal
+ * has one (shared/place-view.ts cloudRefusal). Named apart from `status`,
+ * which a route would answer with. */
+export function boatRefusal(status: number, what: string, body?: any, included = false): Error & { boatStatus: number; boatCode?: string } {
+  const code = body?.error?.code ?? body?.code;
+  return Object.assign(new Error(boatErrorMessage(status, what, body, included)), {
+    boatStatus: status, ...(typeof code === "string" && /^[a-z0-9_]{1,64}$/.test(code) ? { boatCode: code } : {}),
+  });
+}
+
 /** boat.dev trial accounts reject the normal eight-hour auto-stop with a
  * structured `trial_auto_stop_required` refusal. Retry that one condition
  * once at the provider's advertised maximum (or the documented two-hour
@@ -1253,7 +1265,7 @@ export async function provisionBoat(cfg: AppConfig, botId: string, _botName: str
       // retry when boat.dev reports their shorter TTL ceiling.
       const createRes = await createBoat(cfg, botId);
       if (!createRes.ok || !createRes.body?.box?.id) {
-        throw new Error(boatErrorMessage(createRes.status, "boat create", createRes.body, usesIncludedBoat(cfg)));
+        throw boatRefusal(createRes.status, "boat create", createRes.body, usesIncludedBoat(cfg));
       }
       boat = createRes.body.box;
       createRequest = createRes.request;

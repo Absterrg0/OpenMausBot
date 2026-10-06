@@ -53,6 +53,8 @@ import { ClaudeUpdatePrompt } from "./ClaudeUpdatePrompt";
 import { MacCuaRecoveryActions } from "./MacCuaRecoveryActions";
 import { macCuaPermissionMessage, missingMacCuaPermissions } from "@/lib/mac-cua-permissions";
 import { failedTurnCause, signedOutEngine } from "@/lib/failed-turn";
+import { openPlaceAction, placeRowViewFor, usePlaceSeat, worksOnSimpleLabel } from "@/lib/place-view";
+import type { PlaceRow } from "../../shared/place-view";
 import { isProviderSafetyBlock, PROVIDER_SAFETY_GUIDANCE, PROVIDER_SAFETY_HELP_URL } from "../../shared/provider-safety";
 import { BotAvatar } from "./Avatar";
 import { TurnPresence } from "./TurnPresence";
@@ -221,6 +223,7 @@ export function ErrorRow({
   message,
   headline: plainHeadline,
   onRetry,
+  action,
   setupInstance,
   claudeUpdateInstance,
 }: {
@@ -229,6 +232,9 @@ export function ErrorRow({
    * signed-out line); `message` then moves under Details. */
   headline?: string;
   onRetry?: () => void;
+  /** The one next action a failed place names (shared/place-view.ts), in
+   * place of Retry; null for a place with nothing to do here. */
+  action?: { label: string; onClick: () => void } | null;
   setupInstance?: InstanceInfo;
   /** The Claude engine to update when this turn failed because its Claude
    * Code is too old for the model. */
@@ -268,6 +274,16 @@ export function ErrorRow({
         ) : setupInstance &&
         !(setupInstance.snapshot.state === "available" && setupInstance.snapshot.authenticated !== false) ? (
           <EngineSetup instance={setupInstance} className="mt-2 text-ink-secondary" />
+        ) : action !== undefined ? (
+          action && (
+            <button
+              type="button"
+              onClick={action.onClick}
+              className="mt-1.5 flex items-center gap-1.5 rounded-full border border-danger/30 px-2.5 py-1 text-[12.5px] hover:bg-danger/15"
+            >
+              {action.label}
+            </button>
+          )
         ) : (
           onRetry && (
             <button
@@ -283,6 +299,28 @@ export function ErrorRow({
   );
 }
 
+/** A place that could not be used: its one line and its one next action
+ * (shared/place-view.ts), never the provider's raw words or a second
+ * button. Try again is the conversation's own retry, offered only where a
+ * retry exists. */
+function PlaceFailedRow({ place, botId, threadId, onRetry }: {
+  place: PlaceRow;
+  botId: string;
+  threadId?: string;
+  onRetry?: () => void;
+}) {
+  const { state, dispatch } = useStore();
+  const { capabilities } = useDesktopCapabilities();
+  const seat = usePlaceSeat(state.config, capabilities.host.platform);
+  const bot = state.bots.find((candidate) => candidate.id === botId);
+  const view = placeRowViewFor(place, seat, worksOnSimpleLabel(bot?.computer, capabilities.host.platform));
+  const id = view.action?.id;
+  const onClick = !id ? undefined
+    : id === "try-again" ? onRetry
+    : () => { openPlaceAction(id, { botId, threadId }, dispatch); };
+  return <ErrorRow message={view.line} action={view.action && onClick ? { label: view.action.label, onClick } : null} />;
+}
+
 /** Only a local, editable Claude Code engine can be updated from chat; a
  * company-managed one is the organisation's to update. */
 export function claudeUpdateTarget(engine: InstanceInfo | undefined): InstanceInfo | undefined {
@@ -292,12 +330,17 @@ export function claudeUpdateTarget(engine: InstanceInfo | undefined): InstanceIn
 /** A failed turn's stored row ("error: …", src/lib/failed-turn.ts), shown
  * the same in a 1:1 chat and a room: the server writes the same row for both,
  * so both read it here. `engine` is the one the turn ran on — what its
- * sign-in or update card acts on. */
-export function FailedTurnRow({ tool, engine, onRetry }: {
+ * sign-in or update card acts on. A place that could not be used is worded
+ * again from its stored state, in this reader's language and role. */
+export function FailedTurnRow({ tool, engine, onRetry, botId, threadId }: {
   tool: NonNullable<Message["tool"]>;
   engine: InstanceInfo | undefined;
   onRetry?: () => void;
+  /** The bot the turn ran as, and its conversation: where a place's next action goes. */
+  botId?: string;
+  threadId?: string;
 }) {
+  if (tool.place && botId) return <PlaceFailedRow place={tool.place} botId={botId} threadId={threadId} onRetry={onRetry} />;
   const signedOut = signedOutEngine(tool, engine);
   return (
     <ErrorRow
@@ -935,6 +978,8 @@ const MessagesList = memo(function MessagesList({
                   <FailedTurnRow
                     tool={m.tool}
                     engine={engine}
+                    botId={botId}
+                    threadId={threadId}
                     onRetry={m.id === lookups.retryableId && canRetryLast ? onRegenerate : undefined}
                   />
                 );

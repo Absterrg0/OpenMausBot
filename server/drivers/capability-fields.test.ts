@@ -5,7 +5,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { canWorkOnCloud } from "../../shared/cloud-computer.ts";
-import { cloudPlaceDriverError } from "../surface.ts";
+import { cloudPlaceRefusal } from "../surface.ts";
 import { ensureDirs } from "../config.ts";
 import type { ProviderInstance } from "../contracts.ts";
 import { BUILT_IN_DRIVERS } from "./builtIn.ts";
@@ -49,9 +49,9 @@ describe("typed capability fields for the cloud computer", () => {
     expect(onBoat(bare)).toBe(false);
     // What a turn set to Cloud then gets: refused before anything starts, in
     // one plain line with the next step, not handed to some other engine.
-    expect(cloudPlaceDriverError({ computerMcp: bare.adapter.capabilities.computerMcp }))
-      .toBe("This model can't use a computer. Choose another model, or set Works on to Auto.");
-    expect(cloudPlaceDriverError({ computerMcp: mounted.adapter.capabilities.computerMcp })).toBeNull();
+    expect(cloudPlaceRefusal({ computerMcp: bare.adapter.capabilities.computerMcp, name: "Caps Compat Bare" }, "works-on", "Scout")?.message)
+      .toBe("Caps Compat Bare can't use a computer. Choose a model that can, such as Claude or ChatGPT. Choose another model in Scout's settings.");
+    expect(cloudPlaceRefusal({ computerMcp: mounted.adapter.capabilities.computerMcp, name: "Caps Compat" }, "works-on", "Scout")).toBeNull();
   });
 
   it("lets host-harness drivers with computer tools use the cloud computer on their own engine", async () => {

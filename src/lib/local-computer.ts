@@ -61,10 +61,6 @@ export function localComputerDisabledReason({
   return "CUA Driver is not ready for local computer control.";
 }
 
-export function linuxAutoDescription(): string {
-  return "Auto reuses an existing cloud computer; otherwise computer use stays off.";
-}
-
 export type BoatPanelAction =
   | "cloud-new"
   | "cloud-asleep"

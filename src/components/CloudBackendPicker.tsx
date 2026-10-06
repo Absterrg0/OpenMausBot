@@ -3,8 +3,11 @@
 // homes (ComputerPanel and the bot settings dialog's Access section), so the
 // copy can never drift apart. Both backends follow one rule
 // (shared/cloud-computer.ts), so neither is offered or refused on its own.
+// My Cloud's cloud computers are the plan's own, so there it is not shown at
+// all.
 import type { CloudBackend } from "../../shared/wire";
 import { cn } from "@/lib/cn";
+import { useStore } from "@/state/store";
 
 export function CloudBackendPicker({
   value,
@@ -15,6 +18,8 @@ export function CloudBackendPicker({
   compact?: boolean;
   onChange: (backend: CloudBackend) => void;
 }) {
+  const { state } = useStore();
+  if (state.config?.cloudHome) return null;
   return (
     <div className="mt-3 rounded-lg bg-inset p-3">
       <div className="text-[12px] font-medium text-ink">{compact ? "Cloud provider" : "Cloud backend"}</div>

@@ -52,8 +52,9 @@ export interface AutoVmClaimSlot {
   /** Called once, after the slot is marked failed, when the fired claim
    * rejected (issue #1369): the turn surfaces a terminal error and ends
    * instead of staying busy behind a gate that can only refuse. The
-   * fail-closed refusal below does not depend on it firing. */
-  onRejected?: (failure: string) => void;
+   * fail-closed refusal below does not depend on it firing. `error` is what
+   * the claim threw, so a failure already read as a place keeps its row. */
+  onRejected?: (failure: string, error?: unknown) => void;
 }
 
 export type AutoVmClaimTable = Map<string, AutoVmClaimSlot>;
@@ -75,7 +76,7 @@ export function startAutoVmClaim(table: AutoVmClaimTable, threadId: string, gene
     (error: unknown) => {
       slot.failed = true;
       slot.failure = error instanceof Error ? error.message : String(error);
-      slot.onRejected?.(slot.failure);
+      slot.onRejected?.(slot.failure, error);
     },
   );
 }

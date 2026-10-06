@@ -32,6 +32,9 @@ vi.mock("./DesktopCapabilities", async (importOriginal) => ({
   }),
 }));
 vi.mock("@/lib/interface-mode", () => ({ useAdvancedMode: () => fixture.advanced, setAdvancedMode: () => {} }));
+// The owner: starting it early is an Admin's shortcut (shared/place-view.ts);
+// a User's own message starts it when a task needs it.
+vi.mock("@/lib/use-owner-or-admin", () => ({ useOwnerOrAdmin: () => true }));
 vi.mock("./CloudScreenPreview", () => ({
   CloudScreenPreview: () => createElement("div", { "data-live-screen": "" }),
 }));

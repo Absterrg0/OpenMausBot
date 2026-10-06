@@ -3127,7 +3127,8 @@ describe("harness HTTP API", () => {
       roomId = room.id;
       expect((await api("POST", `/api/groups/${room.id}/messages`, { text: "work in the virtual machine" })).status).toBe(202);
       await expect.poll(async () => JSON.stringify((await api("GET", `/api/threads/${room.threadId}/messages`)).body),
-        { timeout: 5_000 }).toMatch(/this model cannot use the Local VM.*Set Works on to Auto in this bot's settings to continue/);
+        { timeout: 5_000 }).toMatch(/fixture-plain-model can't use a Local VM\. Choose a model that can, such as Claude or ChatGPT\. Choose another model in Room VM refusal's settings\./);
+      expect(JSON.stringify((await api("GET", `/api/threads/${room.threadId}/messages`)).body)).not.toContain("Works on to Auto");
     } finally {
       if (roomId) await api("POST", `/api/groups/${roomId}/interrupt`, {}).catch(() => undefined);
       if (roomId) await api("DELETE", `/api/groups/${roomId}`).catch(() => undefined);
@@ -9875,7 +9876,8 @@ describe("harness HTTP API", () => {
       });
       expect(unavailableCloud.status).toBe(409);
       expect(await unavailableCloud.json()).toMatchObject({
-        error: expect.stringMatching(/Boat API key|Cloud VM runner/i),
+        // The same words a failed cloud turn's row uses (shared/place-view.ts).
+        error: expect.stringMatching(/^A cloud computer here needs your own Boat key, a paid service\. Add a Boat key in Settings → API keys\./),
       });
 
       const proposed = await fetch(`${BASE}/api/internal/routine-requests`, {

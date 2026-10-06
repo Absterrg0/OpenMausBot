@@ -5,7 +5,7 @@ import type { IncomingMessage } from "node:http";
 import { afterEach, expect, it } from "vitest";
 import {
   CLOUD_BROWSER_SIGN_IN_MAX_TTL_S, CLOUD_HOME_MARKER, CLOUD_IGNORED_KEYS, CLOUD_PAIRING_MAX_TTL_S, CLOUD_PAIRING_NONCE_MS, CLOUD_PAIRING_SKEW_S, cloudHomeConfiguration, cloudHomeConfigured,
-  boatNotConfiguredMessage, cloudHomeHost, cloudHomeOffersPlace, cloudHomePlaceRefusal, cloudPairingSignature, createCloudPairing, firstCloudTurnPatch, prepareCloudHomeVolume,
+  cloudHomeHost, cloudHomeOffersPlace, cloudHomePlaceRefusal, cloudPairingSignature, createCloudPairing, firstCloudTurnPatch, prepareCloudHomeVolume,
   withoutIgnoredCloudKeys,
 } from "./cloud-home.ts";
 import { cloudHomeChildEnvironments, codeTrustProblem, passwdIds, spawnWithSecrets } from "./cloud-home-start.ts";
@@ -113,12 +113,6 @@ it("refuses the places it never offers with what is true there, not a setup step
     // A failed turn shows the first 160 characters of its error.
     expect(text.length).toBeLessThanOrEqual(160);
   }
-});
-
-it("suggests the browser, not a Local VM, when Cloud has no Boat account on a Cloud home", () => {
-  expect(boatNotConfiguredMessage(true)).toBe("Cloud Boat is not configured — add a Boat API key or choose Browser");
-  // Every other server keeps its words.
-  expect(boatNotConfiguredMessage(false)).toBe("Cloud Boat is not configured — add a Boat API key or choose Local VM");
 });
 
 // ── the Admin's signed pairing request ───────────────────────────────────────

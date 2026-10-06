@@ -336,7 +336,8 @@ describe("a cloud computer starts only when the bot uses it", () => {
     const before = requests.length;
     await apiOk("POST", `/api/bots/${bot.id}/messages`, { text: "hi" });
     const row = await failedRow(bot.id);
-    expect(row.tool.name).toBe("error: Scribe's Tool selection leaves out the computer. Allow it in Scribe's Access settings.");
+    expect(row.tool.name).toBe("error: What Scribe can use doesn't include a computer. Change what Scribe can use in its settings.");
+    expect(row.tool.place).toEqual({ state: "cc-tools-off", params: { bot: "Scribe" }, source: "works-on" });
     await idle(bot.id);
     expect(requests.slice(before)).toEqual([]);
 
@@ -349,7 +350,7 @@ describe("a cloud computer starts only when the bot uses it", () => {
       headers: { authorization: `Bearer ${upstream.OMB_COMMS_TOKEN}` },
     }).then(response => response.json() as Promise<any>);
     expect(selection.options.find((option: { surface: string }) => option.surface === "cloud")).toMatchObject({
-      available: false, reason: "Scribe's Tool selection leaves out the computer. Allow it in Scribe's Access settings.",
+      available: false, reason: "What Scribe can use doesn't include a computer. Change what Scribe can use in its settings.",
     });
     await finish(bot.id);
     expect(requests.slice(before)).toEqual([]);
@@ -390,7 +391,10 @@ describe("a cloud computer starts only when the bot uses it", () => {
       const rows = await errorRows(group.threadId);
       expect(rows).toHaveLength(1);
       expect(rows[0].from).toMatchObject({ botId: bot.id, name: "Roomie" });
-      expect(rows[0].tool.name).toMatch(/^error: This month's 50 cloud computer hours are used up\. /);
+      // Read as a room member's place (shared/place-view.ts): the Admin's
+      // code, with no retry of its own.
+      expect(rows[0].tool.name).toBe("error: This month's cloud computer hours are used up. See your plan on the Plan page.");
+      expect(rows[0].tool.place).toEqual({ state: "cc-no-hours", params: { bot: "Roomie" }, source: "room" });
       await apiOk("DELETE", `/api/groups/${group.id}`);
       await apiOk("DELETE", `/api/bots/${bot.id}`);
     } finally {
@@ -419,7 +423,8 @@ describe("a cloud computer starts only when the bot uses it", () => {
       // error: the same words as the row, never "interrupted".
       expect(finished.status).toBe("failed");
       expect(`error: ${finished.error}`).toBe(rows[0].tool.name);
-      expect(finished.error).toMatch(/^This month's 50 cloud computer hours are used up\. Change where this routine runs\.$/);
+      expect(finished.error).toBe("This month's cloud computer hours are used up. See your plan on the Plan page.");
+      expect(rows[0].tool.place).toEqual({ state: "cc-no-hours", params: { bot: "Runner" }, source: "routine" });
       // The run's thread settles once the interrupt that ended it lands.
       await until(() => task(bot.id), current => current?.busy === false && current.tasks.every((entry: any) => !entry.busy));
       await apiOk("DELETE", `/api/routines/${routine.id}`);

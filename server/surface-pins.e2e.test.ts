@@ -374,7 +374,7 @@ describe("surface pin provenance against the real server", () => {
     writeFileSync(finishFile, "finish");
     await until(() => lastRow(), row => row.startsWith("error:"));
     await idle(bot.id, task.threadId);
-    expect(await lastRow()).toMatch(/^error: .*This conversation is back on Auto; send your message again\.$/);
+    expect(await lastRow()).toBe("error: Cloud computers can't start right now. It isn't anything you did. This conversation is back on Auto. Send your message again.");
     const cleared = savedTask(bot.id, task.threadId)!;
     expect(cleared.surface).toBeUndefined();
     expect(cleared.surfaceSource).toBeUndefined();
@@ -393,7 +393,7 @@ describe("surface pin provenance against the real server", () => {
     await apiOk("POST", `/api/bots/${bot.id}/messages`, { text: "Use the cloud computer.", threadId: task.threadId });
     await until(() => lastRow(), row => row.startsWith("error:"));
     await idle(bot.id, task.threadId);
-    expect(await lastRow()).toMatch(/^error: .*Clear this conversation's place in the composer to continue\.$/);
+    expect(await lastRow()).toBe("error: Cloud computers can't start right now. It isn't anything you did. Clear this conversation's place in the composer to continue.");
     expect(savedTask(bot.id, task.threadId)).toMatchObject({ surface: "cloud", surfaceSource: "user" });
     boatDown = false;
     await apiOk("DELETE", `/api/bots/${bot.id}`);

@@ -840,7 +840,8 @@ describe("Group Local VM ownership on the real isolated server", () => {
     const { bots, group } = await room();
     vmState({ failed: true });
     await send(group.id);
-    await until(() => api("GET", "/api/bots?messages=30"), r => JSON.stringify(r).includes("fixture desktop unavailable"));
+    // The failed place is one sentence now (shared/place-view.ts), its cause capitalized.
+    await until(() => api("GET", "/api/bots?messages=30"), r => JSON.stringify(r).includes("Fixture desktop unavailable."));
     await idle(bots[0].id);
     vmState();
     await send(group.id);
