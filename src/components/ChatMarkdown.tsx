@@ -34,6 +34,8 @@ import { windowsPathDestinations } from "../../shared/markdown-windows-paths";
 import { looksLikeThreadRefUrl, parseThreadRefUrl, resolveThreadRefAddress, remarkThreadRefs } from "../lib/thread-refs";
 import { MarkdownImagePreview, useLocalFileSave, type MessageAttachmentContext } from "./AttachmentPreview";
 import { ThreadLink, ThreadRefsContext, threadLinkFromProps, type ThreadRefsValue } from "./ThreadRefs";
+import { MarkdownTable } from "./MarkdownTable";
+import { TableFileButton } from "./TableFilePreview";
 
 // highlighted code, so revisiting a thread doesn't re-tokenize settled
 // blocks; keys are content hashes. The two-theme HTML is about 20 to 28 times
@@ -595,6 +597,7 @@ function LocalFileLink({ filePath, children, message }: { filePath: string; chil
 
   return (
     <span dir="ltr" className="inline-flex flex-wrap items-center gap-x-1.5 [unicode-bidi:isolate]">
+      <TableFileButton path={filePath} name={filePath.split(/[\\/]/).at(-1) ?? filePath} message={message} />
       <button
         type="button"
         onClick={() => void save.save()}
@@ -922,11 +925,7 @@ const MARKDOWN_COMPONENTS: Components = {
   },
   a: MarkdownLink,
   table({ node, children }: BlockProps) {
-    return (
-      <div className="overflow-x-auto">
-        <table dir={blockDirection(node)} className="w-full border-collapse text-[13.5px]">{children}</table>
-      </div>
-    );
+    return <MarkdownTable direction={blockDirection(node)}>{children}</MarkdownTable>;
   },
   th({ children }: { children?: ReactNode }) {
     return (

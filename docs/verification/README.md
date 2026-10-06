@@ -157,6 +157,10 @@ The [chat and settings polish fixture](chat-polish.md) exercises attachment
 galleries, opt-in video playback, persisted tool details, and responsive settings
 through the real renderer in an isolated fake-engine workspace.
 
+The [rich tables fixture](rich-tables.md) checks Markdown tables and message-scoped
+CSV/TSV previews, large-file virtualization, sorting, search, export and keyboard
+interaction in a disposable workspace.
+
 The [people invitation fixture](people.md) checks hosted workspace sign-in,
 roles and device revocation through the real HTTP API with a stubbed email
 service. It does not drive the People settings UI through `control-omb`.

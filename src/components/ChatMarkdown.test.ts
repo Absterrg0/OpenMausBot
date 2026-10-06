@@ -279,7 +279,7 @@ describe("repaired tables", () => {
     }));
     expect(html).toContain('font-semibold">Pros | Cons</div>');
     expect(html.match(/<table\b/g)).toHaveLength(1);
-    expect(html).toContain(">a | b</th>");
+    expect(html).toContain(">a | b</span>");
     expect(html.match(/<th\b/g)).toHaveLength(2);
   });
 
@@ -763,7 +763,7 @@ describe("bidi: message content carries its own direction", () => {
     expect(html).toContain("list-disc space-y-1 ps-5");
     expect(html).toContain("list-decimal space-y-1 ps-5");
     expect(html).toContain("border-s-2 border-hairline ps-3");
-    expect(html).toContain("px-2 py-1.5 text-start font-semibold");
+    expect(html).toContain('scope="col"');
     expect(html).not.toMatch(/class="[^"]*\bpl-5\b/);
     expect(html).not.toMatch(/class="[^"]*\bborder-l-2\b/);
     expect(html).not.toMatch(/class="[^"]*\btext-left\b/);

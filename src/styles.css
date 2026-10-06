@@ -74,6 +74,20 @@
    rendered values rather than reading the hex. `scripts/check-skin-contrast.mjs`
    re-runs that check.
    ───────────────────────────────────────────────────────────────────────── */
+.table-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 30px;
+  min-height: 30px;
+  border-radius: 6px;
+  color: var(--color-ink-secondary);
+  cursor: pointer;
+}
+.table-action:hover, .table-action[aria-pressed="true"] { background: var(--color-raised); color: var(--color-ink); }
+.table-action:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 1px; }
+@media (pointer: coarse) { .table-action { min-width: 40px; min-height: 40px; } }
+
 @theme {
   --animate-panel-in: panel-in 0.24s cubic-bezier(0.22, 1, 0.36, 1);
   --animate-workspace-in: workspace-in 0.18s cubic-bezier(0.22, 1, 0.36, 1);
