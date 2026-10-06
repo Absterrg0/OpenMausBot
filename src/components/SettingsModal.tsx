@@ -52,7 +52,7 @@ import { cn } from "@/lib/cn";
 import { glassPopupFrameStyle } from "@/lib/glass-popup";
 import { setNotificationSounds, useNotificationSounds } from "@/lib/notification-preferences";
 import { setPinnedCircles, setUniversalPins, usePinnedCircles, useUniversalPins } from "@/lib/sidebar-preferences";
-import { setShowThreads, useShowThreads } from "@/lib/thread-preferences";
+import { setShowThreads, useShowThreadsChoice } from "@/lib/thread-preferences";
 import { setAdvancedMode, useAdvancedMode } from "@/lib/interface-mode";
 import { parseSidebarDensity, setSidebarDensity, SIDEBAR_DENSITIES, useSidebarDensity, type SidebarDensity } from "@/lib/sidebar-preferences";
 import { setShowRunCard, useShowRunCard } from "@/lib/run-card-preferences";
@@ -470,7 +470,7 @@ function AdvancedModeRow() {
 }
 
 function ShowThreadsRow() {
-  const enabled = useShowThreads();
+  const enabled = useShowThreadsChoice();
   return (
     <SettingRow title={t("settings.threadDisplay.title")} subtitle={t("settings.threadDisplay.subtitle")}>
       <Switch
@@ -941,7 +941,9 @@ export function SettingsModal() {
               {remoteActive && <AdvancedModeRow />}
               <FontRow />
               <SidebarDensityRow />
-              <ShowThreadsRow />
+              {/* Simple mode keeps one conversation per bot, so the switch
+                  only means something in Advanced. */}
+              {advanced && <ShowThreadsRow />}
               <PinnedCirclesRow />
               <UniversalPinsRow />
               <NotificationSoundsRow />

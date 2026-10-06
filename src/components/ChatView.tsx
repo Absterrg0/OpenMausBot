@@ -809,10 +809,12 @@ function RoutineRunRow({ message, botId }: { message: Message; botId: string }) 
 /** A conversation with nothing in it yet: who it is with, and a prompt. */
 function EmptyChat({ bot }: { bot: Bot }) {
   const { dispatch } = useStore();
+  const advanced = useAdvancedMode();
   return (
     <div className="flex flex-1 flex-col items-center justify-center gap-3 py-24 text-center">
       <BotAvatar bot={bot} state="idle" size={64} motion="none" motionKey={0} />
-      <RenameTitle
+      {/* Simple mode renames in the bot's settings only. */}
+      {!advanced ? <div className="text-[17px] font-semibold text-ink">{bot.name}</div> : <RenameTitle
         value={bot.name}
         onCommit={(name) => {
           if (window.ogb?.remoteClient?.active) {
@@ -825,7 +827,7 @@ function EmptyChat({ bot }: { bot: Bot }) {
         }}
         className="text-[17px] font-semibold text-ink"
         inputClassName="rounded bg-inset px-1.5 py-0.5 text-center text-[17px] font-semibold"
-      />
+      />}
       <div className="max-w-[360px] text-[14px] text-ink-secondary">
         {bot.description || t("chat.emptyPrompt")}
       </div>
@@ -1075,6 +1077,21 @@ function PinnedBanner({
   );
 }
 
+/** The chat header's bot pill: the model chip's shape and tint. */
+const CHATHEAD_PILL = "flex min-w-0 items-center gap-2 rounded-full border border-hairline/40 bg-control/60 py-0.5 pl-1.5 text-ink";
+
+function chiefOfStaffBadge(bot: Bot) {
+  if (!bot.chiefOfStaff) return null;
+  // One line, never shrinking with the name (it wrapped "Chief / of /
+  // Staff", #1871); folds to the crown like the chips beside it do, so the
+  // name keeps the room.
+  return (
+    <span title={t("chat.chiefOfStaff")} className="flex shrink-0 items-center gap-1 whitespace-nowrap rounded-full bg-accent/12 px-2 py-0.5 text-[11px] font-medium text-accent @max-4xl/chathead:px-1.5">
+      <Crown size={11} aria-hidden="true" /> <span className="@max-4xl/chathead:sr-only">{t("chat.chiefOfStaff")}</span>
+    </span>
+  );
+}
+
 export function ChatView({ bot: profile }: { bot: Bot }) {
   const bot = useMemo(() => currentTaskBot(profile), [profile]);
   const { state, dispatch } = useStore();
@@ -1086,6 +1103,7 @@ export function ChatView({ bot: profile }: { bot: Bot }) {
   const { dragStyle: headerDragStyle, noDragStyle: headerNoDragStyle, controlsShiftStyle } = useCaptionChrome();
   const composerDockRef = useRef<HTMLDivElement>(null);
   const composerDock = useComposerDockPad(composerDockRef);
+  const advanced = useAdvancedMode();
   // A guest on an OMB Cloud home writes only in conversations it opened.
   const canWrite = useCanWriteIn(bot.threadId);
 
@@ -1298,53 +1316,82 @@ export function ChatView({ bot: profile }: { bot: Bot }) {
         {/* The chip group does not shrink, so in a narrow column (a phone,
             or a panel beside the chat) the name truncated to nothing and the
             rename pencil landed under the export button. Below 30rem the
-            header wraps: name line on top, chips underneath on the right. */}
-        <div data-chathead-row className="flex items-center justify-between @max-[30rem]/chathead:flex-wrap @max-[30rem]/chathead:gap-y-1">
-        <div data-chathead-identity className="flex min-w-0 items-center gap-2.5 rounded-lg px-1.5 py-1 @max-[30rem]/chathead:basis-full" style={headerNoDragStyle}>
-          <button
-            onClick={() => dispatch({ type: "toggleSettings", open: true })}
-            className="flex size-10 shrink-0 items-center justify-center rounded-lg hover:bg-raised/50"
-            title={t("chat.openProfile")}
-            aria-label={t("chat.openProfileAria", { name: bot.name })}
-          >
-            <BotAvatar
-              bot={bot}
-              state={stateForBot({ ...bot, messages })}
-              size={28}
-              motion={mascotMotion?.kind ?? "none"}
-              motionKey={mascotMotion?.nonce ?? 0}
-            />
-          </button>
-          <RenameTitle
-            value={bot.name}
-            onCommit={(name) => {
-              if (window.ogb?.remoteClient?.active) {
-                void api(`/api/bots/${bot.id}/profile`, { method: "PATCH", body: JSON.stringify({ name }) })
-                  .then(({ bot: updated }) => dispatch({ type: "botPatched", bot: updated }))
-                  .catch((cause) => dispatch({ type: "error", message: cause instanceof Error ? cause.message : String(cause) }));
-              } else {
-                dispatch({ type: "updateBot", botId: bot.id, patch: { name } });
-              }
-            }}
-            onActivate={() => dispatch({ type: "toggleSettings", open: true })}
-            showEditButton
-            className="truncate text-[15px] font-semibold text-ink"
-            inputClassName="max-w-[220px] rounded bg-inset px-1.5 py-0.5 text-[15px] font-semibold"
-          />
-          {bot.chiefOfStaff && (
-            // One line, never shrinking with the name (it wrapped "Chief / of /
-            // Staff", #1871); folds to the crown like the chips beside it do,
-            // so the name keeps the room.
-            <span title={t("chat.chiefOfStaff")} className="flex shrink-0 items-center gap-1 whitespace-nowrap rounded-full bg-accent/12 px-2 py-0.5 text-[11px] font-medium text-accent @max-4xl/chathead:px-1.5">
-              <Crown size={11} aria-hidden="true" /> <span className="@max-4xl/chathead:sr-only">{t("chat.chiefOfStaff")}</span>
-            </span>
+            header wraps: name line on top, chips underneath on the right.
+            From 30rem the bot sits in the middle of the header: three
+            columns, the left one empty, so the name is centred on the chat
+            itself. The controls' column never goes below their own width;
+            when room is short it takes it from the empty side, which slides
+            the name left rather than under the controls. */}
+        <div data-chathead-row className="flex items-center justify-between @max-[30rem]/chathead:flex-wrap @max-[30rem]/chathead:gap-y-1 @min-[30rem]/chathead:grid @min-[30rem]/chathead:grid-cols-[minmax(0,1fr)_minmax(0,auto)_minmax(max-content,1fr)]">
+        <div data-chathead-identity className="flex min-w-0 items-center gap-2 @max-[30rem]/chathead:basis-full @min-[30rem]/chathead:col-start-2 @min-[30rem]/chathead:justify-self-center" style={headerNoDragStyle}>
+          {/* The bot as one pill, the same shape as the model chip across the
+              header: avatar and name together, opening the bot's settings.
+              Simple mode makes the whole pill that one button; Advanced keeps
+              the rename pencil inside it, so the avatar and the name stay
+              their own buttons (a button cannot hold another). */}
+          {advanced ? (
+            <div data-chathead-pill className={cn(CHATHEAD_PILL, "pr-1")}>
+              <button
+                type="button"
+                onClick={() => dispatch({ type: "toggleSettings", open: true })}
+                className="flex shrink-0 items-center justify-center rounded-full"
+                title={t("chat.openProfile")}
+                aria-label={t("chat.openProfileAria", { name: bot.name })}
+              >
+                <BotAvatar
+                  bot={bot}
+                  state={stateForBot({ ...bot, messages })}
+                  size={24}
+                  motion={mascotMotion?.kind ?? "none"}
+                  motionKey={mascotMotion?.nonce ?? 0}
+                />
+              </button>
+              <RenameTitle
+                value={bot.name}
+                onCommit={(name) => {
+                  if (window.ogb?.remoteClient?.active) {
+                    void api(`/api/bots/${bot.id}/profile`, { method: "PATCH", body: JSON.stringify({ name }) })
+                      .then(({ bot: updated }) => dispatch({ type: "botPatched", bot: updated }))
+                      .catch((cause) => dispatch({ type: "error", message: cause instanceof Error ? cause.message : String(cause) }));
+                  } else {
+                    dispatch({ type: "updateBot", botId: bot.id, patch: { name } });
+                  }
+                }}
+                onActivate={() => dispatch({ type: "toggleSettings", open: true })}
+                showEditButton
+                className="truncate text-[14px] font-semibold text-ink"
+                editButtonClassName="size-6 rounded-full"
+                inputClassName="max-w-[220px] rounded-full bg-inset px-2 py-0.5 text-[14px] font-semibold"
+              />
+              {chiefOfStaffBadge(bot)}
+              {bot.busy && <WorkingDots className="pr-2 text-ink-secondary" />}
+            </div>
+          ) : (
+            <button
+              type="button"
+              data-chathead-pill
+              onClick={() => dispatch({ type: "toggleSettings", open: true })}
+              title={t("chat.openProfile")}
+              aria-label={t("chat.openProfileAria", { name: bot.name })}
+              className={cn(CHATHEAD_PILL, "pr-3.5 hover:bg-raised-hover")}
+            >
+              <BotAvatar
+                bot={bot}
+                state={stateForBot({ ...bot, messages })}
+                size={24}
+                motion={mascotMotion?.kind ?? "none"}
+                motionKey={mascotMotion?.nonce ?? 0}
+              />
+              <span className="min-w-0 truncate text-[14px] font-semibold text-ink">{bot.name}</span>
+              {chiefOfStaffBadge(bot)}
+              {bot.busy && <WorkingDots className="text-ink-secondary" />}
+            </button>
           )}
-          {bot.busy && <WorkingDots className="text-ink-secondary" />}
           {!bot.busy && bot.waitingForTeammates && <span className="truncate text-[12px] text-ink-secondary" role="status">Teammates working</span>}
         </div>
         <div
           data-chathead-controls
-          className="flex shrink-0 items-center gap-2 @max-[30rem]/chathead:ml-auto @max-[30rem]/chathead:flex-wrap @max-[30rem]/chathead:justify-end"
+          className="flex shrink-0 items-center gap-2 @max-[30rem]/chathead:ml-auto @max-[30rem]/chathead:flex-wrap @max-[30rem]/chathead:justify-end @min-[30rem]/chathead:col-start-3 @min-[30rem]/chathead:justify-self-end"
           // The caption buttons sit over the header's right end; drop this
           // icon row 16px (visual only — the header keeps its height) so the
           // buttons clear the 26px overlay while the rest of the layout stays.

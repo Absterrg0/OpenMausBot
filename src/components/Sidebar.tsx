@@ -105,7 +105,7 @@ import {
 import { sidebarSectionAttention } from "@/lib/sidebar-attention";
 import { botListItemPointerIntent } from "@/lib/sidebar-selection";
 import { phoneSettingsAction, SidebarPhoneButton } from "./SidebarPhoneButton";
-import { SidebarFooterNav } from "./SidebarFooterNav";
+import { SidebarAppsButton, SidebarFooterNav } from "./SidebarFooterNav";
 import { GlassBar, GlassScrollFrame, GlassScroller } from "./GlassScrollFrame";
 import { DesktopWorkspaceSwitcher } from "./DesktopWorkspaceSwitcher";
 import { useCloudOwner } from "./CloudOwner";
@@ -2690,14 +2690,19 @@ export function Sidebar({ open, onClose, collapseToIcons = false }: {
             </button>
           </div>
         ) : (
-          // The Tools row and the profile row are two different kinds of
+          // The place rows and the profile row are two different kinds of
           // thing — places to go, versus who you are and what the app is —
-          // so they get clear space between them. A hairline lived here
+          // so they get clear space between them (none when Simple mode has
+          // no place rows and the profile row leads). A hairline lived here
           // briefly and made it worse: full-bleed, it ran within a few pixels
           // of the profile row's rounded hover pill, and the two hover states
-          // read as one crowded block rather than two rows.
-          <div className="mt-3">
-            <SidebarProfileMenu />
+          // read as one crowded block rather than two rows. Apps sits at the
+          // end of the profile row.
+          <div className="flex items-center gap-1 not-first:mt-3">
+            <div className="min-w-0 flex-1">
+              <SidebarProfileMenu />
+            </div>
+            <SidebarAppsButton />
           </div>
         )}
       </div>
