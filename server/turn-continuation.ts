@@ -107,7 +107,10 @@ const NOT_RESUMABLE = /not a multimodal model|unknown model|does not support|too
 export function classifyContinuable(_stopReason: string | null | undefined, failure: string | undefined): "cap" | null {
   if (!failure) return null;
   if (NOT_RESUMABLE.test(failure)) return null;
-  if (/limit reached|stopped after \d+ steps|without a final answer/i.test(failure)) return "cap";
+  // Only OpenMausBot's own step cap. A provider's "Rate limit reached" or
+  // "usage limit reached" is not a budget a new thread can continue past:
+  // continuing would go straight back to the provider that said slow down.
+  if (/stopped after \d+ steps without a final answer|model-call limit reached/i.test(failure)) return "cap";
   return null;
 }
 
@@ -145,7 +148,9 @@ export function makeCapContinuationSubscriber(deps: CapContinuationDeps): (event
       if (CONTINUE_TITLE.test(deadTask.title ?? "")) return;
       const approvalMode = deadTask.approvalMode === "ask" || deadTask.approvalMode === "full" ? deadTask.approvalMode : undefined;
       const contTask = deps.store.createTask(
-        bot.id, `Continue: ${(deadTask.title ?? "task").slice(0, 90)}`, true,
+        // Not activated: the person's open thread stays theirs, and their next
+        // message goes where they were, not into the continuation.
+        bot.id, `Continue: ${(deadTask.title ?? "task").slice(0, 90)}`, false,
         deadTask.projectId, undefined, approvalMode, deadTask.modelSelection,
       );
       if (!contTask) return;
