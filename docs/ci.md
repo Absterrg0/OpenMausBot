@@ -27,6 +27,31 @@ skips fail the gate. Existing advisory jobs remain advisory.
 The separate shared-terminal smoke workflow is manual-only: its tests already
 run in the Windows Vitest/Electron jobs.
 
+## Vitest shards
+
+The suite runs one file at a time, so a shard takes as long as its files added
+up. Vitest's own `--shard` deals out equal numbers of files, and in October
+2026 that put three of the four slowest e2e files in one shard: about 24
+minutes of tests on Windows against 13 to 16 for the others, and every PR
+waited for it. `scripts/testing/duration-sequencer.ts` deals the files out by
+recorded time instead, slowest first, each to the shard with the least time so
+far. The times are `scripts/testing/vitest-shard-weights.json`: each file's
+median seconds on the Windows runners, for every file over five seconds and
+every e2e file. A file not in it counts one second, or the median e2e time if
+it is an e2e file. Every file still runs exactly once, and each shard job logs
+a `duration-sequencer:` line with its share.
+
+Refresh the times from a few recent green runs when shards drift apart:
+
+```sh
+node scripts/testing/update-shard-weights.mjs --run <run id> --run <run id> --run <run id>
+```
+
+Deleting or renaming a test file in the weights fails
+`scripts/testing/duration-sequencer.test.ts` until its entry is removed or
+refreshed. A refresh moves some files to other shards; a failure that appears
+only after one is a real ordering dependency between test files.
+
 ## macOS runners
 
 The account runs at most five macOS jobs at a time, and a PR used to queue
