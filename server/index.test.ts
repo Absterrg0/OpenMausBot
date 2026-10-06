@@ -2978,7 +2978,12 @@ describe("harness HTTP API", () => {
     const stream = await openSse(`${BASE}/api/events`);
     try {
       writeFileSync(failureMarker, "fail");
-      expect((await api("POST", "/api/browser-engine/install")).status).toBe(202);
+      for (const headers of [{ "content-type": "application/x-www-form-urlencoded" }, { "content-type": "text/plain" }, { "content-type": "application/jsonp" }, undefined]) {
+        const refused = await fetch(`${BASE}/api/browser-engine/install`, { method: "POST", headers, body: headers ? "x=1" : undefined });
+        expect(refused.status).toBe(415);
+      }
+      expect(stream.frames.some((frame) => frame.kind === "config" && frame.browserEngine?.installing === true)).toBe(false);
+      expect((await api("POST", "/api/browser-engine/install", {})).status).toBe(202);
       const start = await stream.until((frame) => frame.kind === "config" && frame.browserEngine?.installing === true);
       expect(start.browserEngine).toMatchObject({ kind: "engine", installing: true });
       expect(start.browserEngine).not.toHaveProperty("installError");
@@ -2987,7 +2992,7 @@ describe("harness HTTP API", () => {
       expect(failed.browserEngine.installing).not.toBe(true);
       rmSync(failureMarker);
       stream.frames.splice(0);
-      expect((await api("POST", "/api/browser-engine/install")).status).toBe(202);
+      expect((await api("POST", "/api/browser-engine/install", {})).status).toBe(202);
       const retry = await stream.until((frame) => frame.kind === "config" && frame.browserEngine?.installing === true);
       expect(retry.browserEngine).not.toHaveProperty("installError");
       await stream.until((frame) => frame.kind === "config" && frame.browserEngine?.kind === "engine" && !frame.browserEngine.installing && !frame.browserEngine.installError);
