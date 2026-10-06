@@ -139,11 +139,12 @@ struct PendingAttachmentChip: View {
 /// route for the message that introduced it.
 struct TranscriptAttachmentView: View {
     let attachment: DisplayedMessageAttachment
-    let threadId: String
     let messageId: String
+    /// Fetches the bytes, for this chat's thread. Not the session itself:
+    /// observing it redrew every attachment card on every publish.
+    let actions: TranscriptActions
     var foreground: Color = BubbleColor.mineText
 
-    @EnvironmentObject private var session: Session
     @State private var thumbnail: UIImage?
     @State private var thumbnailLoading = false
     @State private var previewLoading = false
@@ -158,11 +159,11 @@ struct TranscriptAttachmentView: View {
     @State private var imageAspect: CGFloat?
 
     private var taskID: String {
-        "\(threadId)\u{1F}\(messageId)\u{1F}\(attachment.path)\u{1F}\(thumbnailAttempt)\u{1F}\(thumbnailVisible)"
+        "\(actions.threadId)\u{1F}\(messageId)\u{1F}\(attachment.path)\u{1F}\(thumbnailAttempt)\u{1F}\(thumbnailVisible)"
     }
 
     private var shapeKey: String {
-        "\(threadId)\u{1F}\(messageId)\u{1F}\(attachment.path)"
+        "\(actions.threadId)\u{1F}\(messageId)\u{1F}\(attachment.path)"
     }
 
     private var knownAspect: CGFloat? {
@@ -361,8 +362,7 @@ struct TranscriptAttachmentView: View {
         errorMessage = nil
         defer { thumbnailLoading = false }
         do {
-            let downloaded = try await session.fetchAttachment(
-                threadId: threadId,
+            let downloaded = try await actions.fetchAttachment(
                 messageId: messageId,
                 path: attachment.path,
                 cacheResult: true
@@ -407,8 +407,7 @@ struct TranscriptAttachmentView: View {
                 unfinishedItem?.cleanUp()
             }
             do {
-                let downloaded = try await session.prepareAttachmentPreview(
-                    threadId: threadId,
+                let downloaded = try await actions.prepareAttachmentPreview(
                     messageId: messageId,
                     path: attachment.path,
                     cacheResult: attachment.kind == .image

@@ -134,7 +134,6 @@ export function CallTargetButton({
   const turnsReady = capabilitiesReady && supported && voiceReady;
   const unavailable = !active && !liveElsewhere && !liveMode && !turnsReady;
   const voiceSetupRequired = capabilitiesReady && supported && !voiceReady;
-  const liveConfigured = Boolean(state.config?.live?.configured);
   // On the person's Cloud, the Live key is saved there, not on this computer.
   const cloudHome = state.config?.cloudHome === true;
   const [helpOpen, setHelpOpen] = useState(false);
@@ -149,10 +148,10 @@ export function CallTargetButton({
   const setupBot = shownSetupBotId ? state.bots.find((candidate) => candidate.id === shownSetupBotId) : undefined;
   const helpMotion = useMenuMotion(Boolean(unavailable && helpOpen));
   const [menuOpen, setMenuOpen] = useState(false);
-  const [keyOpen, setKeyOpen] = useState(false);
-  // the harness answered "no key" to this window's call attempt (the key was
-  // removed, or this window's config was stale): ask for it here too
-  const keyPopover = canLive && !active && (keyOpen || (media.needsKey && media.botId === targetId));
+  // The harness answered "no key" to this window's call attempt: ask for it
+  // here. A Live call always asks for the microphone first, so a page that
+  // can't have one says so before anyone pastes a key it can't use.
+  const keyPopover = canLive && !active && media.needsKey && media.botId === targetId;
   const rootRef = useRef<HTMLDivElement>(null);
   const buttonRef = useRef<HTMLButtonElement>(null);
   const chevronRef = useRef<HTMLButtonElement>(null);
@@ -193,7 +192,6 @@ export function CallTargetButton({
   const closePopovers = useCallback(() => {
     setHelpOpen(false);
     setMenuOpen(false);
-    setKeyOpen(false);
     dismissKeyPrompt(targetId);
   }, [targetId]);
 
@@ -202,16 +200,12 @@ export function CallTargetButton({
   useEffect(() => () => dismissKeyPrompt(targetId), [targetId]);
 
   /** Start a call in this mode. Live never opens the overlay: the media
-   * module marks the call and the call bar shows it. */
+   * module marks the call and the call bar shows it. A Live call with no key
+   * yet asks for the microphone, then for the key (the harness's needsKey). */
   const start = (next: CallMode) => {
     setHelpOpen(false);
     setMenuOpen(false);
     if (next === "live" && liveThreadId !== undefined) {
-      if (!liveConfigured) {
-        setKeyOpen(true);
-        return;
-      }
-      setKeyOpen(false);
       onStart("live");
       void startLiveCall({ botId: targetId, threadId: liveThreadId });
       return;
@@ -252,7 +246,6 @@ export function CallTargetButton({
     if (opened) keyRef.current?.querySelector<HTMLInputElement>("input")?.focus();
   }, [keyPopover]);
 
-  const opensKey = liveMode && !active && (!liveConfigured || keyPopover);
   // Another device (a phone, another window) holds the one Live line: no
   // button that would start a Live call here, as on the iPhone. The remote
   // bar in that call's chat says who is on the line and can hang up. Take
@@ -281,8 +274,8 @@ export function CallTargetButton({
           }
           start(liveMode ? "live" : "turns");
         }}
-        aria-expanded={unavailable ? helpOpen : opensKey ? keyPopover : undefined}
-        aria-controls={unavailable ? helpId : opensKey ? keyId : undefined}
+        aria-expanded={unavailable ? helpOpen : keyPopover ? true : undefined}
+        aria-controls={unavailable ? helpId : keyPopover ? keyId : undefined}
         aria-label={label}
         title={label}
         data-call-button={placement}
@@ -354,11 +347,8 @@ export function CallTargetButton({
           <LiveKeySetup
             key={`${targetId}:${liveThreadId}`}
             compact
-            onSaved={() => {
-              setKeyOpen(false);
-              onStart("live");
-              void startLiveCall({ botId: targetId, threadId: liveThreadId });
-            }}
+            // the press that asked for the key already counted as a call
+            onSaved={() => void startLiveCall({ botId: targetId, threadId: liveThreadId })}
           />
         </div>
       )}
@@ -464,10 +454,13 @@ export function CallModeMenu({ id, mode, onChoose, onClose, placement = "header"
             type="button"
             role="menuitemradio"
             aria-checked={mode === entry.id}
-            disabled={Boolean(unavailable)}
-            onClick={() => onChoose(entry.id)}
+            // not `disabled`: the arrow keys still reach it, so its reason is read out
+            aria-disabled={unavailable ? true : undefined}
+            onClick={() => {
+              if (!unavailable) onChoose(entry.id);
+            }}
             className={cn(
-              "flex w-full items-start gap-2.5 rounded-lg px-2.5 py-2 text-left outline-none hover:bg-raised focus-visible:bg-raised disabled:hover:bg-transparent",
+              "flex w-full items-start gap-2.5 rounded-lg px-2.5 py-2 text-left outline-none hover:bg-raised focus-visible:bg-raised aria-disabled:cursor-default aria-disabled:hover:bg-transparent",
               mode === entry.id && "bg-raised/60",
             )}
           >

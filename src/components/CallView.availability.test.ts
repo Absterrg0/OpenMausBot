@@ -46,7 +46,7 @@ describe("call capability guidance", () => {
     }), false);
     expect(help).toEqual({
       label: "Calls where you take turns work on This computer",
-      reason: "They listen with your Mac's on-device speech recognition, which a server's page can't use.",
+      reason: "They listen with your Mac's own speech recognition, which only This computer can use.",
     });
     expect(help).not.toHaveProperty("action");
   });

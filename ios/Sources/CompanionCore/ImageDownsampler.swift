@@ -66,6 +66,19 @@ public enum ImageDownsampler {
         return count(thumbnail(source, maxPixelSize: budget))
     }
 
+    /// Decode `data` for a column `width` pixels wide, drawn aspect-fit
+    /// (`scaledToFit`): the image comes out `width` across, or at its own
+    /// size when it is narrower. An EXIF quarter turn is counted, since it
+    /// swaps which side is drawn across.
+    public static func decode(_ data: Data, fittingWidth width: Int) -> DecodedImage? {
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil),
+              CGImageSourceGetCount(source) > 0 else { return nil }
+        guard let size = pixelSize(of: source) else { return count(fullSize(source)) }
+        let across = turnsQuarter(source) ? size.height : size.width
+        let budget = fitBudget(width: width, across: across, longer: max(size.width, size.height))
+        return count(thumbnail(source, maxPixelSize: budget))
+    }
+
     /// Base64 as it arrives on the wire (screen and browser frames), decoded
     /// at full size. Nil when the base64 or the image is not valid, which is
     /// exactly when `Data(base64Encoded:).flatMap(UIImage.init(data:))` was.
@@ -84,6 +97,23 @@ public enum ImageDownsampler {
         guard shorter > 0 else { return side }
         let needed = (Double(side) * Double(longer) / Double(shorter)).rounded(.up)
         return min(longer, max(side, Int(needed)))
+    }
+
+    /// The longer-side budget that draws an image `across` pixels wide at
+    /// `width`, and never more than the image itself has.
+    static func fitBudget(width: Int, across: Int, longer: Int) -> Int {
+        let width = max(1, width)
+        guard across > 0, longer > 0 else { return width }
+        let needed = (Double(width) * Double(longer) / Double(across)).rounded(.up)
+        return min(longer, max(1, Int(needed)))
+    }
+
+    /// EXIF orientations 5–8 turn the image a quarter, so its stored width
+    /// is drawn as its height.
+    private static func turnsQuarter(_ source: CGImageSource) -> Bool {
+        let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any]
+        let orientation = (properties?[kCGImagePropertyOrientation] as? NSNumber)?.intValue ?? 1
+        return (5...8).contains(orientation)
     }
 
     private static func pixelSize(of source: CGImageSource) -> (width: Int, height: Int)? {
