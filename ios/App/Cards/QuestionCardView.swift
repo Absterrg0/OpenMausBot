@@ -12,6 +12,8 @@ import SwiftUI
 /// The desktop's `src/components/QuestionCard.tsx`, in SwiftUI: a tab per
 /// question, the model's options with their glosses, an "Other" row for a
 /// reply it did not think of, and one submit that sends every answer at once.
+/// A question with no options opens straight to its answer field: there is
+/// nothing to pick, so a lone "Other" row would only be one more tap.
 /// The answer text is built by `AskQuestionAnswer.format`, so an answer given
 /// here is byte-for-byte the one the Mac would have sent.
 struct QuestionCardView: View {
@@ -44,7 +46,8 @@ struct QuestionCardView: View {
     /// An open "Other" field with nothing in it is not an answer.
     private func answers(for position: Int) -> [String] {
         var chosen = Array(picked[position] ?? []).sorted()
-        if other.contains(position) {
+        let inWords = questions.indices.contains(position) && questions[position].answersInWords
+        if other.contains(position) || inWords {
             let typed = (custom[position] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
             if !typed.isEmpty { chosen.append(typed) }
         }
@@ -147,6 +150,25 @@ struct QuestionCardView: View {
 
     @ViewBuilder
     private func choices(_ question: AskQuestion) -> some View {
+        if question.answersInWords {
+            TextField("Type your answer", text: binding(forCustom: index), axis: .vertical)
+                .font(.system(size: 15))
+                .lineLimit(1...4)
+                .focused($otherFocused)
+                .textFieldStyle(.plain)
+                .accessibilityIdentifier("question-answer-field")
+                .padding(.horizontal, 12)
+                .padding(.vertical, 10)
+                .background(
+                    RoundedRectangle(cornerRadius: 14, style: .continuous).fill(Color.secondary.opacity(0.10))
+                )
+        } else {
+            optionList(question)
+        }
+    }
+
+    @ViewBuilder
+    private func optionList(_ question: AskQuestion) -> some View {
         VStack(spacing: 0) {
             ForEach(Array(question.options.enumerated()), id: \.offset) { position, option in
                 if position > 0 { Divider().opacity(0.4) }

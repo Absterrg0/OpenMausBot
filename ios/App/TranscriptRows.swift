@@ -131,6 +131,14 @@ struct TranscriptActions: Equatable {
     }
 
     @MainActor
+    func answer(_ card: OptionCard, inWords text: String) async -> Session.TypedAnswerResult {
+        guard let chat = liveChat else { return .gone }
+        let result = await session.answer(chat: chat, card: card, inWords: text)
+        if case let .failed(reason) = result { session.actionError = reason }
+        return result
+    }
+
+    @MainActor
     func alwaysAllow(_ card: OptionCard) async {
         guard case let .bot(bot) = liveChat else { return }
         await session.alwaysAllow(bot: bot, card: card)

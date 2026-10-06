@@ -612,6 +612,8 @@ internal fun localizedMobileCopy(source: String): String {
     localizedCopyResources[source]?.let { return stringResource(it) }
     Regex("""^Ask (.+)$""")
         .matchEntire(source)?.let { return stringResource(R.string.mobile_composer_ask_bot, it.groupValues[1]) }
+    Regex("""^Answer (.+)…$""")
+        .matchEntire(source)?.let { return stringResource(R.string.mobile_composer_answer_bot, it.groupValues[1]) }
     Regex("""^Today (.+)$""")
         .matchEntire(source)?.let { return stringResource(R.string.mobile_date_today_with_time, it.groupValues[1]) }
     Regex("""^Yesterday (.+)$""")

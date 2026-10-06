@@ -206,7 +206,7 @@ final class Session: ObservableObject {
         let arguments = ProcessInfo.processInfo.arguments
         if (arguments.contains("-store-preview") || arguments.contains("-computer-switcher-preview")),
            let url = Bundle.main.url(
-               forResource: arguments.contains("-images-preview") ? "ImagePreview" : arguments.contains("-approval-preview") ? "ApprovalPreview" : arguments.contains("-chat-update-preview") ? "ChatUpdatePreview" : arguments.contains("-chat-presentation-preview") ? "ChatPresentationPreview" : arguments.contains("-roster-preview") ? "RosterPreview" : arguments.contains("-threads-preview") ? "ThreadPreview" : "StorePreview",
+               forResource: arguments.contains("-images-preview") ? "ImagePreview" : arguments.contains("-approval-preview") ? "ApprovalPreview" : arguments.contains("-question-preview") ? "QuestionPreview" : arguments.contains("-chat-update-preview") ? "ChatUpdatePreview" : arguments.contains("-chat-presentation-preview") ? "ChatPresentationPreview" : arguments.contains("-roster-preview") ? "RosterPreview" : arguments.contains("-threads-preview") ? "ThreadPreview" : "StorePreview",
                withExtension: "json"
            ),
            let data = try? Data(contentsOf: url),
@@ -1840,6 +1840,41 @@ final class Session: ObservableObject {
             } else {
                 try await $0.respond(threadId: threadId, requestId: requestId, behavior: "answer", message: choice)
             }
+        }
+    }
+
+    /// What became of an answer typed in words.
+    enum TypedAnswerResult: Equatable {
+        /// The computer took it as the answer; the card settles with it.
+        case answered
+        /// The question went away first and took nothing. The words are
+        /// still the person's to send as an ordinary message.
+        case gone
+        /// Not delivered (offline, refused). Carries what to show.
+        case failed(String)
+    }
+
+    /// A question answered in words, from its card's field or the composer:
+    /// the same respond route the card's buttons use, but reporting back so
+    /// the caller can keep the words when they did not land.
+    func answer(chat: Chat, card: OptionCard, inWords answer: String) async -> TypedAnswerResult {
+        guard let client, let requestId = card.requestId else {
+            return .failed(String(localized: "This computer is offline."))
+        }
+        let runtime = runtimeGeneration
+        do {
+            let outcome = try await client.respond(
+                threadId: chat.threadId,
+                requestId: requestId,
+                behavior: "answer",
+                message: answer
+            )
+            return outcome == "unavailable" ? .gone : .answered
+        } catch let error as APIError where error.isUnauthorized {
+            if runtimeGeneration == runtime { status = .unauthorized }
+            return .failed(error.localizedDescription)
+        } catch {
+            return .failed(error.localizedDescription)
         }
     }
 

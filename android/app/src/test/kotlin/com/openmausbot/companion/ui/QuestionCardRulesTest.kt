@@ -78,4 +78,23 @@ class QuestionCardRulesTest {
         assertFalse(QuestionCardRules.agentComposed(message(card(QuestionRequestCardData(questions = questions)))))
         assertFalse(QuestionCardRules.agentComposed(message(null)))
     }
+
+    @Test
+    fun `a question with nothing to pick still draws the question card`() {
+        val freeText = card(QuestionRequestCardData(questions = listOf(AskQuestion(question = "Which account?"))))
+        assertTrue(QuestionCardRules.drawsQuestionCard(message(freeText)))
+        assertTrue(freeText.questions.single().answersInWords)
+    }
+
+    @Test
+    fun `the composer says a typed line answers the open question`() {
+        fun placeholder(asker: String?, busy: Boolean = true, sending: Boolean = false) = ComposerPromise.placeholder(
+            name = "Mochi", busy = busy, engineCanSteer = true, sending = sending, listening = false, questionAsker = asker,
+        )
+        assertEquals("Answer Mochi…", placeholder("Mochi"))
+        assertEquals("Answer Pip…", placeholder("Pip", busy = false), "a waiting question, busy or not")
+        assertEquals("Sending…", placeholder("Mochi", sending = true))
+        assertEquals("Sends into this turn", placeholder(null))
+        assertEquals("Ask Mochi", placeholder(null, busy = false))
+    }
 }

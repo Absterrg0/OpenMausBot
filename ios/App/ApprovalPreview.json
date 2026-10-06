@@ -118,6 +118,55 @@
      }
     }
    ]
+  },
+  {
+   "id": "preview-mochi",
+   "threadId": "preview-thread-mochi",
+   "name": "Mochi",
+   "title": "Inbox helper",
+   "description": "Writes and sends email for you.",
+   "notifications": true,
+   "color": "blue",
+   "unread": false,
+   "modelSelection": {
+    "instanceId": "preview",
+    "model": "preview"
+   },
+   "createdAt": 1788000000000,
+   "activeLeafId": "mochi-question",
+   "tasks": [
+    {
+     "threadId": "preview-thread-mochi",
+     "title": "Email Milind",
+     "createdAt": 1788000000000
+    }
+   ],
+   "messages": [
+    {
+     "id": "mochi-user",
+     "role": "user",
+     "kind": "text",
+     "at": 1788100000000,
+     "text": "Can you send an email to Milind?"
+    },
+    {
+     "id": "mochi-question",
+     "role": "bot",
+     "kind": "options",
+     "at": 1788100060000,
+     "parentId": "mochi-user",
+     "card": {
+      "title": "Your bot has a question",
+      "subtitle": "Sending to Milind Soni (milind@example.com, from your Linear team). What should the subject and body say? Also confirm it should come from your Gmail.",
+      "options": [
+       "Yes, from your Gmail — I'll give subject and body",
+       "Use a different address"
+      ],
+      "requestId": "preview-question",
+      "requestType": "question"
+     }
+    }
+   ]
   }
  ],
  "groups": []

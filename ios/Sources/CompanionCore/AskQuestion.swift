@@ -59,6 +59,10 @@ public struct AskQuestion: Codable, Hashable, Sendable {
     }
 
     public var allowsMultiple: Bool { multiSelect == true }
+
+    /// A question with nothing to pick is answered in words: its card opens
+    /// straight to the answer field instead of a lone "Other" row.
+    public var answersInWords: Bool { options.isEmpty }
 }
 
 public struct QuestionRequestCardData: Codable, Hashable, Sendable {
@@ -111,5 +115,61 @@ public enum AskQuestionAnswer {
         let lead = "\(preamble)\n\n"
         guard answer.hasPrefix(lead) else { return answer }
         return String(answer.dropFirst(lead.count))
+    }
+}
+
+extension OptionCard {
+    /// A flat question card (the computer's own `ask_user`, which has no
+    /// `questionRequest`) takes a typed answer under its options. Approvals,
+    /// held sends and proposals never do: their buttons are the only answers.
+    public var takesTypedAnswer: Bool {
+        requestType == "question" && questions.isEmpty
+    }
+}
+
+/// The open question a line typed in the composer answers.
+///
+/// A bot blocked on its question never reads words steered into its turn,
+/// so while the chat waits on exactly one question the phone sends the
+/// composer's line as that question's answer instead, through the same
+/// respond route the card's own buttons use. Anything less clear-cut — two
+/// open questions, one card asking several things, an attachment riding
+/// along — is an ordinary message, as it always was.
+public enum ComposerQuestion {
+    /// The question the line would answer and the bot waiting on it.
+    public struct Target: Equatable, Sendable {
+        public var message: Message
+        public var card: OptionCard
+        /// Who the composer names: the asking member in a room, else the chat.
+        public var asker: String
+
+        /// What the computer receives for a typed line. A structured ask gets
+        /// the same "Q: … A: …" text its own card would send, so the Mac and
+        /// the model cannot tell where it was answered; a flat question takes
+        /// the line as it is.
+        public func answer(_ text: String) -> String {
+            let typed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            let questions = card.questions
+            guard !questions.isEmpty else { return typed }
+            return AskQuestionAnswer.format(questions: questions, answers: [[typed]])
+        }
+    }
+
+    /// The one pending question card in `messages`: a flat question card,
+    /// or a structured card asking exactly one thing. Nil when there are
+    /// none or several, when the only one asks several questions, or when
+    /// the message carries attachments.
+    public static func target(in messages: [Message], chatName: String, hasAttachments: Bool = false) -> Target? {
+        guard !hasAttachments else { return nil }
+        var found: Message?
+        for message in messages {
+            guard let card = message.card, card.isPending,
+                  card.requestType == "question" || !card.questions.isEmpty
+            else { continue }
+            if found != nil { return nil }
+            found = message
+        }
+        guard let found, let card = found.card, card.questions.count <= 1 else { return nil }
+        return Target(message: found, card: card, asker: found.from?.name ?? chatName)
     }
 }

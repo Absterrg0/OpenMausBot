@@ -8,13 +8,17 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.MotionDurationScale
 import androidx.compose.ui.test.ExperimentalTestApi
+import androidx.compose.ui.test.assertContentDescriptionEquals
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertTextContains
 import androidx.compose.ui.test.assertTextEquals
 import androidx.compose.ui.test.hasSetTextAction
+import androidx.compose.ui.test.onAllNodesWithContentDescription
+import androidx.compose.ui.test.getBoundsInRoot
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithContentDescription
+import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performTextInput
@@ -51,6 +55,7 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
+import org.robolectric.annotation.GraphicsMode
 
 /** Real Compose controls and Session requests, confined to an offline loopback fixture. */
 @RunWith(RobolectricTestRunner::class)
@@ -157,12 +162,12 @@ class AndroidThreadNavigationTest {
         }
 
         compose.onNode(hasSetTextAction()).performTextInput("Draft for the first thread")
-        compose.onNodeWithText("First thread").performClick()
+        openThreads(on = "First thread")
         compose.onNodeWithText("Second thread").performClick()
         compose.waitUntil(5_000) { (navigator.current as? Destination.Chat)?.target?.threadId == "second" }
         compose.onNode(hasSetTextAction()).assertTextEquals("")
         compose.onNode(hasSetTextAction()).performTextInput("Draft for the second thread")
-        compose.onNodeWithText("Second thread").performClick()
+        openThreads(on = "Second thread")
         compose.onNodeWithText("First thread").performClick()
         compose.waitUntil(5_000) { (navigator.current as? Destination.Chat)?.target?.threadId == "first" }
         compose.onNode(hasSetTextAction()).assertTextEquals("Draft for the first thread")
@@ -174,6 +179,61 @@ class AndroidThreadNavigationTest {
         compose.onNodeWithText("Fixture Home").assertIsDisplayed()
         assertNull(scene.environment.chatDrafts.get("first"))
         assertNull(scene.environment.chatDrafts.get("second"))
+    }
+
+    @Test
+    @Config(qualifiers = "w360dp-h780dp")
+    // Real text measurement: the chip keeps its word only if it measures as fitting.
+    @GraphicsMode(GraphicsMode.Mode.NATIVE)
+    fun `on a narrow phone the header keeps every control clear of the face`() {
+        headerKeepsClearOfTheFace(labelled = false)
+    }
+
+    @Test
+    @Config(qualifiers = "w412dp-h915dp")
+    // Real text measurement: the chip keeps its word only if it measures as fitting.
+    @GraphicsMode(GraphicsMode.Mode.NATIVE)
+    fun `on a wide phone the Threads chip says its name and keeps clear of the face`() {
+        headerKeepsClearOfTheFace(labelled = true)
+    }
+
+    @Test
+    @Config(qualifiers = "w412dp-h915dp")
+    @GraphicsMode(GraphicsMode.Mode.NATIVE)
+    fun `at a large font size the Threads chip drops its word rather than reach the face`() {
+        org.robolectric.RuntimeEnvironment.setFontScale(1.5f)
+        headerKeepsClearOfTheFace(labelled = false)
+    }
+
+    /**
+     * The name pill under the face is gone: Threads sits in the top strip beside
+     * the computer, where the face in the middle leaves room for it — with its
+     * word when the phone is wide enough, as a glyph when not.
+     */
+    private fun headerKeepsClearOfTheFace(labelled: Boolean) {
+        val destination = Destination.Chat(Chat.BotChat(fixture).target)
+        mount {
+            ChatScreen(destination, onResolved = {}, onBack = {}, onOpenComputer = {}, onOpenOverview = {})
+        }
+        val face = compose.onNodeWithContentDescription("Open ${fixture.name} settings").getBoundsInRoot()
+        val chip = compose.onNodeWithTag(THREADS_CHIP_TAG)
+            .assertContentDescriptionEquals("Threads, First thread")
+            .getBoundsInRoot()
+        val controls = listOfNotNull(
+            compose.onNodeWithContentDescription("Back").getBoundsInRoot(),
+            chip,
+            compose.onNodeWithContentDescription("Watch ${fixture.name}'s computer").getBoundsInRoot(),
+            compose.onAllNodesWithContentDescription("Call ${fixture.name}").fetchSemanticsNodes()
+                .singleOrNull()?.let { compose.onNodeWithContentDescription("Call ${fixture.name}").getBoundsInRoot() },
+        )
+        for (control in controls) {
+            assertTrue(control.right <= face.left || control.left >= face.right, "$control clear of the face $face")
+        }
+        assertTrue(chip.left >= face.right, "Threads is on the right")
+        assertEquals(
+            if (labelled) 1 else 0,
+            compose.onAllNodesWithText("Threads", useUnmergedTree = true).fetchSemanticsNodes().size,
+        )
     }
 
     @Test
@@ -189,12 +249,12 @@ class AndroidThreadNavigationTest {
             }
         }
         compose.onNodeWithText(fixture.name).performClick()
-        compose.onNodeWithText("First thread").performClick()
+        openThreads(on = "First thread")
         compose.onNodeWithText("Second thread").performClick()
         compose.waitUntil(5_000) { (navigator.current as? Destination.Chat)?.target?.threadId == "second" }
         compose.onNodeWithContentDescription("Back").performClick()
         compose.onNodeWithText(fixture.name).performClick()
-        compose.onNodeWithText("Second thread").assertIsDisplayed()
+        compose.onNodeWithTag(THREADS_CHIP_TAG).assertContentDescriptionEquals("Threads, Second thread")
         assertEquals("first", scene.session.state.value.bot(fixture.id)?.threadId)
         assertTrue(requests.none { it.method == "POST" })
     }
@@ -430,4 +490,11 @@ class AndroidThreadNavigationTest {
     private fun json(body: String): MockResponse = MockResponse()
         .setHeader("Content-Type", "application/json")
         .setBody(body)
+
+    /** The header's Threads chip names the thread you are on and opens the picker. */
+    private fun openThreads(on: String) {
+        compose.onNodeWithTag(THREADS_CHIP_TAG)
+            .assertContentDescriptionEquals("Threads, $on")
+            .performClick()
+    }
 }

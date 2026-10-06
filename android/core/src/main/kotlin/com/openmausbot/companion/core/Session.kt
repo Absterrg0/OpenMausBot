@@ -1619,6 +1619,39 @@ class Session(
         }
     }
 
+    /**
+     * A question answered in words, from its card's field or the composer:
+     * the same respond route the card's buttons use, but reporting back so
+     * the caller can keep the words when they did not land.
+     */
+    suspend fun answerInWords(chat: Chat, card: OptionCard, answer: String): TypedAnswerResult {
+        val activeClient = client ?: return TypedAnswerResult.Failed("This computer is offline.")
+        val requestId = card.requestId ?: return TypedAnswerResult.Gone
+        val connectionId = _connection.value?.id
+        return try {
+            val outcome = activeClient.respond(
+                threadId = chat.threadId,
+                requestId = requestId,
+                behavior = "answer",
+                message = answer,
+            )
+            if (outcome == "unavailable") TypedAnswerResult.Gone else TypedAnswerResult.Answered
+        } catch (error: CancellationException) {
+            throw error
+        } catch (error: APIError) {
+            if (error.isUnauthorized) {
+                gate.withLock {
+                    if (connectionId != null && _connection.value?.id == connectionId) {
+                        _status.value = Status.Unauthorized
+                    }
+                }
+            }
+            TypedAnswerResult.Failed(error.message ?: "Couldn't send this message. Try again.")
+        } catch (error: Throwable) {
+            TypedAnswerResult.Failed(error.message ?: "Couldn't send this message. Try again.")
+        }
+    }
+
     suspend fun alwaysAllow(bot: Bot, card: OptionCard) {
         val key = card.allowKey ?: return
         perform { it.alwaysAllow(bot.id, key, bot.threadId) }
@@ -2457,6 +2490,21 @@ class PairingInProgressException : IllegalStateException("Another pairing attemp
 class SpentPairingCredentialException : IllegalStateException(Session.SPENT_QR_MESSAGE)
 
 /** What became of an in-chat Claude Code update. */
+/** What became of an answer typed in words. */
+sealed interface TypedAnswerResult {
+    /** The computer took it as the answer; the card settles with it. */
+    data object Answered : TypedAnswerResult
+
+    /**
+     * The question went away first and took nothing. The words are still the
+     * person's to send as an ordinary message.
+     */
+    data object Gone : TypedAnswerResult
+
+    /** Not delivered (offline, refused). Carries what to show. */
+    data class Failed(val message: String) : TypedAnswerResult
+}
+
 sealed interface ClaudeUpdateResult {
     data class Updated(val version: String) : ClaudeUpdateResult
     data class Failed(val message: String) : ClaudeUpdateResult

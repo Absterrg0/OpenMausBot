@@ -685,14 +685,23 @@ class CompanionClient(
         behavior: String,
         message: String? = null,
         reviewedSha256: String? = null,
-    ) {
+    ): String? {
         val body = buildJsonObject {
             put("requestId", requestId)
             put("behavior", behavior)
             message?.let { put("message", it) }
             reviewedSha256?.let { put("reviewedSha256", it) }
         }
-        sendUnit(makeRequest("POST", "/api/threads/${segment(threadId)}/respond", body = body))
+        val raw = perform(makeRequest("POST", "/api/threads/${segment(threadId)}/respond", body = body))
+        check(raw)
+        // What the harness did with the answer ("answered", "unavailable", …).
+        // Only some cards say; a body without it, or one this build cannot
+        // read, is still a delivered answer, so it reads as null, not a failure.
+        return try {
+            CompanionJson.decodeFromString<RespondBody>(raw.data.toString(Charsets.UTF_8)).outcome
+        } catch (_: IllegalArgumentException) {
+            null
+        }
     }
 
     suspend fun alwaysAllow(botId: String, key: String, threadId: String? = null) {
@@ -1419,3 +1428,10 @@ class CompanionClient(
         private const val PAIR_TIMEOUT_SECONDS = 8L
     }
 }
+
+/**
+ * What the respond route said about a card. Only some answers carry an
+ * outcome; the specialized card resolvers write their own shapes.
+ */
+@Serializable
+internal data class RespondBody(val outcome: String? = null)

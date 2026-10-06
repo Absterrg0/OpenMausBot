@@ -109,6 +109,13 @@ extension OptionCard {
         return .standard
     }
 
+    /// Whether the card's answers stack one under another, full width,
+    /// rather than sharing a row. A question's or a proposal's options are
+    /// whole sentences ("Yes, from your Gmail — I'll give subject and body")
+    /// that a shared row cut off; an approval's Allow and Deny fit side by
+    /// side, where a phone expects them.
+    public var stacksOptions: Bool { presentation == .standard }
+
     /// The calls an outbound card covers: the computer's own list when it
     /// sent one, else read back from the subtitle. Empty when neither works.
     public var outboundCalls: [OutboundCall] {

@@ -139,6 +139,15 @@ val OptionCard.presentation: CardPresentation
         else -> CardPresentation.STANDARD
     }
 
+/**
+ * Whether the card's answers stack one under another, full width, rather than
+ * sharing a row. A question's or a proposal's options are whole sentences ("Yes,
+ * from your Gmail — I'll give subject and body") that a shared row cut off; an
+ * approval's Allow and Deny fit side by side, where a phone expects them.
+ */
+val OptionCard.stacksOptions: Boolean
+    get() = presentation == CardPresentation.STANDARD
+
 /** The calls an outbound card covers: the computer's own list, else read back from the subtitle. */
 val OptionCard.outboundCalls: List<OutboundCall>
     get() {

@@ -317,6 +317,21 @@ class ClientTest {
     }
 
     @Test
+    fun anAnswerReportsWhatTheHarnessDidWithIt() = runBlocking {
+        server.enqueue(json("""{"ok":true,"outcome":"answered"}"""))
+        server.enqueue(json("""{"ok":true,"outcome":"unavailable"}"""))
+        server.enqueue(json("{}"))
+
+        assertEquals("answered", client.respond("t1", "r1", "answer", "billing@example.com"))
+        assertEquals("unavailable", client.respond("t1", "r2", "answer", "Friday"))
+        assertEquals(null, client.respond("t1", "r3", "answer", "Yes"), "a body without an outcome is still delivered")
+        assertEquals(
+            mapOf("requestId" to "r1", "behavior" to "answer", "message" to "billing@example.com"),
+            stringBody(server.takeRequest().body.readUtf8()),
+        )
+    }
+
+    @Test
     fun switchingTheVoiceEngineWritesOnlyTheProvider() = runBlocking {
         server.enqueue(json("""{"tts":{"configured":true,"provider":"chatterbox","voice":"ex01"}}"""))
 

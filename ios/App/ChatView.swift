@@ -997,6 +997,9 @@ struct ChatView: View {
                     }
                     .buttonStyle(.plain)
                     .glassCapsule()
+                    // The thread you are on, now that the pill under the
+                    // face that named it is gone.
+                    .accessibilityValue(Text(verbatim: current.threadTitle))
                     .accessibilityIdentifier("header-threads")
                 }
                 if case .bot = current {
@@ -1030,16 +1033,16 @@ struct ChatView: View {
         )
     }
 
-    /// The bot's face over its name pill, floating over the transcript
-    /// between the two buttons.
+    /// The seat for the bot's face, floating over the transcript between the
+    /// two buttons. The thread it is on is the Threads button's to say.
     private var headerFace: some View {
-        VStack(spacing: 6) {
-            // Always here, following the island's face while that one is
-            // the source: when the island lets go, this one flies home.
-            // The face itself is drawn by the island layer above so there is
-            // still only one animated avatar. This transparent seat becomes
-            // its independent profile button once the opening transition has
-            // settled.
+        // Always here, following the island's face while that one is
+        // the source: when the island lets go, this one flies home.
+        // The face itself is drawn by the island layer above so there is
+        // still only one animated avatar. This transparent seat becomes
+        // its independent profile button once the opening transition has
+        // settled.
+        Group {
             if case .bot = current {
                 Button { showingProfile = true } label: {
                     Color.clear
@@ -1051,38 +1054,15 @@ struct ChatView: View {
                 .accessibilityHidden(islandVisible)
                 .accessibilityLabel("Open \(current.name) settings")
                 .accessibilityHint("Changes this bot's model, profile, notifications, and voice")
-            } else {
-                Color.clear.frame(width: 60, height: 60)
+            } else if case let .room(room) = current {
+                // A room's face says whose room this is: the header has no
+                // other place for its name and members.
+                Color.clear
+                    .frame(width: 60, height: 60)
+                    .accessibilityElement()
+                    .accessibilityLabel("\(room.name), \(room.memberIds.count) bots")
+                    .accessibilityIdentifier("header-room")
             }
-            Button {
-                if current.supportsTasks { showingTasks = true }
-                else { showingPlus = true }
-            } label: {
-                HStack(spacing: 6) {
-                    Text(current.name)
-                        .font(.system(size: 15, weight: .semibold))
-                        .foregroundStyle(Color.primary)
-                        .lineLimit(1)
-                    if current.supportsTasks || !current.subtitle.isEmpty {
-                        Text(current.supportsTasks ? current.threadTitle : current.subtitle)
-                            .font(.system(size: 13))
-                            .foregroundStyle(Color.secondary)
-                            .lineLimit(1)
-                    }
-                    Image(systemName: current.supportsTasks ? "chevron.down" : "ellipsis")
-                        .font(.system(size: 11, weight: .bold))
-                        .foregroundStyle(Color.secondary)
-                }
-                .padding(.leading, 12)
-                .padding(.trailing, 10)
-                .frame(height: 32)
-                .contentShape(Capsule())
-            }
-            .buttonStyle(.plain)
-            .glassCapsule()
-            .accessibilityLabel(current.supportsTasks ? "Switch thread: \(current.threadTitle)" : "Open \(current.name) thread options")
-            .accessibilityHint("Choose a conversation or start a new thread")
-            .accessibilityIdentifier("thread-switcher")
         }
         .padding(.top, -4)
     }
@@ -1275,9 +1255,17 @@ struct ChatView: View {
         return attachments.isEmpty && session.steeringInstanceIds.contains(bot.modelSelection.instanceId)
     }
 
+    /// The one open question a typed line answers. A bot blocked on its
+    /// question never reads a line steered into its turn, so while exactly
+    /// one question waits (and nothing is attached) Send answers it instead.
+    private var composerQuestion: ComposerQuestion.Target? {
+        ComposerQuestion.target(in: messages, chatName: current.name, hasAttachments: !attachments.isEmpty)
+    }
+
     private var composerPrompt: String {
         if sendingMessage { return "Sending…" }
         if dictation.isListening { return "Listening…" }
+        if let asker = composerQuestion?.asker { return String(localized: "Answer \(asker)…") }
         if current.busy { return engineCanSteer ? "Sends into this turn" : "Sends after this turn" }
         return "Ask \(current.name)"
     }
@@ -1300,6 +1288,8 @@ struct ChatView: View {
         let text = (explicitText ?? draftAtSend).trimmingCharacters(in: .whitespacesAndNewlines)
         let outgoingAttachments = attachments
         let chatAtSend = current
+        // Only the typed line answers; a chip or a command is its own ask.
+        let question = explicitText == nil ? composerQuestion : nil
         guard !text.isEmpty || !outgoingAttachments.isEmpty,
               !preparingAttachments,
               !sendingMessage
@@ -1313,11 +1303,27 @@ struct ChatView: View {
         readerDetached = false
         sendJumps &+= 1
         Task {
-            let sent = await session.send(
-                text: text,
-                attachments: outgoingAttachments,
-                to: chatAtSend
-            )
+            let sent: Bool
+            if let question, !text.isEmpty {
+                switch await session.answer(chat: chatAtSend, card: question.card, inWords: question.answer(text)) {
+                case .answered:
+                    sent = true
+                case .gone:
+                    // The question closed before the line reached it: say
+                    // it as an ordinary message rather than lose it.
+                    sent = await session.send(text: text, attachments: [], to: chatAtSend)
+                case let .failed(failure):
+                    // Keep the words in the field, with the reason under it.
+                    session.actionError = failure
+                    sent = false
+                }
+            } else {
+                sent = await session.send(
+                    text: text,
+                    attachments: outgoingAttachments,
+                    to: chatAtSend
+                )
+            }
             sendingMessage = false
             guard sent else {
                 let failure = session.actionError ?? "Couldn't send this message. Try again."
@@ -1910,7 +1916,9 @@ struct ChatView: View {
         .padding(.trailing, 6)
         .padding(.bottom, 6)
         .animation(.easeOut(duration: 0.15), value: canSend)
-        .accessibilityLabel(current.busy
+        .accessibilityLabel(composerQuestion != nil
+            ? "Submit answer"
+            : current.busy
             ? engineCanSteer ? "Send into the running turn" : "Queue this message for when the turn finishes"
             : "Send message")
     }
@@ -2941,6 +2949,9 @@ struct CardView: View {
     /// The full request behind a short card. Collapsed until asked for, and
     /// again whenever the card is drawn afresh.
     @State private var showingDetails = false
+    /// A question's answer in the person's own words.
+    @State private var typedAnswer = ""
+    @FocusState private var answerFocused: Bool
 
     /// The option this card offers that means "go ahead".
     ///
@@ -3044,34 +3055,29 @@ struct CardView: View {
                 }
 
                 if card.isPending {
-                    HStack(spacing: 8) {
-                        ForEach(card.options, id: \.self) { option in
-                            Button {
-                                Haptics.selection()
-                                answering = true
-                                Task {
-                                    await actions.answer(card, choice: option)
-                                    answering = false
+                    // A question's answers are sentences: one under another,
+                    // full width, wrapping. Allow and Deny share a row.
+                    Group {
+                        if card.stacksOptions {
+                            VStack(spacing: 8) {
+                                ForEach(card.options, id: \.self) { option in
+                                    optionButton(option, card: card, stacked: true)
                                 }
-                            } label: {
-                                Text(option)
-                                    .font(.system(size: 15, weight: .semibold))
-                                    .foregroundStyle(Self.isRefusal(option) ? Color.primary : .white)
-                                    .frame(maxWidth: .infinity)
-                                    .frame(height: 40)
-                                    .background(
-                                        Capsule().fill(Self.isRefusal(option) ? Color.secondary.opacity(0.18) : tint)
-                                    )
                             }
-                            .buttonStyle(.plain)
-                            .disabled(
-                                answering ||
-                                    (card.skillRequest != nil && !Self.isRefusal(option) &&
-                                        card.skillRequest?.reviewedSha256 == nil)
-                            )
+                            .accessibilityIdentifier("card-options-stacked")
+                        } else {
+                            HStack(spacing: 8) {
+                                ForEach(card.options, id: \.self) { option in
+                                    optionButton(option, card: card, stacked: false)
+                                }
+                            }
                         }
                     }
                     .padding(.top, 2)
+
+                    if card.takesTypedAnswer {
+                        typedAnswerField(card)
+                    }
 
                     // The grant key comes from the card. The phone never
                     // derives its own, so it cannot permit something subtly
@@ -3118,6 +3124,98 @@ struct CardView: View {
             .overlay {
                 RoundedRectangle(cornerRadius: 22, style: .continuous)
                     .strokeBorder(card.isPending ? tint : .clear, lineWidth: 1.5)
+            }
+        }
+    }
+
+    /// One answer. Stacked, it takes the card's width and as many lines as
+    /// its label needs; in a row, it takes an equal share at one height.
+    private func optionButton(_ option: String, card: OptionCard, stacked: Bool) -> some View {
+        let refusal = Self.isRefusal(option)
+        let fill = refusal ? Color.secondary.opacity(0.18) : tint
+        // A capsule around two or three lines reads as a blob; a stacked
+        // answer gets rounded corners instead.
+        let shape = stacked ? AnyShape(RoundedRectangle(cornerRadius: 20, style: .continuous)) : AnyShape(Capsule())
+        return Button {
+            Haptics.selection()
+            answering = true
+            Task {
+                await actions.answer(card, choice: option)
+                answering = false
+            }
+        } label: {
+            Text(option)
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(refusal ? Color.primary : .white)
+                .multilineTextAlignment(stacked ? .center : .leading)
+                .fixedSize(horizontal: false, vertical: stacked)
+                .padding(.horizontal, stacked ? 16 : 0)
+                .padding(.vertical, stacked ? 10 : 0)
+                .frame(maxWidth: .infinity)
+                .frame(minHeight: stacked ? 44 : 40, maxHeight: stacked ? nil : 40)
+                .background(shape.fill(fill))
+                .contentShape(shape)
+        }
+        .buttonStyle(.plain)
+        .disabled(
+            answering ||
+                (card.skillRequest != nil && !refusal && card.skillRequest?.reviewedSha256 == nil)
+        )
+    }
+
+    /// A question also takes words: under its options, or on its own when it
+    /// offered none (the computer's `ask_user` with no choices, which left
+    /// nothing to tap). Sent the way the buttons are, as the answer's text.
+    private func typedAnswerField(_ card: OptionCard) -> some View {
+        let prompt: LocalizedStringKey = card.options.isEmpty ? "Type your answer" : "Type your own answer"
+        let ready = !typedAnswer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !answering
+        return HStack(alignment: .bottom, spacing: 8) {
+            TextField(prompt, text: $typedAnswer, axis: .vertical)
+                .font(.system(size: 15))
+                .lineLimit(1...4)
+                .textFieldStyle(.plain)
+                .focused($answerFocused)
+                .padding(.vertical, 10)
+                .disabled(answering)
+                .accessibilityIdentifier("card-answer-field")
+            Button {
+                sendTypedAnswer(card)
+            } label: {
+                Image(systemName: "arrow.up")
+                    .font(.system(size: 14, weight: .bold))
+                    .foregroundStyle(ready ? Color.white : Color.secondary)
+                    .frame(width: 30, height: 30)
+                    .background(Circle().fill(ready ? tint : Color.secondary.opacity(0.18)))
+            }
+            .buttonStyle(.plain)
+            .disabled(!ready)
+            .padding(.bottom, 6)
+            .accessibilityLabel("Submit answer")
+            .accessibilityIdentifier("card-answer-send")
+        }
+        .padding(.leading, 14)
+        .padding(.trailing, 6)
+        .background(
+            RoundedRectangle(cornerRadius: 20, style: .continuous).fill(Color.secondary.opacity(0.10))
+        )
+    }
+
+    /// Once the computer takes the answer the card stays still until it
+    /// settles and shows the words; a failed send keeps them for a retry.
+    private func sendTypedAnswer(_ card: OptionCard) {
+        let typed = typedAnswer.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !typed.isEmpty, !answering else { return }
+        Haptics.selection()
+        answering = true
+        answerFocused = false
+        Task {
+            switch await actions.answer(card, inWords: typed) {
+            case .answered:
+                break
+            case .gone:
+                answering = false
+            case .failed:
+                answering = false
             }
         }
     }

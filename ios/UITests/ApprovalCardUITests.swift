@@ -35,8 +35,26 @@ final class ApprovalCardUITests: XCTestCase {
         screenshot("Approval details expanded", in: app)
     }
 
+    /// A question's answers are sentences. They stack full width, one under
+    /// the other, so the long one wraps instead of being cut off.
     @MainActor
-    private func launchPreview() -> XCUIApplication {
+    func testAQuestionStacksItsLongOptionsFullWidth() {
+        let app = launchPreview(bot: "Mochi")
+
+        let long = app.buttons["Yes, from your Gmail — I'll give subject and body"]
+        let short = app.buttons["Use a different address"]
+        XCTAssertTrue(long.waitForExistence(timeout: 5))
+        XCTAssertTrue(short.exists)
+        XCTAssertTrue(app.descendants(matching: .any)["card-options-stacked"].exists)
+        XCTAssertGreaterThanOrEqual(short.frame.minY, long.frame.maxY, "one under the other")
+        XCTAssertEqual(long.frame.width, short.frame.width, accuracy: 1, "both take the card's width")
+        XCTAssertEqual(long.frame.minX, short.frame.minX, accuracy: 1)
+        XCTAssertGreaterThan(long.frame.width, app.frame.width * 0.6)
+        screenshot("Question with stacked options", in: app)
+    }
+
+    @MainActor
+    private func launchPreview(bot: String = "Kiwi") -> XCUIApplication {
         continueAfterFailure = false
         let app = XCUIApplication()
         app.terminate()
@@ -55,8 +73,8 @@ final class ApprovalCardUITests: XCTestCase {
         }
         let input = app.descendants(matching: .any)["message-input"]
         if !input.waitForExistence(timeout: 3) {
-            let row = app.staticTexts["Kiwi"].firstMatch
-            XCTAssertTrue(row.waitForExistence(timeout: 10), "Kiwi on the roster")
+            let row = app.staticTexts[bot].firstMatch
+            XCTAssertTrue(row.waitForExistence(timeout: 10), "\(bot) on the roster")
             // The pending approval raises the island over the roster for
             // its first seconds, and a tap then lands on the island.
             for _ in 0..<3 where !input.exists {
@@ -64,7 +82,7 @@ final class ApprovalCardUITests: XCTestCase {
                 _ = input.waitForExistence(timeout: 3)
             }
         }
-        XCTAssertTrue(input.exists, "Kiwi's chat opened")
+        XCTAssertTrue(input.exists, "\(bot)'s chat opened")
         return app
     }
 

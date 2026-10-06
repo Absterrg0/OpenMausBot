@@ -25,6 +25,7 @@ import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -51,10 +52,8 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.Call
 import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material3.CircularProgressIndicator
@@ -79,6 +78,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawWithCache
@@ -94,12 +95,15 @@ import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontFamily
@@ -116,6 +120,8 @@ import com.openmausbot.companion.core.AttachmentPolicy
 import com.openmausbot.companion.core.Bot
 import com.openmausbot.companion.core.Chat
 import com.openmausbot.companion.core.ComposerMention
+import com.openmausbot.companion.core.ComposerQuestion
+import com.openmausbot.companion.core.TypedAnswerResult
 import com.openmausbot.companion.core.MentionChoice
 import com.openmausbot.companion.core.ChatTarget
 import com.openmausbot.companion.core.LocalMessageLink
@@ -519,6 +525,12 @@ private fun LoadedChat(
     val pendingApproval = remember(rawTranscript) {
         ComposerAccessories.hasPendingApproval(rawTranscript)
     }
+    // The one open question a typed line answers. A bot blocked on its
+    // question never reads a line steered into its turn, so while exactly one
+    // question waits (and nothing is attached) Send answers it instead.
+    val composerQuestion = remember(rawTranscript, chat.name, attachments.isEmpty()) {
+        ComposerQuestion.target(rawTranscript, chat.name, hasAttachments = attachments.isNotEmpty())
+    }
 
     // One live composer per thread, including when an upload finishes after
     // switching away and back. Only typed text enters saved instance state;
@@ -793,6 +805,44 @@ private fun LoadedChat(
             return
         }
         if (text.isEmpty()) return
+        // Only the typed line answers; a chip or a command is its own ask.
+        val question = composerQuestion.takeIf { explicitText == null }
+        if (question != null) {
+            if (sendingMessage) return
+            val target = composer
+            sendingMessage = true
+            attachmentError = null
+            composer.onSend()
+            publishFrom(composer)
+            haptics.play(HapticCue.SEND)
+            scope.launch {
+                val result = try {
+                    session.answerInWords(chat, question.card, question.answer(text))
+                } finally {
+                    sendingMessage = false
+                }
+                when (result) {
+                    TypedAnswerResult.Answered -> Unit
+                    // The question closed before the line reached it: say it
+                    // as an ordinary message rather than lose it.
+                    TypedAnswerResult.Gone -> {
+                        if (!session.send(text, emptyList(), chat) && target.text.isBlank()) {
+                            target.onTypedChange(text)
+                            publishFrom(target)
+                        }
+                    }
+                    // Hand the words back, with the reason under them.
+                    is TypedAnswerResult.Failed -> {
+                        if (target.text.isBlank()) {
+                            target.onTypedChange(text)
+                            publishFrom(target)
+                        }
+                        attachmentError = result.message
+                    }
+                }
+            }
+            return
+        }
         composer.onSend()
         // Clearing the draft closes the HUD through the rule above, which is
         // how iOS's `showCommandHUD = false` on submit happens as well.
@@ -1037,18 +1087,9 @@ private fun LoadedChat(
                         }
                     },
                     showCall = LiveCallRules.offersCall(liveCall, state.liveCall),
-                    // A bot's face and its name pill are both the door to its
-                    // profile; a room has no profile, so its pill opens the same
-                    // sheet the + does.
-                    onOpenProfile = {
-                        if (bot != null) {
-                            showingProfile = true
-                        } else {
-                            dictation.stop()
-                            focusManager.clearFocus()
-                            showingPlus = true
-                        }
-                    },
+                    // A bot's face is the door to its profile. A room has no
+                    // profile and its face opens nothing.
+                    onOpenProfile = { if (bot != null) showingProfile = true },
                     modifier = Modifier
                         .align(Alignment.TopCenter)
                         .widthIn(max = CHAT_CONTENT_MAX_WIDTH),
@@ -1090,6 +1131,7 @@ private fun LoadedChat(
                 preparing = preparingAttachments,
                 busy = chat.busy,
                 engineCanSteer = engineCanSteer,
+                questionAsker = composerQuestion?.asker,
                 queuedSends = queuedSends,
                 steering = steering,
                 onSteer = steerNow,
@@ -1262,18 +1304,32 @@ private fun androidx.compose.foundation.lazy.LazyListScope.itemsIndexedKeyed(
 }
 
 // The strip the top controls sit on, and the air the transcript needs below the
-// name pill before its first row.
+// face before its first row: the strip and its fade, which the 60 dp face (at
+// 2 dp from the top) ends inside.
 private val HEADER_BAR = 56.dp
 private val HEADER_SCRIM_FADE = 24.dp
-private val HEADER_CLEARANCE = 128.dp
+private val HEADER_CLEARANCE = HEADER_BAR + HEADER_SCRIM_FADE
+
+// The face in the middle of the strip, the air kept beside it, and the parts of
+// the Threads chip around its word.
+private val HEADER_FACE = 60.dp
+private val HEADER_FACE_AIR = 4.dp
+private val HEADER_PADDING = 12.dp
+private val HEADER_GAP = 8.dp
+private val THREADS_CHIP_PADDING = 10.dp
+private val THREADS_CHIP_GLYPH = 18.dp
+private val THREADS_CHIP_SPACING = 6.dp
+private val THREADS_CHIP_TEXT_SIZE = 14.sp
 
 /**
- * Back on the left with the rest-of-app unread count, a Live call and the bot's
- * computer on the right, and the bot itself between them over its name.
+ * Back on the left with the rest-of-app unread count and a Live call; Threads
+ * and the bot's computer on the right; the bot's face between them — the
+ * layout iOS's chat header has.
  *
- * The strip behind the two buttons is opaque and then fades out, so the
- * transcript slides under the chrome and disappears rather than stopping at a
- * line. The face and the name pill float below it on their own tiles.
+ * The strip behind the buttons is opaque and then fades out, so the transcript
+ * slides under the chrome and disappears rather than stopping at a line. The
+ * face floats over it on its own. The thread you are on is named by the Threads
+ * chip, the one way to the others.
  */
 @Composable
 private fun ChatHeader(
@@ -1294,7 +1350,23 @@ private fun ChatHeader(
     modifier: Modifier = Modifier,
 ) {
     val surface = MaterialTheme.colorScheme.surface
-    Box(modifier = modifier.fillMaxWidth()) {
+    val threadsWord = stringResource(R.string.mobile_threads_bb12e8aa)
+    val threadsStyle = LocalTextStyle.current.merge(
+        TextStyle(fontSize = THREADS_CHIP_TEXT_SIZE, fontWeight = FontWeight.Medium),
+    )
+    val measurer = rememberTextMeasurer()
+    val density = LocalDensity.current
+    BoxWithConstraints(modifier = modifier.fillMaxWidth()) {
+        // The Threads chip keeps its word only when the whole chip fits between
+        // the computer and the face — measured, so a larger font size or a
+        // longer translation drops to the glyph rather than reaching under it.
+        val wordWidth = with(density) {
+            measurer.measure(threadsWord, threadsStyle, maxLines = 1).size.width.toDp()
+        }
+        val chipWidth = THREADS_CHIP_PADDING * 2 + THREADS_CHIP_GLYPH + THREADS_CHIP_SPACING + wordWidth
+        val besideFace = maxWidth / 2 - HEADER_FACE / 2 - HEADER_FACE_AIR -
+            HEADER_PADDING - MIN_TOUCH_TARGET - HEADER_GAP
+        val labelThreads = chipWidth <= besideFace
         Spacer(
             modifier = Modifier
                 .fillMaxWidth()
@@ -1313,21 +1385,32 @@ private fun ChatHeader(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 12.dp, vertical = 4.dp),
+                .padding(horizontal = HEADER_PADDING, vertical = 4.dp),
             verticalAlignment = Alignment.Top,
         ) {
             BackPill(unreadElsewhere = unreadElsewhere, onBack = onBack)
-            Spacer(Modifier.weight(1f))
+            // Beside Back, as on iOS: the right side holds Threads and the
+            // computer, and one more button there reaches under the face.
             // The computer and the phone are bot ideas; a room has neither (§12).
+            if (chat is Chat.BotChat && showCall) {
+                Spacer(Modifier.width(8.dp))
+                ChromeButton(
+                    icon = Icons.Filled.Call,
+                    contentDescription = "Call ${chat.name}",
+                    onClick = onCall,
+                )
+            }
+            Spacer(Modifier.weight(1f))
+            if (chat.supportsTasks) {
+                ThreadsChip(
+                    threadTitle = chat.threadTitle,
+                    word = threadsWord.takeIf { labelThreads },
+                    style = threadsStyle,
+                    onOpen = onOpenThreads,
+                )
+                Spacer(Modifier.width(HEADER_GAP))
+            }
             if (chat is Chat.BotChat) {
-                if (showCall) {
-                    ChromeButton(
-                        icon = Icons.Filled.Call,
-                        contentDescription = "Call ${chat.name}",
-                        onClick = onCall,
-                    )
-                    Spacer(Modifier.width(8.dp))
-                }
                 ChromeButton(
                     painter = painterResource(R.drawable.ic_display),
                     contentDescription = stringResource(R.string.mobile_watch_chat_name_s_computer_92efc119, chat.name),
@@ -1338,29 +1421,28 @@ private fun ChatHeader(
             }
         }
 
-        Column(
+        ChatAvatar(
+            chat = chat,
+            size = HEADER_FACE,
+            state = face,
             modifier = Modifier
                 .align(Alignment.TopCenter)
-                .padding(top = 2.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(6.dp),
-        ) {
-            ChatAvatar(
-                chat = chat,
-                size = 60.dp,
-                state = face,
-                modifier = if (chat is Chat.BotChat) {
-                    Modifier
-                        .clickable(role = Role.Button, onClick = onOpenProfile)
-                        .localizedSemantics(contentDescription = {
-                            stringResource(R.string.mobile_a11y_open_chat_settings, chat.name)
+                .padding(top = 2.dp)
+                .then(
+                    when (chat) {
+                        is Chat.BotChat -> Modifier
+                            .clickable(role = Role.Button, onClick = onOpenProfile)
+                            .localizedSemantics(contentDescription = {
+                                stringResource(R.string.mobile_a11y_open_chat_settings, chat.name)
+                            })
+                        // The header has no other place for a room's name and
+                        // members, so its face says them.
+                        is Chat.RoomChat -> Modifier.localizedSemantics(contentDescription = {
+                            stringResource(R.string.mobile_a11y_room_header, chat.name, chat.room.memberIds.size)
                         })
-                } else {
-                    Modifier
-                },
-            )
-            NamePill(chat = chat, onOpen = if (chat.supportsTasks) onOpenThreads else onOpenProfile)
-        }
+                    },
+                ),
+        )
     }
 }
 
@@ -1402,57 +1484,48 @@ private fun BackPill(unreadElsewhere: Int, onBack: () -> Unit) {
 }
 
 /**
- * The bot's name over its job, and the door to its profile — "who this is", as
- * The conversation title opens thread navigation; the avatar opens settings.
+ * The door to this chat's threads, named for the one you are on — what the
+ * pill under the face used to say. A glyph alone when [word] is null: the
+ * header found no room for it beside the face.
  */
 @Composable
-private fun NamePill(chat: Chat, onOpen: () -> Unit) {
-    val hasThreads = chat.supportsTasks
+private fun ThreadsChip(threadTitle: String, word: String?, style: TextStyle, onOpen: () -> Unit) {
+    val description = stringResource(R.string.mobile_a11y_threads_current, threadTitle)
+    if (word == null) {
+        ChromeButton(
+            icon = Icons.AutoMirrored.Filled.List,
+            contentDescription = description,
+            onClick = onOpen,
+            modifier = Modifier.testTag(THREADS_CHIP_TAG),
+        )
+        return
+    }
     Row(
         modifier = Modifier
+            .testTag(THREADS_CHIP_TAG)
             .chromeCapsule()
             .clip(CircleShape)
             .heightIn(min = MIN_TOUCH_TARGET)
-            .clickable(
-                role = Role.Button,
-                onClickLabel = if (hasThreads) {
-                    "Switch thread"
-                } else {
-                    "Open ${chat.name} chat options"
-                },
-                onClick = onOpen,
-            )
-            .padding(start = 14.dp, end = 10.dp),
-        horizontalArrangement = Arrangement.spacedBy(6.dp),
+            .clickable(role = Role.Button, onClick = onOpen)
+            .clearAndSetSemantics {
+                contentDescription = description
+                role = Role.Button
+            }
+            .padding(horizontal = THREADS_CHIP_PADDING),
+        horizontalArrangement = Arrangement.spacedBy(THREADS_CHIP_SPACING),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Text(
-            text = chat.name,
-            fontSize = 15.sp,
-            fontWeight = FontWeight.SemiBold,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.weight(1f, fill = false),
-        )
-        val subtitle = if (hasThreads) chat.threadTitle else chat.subtitle
-        if (subtitle.isNotEmpty()) {
-            Text(
-                text = subtitle,
-                fontSize = 13.sp,
-                color = secondaryTint,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.weight(1f, fill = false),
-            )
-        }
         Icon(
-            imageVector = if (hasThreads) Icons.Filled.ArrowDropDown else Icons.Filled.MoreVert,
+            imageVector = Icons.AutoMirrored.Filled.List,
             contentDescription = null,
-            tint = secondaryTint,
-            modifier = Modifier.size(16.dp),
+            modifier = Modifier.size(THREADS_CHIP_GLYPH),
         )
+        Text(text = word, style = style, maxLines = 1)
     }
 }
+
+/** The header's Threads chip, for tests. */
+internal const val THREADS_CHIP_TAG = "header-threads"
 
 /**
  * What the composer's + opens: the things you can do here, each with a line
@@ -1739,6 +1812,8 @@ private fun Composer(
     preparing: Boolean,
     busy: Boolean,
     engineCanSteer: Boolean,
+    /** The bot waiting on the one open question Send would answer. */
+    questionAsker: String?,
     queuedSends: List<QueuedSend>,
     steering: Boolean,
     onSteer: (() -> Unit)?,
@@ -1959,6 +2034,7 @@ private fun Composer(
                                 engineCanSteer = engineCanSteer,
                                 sending = sending,
                                 listening = dictationListening,
+                                questionAsker = questionAsker,
                             )),
                             fontSize = 17.sp,
                             color = secondaryTint,
@@ -2066,7 +2142,9 @@ private fun Composer(
                     ) {
                         Icon(
                             imageVector = Icons.AutoMirrored.Filled.Send,
-                            contentDescription = stringResource(R.string.mobile_send_9bc2575c),
+                            contentDescription = stringResource(
+                                if (questionAsker != null) R.string.mobile_submit_answer_bf80bc31 else R.string.mobile_send_9bc2575c,
+                            ),
                             tint = if (canSend) BubbleColor.mineText else secondaryTint,
                             modifier = Modifier.size(16.dp),
                         )

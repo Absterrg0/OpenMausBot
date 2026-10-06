@@ -37,6 +37,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -60,7 +61,9 @@ import kotlinx.coroutines.launch
  * model's options with their glosses, an "Other" row for a reply it did not
  * think of, and one submit that sends every answer at once. The answer text is
  * built by [AskQuestionAnswer.format], so an answer given here is
- * byte-for-byte the one the Mac would have sent.
+ * byte-for-byte the one the Mac would have sent. A question with no options
+ * opens straight to its answer field: there is nothing to pick, so a lone
+ * "Other" row would only be one more tap.
  */
 @Composable
 internal fun QuestionCardView(chat: Chat, message: Message, haptics: Haptics) {
@@ -83,7 +86,7 @@ internal fun QuestionCardView(chat: Chat, message: Message, haptics: Haptics) {
 
     fun answersFor(position: Int): List<String> {
         val chosen = picked[position].orEmpty().sorted().toMutableList()
-        if (other[position] == true) {
+        if (other[position] == true || questions[position].answersInWords) {
             custom[position]?.trim()?.takeIf { it.isNotEmpty() }?.let(chosen::add)
         }
         return chosen
@@ -245,7 +248,19 @@ internal fun QuestionCardView(chat: Chat, message: Message, haptics: Haptics) {
             Text(stringResource(R.string.mobile_choose_all_that_apply_5a20d235), fontSize = 12.sp, color = secondaryTint)
         }
 
-        Column(
+        if (current.answersInWords) {
+            OutlinedTextField(
+                value = custom[index].orEmpty(),
+                onValueChange = { custom[index] = it },
+                placeholder = { Text(stringResource(R.string.mobile_type_your_answer)) },
+                singleLine = false,
+                maxLines = 4,
+                enabled = !answering,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("question-answer-field"),
+            )
+        } else Column(
             modifier = Modifier
                 .fillMaxWidth()
                 .background(secondaryTint.copy(alpha = 0.10f), RoundedCornerShape(14.dp)),

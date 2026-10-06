@@ -47,6 +47,12 @@ data class AskQuestion(
      * keeps the tabs distinguishable when it does not.
      */
     fun tabLabel(position: Int): String = header?.takeIf { it.isNotEmpty() } ?: "Question $position"
+
+    /**
+     * A question with nothing to pick is answered in words: its card opens
+     * straight to the answer field instead of a lone "Other" row.
+     */
+    val answersInWords: Boolean get() = options.isEmpty()
 }
 
 @Serializable
@@ -90,5 +96,67 @@ object AskQuestionAnswer {
     fun withoutPreamble(answer: String): String {
         val lead = "$PREAMBLE\n\n"
         return if (answer.startsWith(lead)) answer.removePrefix(lead) else answer
+    }
+}
+
+/**
+ * A flat question card (the computer's own `ask_user`, which has no
+ * `questionRequest`) takes a typed answer under its options. Approvals, held
+ * sends and proposals never do: their buttons are the only answers.
+ */
+val OptionCard.takesTypedAnswer: Boolean
+    get() = requestType == "question" && questions.isEmpty()
+
+/**
+ * The open question a line typed in the composer answers, kept in step with
+ * `ComposerQuestion` in `ios/Sources/CompanionCore/AskQuestion.swift`.
+ *
+ * A bot blocked on its question never reads words steered into its turn, so
+ * while the chat waits on exactly one question the phone sends the
+ * composer's line as that question's answer instead, through the same
+ * respond route the card's own buttons use. Anything less clear-cut — two
+ * open questions, one card asking several things, an attachment riding
+ * along — is an ordinary message, as it always was.
+ */
+object ComposerQuestion {
+    /** The question the line would answer and the bot waiting on it. */
+    data class Target(
+        val message: Message,
+        val card: OptionCard,
+        /** Who the composer names: the asking member in a room, else the chat. */
+        val asker: String,
+    ) {
+        /**
+         * What the computer receives for a typed line. A structured ask gets
+         * the same "Q: … A: …" text its own card would send, so the Mac and
+         * the model cannot tell where it was answered; a flat question takes
+         * the line as it is.
+         */
+        fun answer(text: String): String {
+            val typed = text.trim()
+            val questions = card.questions
+            if (questions.isEmpty()) return typed
+            return AskQuestionAnswer.format(questions, listOf(listOf(typed)))
+        }
+    }
+
+    /**
+     * The one pending question card in [messages]: a flat question card, or a
+     * structured card asking exactly one thing. Null when there are none or
+     * several, when the only one asks several questions, or when the message
+     * carries attachments.
+     */
+    fun target(messages: List<Message>, chatName: String, hasAttachments: Boolean = false): Target? {
+        if (hasAttachments) return null
+        var found: Message? = null
+        for (message in messages) {
+            val card = message.card ?: continue
+            if (!card.isPending || (card.requestType != "question" && card.questions.isEmpty())) continue
+            if (found != null) return null
+            found = message
+        }
+        val card = found?.card ?: return null
+        if (card.questions.size > 1) return null
+        return Target(found, card, found.from?.name ?: chatName)
     }
 }
