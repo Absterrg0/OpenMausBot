@@ -835,7 +835,10 @@ export function SettingsModal() {
 
   const sectionIndex = currentPage?.sections.indexOf(section) ?? 0;
   useEffect(() => {
-    if (!advanced && scrollRef.current) revealSettingsBlock(scrollRef.current, section, sectionIndex);
+    // Advanced mode gives every section its own page, so a new one starts at
+    // the top instead of at the last page's scroll offset (MOCA-292: "Change
+    // key" landed on API keys scrolled past the key it was opened for).
+    if (scrollRef.current) revealSettingsBlock(scrollRef.current, section, advanced ? 0 : sectionIndex);
   }, [advanced, section, sectionIndex]);
 
   useEffect(() => {

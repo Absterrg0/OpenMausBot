@@ -14,7 +14,7 @@ import type { ModelVariantOption } from "../../shared/runtime-events";
 import { filterCustomModels, partitionCustomModels, suggestedModels } from "@/lib/custom-models";
 import { configuredModelInstances, isClaudeAccount, isCustomOnly, SIGN_IN_FAMILY_LABEL, signInFamily, splitEngineRail, type SignInFamily } from "@/lib/engine-rail";
 import { InstanceProviderMark } from "./ProviderIcons";
-import { EngineSetup, EngineUpdateNotice, needsCli, needsSignIn } from "./EngineSetup";
+import { EngineSetup, EngineUpdateNotice, hasSavedApiKey, needsCli, needsSignIn } from "./EngineSetup";
 import { EngineGroupLabel } from "./EngineGroupLabel";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { ChatGptPlanStatus } from "./ChatGptPlanStatus";
@@ -403,6 +403,11 @@ export function railProviders(instances: InstanceInfo[], selectedInstance: Insta
   return { subscription: subscription.map(entry), api: api.map(entry), custom: custom.map(entry) };
 }
 
+/** Once any key is saved, the keys shortcut is also the way to fix one. */
+function apiKeysLabel(instances: InstanceInfo[]): string {
+  return t(instances.some(hasSavedApiKey) ? "model.addOrChangeApiKeys" : "model.addApiKeys");
+}
+
 export function ModelEngineRail({ instances, selectedInstance, claudeInstance, openaiInstance, onSelect, onAddApiKeys }: {
   instances: InstanceInfo[];
   selectedInstance?: InstanceInfo;
@@ -450,8 +455,8 @@ export function ModelEngineRail({ instances, selectedInstance, claudeInstance, o
           type="button"
           data-rail-add-api-key
           onClick={onAddApiKeys}
-          aria-label={t("model.addApiKeys")}
-          title={t("model.addApiKeys")}
+          aria-label={apiKeysLabel(instances)}
+          title={apiKeysLabel(instances)}
           className="flex size-9 items-center justify-center rounded-lg border border-dashed border-hairline text-ink-secondary hover:bg-control/60 hover:text-ink"
         >
           <Plus size={16} aria-hidden="true" />
@@ -1259,7 +1264,7 @@ export function ModelPicker({
               {window.ogb?.remoteClient?.active !== true && (
                 <button type="button" data-model-add-api-keys onClick={openApiKeys} className="flex shrink-0 items-center gap-1.5 px-4 py-2 text-[12px] text-ink-secondary hover:bg-control/60 hover:text-ink">
                   <KeyRound size={12} aria-hidden="true" />
-                  {t("model.addApiKeys")}
+                  {apiKeysLabel(pickerInstances)}
                 </button>
               )}
             </div>
