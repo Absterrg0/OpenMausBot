@@ -637,6 +637,7 @@
   "common.save": "Save",
   "common.cancel": "Cancel",
   "common.close": "Close",
+  "common.copyFailed": "Could not copy",
   "team.create": "Create team",
   "team.name": "Team name",
   "team.closeDialog": "Close team dialog",

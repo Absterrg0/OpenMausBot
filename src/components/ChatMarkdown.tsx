@@ -18,7 +18,9 @@ import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
 import rehypeKatex from "rehype-katex";
 import { fromMarkdown, type Options as MarkdownParseOptions } from "mdast-util-from-markdown";
-import { Check, Copy, Download, LoaderCircle, RotateCcw, WrapText } from "lucide-react";
+import { Check, Copy, Download, LoaderCircle, RotateCcw, WrapText, X } from "lucide-react";
+import { useCopyFeedback } from "@/lib/copy-text";
+import { t } from "@/lib/i18n";
 import { remarkMentions, type MentionPeer } from "@/lib/mentions";
 
 import {
@@ -238,17 +240,8 @@ export function CodeBlock({ code, lang }: CodeBlockProps) {
   // React compares dangerouslySetInnerHTML by identity: a fresh object each
   // render would rebuild the highlighted DOM on every re-render
   const markup = useMemo(() => (html ? { __html: html } : null), [html]);
-  const [copied, setCopied] = useState(false);
+  const { state: copied, copy } = useCopyFeedback(code);
   const [wrapLines, setWrapLines] = useState(false);
-  const copyTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  useEffect(() => {
-    return () => {
-      if (copyTimeoutRef.current !== null) {
-        clearTimeout(copyTimeoutRef.current);
-      }
-    };
-  }, []);
 
   useEffect(() => {
     const key = highlightKey(lang, code);
@@ -278,22 +271,6 @@ export function CodeBlock({ code, lang }: CodeBlockProps) {
       alive = false;
     };
   }, [code, lang]);
-
-  const copy = () => {
-    if (!navigator.clipboard?.writeText) return;
-    navigator.clipboard
-      .writeText(code)
-      .then(() => {
-        setCopied(true);
-        if (copyTimeoutRef.current !== null) {
-          clearTimeout(copyTimeoutRef.current);
-        }
-        copyTimeoutRef.current = setTimeout(() => setCopied(false), 1500);
-      })
-      .catch(() => {
-        // Clipboard write rejected or failed silently
-      });
-  };
 
   const download = () => {
     const filename = getSnippetFileName(lang);
@@ -348,10 +325,15 @@ export function CodeBlock({ code, lang }: CodeBlockProps) {
             type="button"
             onClick={copy}
             className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] text-ink-secondary hover:bg-raised hover:text-ink transition-colors"
-            title={copied ? "Copied to clipboard" : "Copy code"}
-            aria-label={copied ? "Code copied to clipboard" : "Copy code to clipboard"}
+            title={copied === "copied" ? "Copied to clipboard" : copied === "failed" ? t("common.copyFailed") : "Copy code"}
+            aria-label={copied === "copied" ? "Code copied to clipboard" : copied === "failed" ? t("common.copyFailed") : "Copy code to clipboard"}
           >
-            {copied ? (
+            {copied === "failed" ? (
+              <>
+                <X size={12} className="text-danger" aria-hidden="true" />
+                <span className="text-danger font-medium hidden sm:inline">{t("common.copyFailed")}</span>
+              </>
+            ) : copied === "copied" ? (
               <>
                 <Check size={12} className="text-success" aria-hidden="true" />
                 <span className="text-success font-medium hidden sm:inline">Copied!</span>
@@ -433,8 +415,7 @@ export function MermaidDiagram({ code }: MermaidDiagramProps) {
   const markup = useMemo(() => (svg ? { __html: svg } : null), [svg]);
   const [error, setError] = useState<string | null>(null);
   const [showSource, setShowSource] = useState(false);
-  const [copied, setCopied] = useState(false);
-  const copyTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const { state: copied, copy } = useCopyFeedback(code);
 
   // Skins are stamped on <html>, a subtree could someday carry its own, so
   // watch the whole document for data-skin changes and re-render the diagram
@@ -488,30 +469,6 @@ export function MermaidDiagram({ code }: MermaidDiagramProps) {
     };
   }, [code, skinEpoch]);
 
-  useEffect(() => {
-    return () => {
-      if (copyTimeoutRef.current !== null) {
-        clearTimeout(copyTimeoutRef.current);
-      }
-    };
-  }, []);
-
-  const copy = () => {
-    if (!navigator.clipboard?.writeText) return;
-    navigator.clipboard
-      .writeText(code)
-      .then(() => {
-        setCopied(true);
-        if (copyTimeoutRef.current !== null) {
-          clearTimeout(copyTimeoutRef.current);
-        }
-        copyTimeoutRef.current = setTimeout(() => setCopied(false), 1500);
-      })
-      .catch(() => {
-        // Clipboard write rejected or failed silently
-      });
-  };
-
   // Diagrams read left-to-right whatever language surrounds them, so the
   // frame pins its own direction rather than inheriting the message's.
   return (
@@ -540,10 +497,15 @@ export function MermaidDiagram({ code }: MermaidDiagramProps) {
             type="button"
             onClick={copy}
             className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] text-ink-secondary hover:bg-raised hover:text-ink transition-colors"
-            title={copied ? "Copied to clipboard" : "Copy diagram source"}
-            aria-label={copied ? "Diagram source copied to clipboard" : "Copy diagram source to clipboard"}
+            title={copied === "copied" ? "Copied to clipboard" : copied === "failed" ? t("common.copyFailed") : "Copy diagram source"}
+            aria-label={copied === "copied" ? "Diagram source copied to clipboard" : copied === "failed" ? t("common.copyFailed") : "Copy diagram source to clipboard"}
           >
-            {copied ? (
+            {copied === "failed" ? (
+              <>
+                <X size={12} className="text-danger" aria-hidden="true" />
+                <span className="text-danger font-medium hidden sm:inline">{t("common.copyFailed")}</span>
+              </>
+            ) : copied === "copied" ? (
               <>
                 <Check size={12} className="text-success" aria-hidden="true" />
                 <span className="text-success font-medium hidden sm:inline">Copied!</span>
