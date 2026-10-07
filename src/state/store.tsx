@@ -111,6 +111,11 @@ export interface OptionCardData {
   /** Exact provider command eligible for a durable, folder-scoped allow. */
   commandAllowlist?: { command: string; cwd: string; providerInstanceId: string };
   approvalScope?: "local-computer";
+  /** The bot's change applied without a person (a change to itself, or Full
+   * access): shown as one line with Undo instead of the approval box. */
+  autoApplied?: boolean;
+  /** A person undid that change. */
+  undone?: boolean;
   /** Persisted proposal used by the server when the user confirms it. */
   routineRequest?: RoutineRequestCardData;
   /** Staged learned-skill change; applied only after the user confirms this card. */

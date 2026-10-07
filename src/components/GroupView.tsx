@@ -256,7 +256,7 @@ export const Transcript = memo(function Transcript({
             </div>
           ) : m.kind === "options" && m.card?.requestId && m.card.tool ? (
             <div className="flex justify-start">
-              <ApprovalCard bot={memberOf(m.from?.botId)} message={m} />
+              <ApprovalCard bot={memberOf(m.from?.botId)} message={m} threadId={group.threadId} />
             </div>
           ) : m.kind === "options" && m.card && m.from?.botId ? (
             // a QUESTION from a member. Without this branch the card fell

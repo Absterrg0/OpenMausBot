@@ -69,7 +69,7 @@ import { VoiceNoteBubble, type VoiceNoteAttachment } from "./VoiceNoteBubble";
 import { RawMarkdownView, RawToggleAction } from "./RawMarkdownToggle";
 import { ThreadChip } from "./ThreadChip";
 import { VerifyCard } from "./VerifyCard";
-import { askText, runSteps, runSummary, showRun, skillPrompt, skillStaged } from "@/lib/verify-steps";
+import { askText, runSkill, runSteps, runSummary, showRun, skillPrompt } from "@/lib/verify-steps";
 import { useShowRunCard } from "@/lib/run-card-preferences";
 import { ToolActivity } from "./ToolActivity";
 import { ThreadRefText } from "./ThreadRefs";
@@ -955,7 +955,7 @@ const MessagesList = memo(function MessagesList({
               const card = m.card?.requestId && m.card.questionRequest ? (
                 <QuestionCard threadId={threadId} bot={{ name: botName }} message={m} />
               ) : m.card?.requestId && m.card.tool ? (
-                <ApprovalCard bot={{ name: botName }} message={m} />
+                <ApprovalCard bot={{ name: botName }} message={m} threadId={threadId} />
               ) : shouldHideOnboardingCard(m, transcript) ? null : (
                 <OptionCard botId={botId} threadId={threadId} message={m} />
               );
@@ -1599,7 +1599,7 @@ export function ChatView({ bot: profile }: { bot: Bot }) {
             key={transcriptKey}
             steps={recordedRun}
             canSave={canSaveRun}
-            staged={skillStaged(messages, recordedRun)}
+            skill={runSkill(messages, recordedRun)}
             onDismiss={() => setRunDismissed((current) => new Map(current).set(transcriptKey, lastRunStep.id))}
             onSave={() => {
               appendComposerDraft(`bot:${bot.id}:${bot.threadId}`, skillPrompt(recordedRun, askText(messages)));
