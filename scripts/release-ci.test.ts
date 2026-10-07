@@ -119,4 +119,27 @@ describe("GitHub calls", () => {
       'POST /actions/workflows/ci.yml/dispatches {"ref":"release-ci/v1.2.3"}',
     ]);
   });
+
+  it("tries a 5xx or a dropped connection again, but not a 4xx", async () => {
+    const answers: Array<() => Response> = [
+      () => new Response(null, { status: 500 }),
+      () => { throw new TypeError("fetch failed"); },
+      () => new Response(null, { status: 204 }),
+    ];
+    const waits: number[] = [];
+    let calls = 0;
+    const fetchImpl = async () => answers[calls++]!();
+    const api = githubApi({ token: "t", repository: "o/r", fetchImpl: fetchImpl as typeof fetch, retryDelaysMs: [1, 2, 3], sleep: async (ms: number) => { waits.push(ms); } });
+    await api.dispatchCi("release-ci/v1.2.3");
+    expect(calls).toBe(3);
+    expect(waits).toEqual([1, 2]);
+
+    const always500 = githubApi({ token: "t", repository: "o/r", fetchImpl: (async () => new Response(null, { status: 502 })) as typeof fetch, retryDelaysMs: [1, 1], sleep: async () => {} });
+    await expect(always500.dispatchCi("x")).rejects.toThrow("HTTP 502");
+
+    let forbidden = 0;
+    const no = githubApi({ token: "t", repository: "o/r", fetchImpl: (async () => { forbidden++; return new Response(null, { status: 403 }); }) as typeof fetch, retryDelaysMs: [1, 1], sleep: async () => {} });
+    await expect(no.dispatchCi("x")).rejects.toThrow("HTTP 403");
+    expect(forbidden).toBe(1);
+  });
 });

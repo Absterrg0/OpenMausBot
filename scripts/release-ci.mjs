@@ -76,20 +76,33 @@ export async function waitForReleaseCi({ api, sha, version, sleep = (ms) => new 
   }
 }
 
-/** GitHub REST calls for the release job's GITHUB_TOKEN. */
-export function githubApi({ token, repository, apiUrl = "https://api.github.com", fetchImpl = fetch }) {
+/** GitHub REST calls for the release job's GITHUB_TOKEN. A 5xx or a dropped
+ * connection is GitHub having a moment, not a verdict: it is tried again
+ * after each of `retryDelaysMs` before the release gives up. (v0.1.99's gate
+ * died on one HTTP 500 from the CI dispatch.) */
+export function githubApi({ token, repository, apiUrl = "https://api.github.com", fetchImpl = fetch,
+  retryDelaysMs = [5_000, 15_000, 45_000], sleep = (ms) => new Promise((r) => setTimeout(r, ms)) }) {
   const call = async (method, path, body) => {
-    const response = await fetchImpl(`${apiUrl}/repos/${repository}${path}`, {
-      method,
-      headers: { authorization: `Bearer ${token}`, accept: "application/vnd.github+json", "x-github-api-version": "2022-11-28" },
-      body: body === undefined ? undefined : JSON.stringify(body),
-    });
-    if (!response.ok) {
-      const error = new Error(`${method} ${path}: HTTP ${response.status}`);
-      error.status = response.status;
-      throw error;
+    for (let attempt = 0; ; attempt++) {
+      let response;
+      try {
+        response = await fetchImpl(`${apiUrl}/repos/${repository}${path}`, {
+          method,
+          headers: { authorization: `Bearer ${token}`, accept: "application/vnd.github+json", "x-github-api-version": "2022-11-28" },
+          body: body === undefined ? undefined : JSON.stringify(body),
+        });
+      } catch (cause) {
+        if (attempt < retryDelaysMs.length) { await sleep(retryDelaysMs[attempt]); continue; }
+        throw new Error(`${method} ${path}: ${cause instanceof Error ? cause.message : String(cause)}`, { cause });
+      }
+      if (response.status >= 500 && attempt < retryDelaysMs.length) { await sleep(retryDelaysMs[attempt]); continue; }
+      if (!response.ok) {
+        const error = new Error(`${method} ${path}: HTTP ${response.status}`);
+        error.status = response.status;
+        throw error;
+      }
+      return response.status === 204 ? null : response.json();
     }
-    return response.status === 204 ? null : response.json();
   };
   return {
     async runsForCommit(sha) {
