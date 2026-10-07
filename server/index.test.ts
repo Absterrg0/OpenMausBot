@@ -25,7 +25,7 @@ import { z } from "zod";
 import { removeTempDir, waitForExit } from "./testing/cleanup.ts";
 import { startFakeHttpMcp } from "./testing/fake-http-mcp-server.ts";
 import { startFakeOAuth } from "./testing/fake-oauth-server.ts";
-import { freePortBlock } from "./testing/ports.ts";
+import { freePortBlock, withFreeSignInPort } from "./testing/ports.ts";
 import { openSse } from "./testing/sse.ts";
 import { FILE_MAX_BYTES, IMAGE_MAX_BYTES } from "./attachments.ts";
 import { computerPrompt, SIGN_IN_PROMPT } from "./system-prompt.ts";
@@ -8082,12 +8082,14 @@ describe("harness HTTP API", () => {
     const secret = "corp-app-secret-that-must-never-render";
     const oauth = await startFakeOAuth({ noRegistration: true, preRegistered: { "corp-app": secret } });
     const fake = await startFakeHttpMcp({ acceptBearer: oauth.isValid, wwwAuthenticate: oauth.challenge });
+    // the app returns to the port derived from this URL: make it a free one
+    const url = await withFreeSignInPort(fake.url);
     const configFile = join(home, ".openmausbot", "config.json");
     try {
-      const created = await api("POST", "/api/mcp/servers", { name: "corp", url: fake.url, oauth: { clientId: "corp-app", clientSecret: secret, scopes: ["mcp", "offline_access"] } });
+      const created = await api("POST", "/api/mcp/servers", { name: "corp", url, oauth: { clientId: "corp-app", clientSecret: secret, scopes: ["mcp", "offline_access"] } });
       expect(created.status).toBe(201);
       expect(created.body.servers).toEqual([{
-        name: "corp", type: "http", url: fake.url, headerKeys: [], enabled: false,
+        name: "corp", type: "http", url, headerKeys: [], enabled: false,
         oauth: { clientId: "corp-app", scopes: ["mcp", "offline_access"], clientSecretConfigured: true, redirectUri: expect.stringMatching(/^http:\/\/127\.0\.0\.1:\d+\/mcp-oauth\/callback$/) },
       }]);
 
@@ -8107,7 +8109,7 @@ describe("harness HTTP API", () => {
       expect(tested.body.ok).toBe(true);
 
       // an edit that keeps the app keeps the secret and the sign-in
-      const kept = await api("PUT", "/api/mcp/servers/corp", { type: "http", url: fake.url, headers: {}, oauth: { clientId: "corp-app", clientSecret: true, scopes: ["mcp", "offline_access"] } });
+      const kept = await api("PUT", "/api/mcp/servers/corp", { type: "http", url, headers: {}, oauth: { clientId: "corp-app", clientSecret: true, scopes: ["mcp", "offline_access"] } });
       expect(kept.status).toBe(200);
       expect(kept.body.servers[0]).toMatchObject({ auth: "signed-in", oauth: { clientSecretConfigured: true } });
       expect(JSON.parse(readFileSync(configFile, "utf8")).mcpServers.corp.oauth.clientSecret).toBe(secret);
@@ -8116,9 +8118,9 @@ describe("harness HTTP API", () => {
       expect(readFileSync(join(home, ".openmausbot", "mcp-oauth.json"), "utf8")).not.toContain(secret);
 
       // another app: the old app's tokens and secret go
-      const other = await api("PUT", "/api/mcp/servers/corp", { type: "http", url: fake.url, headers: {}, oauth: { clientId: "other-app", clientSecret: true } });
+      const other = await api("PUT", "/api/mcp/servers/corp", { type: "http", url, headers: {}, oauth: { clientId: "other-app", clientSecret: true } });
       expect(other.status).toBe(400);
-      const moved = await api("PUT", "/api/mcp/servers/corp", { type: "http", url: fake.url, headers: {}, oauth: { clientId: "other-app" } });
+      const moved = await api("PUT", "/api/mcp/servers/corp", { type: "http", url, headers: {}, oauth: { clientId: "other-app" } });
       expect(moved.body.servers[0].auth).toBeUndefined();
       expect(moved.body.servers[0].oauth.clientSecretConfigured).toBe(false);
       expect(readFileSync(configFile, "utf8")).not.toContain(secret);
@@ -8133,6 +8135,8 @@ describe("harness HTTP API", () => {
     const client = { clientId: "headless-corp", clientSecret: "headless-private-secret", scopes: ["mcp", "offline_access"] };
     const oauth = await startFakeOAuth(registered ? { noRegistration: true, preRegistered: { [client.clientId]: client.clientSecret } } : {});
     const fake = await startFakeHttpMcp({ acceptBearer: oauth.isValid, wwwAuthenticate: oauth.challenge });
+    // a pre-registered app returns to the port derived from this URL: make it a free one
+    const url = await withFreeSignInPort(fake.url);
     const pair = async (scopes: string[]) => {
       const opened = await api("POST", "/api/auth/pairing", { scopes });
       const paired = await api("POST", "/api/auth/pair", { code: opened.body.code });
@@ -8152,7 +8156,7 @@ describe("harness HTTP API", () => {
     };
     const base = "/api/mcp/servers/headless/sign-in";
     try {
-      expect((await api("POST", "/api/mcp/servers", { name: "headless", url: fake.url, ...(registered ? { oauth: client } : {}) })).status).toBe(201);
+      expect((await api("POST", "/api/mcp/servers", { name: "headless", url, ...(registered ? { oauth: client } : {}) })).status).toBe(201);
       expect((await remote(member, "POST", base)).status).toBe(403);
       const unauthenticated = await fetch(`${BASE}${base}`, { method: "POST", headers: { "x-forwarded-for": "192.0.2.11" } });
       expect([401, 403]).toContain(unauthenticated.status);

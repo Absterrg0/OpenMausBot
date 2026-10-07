@@ -792,10 +792,11 @@ export function createOpenAIChatRuntime<Config>(options: RuntimeOptions<Config>)
         if (failure && (!abort.signal.aborted || cleanupFailed)) {
           emit({ ...base(turn.threadId, turnId), type: "runtime.error", message: failure, terminal: !abort.signal.aborted });
         }
-        // Automatic continuity: a resumable terminal (budget cap or tool
-        // errors) persists a handoff and raises cap.exhausted so the harness
-        // can start a `Continue:` thread. Interruptions and provider config
-        // errors are excluded by classifyContinuable.
+        // Automatic continuity: a resumable terminal (the step or tool-call
+        // cap) persists a handoff and raises cap.exhausted so the harness
+        // can start a `Continue:` thread. Interruptions, tool errors and
+        // provider errors (a rate limit included) are excluded by
+        // classifyContinuable.
         if (!ok && !abort.signal.aborted) {
           const continuable = classifyContinuable(stopReason, failure);
           if (continuable) {
