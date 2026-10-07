@@ -239,7 +239,7 @@ import {
   parseMcpServersImport,
   parseStoredMcpServer,
 } from "./mcp-registry.ts";
-import { McpOAuthError, McpSignInError, McpOAuthManager, mcpOAuthRedirectUri, withMcpSignIn, withoutPendingSignIn } from "./mcp-oauth.ts";
+import { MCP_OAUTH_CALLBACK_PATH, McpOAuthError, McpSignInError, McpOAuthManager, mcpCallbackOrigin, mcpOAuthRedirectUri, withMcpSignIn, withoutPendingSignIn } from "./mcp-oauth.ts";
 import { probeMcpServer } from "./mcp-probe.ts";
 import {
   GROUP_GOAL_MAX_TURNS,
@@ -560,6 +560,7 @@ import {
   isLoopbackHost,
   isProxied,
   labelFromUserAgent,
+  provesSameOrigin,
   requestOrigin,
   requestSource,
   requiredScope,
@@ -16092,6 +16093,17 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       const refusal = managedPolicy.remoteAccessRefusal();
       if (refusal) return json(res, 403, { error: refusal, code: "managed_policy" });
     }
+    // An MCP server's sign-in, started in a browser on another computer,
+    // comes back here (server/mcp-oauth.ts). Public like the loopback
+    // listener it stands in for: the state is the credential, checked once.
+    if (path === MCP_OAUTH_CALLBACK_PATH) {
+      const answer = method === "GET"
+        ? await mcpOAuth.publicCallback(req.headers.host, url.search)
+        : { status: 400, text: "Invalid sign-in callback. Return to OpenMausBot and try again." };
+      res.writeHead(answer.status, { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store", "referrer-policy": "no-referrer" });
+      res.end(answer.text);
+      return;
+    }
     // ── who is asking (server/request-auth.ts) ──────────────────────────
     // Two public routes come first: what this server is, and turning a pairing
     // code into a session. Everything else needs the loopback owner or a
@@ -24232,7 +24244,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       }
     }
 
-    // The loopback listener and authenticated paste-back complete the same flow.
+    // The loopback listener, the public callback and authenticated paste-back complete the same flow.
     const mcpSignIn = /^\/api\/mcp\/servers\/([a-z][a-z0-9_-]{0,31})\/(sign-in|sign-out)(?:\/([0-9a-f-]{36}))?$/.exec(path);
     if (mcpSignIn) {
       const [, name, action, flowId] = mcpSignIn;
@@ -24265,7 +24277,15 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
           return json(res, 200, { auth: await mcpOAuth.completeCallback(name!, flowId, body.callbackUrl, owner) });
         }
         if (action === "sign-in" && method === "POST" && !flowId) {
-          const started = await mcpOAuth.start(name!, url, undefined, owner);
+          // A browser on another computer cannot reach this machine's
+          // loopback: it comes back to the https address it is using now,
+          // when that is one this server vouches for (mcpCallbackOrigin).
+          const remote = auth.kind === "session" && (isProxied(req) || !isLoopbackHost(req.headers.host));
+          const origin = remote
+            ? mcpCallbackOrigin(provesSameOrigin(req) ? requestOrigin(req) : null,
+              [CLOUD_HOME?.publicOrigin, hostedWorkspaceConfiguration()?.tenant.origin, savedCustomDomain(), FALLBACK_PUBLIC_URL])
+            : null;
+          const started = await mcpOAuth.start(name!, url, undefined, owner, { remote, origin });
           if (auth.kind === "session" && !sessions.isLive(auth.session.id)) {
             mcpOAuth.revokeOwner(owner);
             return json(res, 401, { error: "Your session ended. Start a new sign-in." });

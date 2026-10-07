@@ -8166,6 +8166,8 @@ describe("harness HTTP API", () => {
       const started = await remote(alice, "POST", base);
       expect(started.status).toBe(200);
       expect(started.cache).toBe("no-store");
+      // no https address to come back to: the person pastes the page it ends on
+      expect(started.body.auth.pasteBack).toBe(true);
       const path = `${base}/${started.body.auth.flowId}`;
       const approval = await fetch(started.body.auth.authorizationUrl, { redirect: "manual" });
       const callbackUrl = approval.headers.get("location")!;
@@ -8198,6 +8200,60 @@ describe("harness HTTP API", () => {
     } finally {
       await api("DELETE", "/api/mcp/servers/headless");
       for (const token of [alice, bob, member]) await remote(token, "POST", "/api/auth/logout");
+      await fake.close();
+      await oauth.close();
+    }
+  });
+
+  it("brings a sign-in started in a browser on another computer back to this server's https address", async () => {
+    const oauth = await startFakeOAuth();
+    const fake = await startFakeHttpMcp({ acceptBearer: oauth.isValid, wwwAuthenticate: oauth.challenge });
+    const opened = await api("POST", "/api/auth/pairing", { scopes: ["admin", "client"] });
+    const token = (await api("POST", "/api/auth/pair", { code: opened.body.code })).body.token as string;
+    // What the edge proxy in front of My Cloud hands the server (node's
+    // fetch drops a custom Host header, so this goes through http.request).
+    const viaProxy = (method: string, path: string, headers: Record<string, string> = {}, body?: unknown) =>
+      new Promise<{ status: number; text: string; headers: Record<string, unknown> }>((resolve, reject) => {
+        const req = request({
+          hostname: "127.0.0.1", port: PORT, path, method,
+          headers: { host: "cloud.example", "x-forwarded-proto": "https", "x-forwarded-for": "192.0.2.20", ...headers },
+        }, (res) => {
+          let raw = "";
+          res.on("data", (chunk) => (raw += chunk));
+          res.on("end", () => resolve({ status: res.statusCode ?? 0, text: raw, headers: res.headers }));
+        });
+        req.on("error", reject);
+        req.end(body === undefined ? undefined : JSON.stringify(body));
+      });
+    const signedIn = { authorization: `Bearer ${token}`, origin: "https://cloud.example", "content-type": "application/json" };
+    const base = "/api/mcp/servers/whop/sign-in";
+    try {
+      expect((await api("POST", "/api/mcp/servers", { name: "whop", url: fake.url })).status).toBe(201);
+      const started = await viaProxy("POST", base, signedIn);
+      expect(started.status).toBe(200);
+      const auth = JSON.parse(started.text).auth;
+      expect(auth.pasteBack).toBeUndefined();
+      expect(new URL(auth.authorizationUrl).searchParams.get("redirect_uri")).toBe("https://cloud.example/mcp-oauth/callback");
+      const callback = new URL((await fetch(auth.authorizationUrl, { redirect: "manual" })).headers.get("location")!);
+      expect(callback.origin + callback.pathname).toBe("https://cloud.example/mcp-oauth/callback");
+
+      const forged = new URL(callback);
+      forged.searchParams.set("state", "forged");
+      expect((await viaProxy("GET", forged.pathname + forged.search)).status).toBe(400);
+      expect(JSON.parse((await viaProxy("GET", `${base}/${auth.flowId}`, signedIn)).text).auth.phase).toBe("waiting");
+
+      const page = await viaProxy("GET", callback.pathname + callback.search);
+      expect(page.status).toBe(200);
+      expect(page.text).toBe("Signed in. You can close this tab and return to OpenMausBot.");
+      expect(page.headers).toMatchObject({ "cache-control": "no-store", "referrer-policy": "no-referrer", "content-type": "text/plain; charset=utf-8" });
+      expect(page.text).not.toContain(callback.searchParams.get("code"));
+      expect(JSON.parse((await viaProxy("GET", `${base}/${auth.flowId}`, signedIn)).text).auth.phase).toBe("succeeded");
+      expect((await viaProxy("GET", callback.pathname + callback.search)).status).toBe(409);
+      expect(oauth.counts.token).toBe(1);
+      expect((await api("POST", "/api/mcp/servers/whop/test")).body.ok).toBe(true);
+    } finally {
+      await api("DELETE", "/api/mcp/servers/whop").catch(() => undefined);
+      await viaProxy("POST", "/api/auth/logout", signedIn).catch(() => undefined);
       await fake.close();
       await oauth.close();
     }

@@ -2980,6 +2980,7 @@
   "mcp.auth.cancel": "Cancel",
   "mcp.auth.otherComputer": "Signing in from another computer?",
   "mcp.auth.otherComputerHint": "Finish signing in in your browser. If it ends on a localhost page that cannot connect, copy the full URL from the address bar and paste it here. Keep this URL private and use the browser that started sign-in.",
+  "mcp.auth.pasteBackHint": "After you approve, your browser shows a page that can't load. Copy that page's full address and paste it here.",
   "mcp.auth.callbackUrl": "Redirect URL",
   "mcp.auth.complete": "Complete sign-in",
   "mcp.auth.completing": "Completing sign-in…",

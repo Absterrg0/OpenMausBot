@@ -535,6 +535,22 @@ export function McpServersPanel({ embedded = false, whopCard = false, hideWhop =
   const savedOAuth = editingServer && isRemoteMcpListing(editingServer) ? editingServer.oauth : undefined;
   const secretKept = Boolean(savedOAuth?.clientSecretConfigured && !draft.oauthForgetSecret);
 
+  function renderPasteBack(server: McpServerListing) {
+    return (
+      <>
+        <label className="mt-3 block" htmlFor={`mcp-callback-${server.name}`}>{t("mcp.auth.callbackUrl")}</label>
+        <input id={`mcp-callback-${server.name}`} type="text" value={callbackUrl} disabled={completingSignIn} onChange={(event) => setCallbackUrl(event.target.value)}
+          autoComplete="off" spellCheck={false} placeholder="http://127.0.0.1:…/mcp-oauth/callback?…"
+          className="mt-1 w-full rounded-lg border border-hairline bg-inset px-3 py-2 text-ink outline-none focus:border-accent" />
+        <button type="button" disabled={!callbackUrl.trim() || completingSignIn} aria-busy={completingSignIn} onClick={() => void completeSignIn()}
+          className="mt-2 inline-flex items-center gap-2 rounded-lg bg-accent px-3 py-2 font-medium text-white disabled:opacity-40">
+          {completingSignIn && <Loader2 size={14} className="animate-spin" aria-hidden="true" />}
+          {t(completingSignIn ? "mcp.auth.completing" : "mcp.auth.complete")}
+        </button>
+      </>
+    );
+  }
+
   function renderSignIn(server: McpServerListing) {
     return signingIn === server.name && (
       <div className="mt-3 space-y-3 rounded-lg bg-raised px-3 py-3 text-[12px] text-ink-secondary">
@@ -546,21 +562,17 @@ export function McpServersPanel({ embedded = false, whopCard = false, hideWhop =
             {t("mcp.auth.openAgain")}
           </button>
         )}
-        {signInFlow?.flowId && (
-          <details>
-            <summary className="cursor-pointer font-medium text-ink">{t("mcp.auth.otherComputer")}</summary>
-            <p className="mt-2 leading-relaxed">{t("mcp.auth.otherComputerHint")}</p>
-            <label className="mt-3 block" htmlFor={`mcp-callback-${server.name}`}>{t("mcp.auth.callbackUrl")}</label>
-            <input id={`mcp-callback-${server.name}`} type="text" value={callbackUrl} disabled={completingSignIn} onChange={(event) => setCallbackUrl(event.target.value)}
-              autoComplete="off" spellCheck={false} placeholder="http://127.0.0.1:…/mcp-oauth/callback?…"
-              className="mt-1 w-full rounded-lg border border-hairline bg-inset px-3 py-2 text-ink outline-none focus:border-accent" />
-            <button type="button" disabled={!callbackUrl.trim() || completingSignIn} aria-busy={completingSignIn} onClick={() => void completeSignIn()}
-              className="mt-2 inline-flex items-center gap-2 rounded-lg bg-accent px-3 py-2 font-medium text-white disabled:opacity-40">
-              {completingSignIn && <Loader2 size={14} className="animate-spin" aria-hidden="true" />}
-              {t(completingSignIn ? "mcp.auth.completing" : "mcp.auth.complete")}
-            </button>
-          </details>
-        )}
+        {signInFlow?.flowId && (signInFlow.pasteBack
+          // The browser ends on a page on the server's machine: say so up front.
+          ? <div>
+              <p className="leading-relaxed text-ink">{t("mcp.auth.pasteBackHint")}</p>
+              {renderPasteBack(server)}
+            </div>
+          : <details>
+              <summary className="cursor-pointer font-medium text-ink">{t("mcp.auth.otherComputer")}</summary>
+              <p className="mt-2 leading-relaxed">{t("mcp.auth.otherComputerHint")}</p>
+              {renderPasteBack(server)}
+            </details>)}
         {callbackError && <p role="alert" className="text-danger">{callbackError}</p>}
       </div>
     );

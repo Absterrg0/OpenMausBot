@@ -44,7 +44,7 @@ Some URL servers take no token; they want you to sign in with your browser
 details (RFC 9728 protected-resource metadata, then the authorization
 server's own metadata), the server shows **Needs sign-in** and a **Sign in**
 button. Sign in opens the provider's page in your browser, which returns to
-OpenMausBot on `127.0.0.1`. The server then shows **Signed in**, and Test
+OpenMausBot when you approve. The server then shows **Signed in**, and Test
 lists its tools.
 
 - **Which servers work.** The authorization server must support PKCE with
@@ -52,8 +52,9 @@ lists its tools.
   OpenMausBot registers a fresh app for each sign-in. If it only accepts an
   app registered in advance, add that app as described below. A 401 without
   sign-in details keeps the old message: check the address and headers.
-- **Where you can sign in.** On the workspace computer or from another
-  device using the redirect URL paste-back flow described below.
+- **Where you can sign in.** Anywhere you use OpenMausBot: on the computer
+  it runs on, or in a browser on another computer (My Cloud, a hosted
+  workspace, a server of your own). See below.
 - **Bots never sign in.** A server that needs sign-in is left out of every
   turn until someone signs in from this page. A signed-in server gets
   `Authorization: Bearer …` in place of any `Authorization` header you set,
@@ -66,20 +67,39 @@ lists its tools.
 - **Refresh.** A token is refreshed shortly before it expires. If the server
   refuses the refresh, the server goes back to **Needs sign-in**.
 
-For a headless or remote workspace (including an SSH tunnel), open **Signing
-in from another computer?** while sign-in is waiting. Finish approval in your
-browser. If it redirects to a localhost page that cannot connect, copy the
-**entire URL from the address bar**, paste it into **Redirect URL**, and choose
-**Complete sign-in**. The connection error is expected: that address refers to
-your computer, while OpenMausBot is on the server. No extra port forwarding or
-public callback address is needed. **Open sign-in page** reopens the approval
-page if your browser blocked the first attempt.
+#### Signing in from another computer
+
+On the computer OpenMausBot runs on, your browser returns to it at
+`127.0.0.1`. In a browser on another computer that address is your own
+computer, where OpenMausBot is not, so sign-in comes back another way:
+
+- **Over https (My Cloud, a hosted workspace, a server behind https).** When
+  the server lets apps register themselves, your browser returns to the
+  address you are using OpenMausBot at, at `/mcp-oauth/callback`, and the tab
+  says **Signed in. You can close this tab and return to OpenMausBot.** Nothing
+  to copy. Whop works this way. The address is the server's public address
+  (a Cloud or hosted workspace's own, a connected domain, or `OMB_PUBLIC_URL`)
+  when you are on it, or the https address your browser is on when none is
+  set; a server that has one never sends you to another name.
+- **Otherwise, paste one address.** For an app registered in advance (it
+  always returns to its registered `127.0.0.1` address), a server that will
+  not register OpenMausBot for your https address, or a server reached over
+  plain http, the sign-in panel says: *After you approve, your browser shows a
+  page that can't load. Copy that page's full address and paste it here.* Copy
+  the **entire URL from the address bar**, paste it into **Redirect URL**, and
+  choose **Complete sign-in**. The page that can't load is expected: it
+  refers to your computer, while OpenMausBot is on the server. No port
+  forwarding is needed.
+
+On the computer OpenMausBot runs on, the same paste step is under **Signing
+in from another computer?** for an SSH tunnel or a browser elsewhere. **Open
+sign-in page** reopens the approval page if your browser blocked the first
+attempt.
 
 Keep the redirect URL private. Complete the flow in the same OMB browser/session
 that started it, within five minutes. Cancellation or logging out ends the
-pending flow; a URL cannot be reused. Existing same-machine sign-in still
-finishes automatically. This works with dynamically registered and
-pre-registered sign-in apps.
+pending flow; a URL cannot be reused, and a return to the https address works
+once, for that sign-in only.
 
 #### Servers that need an app registered in advance
 
