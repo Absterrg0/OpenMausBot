@@ -18,6 +18,9 @@ export interface FakeHttpMcpOptions {
   wwwAuthenticate?: string;
   /** never answer tools/list (initialize still works) */
   silentTools?: boolean;
+  /** answer tools/list only after this many milliseconds, like a server
+   * listing tools for every business an account manages */
+  toolsDelayMs?: number;
   description?: string;
   tools?: Array<{ name: string; inputSchema: Record<string, unknown> }>;
 }
@@ -26,6 +29,8 @@ export interface FakeHttpMcp {
   url: string;
   seenHeaders: IncomingMessage["headers"][];
   calls: unknown[];
+  /** tools/list requests now waiting out `toolsDelayMs` */
+  readonly delayedToolsLists: number;
   close(): Promise<void>;
 }
 
@@ -43,6 +48,7 @@ export async function startFakeHttpMcp(options: FakeHttpMcpOptions = {}): Promis
   const seenHeaders: FakeHttpMcp["seenHeaders"] = [];
   const streams = new Set<ServerResponse>();
   const calls: unknown[] = [];
+  let delayedToolsLists = 0;
   const answerFor = (frame: { id?: unknown; method?: unknown; params?: unknown }) => {
     if (frame.method === "initialize") {
       return {
@@ -89,6 +95,11 @@ export async function startFakeHttpMcp(options: FakeHttpMcpOptions = {}): Promis
       const frame = JSON.parse((await readBody(req)) || "{}") as { id?: unknown; method?: unknown; params?: unknown };
       // hold the request open: the client's own timeout has to end it
       if (frame.method === "tools/list" && options.silentTools) return;
+      if (frame.method === "tools/list" && options.toolsDelayMs) {
+        const delayed = new Promise((resolve) => setTimeout(resolve, options.toolsDelayMs));
+        delayedToolsLists += 1;
+        await delayed;
+      }
       const answer = answerFor(frame);
       if (!answer) {
         res.writeHead(202).end();
@@ -114,6 +125,7 @@ export async function startFakeHttpMcp(options: FakeHttpMcpOptions = {}): Promis
     url: `http://127.0.0.1:${port}/${transport === "sse" ? "sse" : "mcp"}`,
     seenHeaders,
     calls,
+    get delayedToolsLists() { return delayedToolsLists; },
     close: () => new Promise<void>((resolve) => {
       server.closeAllConnections();
       server.close(() => resolve());

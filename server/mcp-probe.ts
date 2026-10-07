@@ -22,7 +22,13 @@ export const SIGN_IN_REQUIRED = "This server needs you to sign in.";
 
 const MAX_STDOUT_BYTES = 1_048_576;
 const MAX_TOOLS = 100;
-const DEFAULT_TIMEOUT_MS = 8_000;
+/** A command starts on this computer and answers fast. */
+export const STDIO_PROBE_TIMEOUT_MS = 8_000;
+/** A URL server answers over the internet, and initialize + tools/list for
+ * an account with many businesses (Whop, admin scope) can take well over
+ * 8 seconds. The probe only runs when the person asks for it, never on a
+ * bot's turn. */
+export const REMOTE_PROBE_TIMEOUT_MS = 30_000;
 
 function probeEnvironment(server: StoredStdioMcpServer): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...process.env, PATH: augmentedPath() };
@@ -71,25 +77,26 @@ function publicTools(raw: unknown[], secrets: Record<string, string>): McpProbeT
  * must not see: child stderr, environment values, header values. */
 export function probeMcpServer(
   server: StoredMcpServer,
-  timeoutMs = DEFAULT_TIMEOUT_MS,
+  timeoutMs?: number,
   signal?: AbortSignal,
 ): Promise<McpProbeResult> {
   return isRemoteMcpServer(server)
-    ? probeRemoteMcpServer(server, timeoutMs, signal)
-    : probeStdioMcpServer(server, timeoutMs, signal);
+    ? probeRemoteMcpServer(server, timeoutMs ?? REMOTE_PROBE_TIMEOUT_MS, signal)
+    : probeStdioMcpServer(server, timeoutMs ?? STDIO_PROBE_TIMEOUT_MS, signal);
 }
 
-/** Connect to a remote server over its transport, bounded by the same
- * timeout as a command. HTTP status codes are safe to show and are the one
- * detail that tells a wrong token from a wrong address. */
+/** Connect to a remote server over its transport, bounded by one timeout
+ * for initialize + tools/list together. HTTP status codes are safe to show
+ * and are the one detail that tells a wrong token from a wrong address. */
 async function probeRemoteMcpServer(
   server: StoredRemoteMcpServer,
   timeoutMs: number,
   signal?: AbortSignal,
 ): Promise<McpProbeResult> {
   if (signal?.aborted) return { ok: false, error: publicProbeError("cancelled") };
-  const timeout = AbortSignal.timeout(timeoutMs);
-  const combined = signal ? AbortSignal.any([signal, timeout]) : timeout;
+  const timeout = new AbortController();
+  const timer = setTimeout(() => timeout.abort(), timeoutMs);
+  const combined = signal ? AbortSignal.any([signal, timeout.signal]) : timeout.signal;
   const client = new RemoteMcpClient(server);
   try {
     await client.initialize("OpenMausBot", combined);
@@ -100,7 +107,7 @@ async function probeRemoteMcpServer(
     return { ok: true, tools: publicTools(tools, secrets) };
   } catch (error) {
     if (signal?.aborted) return { ok: false, error: publicProbeError("cancelled") };
-    if (timeout.aborted) return { ok: false, error: publicProbeError("timeout") };
+    if (timeout.signal.aborted) return { ok: false, error: publicProbeError("timeout") };
     // A 401 that names an OAuth sign-in is not a wrong address or header:
     // the person has to sign in. Anything else keeps the plain status.
     if (error instanceof McpHttpError && error.status === 401) {
@@ -118,6 +125,7 @@ async function probeRemoteMcpServer(
     }
     return { ok: false, error: "Could not reach this address. Check the URL and your network." };
   } finally {
+    clearTimeout(timer);
     await client.close().catch(() => {});
   }
 }

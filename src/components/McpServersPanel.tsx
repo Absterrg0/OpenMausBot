@@ -79,12 +79,34 @@ interface McpDraft {
   oauthForgetSecret: boolean;
 }
 
-interface ProbeResult {
+export interface ProbeResult {
   ok: boolean;
   tools?: Array<{ name: string; description?: string }>;
   error?: string;
   /** the server answered 401 and offers an OAuth sign-in */
   auth?: "required";
+}
+
+/** After a sign-in, list the server's tools once. A failure is one plain
+ * line that keeps the test's own reason (a timeout, an HTTP status), which is
+ * already safe to show; the card's Connect button is the retry. */
+export async function signedInToolsCheck(
+  name: string,
+  request: (path: string, init?: RequestInit) => Promise<ProbeResult>,
+  signal: AbortSignal,
+): Promise<ProbeResult> {
+  let tested: ProbeResult;
+  try {
+    tested = await request(`/api/mcp/servers/${name}/test`, { method: "POST", signal });
+  } catch (cause) {
+    if (signal.aborted) throw cause;
+    tested = { ok: false, error: cause instanceof Error ? cause.message : String(cause) };
+  }
+  if (tested.ok) return tested;
+  // A proxy's "504 Gateway Timeout" or a browser's "Failed to fetch" has no
+  // closing period; add one so the reason does not run into the next sentence.
+  const reason = (tested.error ?? "").trim();
+  return { ...tested, error: t("whop.testFailed", { reason: reason && !/[.!?]$/.test(reason) ? `${reason}.` : reason }) };
 }
 
 interface McpMessage {
@@ -414,10 +436,12 @@ export function McpServersPanel({ embedded = false, whopCard = false, hideWhop =
       if (result.phase === "succeeded") {
         if (isRemoteMcpListing(server) && isWhopServer(server)) {
           // Connecting explicitly enables Whop only after OAuth and discovery succeed.
-          const tested: ProbeResult = await api(`/api/mcp/servers/${server.name}/test`, { method: "POST" });
-          if (controller.signal.aborted) return;
+          // The flow is done: the card now says it is loading tools, not waiting for the browser.
+          setSignInFlow({ ...result, flowId: null, authorizationUrl: null });
+          const tested = await signedInToolsCheck(server.name, api, controller.signal);
+          if (controller.signal.aborted || !mounted.current) return;
           setProbe((current) => ({ ...current, [server.name]: tested }));
-          if (!tested.ok) throw new Error(t("whop.testFailed"));
+          if (!tested.ok) return;
           const enabled = await api(`/api/mcp/servers/${server.name}`, { method: "PATCH", body: JSON.stringify({ enabled: true }) });
           if (!mounted.current) return;
           setServers(enabled.servers ?? []);
@@ -555,7 +579,7 @@ export function McpServersPanel({ embedded = false, whopCard = false, hideWhop =
     return signingIn === server.name && (
       <div className="mt-3 space-y-3 rounded-lg bg-raised px-3 py-3 text-[12px] text-ink-secondary">
         <div role="status" className="flex items-center gap-2">
-          <Loader2 size={13} className="animate-spin" /> {t("mcp.auth.waiting")}
+          <Loader2 size={13} className="animate-spin" /> {t(signInFlow?.phase === "succeeded" ? "whop.loadingTools" : "mcp.auth.waiting")}
         </div>
         {signInFlow?.authorizationUrl && mcpSignInLink(signInFlow.authorizationUrl) && (
           <button type="button" onClick={() => void openExternalLink(signInFlow.authorizationUrl!).catch(() => setCallbackError(t("mcp.auth.openFailed")))} className="text-accent hover:underline">
