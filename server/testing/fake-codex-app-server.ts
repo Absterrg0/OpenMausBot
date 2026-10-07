@@ -8,7 +8,9 @@
 //                     mcp-elicitation | mcp-app-approval | mcp-form | permissions-approval | question |
 //                     multi-question | mixed-question | empty-question | malformed-question | config-profile |
 //                     config-profile-unsupported | config-read-error | image |
-//                     logged-in-stdout | logged-out | unauthorized | late-request
+//                     logged-in-stdout | logged-out | unauthorized | late-request |
+//                     retry-then-complete | signin-refused | auth-recovery | mcp-401 | legacy-error |
+//                     key-401 | recovered-403 | recovered-401 | recovering-403
 //   FAKE_CODEX_LAUNCH_CRASHES  die at turn/start (before ack) with transient stderr,
 //                               exit 1, for the first N launches (launch count kept in
 //                               FAKE_CODEX_STATE)
@@ -509,6 +511,60 @@ process.stdin.on("data", (chunk) => {
         }
         if (msg.params?.permissions && (!experimentalApi || mode === "config-profile-unsupported")) {
           out({ jsonrpc: "2.0", id: msg.id, error: { code: -32602, message: "experimental API required for permissions" } });
+          break;
+        }
+        // Codex 0.160's ErrorNotification: {error: TurnError, willRetry}.
+        // Its own reconnects come first with willRetry: true; signin-refused
+        // replays an expired ChatGPT login (the 2026-10-07 report),
+        // auth-recovery a provider 401 after Codex tried to recover the
+        // sign-in, mcp-401 a tool's 401 inside an otherwise good turn, and
+        // legacy-error the bare {message} of Codex 0.144. key-401 replays a
+        // refused API key (a custom provider's, or an API-key login), and
+        // recovered-40x a recovery that succeeded before that failure,
+        // recovering-403 a 403 while the recovery is still unfinished.
+        if (mode === "retry-then-complete" || mode === "signin-refused") {
+          out({ jsonrpc: "2.0", id: msg.id, result: { turn: { id: nativeTurnId } } });
+          for (let attempt = 1; attempt <= 5; attempt++) {
+            notify("error", { willRetry: true, error: { message: `Reconnecting... ${attempt}/5`, codexErrorInfo: null, additionalDetails: "workspace routing discovery unauthorized (401)" } });
+          }
+          if (mode === "retry-then-complete") { finishTurn(); break; }
+          const error = { message: "workspace routing discovery unauthorized (401)", codexErrorInfo: "unauthorized", additionalDetails: null };
+          notify("error", { willRetry: false, error });
+          notify("turn/completed", { turn: { status: "failed", error } });
+          break;
+        }
+        if (mode === "auth-recovery") {
+          out({ jsonrpc: "2.0", id: msg.id, result: { turn: { id: nativeTurnId } } });
+          notify("modelProvider/authRecoveryStarted", { provider: "openai", message: "Refreshing sign-in" });
+          notify("turn/completed", { turn: { status: "failed", error: { message: "unexpected status 401 Unauthorized", codexErrorInfo: null } } });
+          break;
+        }
+        if (mode === "key-401") {
+          out({ jsonrpc: "2.0", id: msg.id, result: { turn: { id: nativeTurnId } } });
+          const error = { message: "unexpected status 401 Unauthorized: Incorrect API key provided", codexErrorInfo: { httpConnectionFailed: { httpStatusCode: 401 } }, additionalDetails: null };
+          notify("error", { willRetry: false, error });
+          notify("turn/completed", { turn: { status: "failed", error } });
+          break;
+        }
+        const recovery = /^(recovered|recovering)-(401|403)$/.exec(mode);
+        if (recovery) {
+          out({ jsonrpc: "2.0", id: msg.id, result: { turn: { id: nativeTurnId } } });
+          notify("modelProvider/authRecoveryStarted", { provider: "openai", message: "Refreshing sign-in" });
+          if (recovery[1] === "recovered") notify("modelProvider/authRecoveryCompleted", { provider: "openai", message: "Signed in" });
+          const message = recovery[2] === "403" ? "unexpected status 403 Forbidden: Just a moment..." : "unexpected status 401 Unauthorized";
+          notify("turn/completed", { turn: { status: "failed", error: { message, codexErrorInfo: recovery[2] === "403" ? { responseStreamConnectionFailed: { httpStatusCode: 403 } } : null } } });
+          break;
+        }
+        if (mode === "mcp-401") {
+          out({ jsonrpc: "2.0", id: msg.id, result: { turn: { id: nativeTurnId } } });
+          notify("item/completed", { item: { id: "t1", type: "mcpToolCall", tool: "fetch", status: "failed", error: { message: "HTTP 401 Unauthorized: Please sign in again" } } });
+          finishTurn();
+          break;
+        }
+        if (mode === "legacy-error") {
+          out({ jsonrpc: "2.0", id: msg.id, result: { turn: { id: nativeTurnId } } });
+          notify("error", { message: "stream disconnected before completion" });
+          notify("turn/completed", { turn: { status: "failed", error: { message: "stream disconnected before completion" } } });
           break;
         }
         if (mode === "unauthorized") {

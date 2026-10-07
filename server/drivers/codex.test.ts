@@ -19,8 +19,10 @@ import { DATA_DIR, NATIVE_DIR } from "../config.ts";
 import { ChatGptPlanAuthController } from "./chatgpt-plan-auth.ts";
 import { recordEvents, type EventRecorder } from "../testing/events.ts";
 import {
+  CODEX_SIGN_IN_EXPIRED,
   CodexDriver,
   codexNativeIncomingLogMessage,
+  codexSignInRefused,
   codexUpdateCommand,
   codexUserError,
 } from "./codex.ts";
@@ -2425,6 +2427,124 @@ process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:m.id,result})+'\\n');});`)
     expect(errors[0]).toMatchObject({ message: expect.stringContaining("blocked by our safety systems") });
     expect(errors[0]).not.toHaveProperty("setup");
     expect(recorder.events.some((e) => e.type === "turn.retrying")).toBe(false);
+  });
+
+  describe("Codex's own retries and a refused ChatGPT sign-in", () => {
+    const signedIn = () => {
+      const codexHome = join(scratch, ".codex");
+      mkdirSync(codexHome, { recursive: true });
+      writeFileSync(join(codexHome, "auth.json"), JSON.stringify({ tokens: { refresh_token: "expired-fixture" } }));
+      return { HOME: scratch, USERPROFILE: scratch, CODEX_HOME: codexHome };
+    };
+    const runTurn = async (threadId: string, model?: string) => {
+      const { turnId } = await instance.adapter.sendTurn({ threadId, text: "hi", ...(model ? { model } : {}) });
+      const done = await recorder.until((e) => e.type === "turn.completed" && e.turnId === turnId);
+      return { done, errors: recorder.events.filter((e) => e.type === "runtime.error" && e.turnId === turnId) };
+    };
+
+    it("keeps reconnects Codex will retry out of the transcript, and a turn that then succeeds leaves no error", async () => {
+      await create({ mode: "retry-then-complete", environment: signedIn() });
+      const { done, errors } = await runTurn("t-reconnect");
+      expect(done).toMatchObject({ ok: true });
+      expect(errors).toEqual([]);
+    });
+
+    it("says an expired sign-in once, in plain words with sign-in, and Settings asks for it until a turn succeeds", async () => {
+      await create({ mode: "signin-refused", environment: signedIn() });
+      const { done, errors } = await runTurn("t-refused");
+      expect(errors).toHaveLength(1);
+      expect(errors[0]).toMatchObject({ setup: true });
+      const message = (errors[0] as { message: string }).message;
+      expect(message.startsWith(CODEX_SIGN_IN_EXPIRED)).toBe(true);
+      expect(message).toContain("workspace routing discovery unauthorized (401)");
+      expect(message).not.toContain("Reconnecting");
+      // what a peer bot asking this one is told
+      expect(done).toMatchObject({ ok: false, stopReason: message });
+      const refused = await instance.snapshot();
+      expect(refused).toMatchObject({ state: "available", authenticated: false, reason: CODEX_SIGN_IN_EXPIRED });
+      expect(refused).not.toHaveProperty("account");
+
+      process.env.FAKE_CODEX_MODE = "happy";
+      expect((await runTurn("t-after")).done).toMatchObject({ ok: true });
+      await expect(instance.snapshot()).resolves.toMatchObject({ authenticated: true });
+    });
+
+    it("clears the mark when Codex stores a new sign-in", async () => {
+      const environment = signedIn();
+      await create({ mode: "signin-refused", environment });
+      await runTurn("t-refused-again");
+      await expect(instance.snapshot()).resolves.toMatchObject({ authenticated: false });
+      writeFileSync(join(environment.CODEX_HOME, "auth.json"), JSON.stringify({ tokens: { refresh_token: "new-fixture" } }));
+      await expect(instance.snapshot()).resolves.toMatchObject({ authenticated: true });
+    });
+
+    it("counts a 401 after Codex tried to recover its sign-in as a refused sign-in", async () => {
+      await create({ mode: "auth-recovery", environment: signedIn() });
+      const { errors } = await runTurn("t-recovery");
+      expect(errors).toHaveLength(1);
+      expect(errors[0]).toMatchObject({ setup: true, message: expect.stringContaining(CODEX_SIGN_IN_EXPIRED) });
+      await expect(instance.snapshot()).resolves.toMatchObject({ authenticated: false });
+    });
+
+    it("leaves the ChatGPT sign-in alone for a custom provider's 401, and its success clears no refusal", async () => {
+      await create({ mode: "key-401", environment: signedIn() });
+      const { errors } = await runTurn("t-provider-401", "badprov::badmodel");
+      expect(errors).toHaveLength(1);
+      expect((errors[0] as { message: string }).message).not.toMatch(/ChatGPT/);
+      await expect(instance.snapshot()).resolves.toMatchObject({ authenticated: true });
+
+      process.env.FAKE_CODEX_MODE = "signin-refused";
+      await runTurn("t-official-refused");
+      process.env.FAKE_CODEX_MODE = "happy";
+      expect((await runTurn("t-provider-ok", "badprov::badmodel")).done).toMatchObject({ ok: true });
+      await expect(instance.snapshot()).resolves.toMatchObject({ authenticated: false, reason: CODEX_SIGN_IN_EXPIRED });
+    });
+
+    it("does not call a refused API-key login an expired ChatGPT sign-in", async () => {
+      const environment = signedIn();
+      writeFileSync(join(environment.CODEX_HOME, "auth.json"), JSON.stringify({ auth_mode: "apikey", OPENAI_API_KEY: "sk-fixture", tokens: null }));
+      await create({ mode: "key-401", environment });
+      const { errors } = await runTurn("t-api-key-401");
+      expect(errors).toHaveLength(1);
+      expect((errors[0] as { message: string }).message).not.toMatch(/ChatGPT/);
+      await expect(instance.snapshot()).resolves.toMatchObject({ authenticated: true });
+    });
+
+    it.each(["recovered-403", "recovered-401", "recovering-403"])(
+      "does not count %s (a recovered sign-in, or a 403) as a refused sign-in", async (mode) => {
+        await create({ mode, environment: signedIn() });
+        const { errors } = await runTurn(`t-${mode}`);
+        expect(errors).toHaveLength(1);
+        expect((errors[0] as { message: string }).message).not.toMatch(/ChatGPT/);
+        await expect(instance.snapshot()).resolves.toMatchObject({ authenticated: true });
+      });
+
+    it("leaves the sign-in alone for a tool's 401", async () => {
+      await create({ mode: "mcp-401", environment: signedIn() });
+      const { done, errors } = await runTurn("t-mcp-401");
+      expect(done).toMatchObject({ ok: true });
+      expect(errors).toEqual([]);
+      await expect(instance.snapshot()).resolves.toMatchObject({ authenticated: true });
+    });
+
+    it("reports an older Codex's error, which carries no willRetry, once and as before", async () => {
+      await create({ mode: "legacy-error", environment: signedIn() });
+      const { done, errors } = await runTurn("t-legacy");
+      expect(errors).toHaveLength(1);
+      expect(errors[0]).toMatchObject({ message: "stream disconnected before completion" });
+      expect(errors[0]).not.toHaveProperty("setup");
+      expect(done).toMatchObject({ ok: false, stopReason: "stream disconnected before completion" });
+      await expect(instance.snapshot()).resolves.toMatchObject({ authenticated: true });
+    });
+
+    it("reads only Codex's own sign-in failures as refused", () => {
+      expect(codexSignInRefused({ message: "anything", codexErrorInfo: "unauthorized" })).toBe(true);
+      expect(codexSignInRefused({ message: "x", codexErrorInfo: { responseStreamConnectionFailed: { httpStatusCode: 401 } } })).toBe(true);
+      expect(codexSignInRefused({ message: "Your access token could not be refreshed. Please log out and sign in again." })).toBe(true);
+      expect(codexSignInRefused({ message: "x", codexErrorInfo: { responseStreamConnectionFailed: { httpStatusCode: 503 } } })).toBe(false);
+      expect(codexSignInRefused({ message: "unexpected status 401 Unauthorized", codexErrorInfo: null })).toBe(false);
+      expect(codexSignInRefused({ message: "Reconnecting... 1/5", codexErrorInfo: "serverOverloaded" })).toBe(false);
+    });
   });
 
   it("auto-retries a transient turn/start failure, then completes with one final message", async () => {

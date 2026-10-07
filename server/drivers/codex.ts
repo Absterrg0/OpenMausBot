@@ -10,7 +10,7 @@ import { codexToolSurfaceArgs } from "./codex-tool-surface.ts";
 //
 // resumeCursor is the codex thread id; a later turn tries thread/resume
 // and preserves that history or reports a failed resume.
-import { existsSync, mkdirSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { homedir } from "node:os";
@@ -36,7 +36,7 @@ import type {
   SteerOutcome,
 } from "../contracts.ts";
 import { newEventId, newId } from "../contracts.ts";
-import { decodeCodexSelection, readCodexModelCatalog, STATIC_CODEX_MODELS } from "./codex-catalog.ts";
+import { decodeCodexSelection, OFFICIAL_CODEX_PROVIDER, readCodexModelCatalog, STATIC_CODEX_MODELS } from "./codex-catalog.ts";
 import { codexLocalProviderArgs } from "./local-inject.ts";
 import { augmentedPath, splitCliString } from "../env-path.ts";
 import { classifyError, computeBackoff, interruptibleDelay, RETRY_MAX_ATTEMPTS } from "./retry.ts";
@@ -47,7 +47,8 @@ import { codexDeveloperInstructions, syncCodexInstructions } from "./codex-instr
 import { volatileContextNote, withContextNote } from "./prompt-split.ts";
 import type { ApprovalMode } from "../../shared/approval-mode.ts";
 import { CodexDeviceAuthController } from "./codex-device-auth.ts";
-import { codexAccountEmail } from "./codex-identity.ts";
+import { codexAccountEmail, codexHome } from "./codex-identity.ts";
+import { keyRejected, noteKeyAccepted, noteKeyRejected } from "../key-rejections.ts";
 import { classifyResumeFailure, mayReplay, recoveryPromptFor } from "../resume-recovery.ts";
 import { extractMcpImages } from "../mcp-tool-images.ts";
 import { parseProtocolAskQuestions, questionAnswersById, questionChoices } from "../../shared/ask-question.ts";
@@ -70,6 +71,31 @@ export function codexUserError(value: string, chatgptPlan: boolean): string {
       : "provider_not_configured: This Codex account cannot use the selected route. For the new ChatGPT plan models, choose ChatGPT plan in Settings → Engines and Continue with ChatGPT, then select a model from that account.";
   }
   return value.slice(0, 400);
+}
+
+// Codex's own words when OpenAI refuses its stored ChatGPT login (codex-cli
+// 0.160 login/src/auth: workspace routing, token refresh, auth storage).
+const CODEX_SIGN_IN_REFUSED = /workspace routing discovery unauthorized|access token could not be refreshed|authentication session could not be refreshed|ChatGPT login is required|auth data is not available|please (?:log out and )?sign in again/i;
+
+/** A turn error (TurnError: message, codexErrorInfo) that says Codex's own
+ * sign-in was refused: `unauthorized`, a 401 from the model backend, or one
+ * of Codex's sign-in messages. A 401 from an MCP server or a tool reaches the
+ * model as a tool result, never as a turn error, so it cannot land here. */
+export function codexSignInRefused(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
+  const { message, codexErrorInfo: info } = error as { message?: unknown; codexErrorInfo?: unknown };
+  if (info === "unauthorized") return true;
+  if (info && typeof info === "object" &&
+    Object.values(info).some((variant) => (variant as { httpStatusCode?: unknown } | null)?.httpStatusCode === 401)) return true;
+  return typeof message === "string" && CODEX_SIGN_IN_REFUSED.test(message);
+}
+
+export const CODEX_SIGN_IN_EXPIRED = "Codex's ChatGPT sign-in has expired. Sign in again in Settings → Model providers → Codex.";
+
+/** The plain sentence first, so a peer bot's one-line report keeps it;
+ * Codex's own words follow as the detail. */
+export function codexSignInExpired(raw: string): string {
+  return `${CODEX_SIGN_IN_EXPIRED} Codex said: ${raw.slice(0, 300)}`;
 }
 
 class CodexRpcError extends Error {
@@ -663,10 +689,35 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
     // reachable in Settings for reconnect; it must not become a shadow.
     if (planAuth) { try { await refreshModels(); } catch { /* Explicit refresh reports the error. */ } }
     else await refreshModels();
+    // Codex's own ChatGPT login (not ChatGPT plan, whose tokens OpenMausBot
+    // holds, nor Company routing) can be refused by OpenAI while `codex login
+    // status` still reports it. A refusal marks it the way a rejected API key
+    // is marked (key-rejections.ts): its credential home, plus the stored
+    // auth file, so a sign-in made anywhere else starts over. A later turn
+    // that succeeds, a new sign-in and sign-out clear it. Only a stored
+    // ChatGPT login is marked: an API-key login (`codex login --with-api-key`)
+    // cannot be fixed by the ChatGPT sign-in Settings offers.
+    const ownLogin = !plan && !config.managed;
+    const loginMark = (): [string, string] | null => {
+      const home = ownLogin ? codexHome(childEnv()) : null;
+      if (!home) return null;
+      let stored = "";
+      try { stored = readFileSync(join(home, "auth.json"), "utf8"); } catch { return null; /* keyring, or none */ }
+      try {
+        const auth = JSON.parse(stored) as { auth_mode?: unknown; tokens?: unknown };
+        const chatgpt = typeof auth.auth_mode === "string" ? /chatgpt/i.test(auth.auth_mode) : Boolean(auth.tokens);
+        if (!chatgpt) return null;
+      } catch { return null; }
+      return [`codex-login:${home}`, stored];
+    };
+    const loginRefused = () => { const mark = loginMark(); if (mark) noteKeyRejected(...mark); };
+    const loginAccepted = (mark = loginMark()) => { if (mark) noteKeyAccepted(...mark); };
+    const loginRejected = () => { const mark = loginMark(); return mark !== null && keyRejected(...mark); };
     const authentication = new CodexDeviceAuthController({
       cli: config.cli,
       environment: childEnv,
-      onAuthenticated: refreshModels,
+      signInRejected: loginRejected,
+      onAuthenticated: async () => { loginAccepted(); await refreshModels(); },
     });
     const listeners = new Set<RuntimeEventListener>();
     interface Turn {
@@ -754,6 +805,12 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
       // tests so a fake's transient failures don't stall real seconds
       const retryScale = Number(process.env.FAKE_CODEX_RETRY_SCALE ?? "1");
 
+      // Only a turn on the official provider says anything about Codex's
+      // ChatGPT login: a custom provider's 401 is its own key's, and its
+      // success proves nothing about ChatGPT. No model means the catalog's
+      // default, which is provider-qualified when config.toml picks another.
+      const chatgptTurn = ownLogin &&
+        decodeCodexSelection(turn.model || models.default).modelProvider === OFFICIAL_CODEX_PROVIDER;
       const launchAttempt = async (attempt: number): Promise<void> => {
         const env = childEnv();
         if (planToken) env.OPENMAUSBOT_CHATGPT_TOKEN = planToken;
@@ -852,6 +909,13 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
       const state = {
         settled: false,
         lastError: "",
+        // whether lastError went out marked setup (a sign-in to fix)
+        lastErrorSetup: false,
+        // an error Codex said it would retry itself (willRetry), kept only
+        // to explain a turn that then fails without words of its own
+        retryError: "",
+        // Codex started recovering its model provider's sign-in this turn
+        authRecovery: false,
         lastText: "",
         sawStreamDelta: false,
         // codex reports token usage as a running total for this app-server
@@ -1190,6 +1254,23 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
           message: `Codex automatic review ${outcome}${target}. Action did not run. Retry stays ${retryMode}. Select Ask for human approval in approval settings.`,
         });
       };
+      // The turn's failure, said once. An error notification and the
+      // turn/completed after it usually carry the same words; the second
+      // only speaks again to deliver a sign-in flag the first lacked.
+      // Codex's own refused sign-in reads as one plain sentence and marks
+      // the login, so Settings asks for a new sign-in too.
+      const turnError = (error: { message?: unknown; codexErrorInfo?: unknown }) => {
+        const raw = String(error.message);
+        const refused = chatgptTurn && loginMark() !== null && (codexSignInRefused(error) ||
+          (state.authRecovery && /\b401\b|unauthorized/i.test(raw)));
+        if (refused) loginRefused();
+        const message = refused ? codexSignInExpired(raw) : codexUserError(raw, plan);
+        const setup = refused || classifyError({ text: message }).reason === "auth";
+        if (message === state.lastError && (state.lastErrorSetup || !setup)) return;
+        state.lastError = message;
+        state.lastErrorSetup ||= setup;
+        emit({ ...base(threadId, turnId), type: "runtime.error", message, ...(setup ? { setup: true } : {}) });
+      };
       const handleNotification = (msg: any) => {
         const p = msg.params ?? {};
         // An app-server also emits notifications for native helper threads.
@@ -1378,27 +1459,39 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
           case "turn/completed": {
             if (reviewWarning && !timedOutReview) reviewNotice("warning");
             const t = p.turn ?? {};
-            const message = typeof t.error?.message === "string" ? codexUserError(t.error.message, plan) : "";
-            if (t.status !== "completed" && message && message !== state.lastError) {
-              state.lastError = message;
-              emit({ ...base(threadId, turnId), type: "runtime.error", message,
-                ...(classifyError({ text: message }).reason === "auth" ? { setup: true } : {}),
-              });
+            if (t.status === "completed") {
+              if (chatgptTurn) loginAccepted();
+            } else if (typeof t.error?.message === "string") {
+              turnError(t.error);
+            } else if (t.status === "failed" && !state.lastError && state.retryError) {
+              // Codex gave up retrying without a final word: its last one
+              turnError({ message: state.retryError });
             }
             void settle(t.status === "completed", t.status === "completed" ? null :
-              (classifyError({ text: message || state.lastError }).reason === "provider_safety" ? "provider_safety" : (message || t.status || "failed")));
+              (classifyError({ text: state.lastError }).reason === "provider_safety" ? "provider_safety" : (state.lastError || t.status || "failed")));
             break;
           }
-          case "error":
-            // shape drift: 0.144 sends {message}, 0.139 nests it under
-            // {error:{message}} — surface either (agentcal armor)
-            {
-              const message = p.message ?? p.error?.message;
-              if (message) {
-                state.lastError = codexUserError(String(message), plan);
-                emit({ ...base(threadId, turnId), type: "runtime.error", message: state.lastError });
-              }
+          case "error": {
+            // shape drift: 0.144 sends {message}, 0.139 and 0.160 nest it
+            // under {error:{message, codexErrorInfo}} — surface either
+            // (agentcal armor)
+            const error = p.error && typeof p.error === "object" ? p.error : { message: p.message };
+            if (!error.message) break;
+            // 0.160 reports each of its own reconnects ("Reconnecting...
+            // 1/5") with willRetry: true. Those are not the turn's failure;
+            // the final error, or turn/completed, says how it ended.
+            if (p.willRetry === true) {
+              state.retryError = String(error.message);
+              break;
             }
+            turnError(error);
+            break;
+          }
+          case "modelProvider/authRecoveryStarted":
+            state.authRecovery = true;
+            break;
+          case "modelProvider/authRecoveryCompleted":
+            state.authRecovery = false;
             break;
         }
       };
@@ -1785,8 +1878,10 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
         if (commitVolatile) commitVolatile();
       } catch (e) {
         const failure = e instanceof Error ? e : { text: String(e) };
-        const message = codexUserError(e instanceof Error ? e.message : String(e), plan);
-        const needsAuth = /(?:\b401\b|unauthorized|missing bearer|authentication required)/i.test(message);
+        const raw = e instanceof Error ? e.message : String(e);
+        const refused = chatgptTurn && loginMark() !== null && codexSignInRefused({ message: raw });
+        const message = refused ? codexSignInExpired(raw) : codexUserError(raw, plan);
+        const needsAuth = refused || /(?:\b401\b|unauthorized|missing bearer|authentication required)/i.test(message);
         const verdict = classifyError(failure);
         // Three guards hold here: main's abandoned attempt never retries,
         // neither does a Company session already recovered once from canonical
@@ -1819,6 +1914,7 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
         // abandoned marks an attempt retired by a retry; its late rpc
         // timeouts must neither report a spurious error nor relaunch again
         if (!state.settled && !abandoned) {
+          if (refused) loginRefused();
           emit({
             ...base(threadId, turnId),
             type: "runtime.error",
@@ -1851,6 +1947,11 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
         resolve(!err && /^logged in\b/im.test(`${stdout}\n${stderr ?? ""}`)),
       );
     });
+    // Signed in as far as the CLI knows, but OpenAI refused it on a real turn.
+    if (authenticated && loginRejected()) {
+      return { state: "available", version, authenticated: false, reason: CODEX_SIGN_IN_EXPIRED,
+        update: await codexReleaseUpdate(version, config.cli), billing: "subscription" };
+    }
     // Display identity only, so Settings can say whose ChatGPT account the
     // bots run on; the status command above stays the authority on sign-in.
     const email = authenticated ? await codexAccountEmail(config.cli, env) : null;
@@ -1888,7 +1989,12 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
     },
     cancelAuthentication: () => (planAuth ?? authentication).cancel(),
     signOut: async () => {
-      if (!planAuth) return authentication.signOut();
+      if (!planAuth) {
+        const mark = loginMark();
+        await authentication.signOut();
+        loginAccepted(mark);
+        return;
+      }
       planSigningOut = true;
       planGeneration++;
       try {
