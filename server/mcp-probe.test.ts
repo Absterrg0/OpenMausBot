@@ -7,9 +7,12 @@ import { startFakeOAuth } from "./testing/fake-oauth-server.ts";
 
 const fakeServer = fileURLToPath(new URL("./testing/fake-mcp-server.ts", import.meta.url));
 
-/** Let real I/O (sockets, child pipes) run while timers are faked. */
-async function untilReal(condition: () => boolean): Promise<void> {
-  for (let turn = 0; turn < 10_000 && !condition(); turn += 1) {
+/** Let real I/O (sockets, child pipes) run while timers are faked. Bounded
+ * by real time, not a count of turns: a loaded CI runner can need far more
+ * turns for the same round trips (Date is not faked here). */
+async function untilReal(condition: () => boolean, limitMs = 15_000): Promise<void> {
+  const started = Date.now();
+  while (!condition() && Date.now() - started < limitMs) {
     await new Promise((resolve) => setImmediate(resolve));
   }
   expect(condition()).toBe(true);
