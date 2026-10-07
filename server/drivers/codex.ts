@@ -1262,7 +1262,7 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
       const turnError = (error: { message?: unknown; codexErrorInfo?: unknown }) => {
         const raw = String(error.message);
         const refused = chatgptTurn && loginMark() !== null && (codexSignInRefused(error) ||
-          (state.authRecovery && /\b401\b|unauthorized/i.test(raw)));
+          (state.authRecovery && !/\b403\b|forbidden/i.test(raw) && /\b401\b|unauthorized/i.test(raw)));
         if (refused) loginRefused();
         const message = refused ? codexSignInExpired(raw) : codexUserError(raw, plan);
         const setup = refused || classifyError({ text: message }).reason === "auth";

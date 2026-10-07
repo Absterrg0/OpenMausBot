@@ -80,7 +80,8 @@ computer, where OpenMausBot is not, so sign-in comes back another way:
   to copy. Whop works this way. The address is the server's public address
   (a Cloud or hosted workspace's own, a connected domain, or `OMB_PUBLIC_URL`)
   when you are on it, or the https address your browser is on when none is
-  set; a server that has one never sends you to another name.
+  set. If you reach the server at an https address it does not list, sign-in
+  returns to its listed public address instead.
 - **Otherwise, paste one address.** For an app registered in advance (it
   always returns to its registered `127.0.0.1` address), a server that will
   not register OpenMausBot for your https address, or a server reached over

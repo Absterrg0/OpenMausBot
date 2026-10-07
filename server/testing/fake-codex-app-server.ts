@@ -551,7 +551,7 @@ process.stdin.on("data", (chunk) => {
           out({ jsonrpc: "2.0", id: msg.id, result: { turn: { id: nativeTurnId } } });
           notify("modelProvider/authRecoveryStarted", { provider: "openai", message: "Refreshing sign-in" });
           if (recovery[1] === "recovered") notify("modelProvider/authRecoveryCompleted", { provider: "openai", message: "Signed in" });
-          const message = recovery[2] === "403" ? "unexpected status 403 Forbidden: Just a moment..." : "unexpected status 401 Unauthorized";
+          const message = recovery[2] === "403" ? "unexpected status 403 Forbidden: unauthorized client" : "unexpected status 401 Unauthorized";
           notify("turn/completed", { turn: { status: "failed", error: { message, codexErrorInfo: recovery[2] === "403" ? { responseStreamConnectionFailed: { httpStatusCode: 403 } } : null } } });
           break;
         }
