@@ -93,7 +93,10 @@ import {
   messageFileRoots,
   messageImageTargetAt,
   messageReferencesFile,
+  listMessageFolder,
+  messageFolderEntryName,
   openMessageFile,
+  openMessageFolderEntry,
 } from "./message-file.ts";
 import {
   avatarGenerationRequestSchema,
@@ -19681,7 +19684,25 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         roots = messageFileRootsForThread(senderId, threadId);
       }
 
-      const file = await openMessageFile(href, roots);
+      // A link to a folder answers with its files; each one is then fetched
+      // by plain name under the same message grant and file checks.
+      const folderEntry = method === "POST" && body.entry !== undefined
+        ? messageFolderEntryName(body.entry)
+        : undefined;
+      if (folderEntry === null) return json(res, 400, { error: "entry must be one file name" });
+      let file: Awaited<ReturnType<typeof openMessageFile>>;
+      try {
+        file = folderEntry
+          ? await openMessageFolderEntry(href, folderEntry, roots)
+          : await openMessageFile(href, roots);
+      } catch (error) {
+        // Only a client that asks for listings gets one; older clients keep the 400.
+        if (body?.listFolder !== true || folderEntry || (error as { code?: unknown } | null)?.code !== "directory") throw error;
+        const listing = await listMessageFolder(href, roots);
+        res.setHeader("x-openmausbot-folder", "1");
+        res.setHeader("cache-control", "private, no-store");
+        return json(res, 200, listing);
+      }
       if ((streamsMessageImage || botAttachment?.kind === "image") && !file.mime.startsWith("image/")) {
         await file.handle.close();
         return json(res, 415, { error: "only images can be previewed here" });

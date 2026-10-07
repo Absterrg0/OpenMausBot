@@ -620,6 +620,31 @@ describe("ChatMarkdown attachments", () => {
     expect(html).not.toContain("type=\"button\"");
   });
 
+  it("lists the files of a linked folder under the link", () => {
+    const save = vi.spyOn(AttachmentPreview, "useLocalFileSave").mockReturnValue({
+      state: "idle",
+      reason: "",
+      savedTo: "",
+      outsideWorkspace: false,
+      folder: {
+        name: "04_post",
+        entries: [{ name: "cover.png", bytes: 2048, mime: "image/png" }],
+        truncated: false,
+      },
+      save: vi.fn(async () => undefined),
+    });
+    try {
+      const html = renderToStaticMarkup(createElement(ChatMarkdown, {
+        text: "[post](Instagram/04_post/)", message: { threadId: "thread-1", messageId: "message-1" },
+      }));
+      expect(html).toContain("aria-label=\"Files in 04_post\"");
+      expect(html).toContain("cover.png");
+      expect(html).toContain("2 KB");
+    } finally {
+      save.mockRestore();
+    }
+  });
+
   describe("a file link outside the conversation's workspace", () => {
     const filePath = "C:\\Users\\Maus\\_draft\\ollama-gen.js";
     const render = (outsideWorkspace: boolean) => {
@@ -628,6 +653,7 @@ describe("ChatMarkdown attachments", () => {
         reason: "the linked file is outside this conversation's workspace",
         savedTo: "",
         outsideWorkspace,
+        folder: null,
         save: vi.fn(async () => undefined),
       });
       try {
