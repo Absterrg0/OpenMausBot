@@ -1210,6 +1210,8 @@
   "composer.mention.aria": "Tag a bot",
   "composer.mention.agent": "Agent",
   "composer.mention.channel": "Group chat",
+  "composer.mention.everyoneOne": "1 bot in this chat",
+  "composer.mention.everyoneMany": "{count} bots in this chat",
   "composer.attach": "Attach a file",
   "newBot.profileFailed": "Your bot was created, but its preset could not be fully applied. Review its instructions in settings: {error}",
   "composer.goal.aria": "Finish together",
