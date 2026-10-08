@@ -15,7 +15,24 @@ import type { RunnerTask, RunnerTestCase } from "vitest";
 import { VitestTestRunner } from "vitest/runners";
 import { CI_RETRIES, findRetryEntry, loadRetryList, retriesInCi, testIdentity } from "./ci-retry-list.mjs";
 
-const list = retriesInCi() ? loadRetryList() : [];
+// Fails open: the list is a CI convenience, and a list that cannot be read
+// must never fail a run whose tests all passed.
+const list = retriesInCi() ? safeRetryList() : [];
+
+function safeRetryList() {
+  try {
+    return loadRetryList();
+  } catch (error) {
+    const message = `the flaky-test list could not be read, so no test is retried: ${String(error)}`;
+    console.warn(`ci-retry-runner: ${message}`);
+    // The summary step reports it, so a broken list is seen, not just survived.
+    const log = process.env.OMB_VITEST_RETRY_LOG;
+    if (log) {
+      try { appendFileSync(log, `${JSON.stringify({ listError: message })}\n`); } catch { /* the warning above remains */ }
+    }
+    return [];
+  }
+}
 
 export default class CiRetryRunner extends VitestTestRunner {
   /** Files where a listed test failed every attempt: no more retries there. */

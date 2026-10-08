@@ -69,6 +69,15 @@ describe("the job summary", () => {
     expect(annotations[0]).toMatch(new RegExp(`^::warning file=${entry.file.replace(/[.]/g, "\\.")},title=Flaky test retried::`));
   });
 
+  it("reports an unreadable list as a warning, apart from the retries", () => {
+    const log = `${JSON.stringify({ listError: "the flaky-test list could not be read, so no test is retried: boom" })}\n${JSON.stringify({ listError: "the flaky-test list could not be read, so no test is retried: boom" })}\n`;
+    const { markdown, annotations } = retrySummary(log, list);
+    expect(annotations).toHaveLength(1);
+    expect(annotations[0]).toMatch(/^::warning title=Flaky-test list unreadable::/);
+    expect(markdown).toContain("The flaky-test list could not be read");
+    expect(markdown).not.toContain("needed a retry");
+  });
+
   it("says nothing when no test needed a retry", () => {
     expect(retrySummary("", list)).toEqual({ markdown: "", annotations: [] });
   });
@@ -132,6 +141,30 @@ describe("the runner", () => {
     const { output } = await vitest(directory, { CI: "true" });
     expect(results(output)).toEqual({ first: "failed", second: "failed" });
     expect(readFileSync(join(directory, "attempts"), "utf8").trim().split("\n")).toEqual(["first", "first", "first", "second"]);
+  }, 60_000);
+
+  it("reads its own list in a happy-dom test file, where the global URL is the DOM's", async () => {
+    // Every vitest job failed in CI once: `new URL(…)` built the default list
+    // path with the DOM's URL, which fs refuses. Inside the repo so happy-dom resolves.
+    const directory = mkdtempSync(join(ROOT, "node_modules", ".omb-ci-retry-"));
+    scratch.push(directory);
+    writeFileSync(join(directory, "dom.test.mjs"), 'it("runs in a DOM", () => { expect(typeof document).toBe("object"); });\n');
+    writeFileSync(join(directory, "vitest.config.mjs"), `export default { test: { globals: true, environment: "happy-dom", include: ["dom.test.mjs"], runner: ${JSON.stringify(RUNNER)} } };\n`);
+    const { code, output } = await vitest(directory, { CI: "true", OMB_VITEST_RETRY_LIST: undefined });
+    expect(output).not.toContain("Unhandled");
+    expect(results(output)).toEqual({ "runs in a DOM": "passed" });
+    expect(code).toBe(0);
+    // the list really loaded: the runner records nothing when it can read it
+    expect(existsSync(join(directory, "retries.jsonl"))).toBe(false);
+  }, 60_000);
+
+  it("runs every test without retries when the list cannot be read", async () => {
+    const directory = project();
+    const { output } = await vitest(directory, { CI: "true", OMB_VITEST_RETRY_LIST: join(directory, "missing.json") });
+    expect(output).not.toContain("Unhandled");
+    expect(results(output)).toEqual({ "fails once": "failed", "fails always": "failed" });
+    const logged = readFileSync(join(directory, "retries.jsonl"), "utf8").trim().split("\n").map((line) => JSON.parse(line));
+    expect(logged).toEqual([{ listError: expect.stringContaining("the flaky-test list could not be read") }]);
   }, 60_000);
 
   it("never retries outside CI", async () => {

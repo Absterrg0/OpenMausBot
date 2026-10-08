@@ -2,7 +2,8 @@
 // Shared by the vitest runner (ci-retry-runner.ts) and the job-summary step
 // (ci-retry-summary.mjs). docs/ci.md, "Flaky tests".
 import { readFileSync } from "node:fs";
-import { relative, sep } from "node:path";
+import { dirname, join, relative, sep } from "node:path";
+import { fileURLToPath } from "node:url";
 
 /** Retries a listed test gets in CI: three attempts in all. */
 export const CI_RETRIES = 2;
@@ -12,9 +13,14 @@ export const CI_RETRIES = 2;
 /** The list; OMB_VITEST_RETRY_LIST points elsewhere only for this mechanism's own tests.
  * @returns {RetryEntry[]} */
 export function loadRetryList(env = process.env) {
-  const path = env.OMB_VITEST_RETRY_LIST || new URL("./ci-retry-list.json", import.meta.url);
+  const path = env.OMB_VITEST_RETRY_LIST || DEFAULT_LIST;
   return JSON.parse(readFileSync(path, "utf8")).tests;
 }
+
+/** A plain path, never `new URL(…)`: in a jsdom or happy-dom test file the
+ * global URL is the DOM's, and fs refuses its URL objects ("The URL must be of
+ * scheme file"), which failed every vitest job that ran such a file in CI. */
+const DEFAULT_LIST = join(dirname(fileURLToPath(import.meta.url)), "ci-retry-list.json");
 
 /** CI sets CI=true; a developer's run never retries. */
 export function retriesInCi(env = process.env) {

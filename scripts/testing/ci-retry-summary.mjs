@@ -13,10 +13,14 @@ const escapeProperty = (text) => escapeData(text).replace(/:/g, "%3A").replace(/
 
 /** @param {string} logText @param {import("./ci-retry-list.mjs").RetryEntry[]} list */
 export function retrySummary(logText, list) {
-  const rows = logText.split("\n").filter(Boolean).flatMap((line) => {
+  const lines = logText.split("\n").filter(Boolean).flatMap((line) => {
     try { return [JSON.parse(line)]; } catch { return []; }
   });
-  if (rows.length === 0) return { markdown: "", annotations: [] };
+  const listErrors = [...new Set(lines.filter((line) => typeof line.listError === "string").map((line) => line.listError))];
+  const rows = lines.filter((line) => typeof line.listError !== "string");
+  const errorAnnotations = listErrors.map((message) => `::warning title=${escapeProperty("Flaky-test list unreadable")}::${escapeData(message)}`);
+  const errorMarkdown = listErrors.length ? ["### The flaky-test list could not be read", "", ...listErrors.map((message) => `- ${cell(message)}`), "", "No test was retried in this job.", ""].join("\n") : "";
+  if (rows.length === 0) return { markdown: errorMarkdown, annotations: errorAnnotations };
   const markdown = [
     "### Flaky tests that needed a retry",
     "",
@@ -32,7 +36,7 @@ export function retrySummary(logText, list) {
   ].join("\n");
   const annotations = rows.map((row) =>
     `::warning file=${escapeProperty(row.file)},title=${escapeProperty("Flaky test retried")}::${escapeData(`${row.test} needed ${row.retries} ${row.retries === 1 ? "retry" : "retries"} (${row.state === "pass" ? "passed" : "failed"}). Listed in scripts/testing/ci-retry-list.json.`)}`);
-  return { markdown, annotations };
+  return { markdown: errorMarkdown + markdown, annotations: [...errorAnnotations, ...annotations] };
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
