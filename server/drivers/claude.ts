@@ -1577,6 +1577,16 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
       // A remote entry ({type, url, headers}) is already in the CLI's own
       // shape and the CLI connects to it itself; header values ride in the
       // 0600 config file like every other credential here.
+      // Claude Code is the one engine that keeps its own connection: every
+      // other engine reaches URL servers through OpenMausBot's remote proxy
+      // (mcp-remote-proxy.ts), whose minimal handshake strict servers
+      // accept. Claude Code 2.1.292 sends only fields the MCP spec defines
+      // (2025-11-25: roots, elicitation.form/url, clientInfo), none of the
+      // rmcp extensions (schemaValidation) Codex and Grok link, and a strict
+      // server that knows the current spec accepts it (captured Oct 8 2026
+      // against testing/fake-http-mcp-server.ts `strictInitialize`). Its
+      // native transport also keeps Claude Code's own MCP tool search,
+      // which defers big catalogs instead of loading them up front.
       // Bot-owned servers, gated below: they are the ones that answer for a
       // machine rather than for a context window.
       const botOwned = new Set<string>();

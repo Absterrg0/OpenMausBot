@@ -56,10 +56,11 @@ const LOOPBACK = ["localhost", "127.0.0.1", "::1", "[::1]"];
  * Cloud image, Electron 43) a plain http:// request through an env proxy
  * hangs: it never reaches the proxy and ignores its own AbortSignal, so an
  * http:// server would never answer. An https:// request goes through the
- * proxy's CONNECT tunnel and works. An http:// server is reached directly,
- * as it was before proxies were passed on at all: the switch is turned off
- * ("0") whenever a proxy, or the switch itself, could otherwise reach the
- * child, since a gate or an engine may hand it this process's environment. */
+ * proxy's CONNECT tunnel and works. For an http:// server the switch is
+ * turned off ("0") whenever a proxy, or the switch itself, could otherwise
+ * reach the child, since a gate or an engine may hand it this process's
+ * environment; the proxy then sends that request to HTTP_PROXY itself
+ * (plainHttpProxyFetch in mcp-http.ts), loopback and NO_PROXY excepted. */
 function networkEnv(source: NodeJS.ProcessEnv | Record<string, string | undefined>, url: string): Record<string, string> {
   const env: Record<string, string> = {};
   for (const name of NETWORK_ENV) if (source[name]) env[name] = source[name];

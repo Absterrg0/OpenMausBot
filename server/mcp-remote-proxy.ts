@@ -1,5 +1,8 @@
-// A stdio facade for selected HTTP/SSE MCP servers. Configuration stays in
-// private environment data; stdout contains only protocol frames.
+// A stdio facade for HTTP/SSE MCP servers: how every engine except Claude
+// Code reaches them. Its upstream handshake is OMB's own (RemoteMcpClient,
+// the one Settings → Test uses), never the engine's: an engine's client adds
+// capability fields a strict server refuses. Configuration stays in private
+// environment data; stdout contains only protocol frames.
 //
 // A driver whose engine cannot search tools on its own also sets
 // OMB_REMOTE_MCP_DIRECTORY. Then a big catalog is searched instead of listed
@@ -9,6 +12,7 @@
 // same setting carries the bot's tool selection, so search, describe and
 // call_tool only ever see the tools the bot may use.
 import { createInterface } from "node:readline";
+import { redactSecretsInText } from "../shared/redact.ts";
 import { allowsTool, parseToolScope, type ToolScope } from "../shared/tool-scope.ts";
 
 import type { ValidateFunction } from "ajv";
@@ -24,7 +28,15 @@ import {
   type CatalogTool,
   type DirectoryContext,
 } from "./mcp-directory.ts";
-import { MAX_REMOTE_MCP_BYTES, REMOTE_MCP_CONFIG_ENV, RemoteMcpClient, remoteMcpSpec } from "./mcp-http.ts";
+import {
+  MAX_REMOTE_MCP_BYTES,
+  McpHttpError,
+  McpRpcError,
+  REMOTE_MCP_CONFIG_ENV,
+  RemoteMcpClient,
+  plainHttpProxyFetch,
+  remoteMcpSpec,
+} from "./mcp-http.ts";
 import { lenientToolValidator, schemaProblems } from "./mcp-schema-validator.ts";
 
 type Json = Record<string, unknown>;
@@ -42,6 +54,16 @@ function fail(message: string): never {
   process.stderr.write(`mcp-remote-proxy: ${message}\n`);
   process.exit(1);
 }
+
+/** What the engine is told when the server refuses its credentials (HTTP
+ * 401). This proxy cannot tell an OpenMausBot sign-in from a header the
+ * person typed (both arrive as headers), so the words cover both: a sign-in
+ * token that ran out during a long turn is refreshed when the next message
+ * starts, while a revoked sign-in or a wrong key needs the person. Our own
+ * words, nothing remote. */
+const CREDENTIALS_REFUSED = "This MCP server refused its credentials (HTTP 401). If it uses a sign-in, send the message again: "
+  + "OpenMausBot refreshes sign-ins when a message starts. If it still fails, open Plugins → MCP servers and sign in to it again, "
+  + "or check its header values.";
 
 /** A refusal of our own: its words carry nothing remote, so they are relayed. */
 class Refusal extends Error {
@@ -96,6 +118,38 @@ function directorySettings(raw: string | undefined): { server: string; scope: To
   return fail("invalid tool directory configuration");
 }
 const directory = directorySettings(settings.OMB_REMOTE_MCP_DIRECTORY);
+
+/** Characters of a server's own error message the engine may read. */
+const REMOTE_ERROR_CHARS = 1_000;
+/** Everything configured for this server that a remote error must not
+ * echo: the address (whole, without its query, its path, long path
+ * segments, query values) and every header value (whole and word by word). */
+const configured: string[] = (() => {
+  const values = new Set<string>([spec.url]);
+  try {
+    const url = new URL(spec.url);
+    values.add(url.href);
+    values.add(`${url.origin}${url.pathname}`);
+    if (url.pathname.length > 1) values.add(url.pathname);
+    for (const segment of url.pathname.split("/")) if (segment.length >= 16) values.add(segment);
+    for (const value of url.searchParams.values()) if (value.length >= 4) values.add(value);
+  } catch { /* checked by remoteMcpSpec */ }
+  for (const value of Object.values(spec.headers)) {
+    if (value.trim().length >= 4) values.add(value.trim());
+    for (const word of value.split(/\s+/)) if (word.length >= 8) values.add(word);
+  }
+  return [...values].filter((value) => value.length >= 4).sort((a, b) => b.length - a.length);
+})();
+/** A server's own error text, for the engine: what the model needs to fix
+ * a call (a missing argument, an unknown id), with nothing configured and
+ * nothing secret-shaped left in it, and bounded. */
+function remoteErrorText(detail: string): string {
+  let text = detail.slice(0, REMOTE_ERROR_CHARS * 8);
+  for (const value of configured) text = text.split(value).join("«redacted»");
+  text = redactSecretsInText(text).trim();
+  if (text.length > REMOTE_ERROR_CHARS) text = `${text.slice(0, REMOTE_ERROR_CHARS - 1)}…`;
+  return text || "Remote MCP request failed";
+}
 const allowed = (name: string) => !directory?.scope || allowsTool(directory.scope, { kind: "mcp", server: directory.server, name });
 
 // ── the directory (only with OMB_REMOTE_MCP_DIRECTORY) ──
@@ -113,8 +167,11 @@ let searching = false;
 const context: DirectoryContext = { server: directory?.server ?? "" };
 
 const closed = new AbortController();
+/** An http:// server behind the person's HTTP proxy is reached through it. */
+const viaProxy = plainHttpProxyFetch(process.env);
 const client = new RemoteMcpClient(spec, {
   maxBytes: MAX_REMOTE_MCP_BYTES,
+  ...(viaProxy ? { fetch: viaProxy } : {}),
   onNotification: (message) => {
     // The catalog changed upstream: read it again on the next request.
     if (directory && message.method === "notifications/tools/list_changed") {
@@ -260,7 +317,12 @@ async function handle(message: Json): Promise<void> {
   if (pending.has(id)) { error(message.id, -32600, "Duplicate request ID"); return; }
   const controller = new AbortController();
   pending.set(id, controller);
-  const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(message.method === "tools/call" ? 120_000 : 30_000)]);
+  // A tool call has no deadline of its own here: the engine keeps its own
+  // (Gemini CLI and Qwen Code wait ten minutes) and cancels through this
+  // proxy, which cancels upstream. Only the directory, mounted for engines
+  // that cannot search tools, keeps two minutes.
+  const deadline = message.method !== "tools/call" ? 30_000 : directory ? 120_000 : undefined;
+  const signal = deadline === undefined ? controller.signal : AbortSignal.any([controller.signal, AbortSignal.timeout(deadline)]);
   try {
     const result = directory
       ? await directed(message, signal)
@@ -270,8 +332,12 @@ async function handle(message: Json): Promise<void> {
     if (message.method === "initialize") initialized = true;
     send({ jsonrpc: "2.0", id: message.id, result });
   } catch (failure) {
-    // Remote errors may contain URLs or header values. Do not relay their text.
+    // Transport failures may carry URLs or header values: never relayed. A
+    // server's own JSON-RPC error is its answer (a bad argument, an unknown
+    // id), relayed with its code once nothing configured or secret is left.
     if (failure instanceof Refusal) error(message.id, failure.code, failure.message);
+    else if (failure instanceof McpRpcError) error(message.id, failure.code ?? -32603, remoteErrorText(failure.detail));
+    else if (failure instanceof McpHttpError && failure.status === 401) error(message.id, -32603, CREDENTIALS_REFUSED);
     else error(message.id, signal.aborted ? -32800 : -32603, signal.aborted ? "MCP request cancelled" : "Remote MCP request failed");
   } finally { pending.delete(id); }
 }
