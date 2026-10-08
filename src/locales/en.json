@@ -990,6 +990,8 @@
   "sidebar.update.openingTerminal": "Opening a terminal…",
   "chat.announce.replied": "{name} replied: {text}",
   "chat.announce.repliedEmpty": "{name} replied",
+  "chat.announce.failed": "{name} failed: {text}",
+  "chat.announce.failedEmpty": "{name} failed",
   "chat.announce.approval": "{name} needs your approval",
   "chat.day.today": "Today",
   "chat.day.yesterday": "Yesterday",
