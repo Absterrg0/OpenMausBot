@@ -1,9 +1,25 @@
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { MAX_REMOTE_MCP_BYTES } from "./mcp-http.ts";
 import { probeMcpServer } from "./mcp-probe.ts";
+import { removeTempDir } from "./testing/cleanup.ts";
 import { startFakeHttpMcp } from "./testing/fake-http-mcp-server.ts";
 import { startFakeOAuth } from "./testing/fake-oauth-server.ts";
+import { whopLikeCatalog } from "./testing/whop-like-catalog.ts";
+
+/** 425 tools in about the 1,207,608 bytes Whop's real tools/list measured. */
+function whopSizedCatalog() {
+  const base = JSON.stringify(whopLikeCatalog(425)).length;
+  const tools = whopLikeCatalog(425, Math.ceil((1_207_608 - base) / 425) - 1);
+  const bytes = Buffer.byteLength(JSON.stringify(tools));
+  expect(bytes).toBeGreaterThan(1_048_576);
+  expect(bytes).toBeLessThan(1_300_000);
+  return tools;
+}
 
 const fakeServer = fileURLToPath(new URL("./testing/fake-mcp-server.ts", import.meta.url));
 
@@ -47,6 +63,19 @@ describe("custom MCP probe", () => {
       env: { FAKE_MCP_MODE: "silent" },
       enabled: false,
     }, 100)).resolves.toEqual({ ok: false, error: "The server did not answer in time." });
+  });
+
+  it("lists a command's Whop-sized catalog and says how many tools it has", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "omb-probe-big-"));
+    try {
+      const file = join(dir, "tools.json");
+      writeFileSync(file, JSON.stringify(whopSizedCatalog()));
+      const result = await probeMcpServer({
+        command: process.execPath, args: ["--experimental-strip-types", fakeServer], env: { FAKE_MCP_TOOLS_FILE: file }, enabled: false,
+      }, 15_000);
+      expect(result).toMatchObject({ ok: true, total: 425 });
+      expect(result.ok && result.tools).toHaveLength(100);
+    } finally { await removeTempDir(dir); }
   });
 
   it("gives a command 8 seconds by default", async () => {
@@ -212,6 +241,28 @@ describe("remote MCP probe", () => {
       await untilReal(() => fake.seenHeaders.length >= 3);
       controller.abort();
       await expect(pending).resolves.toEqual({ ok: false, error: "Connection test was cancelled." });
+    } finally {
+      await fake.close();
+    }
+  });
+
+  it("accepts Whop's 1.2 MB tools list and says how many tools it has", async () => {
+    const fake = await startFakeHttpMcp({ tools: whopSizedCatalog() });
+    try {
+      const result = await probeMcpServer({ type: "http", url: fake.url, headers: {}, enabled: false });
+      expect(result).toMatchObject({ ok: true, total: 425 });
+      expect(result.ok && result.tools.slice(0, 2).map((tool) => tool.name)).toEqual(["stats_get", "payments_list_refunded"]);
+      expect(result.ok && result.tools).toHaveLength(100);
+    } finally {
+      await fake.close();
+    }
+  });
+
+  it("still refuses a tools list past the 32 MB cap", async () => {
+    const fake = await startFakeHttpMcp({ tools: [{ name: "absurd", description: "x".repeat(MAX_REMOTE_MCP_BYTES + 1), inputSchema: { type: "object" } }] });
+    try {
+      await expect(probeMcpServer({ type: "http", url: fake.url, headers: {}, enabled: false }))
+        .resolves.toEqual({ ok: false, error: "The server did not return a valid MCP tools list." });
     } finally {
       await fake.close();
     }

@@ -113,13 +113,18 @@ for (let index = 0; process.env.FAKE_CODEX_MCP_OVERRIDES === "1" && index < proc
   if (match) (mcpOverrides[match[1]!] ??= {})[match[2]!] = JSON.parse(match[3]!);
 }
 // codex-cli 0.160 config/read reports every shell_environment_policy field,
-// null when unset, even for an empty config.toml.
+// null when unset, even for an empty config.toml. A `-c
+// shell_environment_policy.exclude=[…]` override replaces the list, as there.
+const shellExcludeOverride = process.argv.reduce<unknown>((found, arg, index) => {
+  const match = process.argv[index - 1] === "-c" ? /^shell_environment_policy\.exclude=(.*)$/.exec(arg) : null;
+  return match ? JSON.parse(match[1]!) : found;
+}, undefined);
 const shellEnvironmentPolicy = (): unknown => {
   const unset = { inherit: null, ignore_default_excludes: null, exclude: null, set: null,
     include_only: null, filters: null, experimental_use_profile: null };
-  if (!process.env.FAKE_CODEX_SHELL_ENVIRONMENT_POLICY) return unset;
-  const supplied: unknown = JSON.parse(process.env.FAKE_CODEX_SHELL_ENVIRONMENT_POLICY);
-  return supplied && typeof supplied === "object" && !Array.isArray(supplied) ? { ...unset, ...supplied } : supplied;
+  const supplied: unknown = process.env.FAKE_CODEX_SHELL_ENVIRONMENT_POLICY ? JSON.parse(process.env.FAKE_CODEX_SHELL_ENVIRONMENT_POLICY) : {};
+  if (!supplied || typeof supplied !== "object" || Array.isArray(supplied)) return supplied;
+  return { ...unset, ...supplied, ...(shellExcludeOverride !== undefined ? { exclude: shellExcludeOverride } : {}) };
 };
 let developerInstructions = "";
 let resumedThread: string | null = null;

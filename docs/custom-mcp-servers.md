@@ -167,13 +167,42 @@ turns before changing this selection; the next direct or channel turn gets the
 new list. The list does not filter project-local `.mcp.json` files and is not a
 shell sandbox. Individual tool approvals depend on the engine and approval mode.
 
+### Servers with hundreds of tools
+
+Some servers offer more tools than a model can usefully read at once: Whop's
+lists 425. Claude Code, and Codex signed in with its own account, look tools
+up as they need them, so they get every server whole, as before. Other
+engines would read every tool's description on every message, and the
+API-model engines stop at 128 tools. So for bots on API models, on Pi, and on
+Codex with a ChatGPT plan, a big URL server shows up as three tools: one that
+searches its tools, one that reads a tool's exact inputs, and one that runs a
+tool by name. The search tool says what the server covers, area by area.
+
+A server counts as big when it has more than 40 tools, or more than about
+100,000 characters of tool descriptions (roughly where Claude Code starts
+searching on its own). Smaller servers are listed as they always were. There
+is nothing to configure. A bot's tool selection still holds: it can find and
+run only the tools you chose for it, and an approval card names the tool
+being run, never the search. A big URL server also gets 30 seconds to start
+on a bot's turn, like the Test button gives it; command servers keep eight.
+
+Known limits:
+
+- **Codex with a ChatGPT plan, on Approve for me, asks about every call.**
+  Codex lets a server's read-only tools run without asking, but here every
+  tool runs through the one tool that runs them all, which cannot carry each
+  tool's own read-only hint. Each Whop call shows a card, naming the tool.
+- **Command servers are not searched yet.** Only URL servers are. A command
+  server with hundreds of tools is still listed whole, and API-model bots
+  refuse more than 128 tools in one turn.
+
 ### Which engines reach which servers
 
 | Server | Claude Code bots | Codex bots | ACP bots (Cursor, Grok, Kimi, …) | API-model bots |
 | --- | --- | --- | --- | --- |
 | Command (stdio) | yes, through the result gate | yes | yes | yes |
-| URL, Streamable HTTP | yes | yes | when the agent advertises `http` | not yet |
-| URL, SSE | yes | no (Codex has no SSE transport) | when the agent advertises `sse` | not yet |
+| URL, Streamable HTTP | yes | yes | when the agent advertises `http` | yes |
+| URL, SSE | yes | with a tool selection or a ChatGPT plan (Codex itself has no SSE transport) | when the agent advertises `sse` | yes |
 
 A server an engine cannot reach is left out of that bot's turn with a note in
 the server log; nothing else breaks.
@@ -287,12 +316,21 @@ servers gets the enabled tools on its next task.
   wire log redacted). Header values do the same: Codex reads them from
   harness-named environment variables (`env_http_headers`), Claude from the
   0600 file. They do persist as plaintext in the 0600 config file — prefer
-  tokens scoped to the one server.
+  tokens scoped to the one server. Codex gives its MCP servers their
+  variables from the same environment it runs the bot's shell commands in,
+  so each variable a server needs there is excluded from that shell; a value
+  you already had in your own environment, like a proxy setting, stays.
+- **Proxies: https only.** Where OpenMausBot's own remote proxy connects to
+  a URL server, an `https://` server goes through your `HTTPS_PROXY` /
+  `HTTP_PROXY` (CONNECT), with this computer's loopback names always added
+  to `NO_PROXY`. An `http://` server is reached directly: Node 24's fetch
+  hangs on a plain http request sent through an environment proxy.
 - **Testing is bounded.** A command is stopped after the handshake (or eight
   seconds), its output is capped, and its stderr is never sent to the UI. It
   inherits none of OpenMausBot's workspace or provider credentials; only the
-  environment variables configured for that MCP server are added. A URL test
-  reads at most 1 MB and reports only the HTTP status of a refusal.
+  environment variables configured for that MCP server are added. A test
+  reads at most 32 MB (Whop's tool list alone is 1.2 MB), and a URL test
+  reports only the HTTP status of a refusal.
 - **Addresses are checked.** A URL server needs a full `http://` or
   `https://` address with no credentials in it; header names must be valid
   HTTP field names and values a single line.

@@ -2,7 +2,8 @@
 // answer as plain JSON or as a short event stream — or the older SSE
 // transport. It records the headers it saw so a test can prove a token
 // arrived, and can hold a request open so a probe's timeout is exercised.
-import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
+import { createServer, type IncomingMessage, type RequestListener, type Server, type ServerResponse } from "node:http";
+import { createServer as createHttpsServer, type Server as HttpsServer } from "node:https";
 import type { AddressInfo } from "node:net";
 
 export interface FakeHttpMcpOptions {
@@ -22,7 +23,30 @@ export interface FakeHttpMcpOptions {
    * listing tools for every business an account manages */
   toolsDelayMs?: number;
   description?: string;
-  tools?: Array<{ name: string; inputSchema: Record<string, unknown> }>;
+  tools?: FakeHttpMcpTool[];
+  /** what tools/call answers (default: one "remote execution recorded" text) */
+  callResult?: (params: unknown) => unknown;
+  /** answer each tools/call as an event stream that first says the tool
+   * list changed, as a server does after it adds or removes tools */
+  listChangedOnCall?: boolean;
+  /** the server's own initialize instructions */
+  instructions?: string;
+  /** answer tools/list in pages of this many tools, with nextCursor */
+  pageSize?: number;
+  /** with pageSize: hand out the same cursor again and again */
+  cursorLoop?: boolean;
+  /** during each tools/call, first send the client a request with this
+   * method (elicitation/create, sampling/createMessage…) and answer the call
+   * only after the client has replied to it */
+  askOnCall?: string;
+  /** serve https:// with this key and certificate (testing/test-tls.ts) */
+  tls?: { key: string; cert: string };
+}
+
+export interface FakeHttpMcpTool {
+  name: string;
+  inputSchema?: Record<string, unknown>;
+  [key: string]: unknown;
 }
 
 export interface FakeHttpMcp {
@@ -31,6 +55,12 @@ export interface FakeHttpMcp {
   calls: unknown[];
   /** tools/list requests now waiting out `toolsDelayMs` */
   readonly delayedToolsLists: number;
+  /** tools/list requests answered so far */
+  readonly toolsLists: number;
+  /** replace the catalog later tools/list requests answer with */
+  setTools(tools: FakeHttpMcpTool[]): void;
+  /** the client's replies to requests this server sent it */
+  replies: unknown[];
   close(): Promise<void>;
 }
 
@@ -49,28 +79,45 @@ export async function startFakeHttpMcp(options: FakeHttpMcpOptions = {}): Promis
   const streams = new Set<ServerResponse>();
   const calls: unknown[] = [];
   let delayedToolsLists = 0;
+  let toolsLists = 0;
+  let tools = options.tools;
+  const replies: unknown[] = [];
+  let replied: (() => void) | undefined;
+  const ask = () => {
+    const waiting = new Promise<void>((resolve) => { replied = resolve; });
+    return { waiting, frame: `event: message\ndata: ${JSON.stringify({ jsonrpc: "2.0", id: "server-ask-1", method: options.askOnCall, params: {} })}\n\n` };
+  };
   const answerFor = (frame: { id?: unknown; method?: unknown; params?: unknown }) => {
     if (frame.method === "initialize") {
       return {
         jsonrpc: "2.0",
         id: frame.id,
-        result: { protocolVersion: "2025-06-18", capabilities: { tools: {} }, serverInfo: { name: "fake-http-mcp", version: "1" } },
+        result: {
+          protocolVersion: "2025-06-18", capabilities: { tools: {} }, serverInfo: { name: "fake-http-mcp", version: "1" },
+          ...(options.instructions === undefined ? {} : { instructions: options.instructions }),
+        },
       };
     }
     if (frame.method === "tools/list") {
-      return {
-        jsonrpc: "2.0",
-        id: frame.id,
-        result: { tools: options.tools ?? [{ name: "read_notes", description: options.description ?? "Read saved notes" }] },
-      };
+      toolsLists += 1;
+      const all = tools ?? [{ name: "read_notes", description: options.description ?? "Read saved notes" }];
+      if (options.pageSize) {
+        const cursor = (frame.params as { cursor?: unknown } | undefined)?.cursor;
+        const start = typeof cursor === "string" && !options.cursorLoop ? Number(cursor.slice("page-".length)) : 0;
+        const end = start + options.pageSize;
+        return { jsonrpc: "2.0", id: frame.id, result: {
+          tools: all.slice(start, end), ...(end < all.length ? { nextCursor: options.cursorLoop ? "page-again" : `page-${end}` } : {}),
+        } };
+      }
+      return { jsonrpc: "2.0", id: frame.id, result: { tools: all } };
     }
-    if (frame.method === "tools/call" && options.tools) {
+    if (frame.method === "tools/call" && tools) {
       calls.push(frame.params);
-      return { jsonrpc: "2.0", id: frame.id, result: { content: [{ type: "text", text: "remote execution recorded" }] } };
+      return { jsonrpc: "2.0", id: frame.id, result: options.callResult?.(frame.params) ?? { content: [{ type: "text", text: "remote execution recorded" }] } };
     }
     return null;
   };
-  const server: Server = createServer((req, res) => {
+  const handle: RequestListener = (req, res) => {
     void (async () => {
       seenHeaders.push({ ...req.headers });
       if ((options.requireHeader && req.headers[options.requireHeader.name.toLowerCase()] !== options.requireHeader.value)
@@ -93,6 +140,13 @@ export async function startFakeHttpMcp(options: FakeHttpMcpOptions = {}): Promis
         return;
       }
       const frame = JSON.parse((await readBody(req)) || "{}") as { id?: unknown; method?: unknown; params?: unknown };
+      // the client answering a request this server sent it
+      if (frame.method === undefined && frame.id !== undefined) {
+        replies.push(frame);
+        replied?.();
+        res.writeHead(202).end();
+        return;
+      }
       // hold the request open: the client's own timeout has to end it
       if (frame.method === "tools/list" && options.silentTools) return;
       if (frame.method === "tools/list" && options.toolsDelayMs) {
@@ -107,10 +161,29 @@ export async function startFakeHttpMcp(options: FakeHttpMcpOptions = {}): Promis
       }
       if (transport === "sse") {
         res.writeHead(202).end();
+        if (options.askOnCall && frame.method === "tools/call") {
+          const { waiting, frame: request } = ask();
+          for (const stream of streams) stream.write(request);
+          await waiting;
+        }
         for (const stream of streams) stream.write(`event: message\ndata: ${JSON.stringify(answer)}\n\n`);
         return;
       }
       const session = { "mcp-session-id": "fake-session" };
+      if (options.askOnCall && frame.method === "tools/call") {
+        const { waiting, frame: request } = ask();
+        res.writeHead(200, { ...session, "content-type": "text/event-stream" });
+        res.write(request);
+        await waiting;
+        res.end(`event: message\ndata: ${JSON.stringify(answer)}\n\n`);
+        return;
+      }
+      if (options.listChangedOnCall && frame.method === "tools/call") {
+        const changed = { jsonrpc: "2.0", method: "notifications/tools/list_changed" };
+        res.writeHead(200, { ...session, "content-type": "text/event-stream" });
+        res.end(`event: message\ndata: ${JSON.stringify(changed)}\n\nevent: message\ndata: ${JSON.stringify(answer)}\n\n`);
+        return;
+      }
       if (options.answer === "event-stream" && frame.method === "tools/list") {
         res.writeHead(200, { ...session, "content-type": "text/event-stream" });
         res.end(`: keepalive\n\nevent: message\ndata: ${JSON.stringify(answer)}\n\n`);
@@ -118,14 +191,18 @@ export async function startFakeHttpMcp(options: FakeHttpMcpOptions = {}): Promis
       }
       res.writeHead(200, { ...session, "content-type": "application/json" }).end(JSON.stringify(answer));
     })();
-  });
+  };
+  const server: Server | HttpsServer = options.tls ? createHttpsServer({ key: options.tls.key, cert: options.tls.cert }, handle) : createServer(handle);
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   const { port } = server.address() as AddressInfo;
   return {
-    url: `http://127.0.0.1:${port}/${transport === "sse" ? "sse" : "mcp"}`,
+    url: `${options.tls ? "https" : "http"}://127.0.0.1:${port}/${transport === "sse" ? "sse" : "mcp"}`,
     seenHeaders,
     calls,
     get delayedToolsLists() { return delayedToolsLists; },
+    get toolsLists() { return toolsLists; },
+    replies,
+    setTools: (next) => { tools = next; },
     close: () => new Promise<void>((resolve) => {
       server.closeAllConnections();
       server.close(() => resolve());

@@ -82,6 +82,8 @@ interface McpDraft {
 export interface ProbeResult {
   ok: boolean;
   tools?: Array<{ name: string; description?: string }>;
+  /** how many tools the server advertised, when `tools` shows only the first */
+  total?: number;
   error?: string;
   /** the server answered 401 and offers an OAuth sign-in */
   auth?: "required";
@@ -185,12 +187,14 @@ export function parseMcpOAuthClient(
   };
 }
 
-function probeToolsLabel(tools: ProbeResult["tools"]): string {
+function probeToolsLabel(tools: ProbeResult["tools"], total?: number): string {
   if (!tools?.length) return t("mcp.probe.noTools");
-  const names = tools.map((tool) => tool.name).join(", ");
-  return tools.length === 1
+  // A big server (Whop lists 425) sends its first hundred names only.
+  const count = Math.max(total ?? 0, tools.length);
+  const names = tools.map((tool) => tool.name).join(", ") + (count > tools.length ? ", …" : "");
+  return count === 1
     ? t("mcp.probe.toolsOne", { names })
-    : t("mcp.probe.toolsMany", { count: tools.length, names });
+    : t("mcp.probe.toolsMany", { count, names });
 }
 
 function draftFor(server: McpServerListing): McpDraft {
@@ -989,7 +993,7 @@ export function McpServersPanel({ embedded = false, whopCard = false, hideWhop =
                   {result && signingIn !== server.name && (
                     <div role="status" className={cn("mt-3 rounded-lg px-3 py-2 text-[12px]", result.ok ? "bg-success/10 text-success" : result.auth === "required" ? "bg-warning/10 text-warning" : "bg-danger/10 text-danger")}>
                       {result.auth === "required" ? t("mcp.auth.required") : result.ok ? (
-                        <span className="flex items-start gap-2"><CheckCircle2 size={14} className="mt-px shrink-0" /> {t("mcp.probe.connected")} {probeToolsLabel(result.tools)}</span>
+                        <span className="flex items-start gap-2"><CheckCircle2 size={14} className="mt-px shrink-0" /> {t("mcp.probe.connected")} {probeToolsLabel(result.tools, result.total)}</span>
                       ) : result.error}
                     </div>
                   )}

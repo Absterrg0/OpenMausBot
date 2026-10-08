@@ -725,16 +725,20 @@ export function createOpenAIChatRuntime<Config>(options: RuntimeOptions<Config>)
                 }
               } else {
                 tools.validate(call.function.name, args);
+                // A searched server's call_tool is shown as the tool it runs;
+                // its catalog reads ask nothing, as listing tools never did.
+                const shown = tools.view(call.function.name, args as Record<string, unknown>);
+                const shownPreview = shown.input === args ? inputPreview : preview(shown.input);
                 // Full access is the person's explicit grant to answer every
                 // prompt. This runtime has no provider reviewer to hand it to,
                 // so it is honoured here: without it every single tool call on
                 // an OpenAI-compatible engine stops for a card, and a Chief's
                 // delegated Full access cannot help either.
-                const allowed = turn.approvalMode === "full"
-                  || await approval.ask(call.function.name, inputPreview ?? "This tool has no arguments.");
+                const allowed = turn.approvalMode === "full" || !shown.ask
+                  || await approval.ask(shown.title, shownPreview ?? "This tool has no arguments.");
                 abort.signal.throwIfAborted();
                 emit({ ...base(turn.threadId, turnId), type: "item.started", itemType: "tool", itemId: call.id,
-                  title: call.function.name, ...(inputPreview ? { input: inputPreview } : {}),
+                  title: shown.title, ...(shownPreview ? { input: shownPreview } : {}),
                 });
                 started = true;
                 if (allowed) {
@@ -752,7 +756,7 @@ export function createOpenAIChatRuntime<Config>(options: RuntimeOptions<Config>)
                     }
                   }
                 } else {
-                  denials.push(call.function.name);
+                  denials.push(shown.title);
                   result = { ok: false, text: "Permission denied or expired; the tool was not executed." };
                 }
               }
