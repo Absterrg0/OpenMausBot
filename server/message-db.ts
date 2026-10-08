@@ -837,6 +837,13 @@ export function removeMemoryFile(botId: string, path: string): void {
   db().prepare("DELETE FROM memory_files WHERE bot_id = ? AND path = ?").run(botId, path);
 }
 
+/** Remove one bot's memory-file rows. The delete trigger drops the
+ * matching external-content FTS rows, the same way deleting a thread's
+ * messages drops theirs. */
+export function deleteBotMemoryFiles(botId: string): void {
+  db().prepare("DELETE FROM memory_files WHERE bot_id = ?").run(botId);
+}
+
 /** What is indexed for a bot, so the caller can compare against the disk. */
 export function indexedMemoryFiles(botId: string): MemoryFileStat[] {
   const rows = db()
