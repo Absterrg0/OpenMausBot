@@ -637,6 +637,7 @@ import { createUndoRoutes } from "./routes/undo.ts";
 import { createDesktopViewer, desktopViewerUrl } from "./routes/desktop-viewer.ts";
 import { localDesktopTarget, localVmViewerStatus, viewerTargetId } from "./desktop-viewer-targets.ts";
 import { createAntigravityLeftoverRoutes } from "./routes/antigravity-leftovers.ts";
+import { createAntigravityAccountRoutes } from "./routes/antigravity-accounts.ts";
 import { findAntigravityLeftovers, removeAntigravityLeftovers } from "./drivers/antigravity-temp.ts";
 import { createLiveRoutes } from "./routes/live.ts";
 import { createUsageRoutes } from "./routes/usage.ts";
@@ -1688,6 +1689,10 @@ interface AuditPlan {
   roomId?: string;
 }
 
+/** The "add an account" routes and the engine each one adds to, for the audit log. */
+const ACCOUNT_ADD_ENGINES = new Map([["/api/instances/claude-accounts", "claude"], ["/api/instances/chatgpt-accounts", "chatgpt"],
+  ["/api/instances/antigravity-accounts", "antigravity"]]);
+
 function adminAuditPlan(method: string, path: string): AuditPlan | null {
   if (method === "GET" || method === "HEAD" || method === "OPTIONS") return null;
   if (path.startsWith("/api/internal/") || path.startsWith("/api/testing/")) return null;
@@ -1708,9 +1713,8 @@ function adminAuditPlan(method: string, path: string): AuditPlan | null {
   if (m && method === "PATCH") plan.roomId = m[1];
   m = /^\/api\/instances\/([\w.-]+)\/(install|auth\/complete|auth\/sign-out|claude-update|leftover-files\/remove)$/.exec(path);
   if (m && method === "POST") plan.engineAction = { id: m[1]!, action: m[2]!.replace("/", "-") };
-  if (method === "POST" && path === "/api/instances/claude-accounts") plan.engineAction = { id: "claude", action: "account-add" };
-  if (method === "POST" && path === "/api/instances/chatgpt-accounts") plan.engineAction = { id: "chatgpt", action: "account-add" };
-  if (method === "POST" && path === "/api/instances/antigravity-accounts") plan.engineAction = { id: "antigravity", action: "account-add" };
+  const accountAdd = method === "POST" ? ACCOUNT_ADD_ENGINES.get(path) : undefined;
+  if (accountAdd) plan.engineAction = { id: accountAdd, action: "account-add" };
   return plan.config || plan.botId || plan.createsBots || plan.deletesBot || plan.createsWebhook || plan.webhookId || plan.sessionId || plan.pairing || plan.engineAction || plan.roomId ? plan : null;
 }
 
@@ -15988,6 +15992,17 @@ ROUTES.push(createAntigravityLeftoverRoutes({
   find: () => findAntigravityLeftovers(),
   remove: () => removeAntigravityLeftovers(),
 }));
+// Another Google account for Antigravity; shares the provider-settings lock with the other account routes.
+ROUTES.push(createAntigravityAccountRoutes({
+  instances: () => persistableInstanceConfigs(cfg),
+  persist: persistProviderInstance,
+  describe: describeInstances,
+  exclusive: (work) => {
+    if (providerConfigBusy) return null;
+    providerConfigBusy = true;
+    return work().finally(() => { providerConfigBusy = false; });
+  },
+}));
 
 ROUTES.push(desktopViewer.route);
 
@@ -23965,26 +23980,6 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         cfg.instances = changed.instances;
         broadcast({ kind: "config", ...configStatus() });
         return json(res, 200, { instances: await describeInstances() });
-      } finally { providerConfigBusy = false; }
-    }
-
-    if (method === "POST" && path === "/api/instances/antigravity-accounts") {
-      if (!String(req.headers["content-type"] ?? "").toLowerCase().startsWith("application/json")) return json(res, 415, { error: "content-type must be application/json" });
-      const parsed = createClaudeAccountSchema.pick({ displayName: true }).extend({ sourceInstanceId: z.string().min(1).max(200) }).safeParse(await readBody(req, 8192));
-      if (!parsed.success) return json(res, 400, { error: "Enter an account name (up to 80 characters) and select an Antigravity provider." });
-      if (providerConfigBusy) return json(res, 409, { error: "provider settings are already being updated" });
-      providerConfigBusy = true;
-      try {
-        const instances = persistableInstanceConfigs(cfg);
-        const source = instances[parsed.data.sourceInstanceId];
-        if (source?.driver !== "antigravityAgent") return json(res, 400, { error: "Select a personal Antigravity provider." });
-        const instanceId = `antigravity-${randomUUID()}`;
-        const cli = (source.config as { cli?: unknown } | undefined)?.cli;
-        // Only share the runtime. Each instance gets its own Google profile.
-        instances[instanceId] = { driver: "antigravityAgent", displayName: parsed.data.displayName,
-          config: typeof cli === "string" && cli ? { cli } : {} };
-        await persistProviderInstance(instanceId, instances);
-        return json(res, 201, { instanceId, instances: await describeInstances() });
       } finally { providerConfigBusy = false; }
     }
 
