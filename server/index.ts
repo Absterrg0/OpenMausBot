@@ -1710,6 +1710,7 @@ function adminAuditPlan(method: string, path: string): AuditPlan | null {
   if (m && method === "POST") plan.engineAction = { id: m[1]!, action: m[2]!.replace("/", "-") };
   if (method === "POST" && path === "/api/instances/claude-accounts") plan.engineAction = { id: "claude", action: "account-add" };
   if (method === "POST" && path === "/api/instances/chatgpt-accounts") plan.engineAction = { id: "chatgpt", action: "account-add" };
+  if (method === "POST" && path === "/api/instances/antigravity-accounts") plan.engineAction = { id: "antigravity", action: "account-add" };
   return plan.config || plan.botId || plan.createsBots || plan.deletesBot || plan.createsWebhook || plan.webhookId || plan.sessionId || plan.pairing || plan.engineAction || plan.roomId ? plan : null;
 }
 
@@ -23964,6 +23965,26 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         cfg.instances = changed.instances;
         broadcast({ kind: "config", ...configStatus() });
         return json(res, 200, { instances: await describeInstances() });
+      } finally { providerConfigBusy = false; }
+    }
+
+    if (method === "POST" && path === "/api/instances/antigravity-accounts") {
+      if (!String(req.headers["content-type"] ?? "").toLowerCase().startsWith("application/json")) return json(res, 415, { error: "content-type must be application/json" });
+      const parsed = createClaudeAccountSchema.pick({ displayName: true }).extend({ sourceInstanceId: z.string().min(1).max(200) }).safeParse(await readBody(req, 8192));
+      if (!parsed.success) return json(res, 400, { error: "Enter an account name (up to 80 characters) and select an Antigravity provider." });
+      if (providerConfigBusy) return json(res, 409, { error: "provider settings are already being updated" });
+      providerConfigBusy = true;
+      try {
+        const instances = persistableInstanceConfigs(cfg);
+        const source = instances[parsed.data.sourceInstanceId];
+        if (source?.driver !== "antigravityAgent") return json(res, 400, { error: "Select a personal Antigravity provider." });
+        const instanceId = `antigravity-${randomUUID()}`;
+        const cli = (source.config as { cli?: unknown } | undefined)?.cli;
+        // Only share the runtime. Each instance gets its own Google profile.
+        instances[instanceId] = { driver: "antigravityAgent", displayName: parsed.data.displayName,
+          config: typeof cli === "string" && cli ? { cli } : {} };
+        await persistProviderInstance(instanceId, instances);
+        return json(res, 201, { instanceId, instances: await describeInstances() });
       } finally { providerConfigBusy = false; }
     }
 
