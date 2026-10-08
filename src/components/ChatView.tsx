@@ -189,8 +189,9 @@ function DaySeparator({ at, today }: { at: number; today: number }) {
   );
 }
 
-/** Hover/focus-revealed copy control shared by user + bot bubbles. */
-function CopyButton({ text, className }: { text: string; className?: string }) {
+/** Hover/focus-revealed copy control shared by user + bot bubbles. Rooms use
+ * the same button beside a message. */
+export function CopyButton({ text, className }: { text: string; className?: string }) {
   const { state, copy } = useCopyFeedback(text);
   const label = t(state === "copied" ? "chat.copyMessageDone" : state === "failed" ? "chat.copyMessageFailed" : "chat.copyMessage");
   return (
@@ -353,8 +354,8 @@ export function FailedTurnRow({ tool, engine, onRetry, botId, threadId }: {
 }
 
 /** One bad markdown node must not white-screen the app — the transcript
- * degrades to a plain-text bubble instead. */
-class MessageBoundary extends Component<{ children: ReactNode; fallbackText: string }, { failed: boolean }> {
+ * degrades to a plain-text bubble instead. Rooms use the same boundary. */
+export class MessageBoundary extends Component<{ children: ReactNode; fallbackText: string }, { failed: boolean }> {
   state = { failed: false };
   static getDerivedStateFromError() {
     return { failed: true };
