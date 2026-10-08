@@ -193,6 +193,49 @@ describe("CodexDriver turns (fake app-server)", () => {
     }
   });
 
+  // codex-cli 0.160 reports every unset policy field as null, even with an
+  // empty config.toml; the fake's default mirrors that shape.
+  it("runs scoped turns when Codex reports every shell policy field as null", async () => {
+    const dump = join(scratch, "null-shell-policy.json"); process.env.FAKE_CODEX_DUMP = dump;
+    await create({ mode: "resume", environment: { HOME: scratch, CODEX_HOME: join(scratch, ".codex"), FAKE_CODEX_MCP_OVERRIDES: "1" } });
+    for (const resumeCursor of [undefined, "old-session"]) {
+      const { turnId } = await instance.adapter.sendTurn({ threadId: "null-shell-policy", text: "Fixture", resumeCursor,
+        toolScope: { allow: ["native:*", "mcp:notes:read"] },
+        integrations: { custom: { notes: { type: "http", url: "https://example.test/notes", headers: {} } } },
+      });
+      const completed = await recorder.until(event => event.type === "turn.completed" && event.turnId === turnId);
+      expect(recorder.events.filter(event => event.type === "runtime.error")).toEqual([]);
+      expect(completed).toMatchObject({ ok: true });
+      const seen = JSON.parse(readFileSync(dump, "utf8"));
+      const config = seen.calls.find((call: { method: string }) => call.method === (resumeCursor ? "thread/resume" : "thread/start")).params.config;
+      expect(config["shell_environment_policy.exclude"]).toEqual(["OMB_GATE_CONFIG_*"]);
+      expect(Object.keys(config).filter(key => key.startsWith("shell_environment_policy"))).toEqual(["shell_environment_policy.exclude"]);
+    }
+  });
+
+  // A higher layer that writes the legacy `exclude` list drops the person's
+  // `filters` table (codex-cli 0.160), so their own rules are extended in kind.
+  it("keeps a person's shell filters and adds the gate pattern as an exclude filter", async () => {
+    const dump = join(scratch, "shell-filters.json"); process.env.FAKE_CODEX_DUMP = dump;
+    const policy = { inherit: "all", filters: { "USER_SECRET_*": "exclude", "KEEP_*": "include", "omb_gate_config_*": "include" } };
+    await create({ mode: "resume", environment: { HOME: scratch, CODEX_HOME: join(scratch, ".codex"),
+      FAKE_CODEX_MCP_OVERRIDES: "1", FAKE_CODEX_SHELL_ENVIRONMENT_POLICY: JSON.stringify(policy) } });
+    for (const resumeCursor of [undefined, "old-session"]) {
+      const { turnId } = await instance.adapter.sendTurn({ threadId: "shell-filters", text: "Fixture", resumeCursor,
+        toolScope: { allow: ["native:*", "mcp:notes:read"] },
+        integrations: { custom: { notes: { type: "http", url: "https://example.test/notes", headers: {} } } },
+      });
+      const completed = await recorder.until(event => event.type === "turn.completed" && event.turnId === turnId);
+      expect(completed).toMatchObject({ ok: true });
+      const seen = JSON.parse(readFileSync(dump, "utf8"));
+      const config = seen.calls.find((call: { method: string }) => call.method === (resumeCursor ? "thread/resume" : "thread/start")).params.config;
+      // Codex matches (and rejects duplicate) filter patterns ignoring case:
+      // the gate pattern replaces a case variant rather than sitting beside it.
+      expect(config["shell_environment_policy.filters"]).toEqual({ "USER_SECRET_*": "exclude", "KEEP_*": "include", "OMB_GATE_CONFIG_*": "exclude" });
+      expect(Object.keys(config).filter(key => key.startsWith("shell_environment_policy"))).toEqual(["shell_environment_policy.filters"]);
+    }
+  });
+
   it("refuses a scoped prompt when inherited shell snapshots cannot be disabled", async () => {
     const dump = join(scratch, "unsafe-shell-snapshot.json"); process.env.FAKE_CODEX_DUMP = dump;
     await create({ environment: { HOME: scratch, CODEX_HOME: join(scratch, ".codex"),
@@ -208,7 +251,12 @@ describe("CodexDriver turns (fake app-server)", () => {
     expect(seen.calls.some((call: { method: string }) => call.method === "turn/start")).toBe(false);
   });
 
-  it.each([null, false, [], { exclude: null }, { exclude: ["SAFE_*", 42] }])("refuses a scoped prompt with a malformed shell policy %j", async (policy) => {
+  it.each([null, false, [], { exclude: "SAFE_*" }, { exclude: ["SAFE_*", 42] }, { filters: [] }, { filters: "SAFE_*" },
+    { filters: { "SAFE_*": "keep" } }, { filters: { "SAFE_*": null } },
+    // Codex refuses a layer that mixes the representations; a policy that
+    // reports both could not be extended without dropping one of them.
+    { exclude: ["SAFE_*"], filters: { "OTHER_*": "exclude" } }, { include_only: ["PATH"], filters: { "OTHER_*": "exclude" } },
+  ])("refuses a scoped prompt with a malformed shell policy %j", async (policy) => {
     const dump = join(scratch, "invalid-shell-policy.json"); process.env.FAKE_CODEX_DUMP = dump;
     await create({ environment: { HOME: scratch, CODEX_HOME: join(scratch, ".codex"),
       FAKE_CODEX_MCP_OVERRIDES: "1", FAKE_CODEX_SHELL_ENVIRONMENT_POLICY: JSON.stringify(policy) } });

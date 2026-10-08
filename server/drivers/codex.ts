@@ -357,6 +357,34 @@ export function codexShellDisabled(config: unknown): boolean {
   return features?.shell_tool === false && features?.unified_exec === false && features?.view_image === false;
 }
 
+/** Thread-config overrides that add `patterns` to the person's shell
+ * exclusions, given the effective shell_environment_policy (config/read).
+ * Codex keeps two representations: the legacy `exclude`/`include_only`
+ * lists and the keyed `filters` table (pattern → "exclude" | "include").
+ * A higher layer that writes one drops the other from the layers below
+ * (codex-cli 0.160), so the person's rules are extended in the
+ * representation they use. codex-cli 0.160 also reports every unset field
+ * as null: null means absent. Anything else unexpected refuses the turn. */
+function extendShellExclusions(policy: Record<string, unknown>, patterns: readonly string[]): Record<string, unknown> {
+  const unconfirmed = () => new Error("Codex could not confirm its shell environment exclusions. No prompt was sent.");
+  const exclude = policy.exclude ?? undefined;
+  const filters = policy.filters ?? undefined;
+  if (exclude !== undefined && (!Array.isArray(exclude) || exclude.some(name => typeof name !== "string"))) throw unconfirmed();
+  if (filters === undefined) {
+    return { "shell_environment_policy.exclude": [...new Set([...(exclude ?? []) as string[], ...patterns])] };
+  }
+  const table = plainRecord(filters);
+  if (!table || Object.values(table).some(action => action !== "exclude" && action !== "include")) throw unconfirmed();
+  // One Codex layer cannot mix the two; writing filters would drop the lists.
+  if (exclude !== undefined || (policy.include_only ?? undefined) !== undefined) throw unconfirmed();
+  // Patterns match, merge across layers, and must be unique ignoring case.
+  const ours = new Set(patterns.map(pattern => pattern.toLowerCase()));
+  return { "shell_environment_policy.filters": Object.fromEntries([
+    ...Object.entries(table).filter(([pattern]) => !ours.has(pattern.toLowerCase())),
+    ...patterns.map(pattern => [pattern, "exclude"]),
+  ]) };
+}
+
 /** Codex persists these values on its native thread. Keep them explicit on
  * start, resume, and every turn so switching modes cannot leave a more
  * permissive sandbox/reviewer stuck to the next request. */
@@ -1681,12 +1709,7 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
           if (rawPolicy !== undefined && (!rawPolicy || typeof rawPolicy !== "object" || Array.isArray(rawPolicy))) {
             throw new Error("Codex could not confirm its shell environment policy. No prompt was sent.");
           }
-          const policy = (rawPolicy ?? {}) as Record<string, unknown>;
-          const excluded = policy.exclude === undefined ? [] : policy.exclude;
-          if (!Array.isArray(excluded) || excluded.some(name => typeof name !== "string")) {
-            throw new Error("Codex could not confirm its shell environment exclusions. No prompt was sent.");
-          }
-          selectionConfig.config!["shell_environment_policy.exclude"] = [...new Set([...excluded, "OMB_GATE_CONFIG_*"])];
+          Object.assign(selectionConfig.config!, extendShellExclusions((rawPolicy ?? {}) as Record<string, unknown>, ["OMB_GATE_CONFIG_*"]));
           const catalog = (effectiveConfig as { mcp_servers?: unknown } | null)?.mcp_servers;
           if (!catalog || typeof catalog !== "object" || Array.isArray(catalog)) throw new Error("Codex could not confirm its selected MCP configuration. No prompt was sent.");
           for (const [name, entry] of Object.entries(catalog)) {
