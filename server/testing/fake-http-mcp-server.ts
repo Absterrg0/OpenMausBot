@@ -41,6 +41,8 @@ export interface FakeHttpMcpOptions {
   askOnCall?: string;
   /** serve https:// with this key and certificate (testing/test-tls.ts) */
   tls?: { key: string; cert: string };
+  /** the loopback address to listen on (default 127.0.0.1; "::1" for IPv6) */
+  host?: "127.0.0.1" | "::1";
 }
 
 export interface FakeHttpMcpTool {
@@ -193,10 +195,11 @@ export async function startFakeHttpMcp(options: FakeHttpMcpOptions = {}): Promis
     })();
   };
   const server: Server | HttpsServer = options.tls ? createHttpsServer({ key: options.tls.key, cert: options.tls.cert }, handle) : createServer(handle);
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const host = options.host ?? "127.0.0.1";
+  await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(0, host, () => { server.off("error", reject); resolve(); }); });
   const { port } = server.address() as AddressInfo;
   return {
-    url: `${options.tls ? "https" : "http"}://127.0.0.1:${port}/${transport === "sse" ? "sse" : "mcp"}`,
+    url: `${options.tls ? "https" : "http"}://${host === "::1" ? "[::1]" : host}:${port}/${transport === "sse" ? "sse" : "mcp"}`,
     seenHeaders,
     calls,
     get delayedToolsLists() { return delayedToolsLists; },

@@ -101,6 +101,34 @@ describe("Codex native diagnostic sanitization", () => {
   });
 });
 
+// The fake must report what codex-cli 0.160.1's config/read does, or a test
+// pins a policy the driver never meets.
+describe("fake app-server shell policy", () => {
+  const readPolicy = async (args: string[], policy: unknown) => {
+    const child = spawn(process.execPath, [FAKE_CLI, "app-server", ...args], {
+      env: { ...Object.fromEntries(Object.entries(process.env).filter(([name]) => !name.startsWith("FAKE_CODEX_"))), FAKE_CODEX_SHELL_ENVIRONMENT_POLICY: JSON.stringify(policy) },
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    try {
+      const lines = createInterface({ input: child.stdout });
+      child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id: 1, method: "config/read", params: { includeLayers: false } })}\n`);
+      for await (const line of lines) {
+        const frame = JSON.parse(line);
+        if (frame.id === 1) return frame.result.config.shell_environment_policy;
+      }
+    } finally {
+      child.kill();
+    }
+  };
+
+  it("lets a `-c exclude` override drop the lower layers' filters but keep their include_only", async () => {
+    const policy = await readPolicy(["-c", 'shell_environment_policy.exclude=["OPENMAUSBOT_CHATGPT_TOKEN"]'],
+      { filters: { "USER_SECRET_*": "exclude" }, include_only: ["PATH", "HOME"] });
+    expect(policy).toMatchObject({ exclude: ["OPENMAUSBOT_CHATGPT_TOKEN"], filters: null, include_only: ["PATH", "HOME"] });
+    expect(await readPolicy([], { filters: { "USER_SECRET_*": "exclude" } })).toMatchObject({ exclude: null, filters: { "USER_SECRET_*": "exclude" } });
+  });
+});
+
 describe("CodexDriver turns (fake app-server)", () => {
   let instance: ProviderInstance;
   let recorder: EventRecorder;
@@ -1277,17 +1305,39 @@ process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:m.id,result})+'\\n');});`)
       expect(envVars).toEqual(expect.arrayContaining(["HTTPS_PROXY", "NODE_EXTRA_CA_CERTS"]));
       // the proxy's own switches ride its env table, never the shell's environment
       expect(envVars).not.toContain("NODE_USE_ENV_PROXY");
-      expect(seen.argv).toContain('mcp_servers.whop.env={ "NODE_USE_ENV_PROXY" = "1", "NO_PROXY" = "localhost,127.0.0.1,::1", "no_proxy" = "localhost,127.0.0.1,::1" }');
+      expect(seen.argv).toContain('mcp_servers.whop.env={ "NODE_USE_ENV_PROXY" = "1", "NO_PROXY" = "localhost,127.0.0.1,::1,[::1]", "no_proxy" = "localhost,127.0.0.1,::1,[::1]" }');
       expect(seen.env.NODE_USE_ENV_PROXY).toBeUndefined();
-      // an http:// server is reached directly: Node 24's fetch hangs on a
-      // plain http request through an env proxy (mcp-gate-config.ts)
-      expect(seen.argv.some((arg: string) => arg.startsWith("mcp_servers.plain.env="))).toBe(false);
+      // an http:// server is reached directly, the switch explicitly off:
+      // Node 24's fetch hangs on a plain http request through an env proxy
+      // (mcp-gate-config.ts)
+      expect(seen.argv).toContain('mcp_servers.plain.env={ "NODE_USE_ENV_PROXY" = "0" }');
       expect(JSON.parse(seen.argv.find((arg: string) => arg.startsWith("mcp_servers.plain.env_vars=")).split("=").slice(1).join("="))).not.toContain("NODE_USE_ENV_PROXY");
       // the person's own settings reach both, unchanged, and are not excluded
       expect(seen.env.HTTPS_PROXY).toBe("http://proxy.example.test:3128");
       const exclusions = seen.calls.find((call: { method: string }) => call.method === "thread/start").params.config["shell_environment_policy.exclude"];
       expect(exclusions).not.toContain("HTTPS_PROXY");
       expect(exclusions).not.toContain("NODE_EXTRA_CA_CERTS");
+    });
+
+    // A `-c shell_environment_policy.exclude` would replace the lower
+    // layers' list and drop their filters (codex-cli 0.160.1); the token is
+    // added to the policy in the person's own representation instead, on
+    // every plan turn, with or without mounts.
+    it.each([
+      ["list", { exclude: ["USER_SECRET_*"] }, "shell_environment_policy.exclude", ["USER_SECRET_*", "OPENMAUSBOT_CHATGPT_TOKEN"]],
+      ["filters", { filters: { "USER_SECRET_*": "exclude" } }, "shell_environment_policy.filters", { "USER_SECRET_*": "exclude", OPENMAUSBOT_CHATGPT_TOKEN: "exclude" }],
+    ] as const)("keeps the person's own shell %s and adds the plan token to it", async (_name, policy, key, expected) => {
+      plan();
+      await create({ mode: "resume", authMode: "chatgpt-plan", environment: { FAKE_CODEX_SHELL_ENVIRONMENT_POLICY: JSON.stringify(policy) } });
+      const dump = join(scratch, "plan-own-policy.json");
+      process.env.FAKE_CODEX_DUMP = dump;
+      for (const resumeCursor of [undefined, "old-session"]) {
+        const { turnId } = await instance.adapter.sendTurn({ threadId: "t-plan-own-policy", text: "go", model: "gpt-6.1-sol", resumeCursor });
+        expect(await recorder.until((event) => event.type === "turn.completed" && event.turnId === turnId)).toMatchObject({ ok: true });
+        const seen = JSON.parse(readFileSync(dump, "utf8"));
+        const thread = seen.calls.find((call: { method: string }) => call.method === (resumeCursor ? "thread/resume" : "thread/start"));
+        expect(thread.params.config).toEqual({ [key]: expected });
+      }
     });
 
     it("refuses the turn when Codex's shell exclusions cannot be confirmed", async () => {
@@ -1628,10 +1678,13 @@ process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:m.id,result})+'\\n');});`)
       if (plan) {
         expect(seen.env.CODEX_HOME.startsWith(join(DATA_DIR, "providers", "chatgpt-plan") + sep)).toBe(true);
         expect(seen.env.CODEX_HOME).not.toBe(join(scratch, ".codex"));
-        expect(seen.argv).toContain('shell_environment_policy.exclude=["OPENMAUSBOT_CHATGPT_TOKEN"]');
+        // the token is excluded on the thread, not by a `-c exclude` that
+        // would replace the policy's lower layers
+        expect(seen.argv.some((arg: string) => arg.startsWith("shell_environment_policy.exclude="))).toBe(false);
       } else expect(seen.env.CODEX_HOME).toBe(join(scratch, ".codex"));
       const threadCalls = seen.calls.filter((call: { method: string }) => ["thread/start", "thread/resume"].includes(call.method));
       expect(threadCalls).toHaveLength(1);
+      if (plan) expect(threadCalls[0].params.config["shell_environment_policy.exclude"]).toEqual(["OPENMAUSBOT_CHATGPT_TOKEN"]);
       expect(threadCalls[0]).toMatchObject({
         method: index ? "thread/resume" : "thread/start",
         params: { model: expectedModel, modelProvider, ...(index ? { threadId: "codex-thread-1" } : {}) },

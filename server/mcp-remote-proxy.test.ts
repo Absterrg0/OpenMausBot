@@ -543,6 +543,52 @@ describe("remote MCP tool directory", () => {
     }
   });
 
+  // Node's env-proxy matcher compares an IPv6 host in its bracketed form,
+  // so only the "[::1]" NO_PROXY entry keeps https://[::1] off the proxy.
+  it.skipIf(!tls)("reaches an https server on IPv6 loopback directly, never through the proxy", async (ctx) => {
+    try {
+      fake = await startFakeHttpMcp({ tools: catalog, tls, host: "::1" });
+    } catch {
+      return ctx.skip(); // no IPv6 loopback on this machine
+    }
+    // a proxy that records what it is asked and answers nothing
+    const tunnels: string[] = [];
+    const proxy = createServer((req, res) => { tunnels.push(`${req.method} ${req.url}`); res.writeHead(502).end(); });
+    proxy.on("connect", (req: IncomingMessage, client: Socket) => { tunnels.push(`CONNECT ${req.url}`); client.end("HTTP/1.1 502 Bad Gateway\r\n\r\n"); });
+    await new Promise<void>((resolve) => proxy.listen(0, "127.0.0.1", resolve));
+    try {
+      const via = `http://127.0.0.1:${(proxy.address() as AddressInfo).port}`;
+      const descriptor = mcpStdioServer(spec(fake.url), { directory: { name: "whop" }, sourceEnv: { HTTPS_PROXY: via, NODE_EXTRA_CA_CERTS: tls!.certPath } })!;
+      expect(descriptor.env!.NODE_USE_ENV_PROXY).toBe("1");
+      start(descriptor, withoutProxies());
+      const answer = await request("initialize", { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "fixture", version: "1" } });
+      expect(tunnels).toEqual([]);
+      // Node 24's fetch checks an https://[::1] certificate against "::1."
+      // and refuses it, proxy or none; Node 26 connects.
+      if (Number(process.versions.node.split(".")[0]) >= 26) expect(answer.result.serverInfo.name).toBe("fake-http-mcp");
+    } finally {
+      proxy.closeAllConnections();
+      await new Promise<void>((resolve) => proxy.close(() => resolve()));
+    }
+  });
+
+  // The gate and some engines hand the proxy child this process's whole
+  // environment: a switch set here must not send an http:// server through
+  // the proxy, where Node 24 fails it and Node 26 forwards it.
+  it("reaches an http server directly when this process turns the proxy switch on", async () => {
+    fake = await startFakeHttpMcp({ tools: catalog });
+    const unreachable = "http://127.0.0.1:9";
+    const inherited = { ...withoutProxies(), NODE_USE_ENV_PROXY: "1", HTTP_PROXY: unreachable, HTTPS_PROXY: unreachable };
+    for (const sourceEnv of [inherited, { NODE_USE_ENV_PROXY: "1" }]) {
+      const descriptor = mcpStdioServer(spec(fake.url), { directory: { name: "whop" }, sourceEnv })!;
+      expect(descriptor.env!.NODE_USE_ENV_PROXY).toBe("0");
+      start(descriptor, inherited);
+      await initialize();
+      expect((await request("tools/list")).result.tools).toHaveLength(3);
+      const stopped = once(child!, "close"); child!.kill(); await stopped;
+    }
+  });
+
   it("runs from the shipped bundle, schema checks included", async () => {
     fake = await startFakeHttpMcp({ tools: catalog });
     const scratch = mkdtempSync(join(tmpdir(), "omb-directory-bundle-"));

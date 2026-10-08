@@ -44,22 +44,28 @@ const PROXY_ENV = ["HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"];
 
 /** Never sent through a proxy: Node's env-proxy mode, unlike curl, does
  * not exempt this computer on its own, and a URL server on loopback (a
- * local tool, a test) is unreachable through a corporate proxy. */
-const LOOPBACK = ["localhost", "127.0.0.1", "::1"];
+ * local tool, a test) is unreachable through a corporate proxy. Node
+ * matches an IPv6 host in its bracketed form, so https://[::1] is exempt
+ * only through "[::1]"; the bare "::1" is kept for tools that read it so. */
+const LOOPBACK = ["localhost", "127.0.0.1", "::1", "[::1]"];
 
 /** The proxy's network settings for a server at `url`.
  *
  * Node's fetch ignores the proxy variables unless NODE_USE_ENV_PROXY is set,
- * and that switch is set only for an https:// server. On Node 24 (CI, the
+ * and that switch is on only for an https:// server. On Node 24 (CI, the
  * Cloud image, Electron 43) a plain http:// request through an env proxy
  * hangs: it never reaches the proxy and ignores its own AbortSignal, so an
  * http:// server would never answer. An https:// request goes through the
  * proxy's CONNECT tunnel and works. An http:// server is reached directly,
- * as it was before proxies were passed on at all. */
+ * as it was before proxies were passed on at all: the switch is turned off
+ * ("0") whenever a proxy, or the switch itself, could otherwise reach the
+ * child, since a gate or an engine may hand it this process's environment. */
 function networkEnv(source: NodeJS.ProcessEnv | Record<string, string | undefined>, url: string): Record<string, string> {
   const env: Record<string, string> = {};
   for (const name of NETWORK_ENV) if (source[name]) env[name] = source[name];
-  if (new URL(url).protocol === "https:" && PROXY_ENV.some((name) => env[name])) {
+  if (new URL(url).protocol !== "https:") {
+    if (source.NODE_USE_ENV_PROXY || PROXY_ENV.some((name) => env[name])) env.NODE_USE_ENV_PROXY = "0";
+  } else if (PROXY_ENV.some((name) => env[name])) {
     env.NODE_USE_ENV_PROXY = source.NODE_USE_ENV_PROXY || "1";
     // One list under both spellings, since either may be the one read.
     const bypass = [env.no_proxy, env.NO_PROXY].flatMap((list) => (list ?? "").split(",")).map((entry) => entry.trim()).filter(Boolean);

@@ -181,7 +181,9 @@ export function chatgptPlanCodexArgs(): string[] {
     "-c", 'cli_auth_credentials_store="ephemeral"',
     "-c", "features.tool_search=false",
     "-c", "shell_environment_policy.ignore_default_excludes=false",
-    "-c", 'shell_environment_policy.exclude=["OPENMAUSBOT_CHATGPT_TOKEN"]',
+    // OPENMAUSBOT_CHATGPT_TOKEN is excluded on the thread, in the policy's
+    // own representation (extendShellExclusions): a `-c exclude` here would
+    // replace the lower layers' list and drop their filters.
   ];
 }
 
@@ -1797,9 +1799,12 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
           if (provenPrivateEnv ? snapshot !== false : snapshot === true) {
             throw new Error("Codex could not disable inherited shell snapshots. No prompt was sent.");
           }
+        }
+        if (privateEnv.length || plan) {
           // Extend the effective policy, never replace it, for both new and
           // resumed threads, so local, Company and ChatGPT turns keep the
-          // person's own exclusions and a plan turn keeps its token's.
+          // person's own exclusions, and a plan turn adds its token's to
+          // them on every turn, mounts or none.
           const rawPolicy = (effectiveConfig as { shell_environment_policy?: unknown } | null)?.shell_environment_policy;
           if (rawPolicy !== undefined && (!rawPolicy || typeof rawPolicy !== "object" || Array.isArray(rawPolicy))) {
             throw new Error("Codex could not confirm its shell environment policy. No prompt was sent.");

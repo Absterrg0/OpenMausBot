@@ -53,10 +53,10 @@ describe("tool directory configuration", () => {
     const proxy = mcpStdioServer(remote, { sourceEnv })!;
     expect(proxy.env).toMatchObject({ HTTPS_PROXY: "http://proxy.example.test:3128", NODE_EXTRA_CA_CERTS: "/etc/corp-ca.pem", SSL_CERT_FILE: "/etc/ssl/cert.pem", NODE_USE_ENV_PROXY: "1" });
     // this computer never goes through the proxy, under either spelling, the person's own list kept
-    expect(proxy.env!.NO_PROXY).toBe("localhost,127.0.0.1,::1");
-    expect(proxy.env!.no_proxy).toBe("localhost,127.0.0.1,::1");
+    expect(proxy.env!.NO_PROXY).toBe("localhost,127.0.0.1,::1,[::1]");
+    expect(proxy.env!.no_proxy).toBe("localhost,127.0.0.1,::1,[::1]");
     const merged = mcpStdioServer(remote, { sourceEnv: { HTTP_PROXY: "http://proxy.example.test:3128", NO_PROXY: "corp.internal, .example.org", no_proxy: "build.local" } })!;
-    expect(merged.env!.NO_PROXY).toBe("build.local,corp.internal,.example.org,localhost,127.0.0.1,::1");
+    expect(merged.env!.NO_PROXY).toBe("build.local,corp.internal,.example.org,localhost,127.0.0.1,::1,[::1]");
     expect(merged.env!.no_proxy).toBe(merged.env!.NO_PROXY);
     expect(proxy.env).not.toHaveProperty("UNRELATED_SECRET");
     expect(proxy.env).not.toHaveProperty("PATH");
@@ -78,21 +78,27 @@ describe("tool directory configuration", () => {
     for (const sourceEnv of [{ HTTP_PROXY: "http://proxy.example.test:3128" }, { HTTPS_PROXY: "http://proxy.example.test:3128", no_proxy: "corp.internal" }]) {
       const secure = mcpStdioServer(remote, { sourceEnv })!.env!;
       expect(secure.NODE_USE_ENV_PROXY).toBe("1");
-      expect(secure.NO_PROXY!.split(",")).toEqual(expect.arrayContaining(["localhost", "127.0.0.1", "::1"]));
+      // Node matches an IPv6 host bracketed: only "[::1]" exempts https://[::1]
+      expect(secure.NO_PROXY!.split(",")).toEqual(expect.arrayContaining(["localhost", "127.0.0.1", "::1", "[::1]"]));
       expect(secure.no_proxy).toBe(secure.NO_PROXY);
       const plain = mcpStdioServer(http, { sourceEnv })!.env!;
-      expect(plain).not.toHaveProperty("NODE_USE_ENV_PROXY");
+      // explicitly off, so an inherited switch cannot turn it back on
+      expect(plain.NODE_USE_ENV_PROXY).toBe("0");
       // the person's own list passes on as it was, nothing added
       expect(plain.NO_PROXY).toBeUndefined();
       expect(plain.no_proxy).toBe(sourceEnv.no_proxy);
       for (const descriptor of [
         gateServer({ name: "whop", server: http, threadId: "disposable-thread", budget: 0, toolScope: { allow: [] }, sourceEnv })!,
         gateServer({ name: "whop", server: http, threadId: "disposable-thread", budget: 0, toolScope: { allow: [] }, directory: true, sourceEnv })!,
-      ]) expect(JSON.parse(descriptor.env.OMB_GATE_UPSTREAM).env).not.toHaveProperty("NODE_USE_ENV_PROXY");
+      ]) expect(JSON.parse(descriptor.env.OMB_GATE_UPSTREAM).env.NODE_USE_ENV_PROXY).toBe("0");
       expect(JSON.parse(gateServer({ name: "whop", server: remote, threadId: "disposable-thread", budget: 0, toolScope: { allow: [] }, sourceEnv })!.env.OMB_GATE_UPSTREAM).env.NODE_USE_ENV_PROXY).toBe("1");
     }
+    // the switch alone, inherited from this process, is turned off too
+    expect(mcpStdioServer(http, { sourceEnv: { NODE_USE_ENV_PROXY: "1" } })!.env!.NODE_USE_ENV_PROXY).toBe("0");
+    // with neither a proxy nor the switch, nothing is said about it
+    expect(mcpStdioServer(http, { sourceEnv: {} })!.env).not.toHaveProperty("NODE_USE_ENV_PROXY");
     // an SSE server follows its own URL's scheme too
-    expect(mcpStdioServer({ ...remote, type: "sse", url: "http://mcp.example.test/sse" }, { sourceEnv: { HTTPS_PROXY: "http://p:1" } })!.env).not.toHaveProperty("NODE_USE_ENV_PROXY");
+    expect(mcpStdioServer({ ...remote, type: "sse", url: "http://mcp.example.test/sse" }, { sourceEnv: { HTTPS_PROXY: "http://p:1" } })!.env!.NODE_USE_ENV_PROXY).toBe("0");
     expect(mcpStdioServer({ ...remote, type: "sse", url: "https://mcp.example.test/sse" }, { sourceEnv: { HTTPS_PROXY: "http://p:1" } })!.env!.NODE_USE_ENV_PROXY).toBe("1");
   });
 
