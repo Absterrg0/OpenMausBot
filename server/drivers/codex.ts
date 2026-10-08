@@ -17,6 +17,7 @@ import { homedir } from "node:os";
 import { codexConfigMcpServerNames, mountedMcpServerName } from "./codex-mcp-names.ts";
 
 import { DATA_DIR, stripWorkspaceCredentialEnv } from "../config.ts";
+import { laterStartup, openStartupModelCatalog, writeStartupModelCache } from "../startup-model-catalog.ts";
 import { hostedWorkspaceConfigured } from "../enterprise.ts";
 import { cloudHomeConfigured } from "../cloud-home.ts";
 import { serverVersion } from "../environment.ts";
@@ -688,28 +689,50 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
     let disposed = false;
     let planWarning: string | undefined;
     let models = plan ? { default: "", options: [] } : config.managed ? { default: config.managed.models[0], options: config.managed.models.map(id => ({ id, label: id })) } : STATIC_CODEX_MODELS;
-    const refreshModels = async () => {
+    const refreshModels = async (preserveExisting = false) => {
       if (config.managed) return;
       if (planAuth) {
         const generation = planGeneration;
-        models = { default: "", options: [] };
-        if (!planUnavailable && !planSigningOut && !disposed) {
-          const catalog = await planAuth.models();
-          if (generation === planGeneration && !planSigningOut && !disposed) models = catalog;
+        const kept = preserveExisting && models.options.length > 0 ? models : null;
+        if (!kept) models = { default: "", options: [] };
+        try {
+          if (!planUnavailable && !planSigningOut && !disposed) {
+            const catalog = await planAuth.models();
+            if (generation === planGeneration && !planSigningOut && !disposed && (!kept || catalog.options.length)) models = catalog;
+          }
+        } catch (error) {
+          // A deferred refresh keeps the list already being served. An
+          // explicit refresh still clears first and reports the error.
+          if (!kept) throw error;
         }
-        return;
+      } else {
+        try {
+          const resolved = await readCodexModelCatalog(catalogEnv, fetch, config.cli);
+          if (resolved.options.length) models = resolved;
+        } catch {
+          // Keep the last usable catalog when a local provider is down.
+        }
       }
-      try {
-        const resolved = await readCodexModelCatalog(catalogEnv, fetch, config.cli);
-        if (resolved.options.length) models = resolved;
-      } catch {
-        // Keep the last usable catalog when a local provider is down.
-      }
+      try { writeStartupModelCache(instanceId, models); } catch { /* derived cache */ }
     };
     // A revoked grant or a temporary catalog outage must leave the account
     // reachable in Settings for reconnect; it must not become a shadow.
-    if (planAuth) { try { await refreshModels(); } catch { /* Explicit refresh reports the error. */ } }
-    else await refreshModels();
+    // A later start serves the saved list and refreshes behind listen.
+    let startupModelRefresh: Promise<void> | null = null;
+    if (config.managed) {
+      await refreshModels();
+    } else {
+      startupModelRefresh = (await openStartupModelCatalog({
+        instanceId,
+        use: (catalog) => { models = catalog; },
+        current: () => models,
+        refresh: async () => {
+          if (planAuth) {
+            try { await refreshModels(laterStartup()); } catch { /* Explicit refresh reports the error. */ }
+          } else await refreshModels();
+        },
+      }))?.pending ?? null;
+    }
     // Codex's own ChatGPT login (not ChatGPT plan, whose tokens OpenMausBot
     // holds, nor Company routing) can be refused by OpenAI while `codex login
     // status` still reports it. A refusal marks it the way a rejected API key
@@ -765,6 +788,7 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
     });
 
     const sendTurn = async (turn: SendTurnInput) => {
+      if (startupModelRefresh) await startupModelRefresh;
       turn = { ...turn, toolScope: assertToolScopeSupported(DRIVER_KIND, turn.toolScope) };
       const generation = planGeneration;
       const assertPlanCurrent = () => {
@@ -2075,6 +2099,7 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
       return models;
     },
     refreshModels,
+    ...(startupModelRefresh ? { startupModelRefresh } : {}),
     ...(plan ? { authenticationMethod: "browser-pkce" as const } : {}),
     startAuthentication: async () => {
       if (planUnavailable) throw new Error(planUnavailable);

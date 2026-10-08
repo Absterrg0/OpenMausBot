@@ -16,6 +16,7 @@ import { homedir, tmpdir } from "node:os";
 import { join, dirname, isAbsolute, normalize } from "node:path";
 
 import { DATA_DIR, stripWorkspaceCredentialEnv } from "../config.ts";
+import { openStartupModelCatalog, writeStartupModelCache } from "../startup-model-catalog.ts";
 import { writeFileAtomic, writeFileAtomicIfChanged } from "../atomic.ts";
 import { augmentedPath } from "../env-path.ts";
 import { brokerSocketPath, describeSpawnFailure, execCli, killCliTree, spawnCli } from "../procs.ts";
@@ -1177,8 +1178,16 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
       } catch {
         // Keep the last usable catalog when settings.json is unreadable.
       }
+      try { writeStartupModelCache(instanceId, models); } catch { /* derived cache */ }
     };
-    await refreshModels();
+    // A later start serves the saved list and refreshes behind listen.
+    // The first run still waits so the seeded default model does not change.
+    const startupModelRefresh = config.managed ? null : (await openStartupModelCatalog({
+      instanceId,
+      use: (catalog) => { models = catalog; },
+      current: () => models,
+      refresh: refreshModels,
+    }))?.pending ?? null;
 
     // The installed CLI's version as snapshot() last read it, so a flag the
     // CLI does not know is never passed to it (CLAUDE_FLAG_FLOORS). The
@@ -1378,6 +1387,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
     const retryState = new Map<string, { attempt: number; cancelled: boolean; rebuilt?: boolean }>();
 
     const sendTurn = async (turn: SendTurnInput, logicalTurnId?: string) => {
+      if (startupModelRefresh) await startupModelRefresh;
       turn = { ...turn, toolScope: assertToolScopeSupported(DRIVER_KIND, turn.toolScope) };
       if (config.managedModels && (!turn.model || !config.managedModels.includes(turn.model))) throw new Error("This model is not assigned to this workspace.");
       if (config.requireApiKey && !input.environment.ANTHROPIC_API_KEY) throw new Error(NO_ANTHROPIC_KEY);
@@ -2626,6 +2636,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
         return models;
       },
       refreshModels,
+      ...(startupModelRefresh ? { startupModelRefresh } : {}),
       snapshot,
       startAuthentication: () => login.start(),
       getAuthentication: (flowId) => login.get(flowId),

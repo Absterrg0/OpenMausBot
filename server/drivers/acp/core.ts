@@ -31,6 +31,7 @@ import { basename, dirname, isAbsolute, relative, resolve } from "node:path";
 import { createHash } from "node:crypto";
 
 import { PROVIDER_CREDENTIAL_ENV, stripControlPlaneEnv, WORKSPACE_CREDENTIAL_ENV } from "../../config.ts";
+import { openStartupModelCatalog, writeStartupModelCache } from "../../startup-model-catalog.ts";
 import { decodeInjectId } from "../local-inject.ts";
 import { DeviceAuthController, type DeviceSignIn } from "../device-auth.ts";
 import { deletePromptSplitReceipt, promptHalves, readPromptSplitReceipt, splitSessionPrompt, writePromptSplitReceipt } from "../prompt-split.ts";
@@ -705,8 +706,23 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
         } catch {
           // Keep the last usable catalog when an optional discovery source is down.
         }
+        try { writeStartupModelCache(instanceId, models); } catch { /* derived cache */ }
       };
-      if (support.resolveModelsOnCreate !== false) await refreshModels();
+      // A later start serves the saved list and refreshes behind listen.
+      // The first run still waits so the seeded default model does not change.
+      // Engines with no resolver (Gemini, custom ACP) and Antigravity
+      // (resolveModelsOnCreate: false) stay on the instant path.
+      let startupModelRefresh: Promise<void> | null = null;
+      if (support.resolveModels && support.resolveModelsOnCreate !== false) {
+        startupModelRefresh = (await openStartupModelCatalog({
+          instanceId,
+          use: (catalog) => { models = catalog; },
+          current: () => models,
+          refresh: refreshModels,
+        }))?.pending ?? null;
+      } else if (support.resolveModelsOnCreate !== false) {
+        await refreshModels();
+      }
       const deviceSignIn = support.deviceSignIn
         ? new DeviceAuthController(support.deviceSignIn, { cli: config.cli, environment: () => childEnv(), onAuthenticated: refreshModels })
         : null;
@@ -1540,6 +1556,7 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
       };
 
       const sendTurn = async (turn: SendTurnInput) => {
+        if (startupModelRefresh) await startupModelRefresh;
         const parsedScope = parseToolScope(turn.toolScope);
         if (!parsedScope.ok) throw new Error(parsedScope.error);
         turn = { ...turn, toolScope: parsedScope.scope };
@@ -2276,6 +2293,7 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
           return models;
         },
         refreshModels: support.resolveModels ? refreshModels : undefined,
+        ...(startupModelRefresh ? { startupModelRefresh } : {}),
         ...(deviceSignIn ? {
           startAuthentication: () => deviceSignIn.start(),
           getAuthentication: (flowId: string) => deviceSignIn.get(flowId),
