@@ -2487,8 +2487,10 @@ describe("harness HTTP API", () => {
         return { status: response.status, body };
       };
 
+      // Below Full Access the specialist waits on one review card.
       const direct = await createOperator(chief.threadId, "Direct Task Operator");
-      expect(direct).toMatchObject({ status: 201, body: { section: "Channel creation test" } });
+      expect(direct).toMatchObject({ status: 201, body: { state: "pending" } });
+      expect(direct.body.detail).toContain('Section: "Channel creation test"');
       // a name is quoted into every other room member's system prompt as one
       // line, so one that spans lines is refused here as it is at the profile
       // endpoints — an injected Chief must not be the way round that door
@@ -2721,18 +2723,103 @@ describe("harness HTTP API", () => {
         return { status: response.status, body: await response.json() as { id?: string; error?: string } };
       };
       const folder = mkdtempSync(join(tmpdir(), "omb-create-cwd-"));
-      const landed = await create(`Folder operator ${chief.id}`, folder);
-      expect(landed.status).toBe(201);
-      createdId = landed.body.id;
-      const state = (await api("GET", "/api/bots?messages=0")).body;
-      expect(state.bots.find((bot: { id?: string }) => bot.id === createdId)?.cwd).toBe(folder);
+      const landed = await create(`Folder operator ${chief.id}`, folder) as { status: number; body: { requestId?: string; state?: string; detail?: string } };
+      expect(landed.body).toMatchObject({ state: "pending" });
+      expect(landed.body.detail).toContain(`Working folder: "${folder}"`);
       const relative = await create(`Relative operator ${chief.id}`, "relative/path");
       expect(relative).toMatchObject({ status: 400, body: { error: "working folder must be an absolute path" } });
       const missing = await create(`Missing operator ${chief.id}`, join(folder, "missing"));
       expect(missing.status).toBe(400);
       expect(missing.body.error).toBe(`that folder doesn't exist: ${join(folder, "missing")}`);
+      // Applying the card resumes the Chief, which retires this turn's token.
+      const applied = await fetch(`${BASE}/api/threads/${chief.threadId}/respond`, {
+        method: "POST",
+        headers: { "content-type": "application/json", origin: BASE },
+        body: JSON.stringify({ requestId: landed.body.requestId, behavior: "allow" }),
+      });
+      const result = await applied.json() as { result: { bots: Array<{ id: string }> } };
+      expect(applied.status, JSON.stringify(result)).toBe(200);
+      createdId = result.result.bots[0]?.id;
+      const state = (await api("GET", "/api/bots?messages=0")).body;
+      expect(state.bots.find((bot: { id?: string }) => bot.id === createdId)?.cwd).toBe(folder);
     } finally {
       if (createdId) await api("DELETE", `/api/bots/${createdId}`);
+      await api("DELETE", `/api/bots/${chief.id}`);
+    }
+  });
+
+  it("keeps create_bot on its review card below Full Access, whatever the Chief always allows", async () => {
+    const chief = (await api("POST", "/api/bots")).body.bot;
+    try {
+      expect((await api("PATCH", `/api/bots/${chief.id}`, { chiefOfStaff: true })).status).toBe(200);
+      // Every key a standing grant could plausibly carry for this tool.
+      const grants = ["create_bot", "mcp__agents__create_bot", "mcp__openmausbot__create_bot", "propose_team_setup", "set_up_team"];
+      expect((await api("PATCH", `/api/bots/${chief.id}`, { alwaysAllow: grants })).status).toBe(200);
+      const granted = (await api("GET", "/api/bots?messages=0")).body.bots.find((bot: { id: string }) => bot.id === chief.id);
+      expect(granted.alwaysAllow).toEqual(grants);
+      const before = (await api("GET", "/api/bots?messages=0")).body.bots.length;
+      const token = await mintTestCapability(BASE, chief.id, chief.threadId);
+      const response = await fetch(`${BASE}/api/internal/create-bot`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+        body: JSON.stringify({ name: `Granted operator ${chief.id}`, role: "Ops", instructions: "Work carefully.\nReport back." }),
+      });
+      const card = await response.json() as { state: string; requestId: string; detail: string };
+      expect(response.status).toBe(201);
+      expect(card.state).toBe("pending");
+      expect(card.detail).toContain("+Work carefully.");
+      expect((await api("GET", "/api/bots?messages=0")).body.bots.length).toBe(before);
+      // A team-setup card offers no "Always allow" to remember either.
+      for (const allowKey of grants) {
+        expect((await api("POST", `/api/bots/${chief.id}/always-allow`, { threadId: chief.threadId, allowKey })).status).toBe(409);
+      }
+      const denied = await fetch(`${BASE}/api/threads/${chief.threadId}/respond`, {
+        method: "POST",
+        headers: { "content-type": "application/json", origin: BASE },
+        body: JSON.stringify({ requestId: card.requestId, behavior: "deny" }),
+      });
+      expect((await denied.json() as { result: { state: string } }).result.state).toBe("denied");
+      expect((await api("GET", "/api/bots?messages=0")).body.bots.length).toBe(before);
+    } finally {
+      await api("DELETE", `/api/bots/${chief.id}`);
+    }
+  });
+
+  it("keeps one suggested specialist open per conversation and remembers Not now", async () => {
+    const chief = (await api("POST", "/api/bots")).body.bot;
+    try {
+      expect((await api("PATCH", `/api/bots/${chief.id}`, { chiefOfStaff: true })).status).toBe(200);
+      const before = (await api("GET", "/api/bots?messages=0")).body.bots.length;
+      const token = await mintTestCapability(BASE, chief.id, chief.threadId);
+      const suggest = async (name: string) => {
+        const response = await fetch(`${BASE}/api/internal/create-bot`, {
+          method: "POST",
+          headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+          body: JSON.stringify({ name, role: "Checker", instructions: "Check the totals.", suggestion: true }),
+        });
+        return { status: response.status, body: await response.json() as { state?: string; requestId?: string; title?: string; error?: string } };
+      };
+      const first = await suggest(`Suggested ${chief.id}`);
+      expect(first).toMatchObject({ status: 201, body: { state: "pending", title: `Add @Suggested ${chief.id} to the team?` } });
+      const card = (await api("GET", `/api/threads/${chief.threadId}/messages?limit=20`)).body.messages.find((m: { card?: { requestId?: string } }) => m.card?.requestId === first.body.requestId).card;
+      expect(card.options).toEqual(["Add bot", "Not now"]);
+      expect(await suggest(`Second ${chief.id}`)).toMatchObject({ status: 409, body: { error: expect.stringMatching(/already waiting/) } });
+      const notNow = await fetch(`${BASE}/api/threads/${chief.threadId}/respond`, {
+        method: "POST",
+        headers: { "content-type": "application/json", origin: BASE },
+        body: JSON.stringify({ requestId: first.body.requestId, behavior: "deny" }),
+      });
+      expect((await notNow.json() as { result: { state: string } }).result.state).toBe("denied");
+      const fresh = await mintTestCapability(BASE, chief.id, chief.threadId);
+      const again = await fetch(`${BASE}/api/internal/create-bot`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${fresh}`, "content-type": "application/json" },
+        body: JSON.stringify({ name: `Third ${chief.id}`, role: "Checker", instructions: "Check the totals.", suggestion: true }),
+      });
+      expect(again.status).toBe(409);
+      expect((await again.json() as { error: string }).error).toMatch(/not now/);
+      expect((await api("GET", "/api/bots?messages=0")).body.bots.length).toBe(before);
+    } finally {
       await api("DELETE", `/api/bots/${chief.id}`);
     }
   });
