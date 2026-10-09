@@ -785,6 +785,10 @@ export class RoutineManager {
   private readonly now: () => number;
   private readonly options: RoutineManagerOptions;
   private routines: Routine[] = [];
+  /** Stored routines whose schedule no longer loads. They stay hidden and
+   * never run, but every save writes them back unchanged so unrelated work
+   * cannot delete a row that is still repairable on disk. */
+  private unloadedRoutines: Routine[] = [];
   private runs: RoutineRun[] = [];
   private routineRequestReceipts: RoutineRequestReceipt[] = [];
   private webhookRunReceipts: WebhookRunReceipt[] = [];
@@ -811,7 +815,11 @@ export class RoutineManager {
       this.routines = Array.isArray(disk.routines)
         ? disk.routines.flatMap((routine) => {
             const schedule = loadSchedule(routine.schedule, this.now());
-            if (!schedule) return [];
+            if (!schedule) {
+              console.warn(`routines: keeping ${String(routine.id)} on disk unscheduled; its schedule could not load`);
+              this.unloadedRoutines.push(routine);
+              return [];
+            }
             const target = loadTarget(routine.target);
             const loaded: Routine = {
               ...routine,
@@ -882,6 +890,7 @@ export class RoutineManager {
       }
     } catch (error) {
       this.routines = [];
+      this.unloadedRoutines = [];
       this.runs = [];
       this.routineRequestReceipts = [];
       this.webhookRunReceipts = [];
@@ -1999,7 +2008,7 @@ export class RoutineManager {
     mkdirSync(dirname(this.file), { recursive: true });
     writeFileAtomic(this.file, JSON.stringify({
       version: 1,
-      routines: this.routines,
+      routines: [...this.routines, ...this.unloadedRoutines],
       runs: this.runs,
       routineRequestReceipts: this.routineRequestReceipts,
       webhookRunReceipts: this.webhookRunReceipts,
