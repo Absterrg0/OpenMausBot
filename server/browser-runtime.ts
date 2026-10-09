@@ -53,6 +53,14 @@ export function ownsBrowserViewport(env: NodeJS.ProcessEnv): boolean {
 }
 
 export class TransportError extends Error {}
+
+/** An error the engine answered: the action ran and failed (a page that
+ * would not load). Nothing is left running in the browser, so unlike a
+ * timeout or a lost connection it does not need a restart. Errors mark
+ * themselves with `settled: true`. */
+export function isSettledBrowserFailure(error: unknown): boolean {
+  return (error as { settled?: unknown } | null)?.settled === true;
+}
 type Pending = { resolve: (result: unknown) => void; reject: (error: Error) => void; timer: NodeJS.Timeout };
 
 /** A server-owned JSONL client. Neither child stderr nor its environment is
@@ -473,8 +481,11 @@ export class BrowserRuntime {
     catch (error) {
       // Validation happens before entry. A failed accepted command might still
       // be executing in the daemon; hand-back must not race its completion.
-      gate.uncertain = true;
-      gate.ready = false;
+      // One the engine answered as failed is over, and the browser stays usable.
+      if (!isSettledBrowserFailure(error)) {
+        gate.uncertain = true;
+        gate.ready = false;
+      }
       throw error;
     }
     finally { gate.humans--; this.changed(gate); }

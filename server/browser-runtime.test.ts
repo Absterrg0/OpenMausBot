@@ -84,6 +84,18 @@ describe("browser takeover gate", () => {
     expect(value.interrupted("s")).toBe(false);
   });
 
+  // A page that would not load used to lock the browser behind "Choose
+  // Restart browser…": the engine had answered, nothing was left running.
+  it("keeps the browser usable after an action the engine answered as failed", async () => {
+    const value = runtime();
+    await expect(value.take("s", "owner")).resolves.toBe(false);
+    const answered = Object.assign(new Error("This page could not be opened."), { settled: true });
+    await expect(value.withHumanAction("s", "owner", async () => { throw answered; })).rejects.toBe(answered);
+    expect(value.interrupted("s")).toBe(false);
+    expect(value.canControl("s", "owner")).toBe(true);
+    await expect(value.withHumanAction("s", "owner", async () => "next page")).resolves.toBe("next page");
+  });
+
   it("release cancels an in-flight take and does not grant control afterwards", async () => {
     const value = runtime();
     const action = deferred();
