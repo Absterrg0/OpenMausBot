@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { createElement } from "react";
 import * as React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it, vi } from "vitest";
+import { beforeAll, describe, expect, it, vi } from "vitest";
 
 import {
   ChatMarkdown,
@@ -17,6 +17,8 @@ import {
   localFilePath,
   normalizeMathDelimiters,
   textDirection,
+  ensureChatKatex,
+  messageNeedsKatex,
 } from "./ChatMarkdown";
 import { StoreProvider } from "@/state/store";
 import { ThreadRefsContext } from "./ThreadRefs";
@@ -78,7 +80,29 @@ describe("mention highlighting", () => {
   });
 });
 
+describe("math before katex loads", () => {
+  it("keeps the formula as source until katex is loaded, then typesets it", async () => {
+    expect(messageNeedsKatex("Inline $x$.")).toBe(true);
+    expect(messageNeedsKatex("Jan −$3,000 · Feb −$2,000")).toBe(false);
+    expect(messageNeedsKatex("`const price = '$5'`\n\nUnclosed \\(x")).toBe(false);
+    expect(messageNeedsKatex("```tex\n\\(not rendered\\)\n```")).toBe(false);
+    expect(messageNeedsKatex("\\(x^2\\)")).toBe(true);
+    expect(messageNeedsKatex("Plans: US$5, or $x$ per seat.")).toBe(true);
+    const before = renderToStaticMarkup(createElement(ChatMarkdown, { text: "Inline $x$." }));
+    expect(before).not.toContain('class="katex"');
+    expect(before).toContain("x");
+    await ensureChatKatex();
+    const after = renderToStaticMarkup(createElement(ChatMarkdown, { text: "Inline $x$." }));
+    expect(after).toContain('class="katex"');
+    expect(after).toContain("<mi>x</mi>");
+  });
+});
+
 describe("math rendering", () => {
+  beforeAll(async () => {
+    await ensureChatKatex();
+  });
+
   it.each([
     "\\(x% comment\r\n+y\\)\n\nAfter",
     "> Before \\(x% comment\n> +y\\)\n\nAfter",
