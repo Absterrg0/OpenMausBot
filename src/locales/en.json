@@ -1087,6 +1087,7 @@
   "chat.peer.asked": "asked via ask_bot",
   "chat.peer.delegated": "delegated a task",
   "chat.peer.openedThread": "opened this thread",
+  "chat.peer.requested": "sent a request",
   "chat.assistant": "Assistant",
   "chat.webhookTask": "Webhook task",
   "chat.viewPayload": "View event payload",
