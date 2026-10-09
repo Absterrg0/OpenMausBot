@@ -5091,6 +5091,13 @@ const roomHandoffs = new RoomHandoffs(join(DATA_DIR, "room-handoffs.json"), {
 activeCoordinationForThread = threadId => roomHandoffs.activeDirect(threadId);
 const groupUsageReader = new GroupUsageReader(DATA_DIR);
 try { groupUsageReader.refresh(); } catch { /* accounting must not block startup */ }
+/** Where the person stopped reading a conversation: its newest message now.
+ * The New divider of the next unread visit goes after it. */
+function readCursor(threadId: string): { lastReadMessageId?: string } {
+  const newest = store.activePath(threadId).at(-1)?.id;
+  return newest ? { lastReadMessageId: newest } : {};
+}
+
 function publicGroupState(record: GroupRecord): WireGroup {
   // The organization library's part hashes stay server-side.
   const { installedPackage: _installedPackage, ...group } = record;
@@ -20668,8 +20675,9 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
     }
     m = path.match(/^\/api\/groups\/([\w-]+)\/read$/);
     if (m && method === "POST") {
-      const group = store.patchGroup(m[1], { unread: false });
-      if (!group) return json(res, 404, { error: "no such room" });
+      const room = store.group(m[1]);
+      if (!room) return json(res, 404, { error: "no such room" });
+      const group = store.patchGroup(room.id, { unread: false, ...readCursor(room.threadId) })!;
       broadcast({ kind: "group", group: publicGroupState(group) });
       return json(res, 200, { group: publicGroupState(group) });
     }
@@ -21410,7 +21418,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       const body = await readBody(req);
       requirePinnedClientThread(m[1], body?.threadId);
       const current = requestedTaskBot(m[1], body?.threadId);
-      store.patchTask(current.id, current.threadId, { unread: false });
+      store.patchTask(current.id, current.threadId, { unread: false, ...readCursor(current.threadId) });
       const bot = store.bot(current.id)!;
       const visible = wireBot(bot);
       broadcast({ kind: "bot", bot: visible });
