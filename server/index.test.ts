@@ -8,7 +8,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { once } from "node:events";
 import { createServer, request, type Server } from "node:http";
 import { connect, type Socket } from "node:net";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -49,7 +49,7 @@ async function mintTestCapability(
   baseUrl: string,
   botId: string,
   threadId: string,
-  options: { kind?: "agents" | "connectors" | "computer"; skillAuthoring?: boolean } = {},
+  options: { kind?: "agents" | "connectors" | "computer"; skillAuthoring?: boolean; deliversSavedFiles?: boolean } = {},
 ): Promise<string> {
   const response = await fetch(`${baseUrl}/api/testing/internal-capability`, {
     method: "POST",
@@ -57,7 +57,13 @@ async function mintTestCapability(
       "content-type": "application/json",
       "x-openmausbot-test-capability": TEST_CAPABILITY_KEY,
     },
-    body: JSON.stringify({ botId, threadId, kind: options.kind ?? "agents", skillAuthoring: options.skillAuthoring ?? false }),
+    body: JSON.stringify({
+      botId,
+      threadId,
+      kind: options.kind ?? "agents",
+      skillAuthoring: options.skillAuthoring ?? false,
+      ...(options.deliversSavedFiles ? { deliversSavedFiles: true } : {}),
+    }),
   });
   expect(response.status).toBe(201);
   return ((await response.json()) as { token: string }).token;
@@ -11802,6 +11808,60 @@ describe("bot memory API", () => {
       for (let count = 2; count < 10; count += 1) expect((await attach({ path: "song.mp3" })).status).toBe(200);
       const flooded = await attach({ path: "song.mp3" });
       expect(flooded.status).toBe(429);
+    } finally {
+      await api("DELETE", `/api/bots/${bot.id}`);
+    }
+  });
+
+  it("delivers a file a host engine's turn saved outside its folders by copy, and nothing else from there", async () => {
+    const bot = (await api("POST", "/api/bots", {})).body.bot;
+    try {
+      const attachWith = (token: string, path: string) => fetch(`${BASE}/api/internal/attach-file`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+        body: JSON.stringify({ path }),
+      });
+      // A real turn has made its folders before the engine starts.
+      mkdirSync(workspaceOf(bot.id), { recursive: true });
+      const designs = join(home, "Desktop", "designs", "2026-10-08_News");
+      mkdirSync(designs, { recursive: true });
+      const old = join(designs, "last-week.jpg");
+      writeFileSync(old, "jpeg-old");
+      utimesSync(old, new Date(Date.now() - 3_600_000), new Date(Date.now() - 3_600_000));
+
+      // Without the host-files grant nothing outside the folders is attached, as before.
+      const plain = await mintTestCapability(BASE, bot.id, bot.threadId);
+      writeFileSync(join(designs, "PREVIEW.jpg"), "jpeg-new");
+      expect((await attachWith(plain, join(designs, "PREVIEW.jpg"))).status).toBe(403);
+
+      const token = await mintTestCapability(BASE, bot.id, bot.threadId, { deliversSavedFiles: true });
+      writeFileSync(join(designs, "PREVIEW.jpg"), "jpeg-this-turn");
+      const attached = await attachWith(token, join(designs, "PREVIEW.jpg"));
+      expect(attached.status).toBe(200);
+      const old403 = await attachWith(token, old);
+      expect(old403.status).toBe(403);
+      expect(((await old403.json()) as { error: string }).error).toContain("not saved during this turn");
+      expect((await attachWith(token, designs)).status).toBe(400);
+
+      const dump = await api("GET", `/api/threads/${bot.threadId}/export?format=json`);
+      const delivered = (dump.body.messages as Array<{ id: string; attachments?: Array<{ path: string }> }>)
+        .filter((message) => message.attachments?.length);
+      expect(delivered).toHaveLength(1);
+      const copy = delivered[0]!.attachments![0]!.path;
+      expect(readFileSync(join(designs, "PREVIEW.jpg"), "utf8")).toBe("jpeg-this-turn");
+      const served = await fetch(`${BASE}/api/threads/${bot.threadId}/messages/${delivered[0]!.id}/file`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ path: copy }),
+      });
+      expect(served.status).toBe(200);
+      expect(Buffer.from(await served.arrayBuffer()).toString()).toBe("jpeg-this-turn");
+      // The original folder is still no grant for a message link.
+      expect((await fetch(`${BASE}/api/threads/${bot.threadId}/messages/${delivered[0]!.id}/file`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ path: join(designs, "PREVIEW.jpg") }),
+      })).status).toBe(403);
     } finally {
       await api("DELETE", `/api/bots/${bot.id}`);
     }
