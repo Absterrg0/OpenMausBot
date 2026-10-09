@@ -9,6 +9,7 @@ import {
   CodeBlock,
   HIGHLIGHT_CACHE_MAX,
   HIGHLIGHT_CACHE_MAX_CHARS,
+  HIGHLIGHT_MAX_CHARS,
   samePeers,
   chatUrlTransform,
   markdownImageName,
@@ -415,6 +416,43 @@ it("keeps the newest highlighted code within both the count and the size bound",
     await highlight("huge block");
     expect(painted("huge block")).toBe(false);
     expect(big.slice(1).every(painted)).toBe(true);
+  } finally {
+    for (const close of cleanup) if (typeof close === "function") close();
+    effect.mockImplementation(originalUseEffect);
+    shiki.codeToHtml.mockReset();
+  }
+});
+
+it("leaves a block past the highlight bound as plain text and never tokenizes it", async () => {
+  const originalUseEffect = (await vi.importActual<typeof React>("react")).useEffect;
+  const effects: React.EffectCallback[] = [];
+  const effect = vi.mocked(React.useEffect).mockImplementation((callback) => { effects.push(callback); });
+  shiki.codeToHtml.mockReset();
+  shiki.codeToHtml.mockImplementation(async (code: string) => `<pre class="highlighted">${code.length}</pre>`);
+  const cleanup: ReturnType<React.EffectCallback>[] = [];
+  const paint = (code: string) => {
+    const html = renderToStaticMarkup(createElement(CodeBlock, { code, lang: "json" }));
+    for (const callback of effects.splice(0)) cleanup.push(callback());
+    return html;
+  };
+  try {
+    // exactly at the bound still highlights, as every block did before
+    const atBound = "1".repeat(HIGHLIGHT_MAX_CHARS);
+    paint(atBound);
+    await vi.waitFor(() => expect(shiki.codeToHtml).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(paint(atBound)).toContain('class="highlighted"'));
+
+    // one character past it: the plain <pre> with the full text, and Shiki is never asked
+    shiki.codeToHtml.mockClear();
+    const past = `${"2".repeat(HIGHLIGHT_MAX_CHARS)}x`;
+    const html = paint(past);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(shiki.codeToHtml).not.toHaveBeenCalled();
+    expect(html).not.toContain('class="highlighted"');
+    expect(html).toContain(past);
+    // and a remount still paints it plain, without a highlight pass
+    expect(paint(past)).not.toContain('class="highlighted"');
+    expect(shiki.codeToHtml).not.toHaveBeenCalled();
   } finally {
     for (const close of cleanup) if (typeof close === "function") close();
     effect.mockImplementation(originalUseEffect);

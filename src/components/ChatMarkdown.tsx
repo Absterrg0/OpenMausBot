@@ -208,6 +208,11 @@ async function highlightFence(code: string, lang: string): Promise<string> {
   });
 }
 const highlightKey = (lang: string, code: string) => `${lang}:${hash(code)}`;
+// Past this size a block stays plain text. Shiki tokenizes on the renderer's
+// main thread: 100 KB of TypeScript took 1.1 s, 200 KB 2.3 s and 1 MB 12 s,
+// and HTML that big is never cached (HIGHLIGHT_CACHE_MAX_CHARS), so every
+// remount froze the window again. Chat snippets sit far below the bound.
+export const HIGHLIGHT_MAX_CHARS = 100_000;
 const mermaidKey = (scheme: "dark" | "light", code: string) => `${scheme}:${hash(code)}`;
 
 // A markdown link whose target is a file on this machine: bots hand over
@@ -368,7 +373,8 @@ export interface CodeBlockProps {
 export function CodeBlock({ code, lang }: CodeBlockProps) {
   // a block highlighted before (revisiting a thread) paints highlighted in
   // its first frame instead of plain first and highlighted after the effect
-  const [html, setHtml] = useState<string | null>(() => highlightCache.get(highlightKey(lang, code)) ?? null);
+  const highlightable = code.length <= HIGHLIGHT_MAX_CHARS;
+  const [html, setHtml] = useState<string | null>(() => highlightable ? highlightCache.get(highlightKey(lang, code)) ?? null : null);
   // React compares dangerouslySetInnerHTML by identity: a fresh object each
   // render would rebuild the highlighted DOM on every re-render
   const markup = useMemo(() => (html ? { __html: html } : null), [html]);
@@ -376,6 +382,8 @@ export function CodeBlock({ code, lang }: CodeBlockProps) {
   const [wrapLines, setWrapLines] = useState(false);
 
   useEffect(() => {
+    // a block too big to highlight keeps the plain <pre>
+    if (!highlightable) return setHtml(null);
     const key = highlightKey(lang, code);
     const cached = highlightCache.get(key);
     if (cached) return setHtml(cached);
@@ -392,7 +400,7 @@ export function CodeBlock({ code, lang }: CodeBlockProps) {
     return () => {
       alive = false;
     };
-  }, [code, lang]);
+  }, [code, lang, highlightable]);
 
   const download = () => {
     const filename = getSnippetFileName(lang);
