@@ -19267,7 +19267,20 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         if (!sourceBotId || !mapped.has(sourceBotId)) return [];
         return [{ sourceBotId, targetBotId: watch.toBotId, threadId, groupId: channel?.id }];
       });
-      return json(res, 200, { collaborations, queued, running });
+      // Work sent with coordinate_bots lives in the room handoff tree, not in
+      // the classic delegation queue above. Ids only, like everything here.
+      const handoffs = roomHandoffs.liveEdges()
+        .filter((edge) =>
+          mapped.has(edge.sourceBotId)
+          && mapped.has(edge.targetBotId)
+          && (!edge.groupId || visible.group(edge.groupId)));
+      const links = (state: "queued" | "running") =>
+        handoffs.flatMap(({ state: edgeState, ...link }) => edgeState === state ? [link] : []);
+      return json(res, 200, {
+        collaborations,
+        queued: [...queued, ...links("queued")],
+        running: [...running, ...links("running")],
+      });
     }
 
     // ── routines calendar ────────────────────────────────────────────────
