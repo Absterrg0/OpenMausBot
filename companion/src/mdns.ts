@@ -18,7 +18,7 @@ import { createHash } from "node:crypto";
 import { createSocket } from "node:dgram";
 import { hostname, networkInterfaces } from "node:os";
 
-import { lanAddresses } from "./listener.ts";
+import { lanInterfaces, tailscaleAddress } from "./listener.ts";
 
 const MDNS_ADDRESS = "224.0.0.251";
 const MDNS_PORT = 5353;
@@ -453,17 +453,29 @@ export function defaultHostName(machine = hostname()): string {
   return `openmausbot-${digest}.local`;
 }
 
+/** Point-to-point tunnels: macOS utun (Tailscale, WireGuard, most VPNs),
+ * Linux tun/wg/tailscale0, ZeroTier, PPP and IPsec, and the Windows adapters
+ * named for them. Multicast discovery never crosses one. */
+const TUNNEL_INTERFACE = /^(utun|tun|wg|tailscale|zt|ppp|ipsec)|wireguard|zerotier|vpn/i;
+
 /**
- * Every IPv4 address worth publishing.
+ * Every IPv4 address worth publishing: `lanAddresses()` without tunnels.
  *
- * This is `lanAddresses()` under a name that says why mDNS wants it. It used
- * to be a second copy of the same filter, which is the kind of duplication
- * that stays correct right up until one side learns about a new interface
- * type and the other does not — and the failure then is a phone that
- * discovers the computer but cannot reach it.
+ * It filters `lanInterfaces()` rather than keeping a second copy of the LAN
+ * rules, so the two lists cannot drift apart and leave a phone that discovers
+ * the computer but cannot reach it.
+ *
+ * Tunnels are left out because Bonjour cannot work across them, and joining
+ * the group on one is not harmless: each time a tunnel came or went the
+ * address set changed, so the socket holding those memberships was closed
+ * and rebuilt, and on macOS 27 that close once hung in the kernel (#2513).
+ * A tailnet address is still offered among the pairing endpoints, which do
+ * not need discovery.
  */
-export function advertisableAddresses(): string[] {
-  return lanAddresses();
+export function advertisableAddresses(interfaces = networkInterfaces()): string[] {
+  return lanInterfaces(interfaces)
+    .filter(({ name, address }) => !TUNNEL_INTERFACE.test(name) && !tailscaleAddress([address]))
+    .map(({ address }) => address);
 }
 
 // ── the responder ──────────────────────────────────────────────────────

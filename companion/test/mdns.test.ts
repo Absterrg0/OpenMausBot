@@ -685,6 +685,53 @@ describe("lanAddresses", () => {
   });
 });
 
+// #2513: on macOS 27 the responder's socket hung in close() after joining the
+// group on utun interfaces, and a tunnel coming up was what made it close.
+describe("advertisableAddresses", () => {
+  const ipv4 = (address: string): NetworkInterfaceInfoIPv4 => ({
+    address,
+    netmask: "255.255.255.0",
+    family: "IPv4",
+    mac: "00:00:00:00:00:00",
+    internal: false,
+    cidr: `${address}/24`,
+  });
+
+  it("leaves out a Mac's tunnels and tailnet address, keeping Wi-Fi and its bridges", () => {
+    expect(
+      advertisableAddresses({
+        utun3: [ipv4("10.8.0.2")],
+        utun4: [ipv4("100.102.178.88")],
+        utun5: [ipv4("198.18.0.1")],
+        bridge100: [ipv4("192.168.64.1")],
+        en0: [ipv4("192.168.1.42")],
+      }),
+    ).toEqual(["192.168.1.42", "192.168.64.1"]);
+  });
+
+  it("leaves out Linux and Windows tunnels by name, and a tailnet address on any name", () => {
+    expect(
+      advertisableAddresses({
+        tailscale0: [ipv4("100.101.1.2")],
+        wg0: [ipv4("10.6.0.2")],
+        tun0: [ipv4("10.9.0.2")],
+        ztabcdef12: [ipv4("10.147.17.4")],
+        "OpenVPN Data Channel Offload": [ipv4("10.8.0.6")],
+        Tailscale: [ipv4("100.101.102.103")],
+        unknown0: [ipv4("100.64.0.9")],
+        docker0: [ipv4("172.17.0.1")],
+        wlp2s0: [ipv4("192.168.1.20")],
+      }),
+    ).toEqual(["192.168.1.20", "172.17.0.1"]);
+  });
+
+  it("does not change when a tunnel comes up, so the responder is not rebuilt", () => {
+    const lan = { en0: [ipv4("192.168.1.42")] };
+    expect(advertisableAddresses(lan)).toEqual(["192.168.1.42"]);
+    expect(advertisableAddresses({ ...lan, utun4: [ipv4("100.102.178.88")] })).toEqual(["192.168.1.42"]);
+  });
+});
+
 // Tailscale hands out 100.64.0.0/10 (RFC 6598 shared address space), which
 // is what makes a tailnet address distinguishable from a LAN one — and
 // worth distinguishing, because it is the address that still works when the
