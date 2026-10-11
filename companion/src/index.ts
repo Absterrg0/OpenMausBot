@@ -67,6 +67,9 @@ const WEBHOOK_PORT = num(process.env.OMB_WEBHOOK_PORT, HARNESS_PORT + 1);
 const COMPANION_PORT = num(process.env.OMB_COMPANION_PORT, 8810);
 const CONTROL_PORT = num(process.env.OMB_CONTROL_PORT, 8811);
 const SERVICE_TYPE = "_openmausbot._tcp";
+/** `off` keeps the sidecar off the multicast group entirely, for a machine
+ * where Bonjour misbehaves (#2513). Pairing by QR or typed address remains. */
+const BONJOUR = !/^(off|0|false)$/i.test(process.env.OMB_COMPANION_BONJOUR?.trim() ?? "");
 let hostedUrl = hostedCompanionUrl(process.env.OMB_COMPANION_HOSTED_URL);
 const PRIVATE_ORIGIN = companionOriginSocket(process.env.OMB_COMPANION_INTERNAL_ORIGIN);
 const SECRET_PUBLIC_KEY = normalizedPhoneSecretPublicKey(
@@ -286,8 +289,12 @@ async function main(): Promise<void> {
   // before wifi associates has no addresses yet, and addresses change under
   // a running sidecar. The first check advertises (or says why not), and the
   // interval re-advertises on every change after that.
-  await watcher.check();
-  watcher.start();
+  if (BONJOUR) {
+    await watcher.check();
+    watcher.start();
+  } else {
+    console.log("bonjour: off (OMB_COMPANION_BONJOUR) — pair by QR or typed address");
+  }
 
   const addresses = lanAddresses();
   const tailscale = tailscaleAddress(addresses);
