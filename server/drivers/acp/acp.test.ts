@@ -1852,6 +1852,29 @@ describe("ACP turns (fake CLI)", () => {
     },
   );
 
+  it("sends Grok session/set_model only when the session runs another model", async () => {
+    await create(GrokAgentDriver);
+    process.env.FAKE_ACP_SESSION_MODELS = "grok-4.7|Grok 4.7,grok-4.6|Grok 4.6";
+    try {
+      const configCalls = async (threadId: string, model: string) => {
+        const dump = join(scratch, `${threadId}.json`);
+        process.env.FAKE_ACP_DUMP = dump;
+        const { turnId } = await instance.adapter.sendTurn({
+          threadId, text: "use a skill", model, approvalMode: "auto",
+          integrations: { agents: { command: "node", args: ["/fixture/agents-proxy.mjs"], env: {} } },
+        });
+        await recorder.until((e) => e.type === "turn.completed" && e.turnId === turnId);
+        return existsSync(`${dump}.config.json`) ? JSON.parse(readFileSync(`${dump}.config.json`, "utf8")) : [];
+      };
+      expect(await configCalls("t-grok-same-model", "grok-4.7")).toEqual([]);
+      expect(await configCalls("t-grok-other-model", "grok-4.6")).toEqual([
+        { method: "session/set_model", params: { sessionId: "fake-acp-session", modelId: "grok-4.6" } },
+      ]);
+    } finally {
+      delete process.env.FAKE_ACP_SESSION_MODELS;
+    }
+  });
+
   it.each([
     ["ask", true, "default"],
     ["full", true, "bypassPermissions"],

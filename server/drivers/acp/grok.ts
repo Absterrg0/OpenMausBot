@@ -452,13 +452,10 @@ const support: AcpSupport = {
         await delay(50);
       }
     }
-    if (!turn.model) return;
+    // Repeating set_model can rebuild the harness, dropping its MCP catalog, or reject a valid resumed profile.
+    if (!turn.model || currentModelId === turn.model) return;
     if (narrowsNativeTools(turn.toolScope)) {
-      if (currentModelId !== turn.model) {
-        throw new Error("Grok could not confirm the selected model without replacing its tool profile. Start a new conversation or choose a model with a supported Grok profile. No prompt was sent.");
-      }
-        // Repeating set_model can rebuild the harness or reject a valid resumed profile.
-      return;
+      throw new Error("Grok could not confirm the selected model without replacing its tool profile. Start a new conversation or choose a model with a supported Grok profile. No prompt was sent.");
     }
     try {
       await request("session/set_model", { sessionId, modelId: turn.model });
