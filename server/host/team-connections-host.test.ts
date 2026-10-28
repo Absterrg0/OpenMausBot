@@ -1,7 +1,7 @@
 import { mkdtempSync, readFileSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { Audience } from "../audience.ts";
 import type { AppConfig } from "../config.ts";
@@ -10,6 +10,7 @@ import { McpOAuthManager } from "../mcp-oauth.ts";
 import { personKey } from "../person-key.ts";
 import { excludedWorkspaceAuthPath } from "../workspace-backup-policy.ts";
 import { appsFromCreator } from "../inherited-apps.ts";
+import { APP_TOOLS_ENV } from "../connector-app-tools.ts";
 import { createTeamConnectionsHost } from "./team-connections-host.ts";
 
 const ADA = personKey({ id: "", email: "ada@acme.test" });
@@ -224,5 +225,47 @@ describe("what the bot and the admins are told", () => {
     expect(extras).toEqual({ scopes: { apps: ["gmail"], mcp: ["mail"] }, people: { apps: { gmail: ["ada@acme.test"] }, mcp: { mail: ["ada@acme.test"] } } });
     expect(JSON.stringify(extras)).not.toMatch(/ada-own-mail-key|aaaaaaaa/);
     expect(await setup({ team: false }).host.adminExtras()).toEqual({});
+  });
+});
+
+describe("the connected apps a turn's app tools come from", () => {
+  afterEach(() => { vi.useRealTimers(); });
+  const bot = { id: "scout", name: "Scout" };
+  const GMAIL = { gmail: { connected: true, pending: false, status: "ACTIVE", accounts: [] } };
+  const appTools = (bridges: { composio?: { env: Record<string, string> } }): string[] => JSON.parse(bridges.composio?.env[APP_TOOLS_ENV] ?? "[]");
+
+  it("uses what is known at once, and reads it again in the background once it is a minute old, never waiting on that", async () => {
+    vi.useFakeTimers();
+    const { host, composio } = setup({ team: false });
+    composio.connectedServices.mockResolvedValue(GMAIL as never);
+    host.primeApps();
+    expect(composio.connectedServices, "read at start").toHaveBeenCalledTimes(1);
+    expect(appTools(await host.appsIntegrations(bot, "main-chat", "g1"))).toContain("gmail.search_emails");
+    expect(composio.connectedServices, "the read at start served the first turn").toHaveBeenCalledTimes(1);
+    vi.setSystemTime(Date.now() + 61_000);
+    let answer: (services: never) => void = () => {};
+    composio.connectedServices.mockImplementation(() => new Promise((resolve) => { answer = resolve; }));
+    expect(appTools(await host.appsIntegrations(bot, "main-chat", "g2")), "the known answer while the new read hangs").toContain("gmail.search_emails");
+    expect(composio.connectedServices).toHaveBeenCalledTimes(2);
+    answer({} as never);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(appTools(await host.appsIntegrations(bot, "main-chat", "g3")), "Gmail was disconnected meanwhile").toEqual([]);
+  });
+
+  it("waits a few seconds at most for an installation's first answer, and reads again soon after a failed one", async () => {
+    vi.useFakeTimers();
+    const hanging = setup({ team: false });
+    hanging.composio.connectedServices.mockImplementation(() => new Promise<never>(() => {}));
+    const first = hanging.host.appsIntegrations(bot, "main-chat", "g1");
+    await vi.advanceTimersByTimeAsync(3_000);
+    expect(appTools(await first), "no answer yet: this turn goes without").toEqual([]);
+
+    const { host, composio } = setup({ team: false });
+    composio.connectedServices.mockRejectedValueOnce(new Error("broker down")).mockResolvedValue(GMAIL as never);
+    expect(appTools(await host.appsIntegrations(bot, "main-chat", "g1"))).toEqual([]);
+    expect(appTools(await host.appsIntegrations(bot, "main-chat", "g2"))).toEqual([]);
+    expect(composio.connectedServices, "not read again at once").toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(appTools(await host.appsIntegrations(bot, "main-chat", "g3"))).toContain("gmail.search_emails");
   });
 });
