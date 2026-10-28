@@ -36,7 +36,7 @@ const TOKEN = `ops_fake-team-${randomBytes(8).toString("hex")}`;
 type Row = { id: string; role: string; kind: string; text?: string; card?: { requestId?: string; answered?: string }; replyToId?: string;
   relay?: { kind: string; email: string; name: string }; peerAsk?: { botId: string; name: string };
   inbox?: { kind: string; from: { name: string; email?: string; botId?: string }; via?: { name: string }; origin?: { botId: string; threadId: string; title: string }; replies?: true; answers?: Array<{ by: string; text: string }> } };
-type Task = { threadId: string; title: string; inbox?: true; private?: true; openAsks?: number };
+type Task = { threadId: string; title: string; inbox?: true; private?: true; openAsks?: number; inboxChangedAt?: number };
 type Bot = { id: string; name: string; threadId: string; mainThreadId?: string; busy?: boolean; activity?: string; tasks?: Task[] };
 type Frame = { kind: string; bot?: Bot; notification?: { kind: string; botId: string; threadId: string; title: string; body: string; forPerson?: string } };
 
@@ -351,6 +351,36 @@ it("lets a tag Marco answered in the chat it came from leave his Needs you", asy
   script(null, "Thanks Marco, the numbers stand.");
   await turn(marco, scout, main, "Confirmed, they are right.");
   expect(await listed()).toBe(false);
+}, hostTimeout(120_000));
+
+it("lists Marco's inbox by tab, settles an ask answered from its row, and keeps news until he marks it done", async () => {
+  type Listed = { id: string; kind: string; tab: string; text: string; card?: { requestId?: string } };
+  const listed = async () => (await team.as(marco, "GET", "/api/inbox")).body as { botId: string; threadId: string; rows: Listed[] };
+  const before = marcos.length;
+  const requestId = await approvalFromReporter("rm -rf ./tmp");
+  await until(async () => (await listed()).rows.some((row) => row.card?.requestId === requestId));
+  const view = await listed();
+  expect(view).toMatchObject({ botId: chief.id, threadId: inbox });
+  expect(view.rows.find((row) => row.card?.requestId === requestId)).toMatchObject({ kind: "ask", tab: "needs-you" });
+  expect(view.rows.filter((row) => row.tab === "needs-you").map((row) => row.card?.requestId), "only what waits on him needs him").toEqual([requestId]);
+  expect(view.rows.find((row) => row.text === "Can you approve the travel budget for me?")).toMatchObject({ kind: "message", tab: "info" });
+  expect(view.rows.find((row) => row.text === "The launch moved to Friday."), "answered from the inbox").toMatchObject({ tab: "done" });
+  const ask = view.rows.find((row) => row.card?.requestId === requestId)!;
+  expect((await team.as(marco, "POST", `/api/inbox/${ask.id}/done`)).status, "an ask is settled by its answer").toBe(409);
+
+  const answered = await team.as(marco, "POST", `/api/threads/${inbox}/respond`, { requestId, behavior: "allow" });
+  expect(answered.status, JSON.stringify(answered.body)).toBe(200);
+  await until(async () => (await listed()).rows.find((row) => row.id === ask.id)?.tab === "done");
+  expect((await inboxTask()).openAsks).toBeUndefined();
+  await until(() => inboxFrames(marcos.slice(before)).some((task, index, all) => index > 0 && (task?.inboxChangedAt ?? 0) > (all[0]?.inboxChangedAt ?? 0)));
+
+  const news = view.rows.find((row) => row.text === "Can you approve the travel budget for me?")!;
+  const marked = await team.as(marco, "POST", `/api/inbox/${news.id}/done`);
+  expect(marked.status, JSON.stringify(marked.body)).toBe(200);
+  expect((marked.body as { rows: Listed[] }).rows.find((row) => row.id === news.id)).toMatchObject({ tab: "done" });
+  expect((await team.as(philipp, "POST", `/api/inbox/${news.id}/done`)).status, "only his own").toBe(404);
+  writeFileSync(file("release"), "");
+  await until(idle);
 }, hostTimeout(120_000));
 
 it("opens Marco's inbox on his first arrival of the day, and forgets it once he leaves", async () => {

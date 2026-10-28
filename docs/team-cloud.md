@@ -358,6 +358,17 @@ their own in the conversation it came from. The inbox's task carries the asks th
 whenever one is asked or settled), which the app shows on the person's own row under People and adds to its unread
 count: the browser tab's title and the app's icon.
 
+**The inbox's list and its card.** `GET /api/inbox` lists the session's own person's inbox (`InboxView`,
+`shared/inbox.ts`), newest first, each line in one tab: **Needs you** while it waits on them (an ask, by the rule above;
+their count is the badge), **For your info** for news until they answer it or mark it done, and **Done** once it is
+settled or marked done. `POST /api/inbox/<line>/done` marks news done (an open ask refuses, 409: only its answer settles
+it) and `POST /api/inbox/<line>/read` marks one line read; each answers with the list as it is now. The app shows the
+list in the right panel, opened from the card, the badge or the person's own row under People: dense rows with each
+line's quick answers, a reading view with the reply, and a sheet at phone width. Answering from a row answers the copy's
+card or replies to the line, through the same routes as in the chat. In the inbox conversation one card sits under the
+newest line that needed the person (`InboxView.anchor`) and updates in place. The inbox's task carries
+`inboxChangedAt`, which moves whenever the list changes; a client showing the list reads it again then.
+
 **The representative.** When a message asks something a fact the person already shares with the team answers, their
 inbox's bot answers it for them (`server/host/representative.ts`); the answer goes back like a reply, as "Marco's
 assistant answered …" (`relay.kind: "assistant"`), and the line shows the question, the answer and that a reply corrects

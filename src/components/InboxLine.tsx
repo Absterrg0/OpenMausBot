@@ -9,11 +9,12 @@ import { PersonFace } from "./TeamOwner";
 
 const face = (person: { name: string; email: string }): TeamPerson => ({ email: person.email, name: person.name, role: "member" });
 
-function Sender({ from }: { from: NonNullable<Message["inbox"]>["from"] }) {
+/** The face of who a line is from: a teammate's picture, or the bot's avatar. */
+export function InboxSender({ from, size = 16 }: { from: NonNullable<Message["inbox"]>["from"]; size?: number }) {
   const { state } = useStore();
-  if (from.email) return <PersonFace person={face({ name: from.name, email: from.email })} size={16} />;
+  if (from.email) return <PersonFace person={face({ name: from.name, email: from.email })} size={size} />;
   const bot = state.bots.find((one) => one.id === from.botId);
-  return <BotAvatar bot={bot ?? { name: from.name, color: "blue" }} state="happy" size={16} motion="none" motionKey={0} animated={false} />;
+  return <BotAvatar bot={bot ?? { name: from.name, color: "blue" }} state="happy" size={size} motion="none" motionKey={0} animated={false} />;
 }
 
 /** Above an inbox line: from whom, through which bot, and the conversation it came from. */
@@ -26,7 +27,7 @@ export function InboxCaption({ message }: { message: Message }) {
   const origin = item.origin;
   return (
     <div data-inbox-line={item.kind} className="-mb-2 flex min-w-0 items-center gap-1.5 pl-0.5 text-[11px] text-ink-tertiary">
-      <Sender from={item.from} />
+      <InboxSender from={item.from} />
       <span className="truncate font-medium text-ink-secondary">{who}</span>
       {item.via && <span className="shrink-0">· {t("inbox.via", { name: item.via.name })}</span>}
       {origin && (

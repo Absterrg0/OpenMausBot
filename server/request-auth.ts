@@ -396,6 +396,9 @@ export const CLIENT_ALLOW: ReadonlyArray<{ methods: readonly string[]; path: Reg
   { methods: ["POST"], path: /^\/api\/presence\/active$/ },
   // what a bot asks of this person: their own questions and approvals only
   { methods: ["GET"], path: /^\/api\/needs-you$/ },
+  // a Team Cloud person's own inbox: its lines, and one of them read or done; the handler serves the session's own alone
+  { methods: ["GET"], path: /^\/api\/inbox$/ },
+  { methods: ["POST"], path: /^\/api\/inbox\/[\w-]+\/(?:read|done)$/ },
   // who a Team Cloud bot can report to, and handing over a bot the member owns: the handler checks who may
   { methods: ["GET"], path: /^\/api\/team\/people$/ },
   // a teammate's picture: the handler serves it to the team's own members only

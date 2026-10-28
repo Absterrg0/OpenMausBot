@@ -1,6 +1,6 @@
-// On a Team Cloud: the team's people, with their pictures. Your own row opens your inbox, your chat with your Chief, where
-// everything sent to you arrives, and counts the asks waiting on you there. Anyone else's puts @their name in the
-// composer, which reaches their inbox once sent.
+// On a Team Cloud: the team's people, with their pictures. Your own row opens your inbox, your chat with your Chief where
+// everything sent to you arrives, with the inbox's list beside it, and counts the asks waiting on you there. Anyone
+// else's puts @their name in the composer, which reaches their inbox once sent.
 import { botOwner } from "../../shared/bot-owner";
 import { openAsksOf } from "@/lib/bot-unread";
 import { cn } from "@/lib/cn";
@@ -8,6 +8,7 @@ import { leadComposerDraft } from "@/lib/drafts";
 import { t } from "@/lib/i18n";
 import { useShowThreads } from "@/lib/thread-preferences";
 import { openBot, openThread, useStore, type AppState, type Bot } from "@/state/store";
+import { openInbox } from "@/state/inbox";
 import { useTeamPeople, type TeamPerson } from "@/state/team-people";
 import { PersonFace } from "./TeamOwner";
 
@@ -42,6 +43,7 @@ export function SidebarPeople({ compact }: { compact: boolean }) {
   const open = (person: TeamPerson) => {
     if (person.you) {
       if (inbox) openBot(dispatch, inbox, showThreads);
+      if (inboxThread) openInbox({ tab: waiting ? "needs-you" : undefined });
       return;
     }
     const tag = `@${person.name} `;

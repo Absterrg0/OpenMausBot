@@ -8,6 +8,7 @@ import { z } from "zod";
 import { nameFromEmail, ownerEmail } from "../../shared/bot-owner.ts";
 import type { Notification } from "../../shared/notification.ts";
 import { mentionablePeople, teammateMentions } from "../../shared/person-mention.ts";
+import type { InboxView } from "../../shared/inbox.ts";
 import type { NeedsYouItem } from "../../shared/today.ts";
 import type { ResolvedSender } from "../../shared/wire.ts";
 import { audienceMember, type Audience } from "../audience.ts";
@@ -21,7 +22,7 @@ import type { BotRecord, GroupRecord, Message, Store, StoreChange } from "../sto
 import type { TeamPeople } from "../team-people.ts";
 import { currentTimeZone } from "../time-zone.ts";
 import { loadMemory } from "../workspace.ts";
-import { createPersonInbox, type Delivery, type Item, type Passed, type PersonInboxDeps } from "./person-inbox.ts";
+import { createPersonInbox, type Delivery, type Item, type Passed, type PersonInbox, type PersonInboxDeps } from "./person-inbox.ts";
 import { createRepresentative, type RepresentativeDeps } from "./representative.ts";
 import { oneLine } from "./text-clip.ts";
 
@@ -210,7 +211,7 @@ export function createTeamMessages(deps: TeamMessagesDeps) {
   /** A teammate's line tags @Bob: their words reach Bob's inbox, wherever they wrote them; Bob's answer reaches theirs. */
   function personWrote(threadId: string, line: Message) {
     const writer = byKey(line.sender?.id);
-    if (writer) inbox.seen(writer.key, threadId);
+    if (writer) { inbox.seen(writer.key, threadId); inbox.wrote(writer.key, threadId); }
     const at = owner(threadId);
     if (!at || !line.text) return;
     const writerName = writer?.name ?? line.sender?.name ?? "Someone";
@@ -331,6 +332,21 @@ export function createTeamMessages(deps: TeamMessagesDeps) {
       if (!passed) return null;
       if (passed.status >= 400) return Promise.reject(Object.assign(new Error(passed.error ?? "That answer can't be passed back."), { status: passed.status }));
       return Promise.resolve(repeated ? { queued: false, repeated: true } : { queued: false });
+    },
+    /** The session's person's inbox as its panel lists it; null off a team or for someone without one. */
+    view(auth: RequestAuth): InboxView | null {
+      const me = sessionPerson(auth);
+      return team && me ? inbox.view(me.key) : null;
+    },
+    /** The session's person is done with a line of news in their inbox. */
+    markDone(auth: RequestAuth, id: string): ReturnType<PersonInbox["markDone"]> {
+      const me = sessionPerson(auth);
+      return team && me ? inbox.markDone(me.key, id) : "unknown";
+    },
+    /** The session's person read a line of their inbox. */
+    markRead(auth: RequestAuth, id: string): boolean {
+      const me = sessionPerson(auth);
+      return Boolean(team && me && inbox.markRead(me.key, id));
     },
     /** This person's Needs you lines: the messages in their inbox they have not opened, newest first. */
     needsYou(auth: RequestAuth): NeedsYouItem[] {
