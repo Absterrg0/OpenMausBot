@@ -2534,5 +2534,18 @@
   "placeLook.member": "इसका रंग सिर्फ़ इसके एडमिन बदल सकते हैं।",
   "placeLook.signedOut": "इसका रंग बदलने के लिए MausBot Cloud में साइन इन करें।",
   "placeLook.unsupported": "इस Cloud का रंग अभी ऐप से नहीं बदला जा सकता।",
-  "placeLook.failed": "रंग सेव नहीं हुआ। फिर कोशिश करें।"
+  "placeLook.failed": "रंग सेव नहीं हुआ। फिर कोशिश करें।",
+  "placeLook.picture": "तस्वीर",
+  "placeLook.pictureSub": "आपकी अपनी तस्वीर, साइडबार के ऊपर हल्की-सी घुली हुई। यहाँ सब इसे देखते हैं।",
+  "placeLook.useImage": "तस्वीर लगाएँ",
+  "placeLook.changeImage": "तस्वीर बदलें",
+  "placeLook.removeImage": "हटाएँ",
+  "placeLook.currentImage": "मौजूदा तस्वीर",
+  "placeLook.imageAdmins": "इसकी तस्वीर सिर्फ़ इसके एडमिन बदल सकते हैं।",
+  "placeLook.imageFormat": "PNG, JPEG या WebP तस्वीर लगाएँ।",
+  "placeLook.imageRead": "वह तस्वीर पढ़ी नहीं जा सकी। कोई दूसरी आज़माएँ।",
+  "placeLook.imageSize": "वह तस्वीर बहुत बड़ी है। कोई छोटी आज़माएँ।",
+  "placeLook.imageMoving": "स्थिर तस्वीर लगाएँ।",
+  "placeLook.imageFailed": "तस्वीर सेव नहीं हुई। फिर कोशिश करें।",
+  "placeLook.imageSaving": "सेव हो रही है…"
 }

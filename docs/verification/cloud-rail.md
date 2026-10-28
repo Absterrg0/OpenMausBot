@@ -32,6 +32,13 @@ Nothing here needs a real MausBot Cloud account, a payment or the Electron app.
   (`PATCH /api/cloud/desktop/clouds/:id`, its owner or its team's admins; a
   member sees it locked), a server connected by hand on this computer. An
   Admin without that route changes nothing and says so.
+- A workspace may also have a banner picture, kept on its own server beside its
+  other pictures (`GET`, `PUT` and `DELETE /api/workspace/banner`; changing it
+  is an admin's, seeing it anyone's signed in there). The app shrinks it to
+  1600 px across at most and draws it afresh as WebP or JPEG under 400 KB; the
+  server checks it again (kind, size, still, readable) and keeps none of its
+  metadata. It shows faded into the top of the sidebar, in front of the
+  colour's tint, which shows when there is no picture or it won't load.
 - The person's own servers and computers that signed in with their account come
   in the same list (`managed: false`, on a server, with or without an address).
   They are never a Cloud of theirs to pair with or lend to: the rail shows them
@@ -45,6 +52,7 @@ Nothing here needs a real MausBot Cloud account, a payment or the Electron app.
 ```sh
 node --test electron/cloud-list.node-test.mjs electron/cloud-account-clouds.node-test.mjs electron/cloud-rail.node-test.mjs electron/home-window.node-test.mjs electron/place-look.node-test.mjs
 pnpm exec vitest run src/components/PlacesRail.test.ts src/components/cloud-buy/AddCloudFlow.test.ts src/components/PlaceLookCard.test.ts
+pnpm exec vitest run server/workspace-banner.test.ts server/routes/workspace-banner.test.ts server/workspace-banner.e2e.test.ts src/lib/place-banner.test.ts src/components/PlacePicture.test.ts
 ```
 
 The account tests answer as a loopback Admin, with and without `clouds`. The
@@ -52,7 +60,10 @@ rail tests load the production preload and check which page gets the list,
 which ids open, and that a circle, ＋, checkout and a colour change act only
 from a click. The colour tests check who may change a place's colour and where
 it is kept, that nothing is saved when the Admin refuses, and that the tint
-follows at once.
+follows at once. The banner tests run pictures a real encoder made, carrying
+EXIF, ICC, XMP and text, through the server's checks, and a real Team Cloud
+where its Super admin sets the banner, a member sees it but can't change it,
+and a signed-out request gets nothing.
 
 ## Rendered workflow
 
@@ -67,8 +78,10 @@ its owner, eleven for the list past eight. A headless Chrome in a throwaway
 profile photographs the rail in Advanced and Simple mode (with the place's
 tint), the list past eight, ＋'s two choices, the steps for a server of one's
 own, the plans, the name and colour of a new Cloud and its setup, the person's
-signed-in servers and the steps to connect one, and the colour in Settings for
-an admin and for a team member, each in the Daylight and Midnight skins.
+signed-in servers and the steps to connect one, the colour in Settings for an
+admin and for a team member, and a banner picture (drawn by the script and kept
+through the fixture server's own route) in the sidebar and in Settings, each in
+the Daylight and Midnight skins.
 `--only rail,look-settings` limits it to some views. Without `--shots` it
 prints the preview's address and waits for Ctrl-C.
 

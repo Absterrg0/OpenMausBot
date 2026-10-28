@@ -2979,5 +2979,18 @@
   "placeLook.member": "Колір можуть змінювати лише адміністратори.",
   "placeLook.signedOut": "Увійдіть у MausBot Cloud, щоб змінити колір.",
   "placeLook.unsupported": "Колір цього Cloud поки не можна змінити в застосунку.",
-  "placeLook.failed": "Колір не збережено. Спробуйте ще раз."
+  "placeLook.failed": "Колір не збережено. Спробуйте ще раз.",
+  "placeLook.picture": "Зображення",
+  "placeLook.pictureSub": "Ваше зображення, м'яко розчинене вгорі бічної панелі. Його бачать усі тут.",
+  "placeLook.useImage": "Вибрати зображення",
+  "placeLook.changeImage": "Змінити зображення",
+  "placeLook.removeImage": "Вилучити",
+  "placeLook.currentImage": "Поточне зображення",
+  "placeLook.imageAdmins": "Зображення можуть змінювати лише адміністратори.",
+  "placeLook.imageFormat": "Виберіть зображення PNG, JPEG або WebP.",
+  "placeLook.imageRead": "Не вдалося прочитати це зображення. Спробуйте інше.",
+  "placeLook.imageSize": "Це зображення завелике. Спробуйте менше.",
+  "placeLook.imageMoving": "Виберіть нерухоме зображення.",
+  "placeLook.imageFailed": "Зображення не збережено. Спробуйте ще раз.",
+  "placeLook.imageSaving": "Збереження…"
 }

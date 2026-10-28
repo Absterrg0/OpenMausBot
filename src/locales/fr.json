@@ -2534,5 +2534,18 @@
   "placeLook.member": "Seuls ses administrateurs peuvent changer sa couleur.",
   "placeLook.signedOut": "Connectez-vous à MausBot Cloud pour changer sa couleur.",
   "placeLook.unsupported": "La couleur de ce Cloud ne peut pas encore être changée depuis l'app.",
-  "placeLook.failed": "La couleur n'a pas été enregistrée. Réessayez."
+  "placeLook.failed": "La couleur n'a pas été enregistrée. Réessayez.",
+  "placeLook.picture": "Image",
+  "placeLook.pictureSub": "Votre propre image, fondue en haut de la barre latérale. Tout le monde ici la voit.",
+  "placeLook.useImage": "Utiliser une image",
+  "placeLook.changeImage": "Changer l'image",
+  "placeLook.removeImage": "Retirer",
+  "placeLook.currentImage": "Image actuelle",
+  "placeLook.imageAdmins": "Seuls ses administrateurs peuvent changer son image.",
+  "placeLook.imageFormat": "Utilisez une image PNG, JPEG ou WebP.",
+  "placeLook.imageRead": "Impossible de lire cette image. Essayez-en une autre.",
+  "placeLook.imageSize": "Cette image est trop grande. Essayez-en une plus petite.",
+  "placeLook.imageMoving": "Utilisez une image fixe.",
+  "placeLook.imageFailed": "L'image n'a pas été enregistrée. Réessayez.",
+  "placeLook.imageSaving": "Enregistrement…"
 }

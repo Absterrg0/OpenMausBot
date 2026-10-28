@@ -9,6 +9,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { launchVerificationServer, runControlOmb } from "./control-omb.ts";
+import { duskPng } from "./testing/dusk-banner.ts";
 import { mountPreview, parkUntilSignal, type MountedPreview } from "./testing/preview-fixture.ts";
 
 const at = process.argv.indexOf("--shots");
@@ -17,7 +18,7 @@ const onlyAt = process.argv.indexOf("--only");
 const only = onlyAt === -1 ? null : new Set((process.argv[onlyAt + 1] ?? "").split(",").filter(Boolean));
 const CHROME = process.env.OMB_CDP_CHROME ?? "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
 /** Each view: its query, what must be on screen before the picture, and the window's height. */
-const VIEWS: Array<{ name: string; query: string; ready: string; height?: number }> = [
+const VIEWS: Array<{ name: string; query: string; ready: string; height?: number; banner?: true }> = [
   { name: "rail", query: "", ready: "[data-places-rail]" },
   { name: "rail-simple", query: "mode=simple", ready: "[data-places-rail]" },
   { name: "rail-many", query: "places=many&more=1", ready: "[data-rail-more] li" },
@@ -30,6 +31,10 @@ const VIEWS: Array<{ name: string; query: string; ready: string; height?: number
   { name: "connect-server", query: "places=servers&sheet=connect", ready: "[data-place-add='connect-server']" },
   { name: "look-settings", query: "look=teal&settings=look", ready: "[data-place-look='admin']" },
   { name: "look-member", query: "member=1&settings=look", ready: "[data-place-look='locked']" },
+  // The workspace's banner picture, kept on the fixture server first (each view after it shows it).
+  { name: "banner", query: "", ready: "[data-place-banner] img", banner: true },
+  { name: "banner-simple", query: "mode=simple", ready: "[data-place-banner] img", banner: true },
+  { name: "banner-settings", query: "settings=look", ready: "[data-place-picture='set']", banner: true },
 ];
 const SKINS = [{ id: "daylight", look: "light" }, { id: "midnight", look: "dark" }];
 
@@ -92,7 +97,13 @@ try {
     const profile = mkdtempSync(join(tmpdir(), "omb-rail-chrome-"));
     const chrome = await openChrome(profile);
     try {
+      let banner = false;
       for (const view of VIEWS.filter((entry) => !only || only.has(entry.name))) for (const skin of SKINS) {
+        if (view.banner && !banner) {
+          const kept = await fetch(`${fixture.info.url}/api/workspace/banner`, { method: "PUT", headers: { "content-type": "image/png", origin: fixture.info.url }, body: new Uint8Array(duskPng()) });
+          if (!kept.ok) throw new Error(`the banner wasn't kept (${kept.status}): ${await kept.text()}`);
+          banner = true;
+        }
         const file = join(shots, `${view.name}-${skin.look}.png`);
         await chrome.shoot(`${ui.previewUrl}?skin=${skin.id}${view.query ? `&${view.query}` : ""}`, view.ready, file, view.height);
         console.log(file);

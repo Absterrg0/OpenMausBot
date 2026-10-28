@@ -5005,5 +5005,18 @@
   "placeLook.member": "Chỉ quản trị viên mới đổi được màu này.",
   "placeLook.signedOut": "Đăng nhập MausBot Cloud để đổi màu này.",
   "placeLook.unsupported": "Chưa thể đổi màu của Cloud này từ ứng dụng.",
-  "placeLook.failed": "Chưa lưu được màu. Hãy thử lại."
+  "placeLook.failed": "Chưa lưu được màu. Hãy thử lại.",
+  "placeLook.picture": "Hình ảnh",
+  "placeLook.pictureSub": "Hình ảnh của riêng bạn, mờ dần ở đầu thanh bên. Mọi người ở đây đều thấy.",
+  "placeLook.useImage": "Dùng một hình ảnh",
+  "placeLook.changeImage": "Đổi hình ảnh",
+  "placeLook.removeImage": "Gỡ",
+  "placeLook.currentImage": "Hình ảnh hiện tại",
+  "placeLook.imageAdmins": "Chỉ quản trị viên mới đổi được hình ảnh này.",
+  "placeLook.imageFormat": "Hãy dùng hình ảnh PNG, JPEG hoặc WebP.",
+  "placeLook.imageRead": "Không đọc được hình ảnh đó. Hãy thử hình khác.",
+  "placeLook.imageSize": "Hình ảnh đó quá lớn. Hãy thử hình nhỏ hơn.",
+  "placeLook.imageMoving": "Hãy dùng hình ảnh tĩnh.",
+  "placeLook.imageFailed": "Chưa lưu được hình ảnh. Hãy thử lại.",
+  "placeLook.imageSaving": "Đang lưu…"
 }

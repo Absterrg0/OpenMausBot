@@ -14,6 +14,8 @@ const look = (over: Partial<PlaceLook> = {}): PlaceLook => ({ name: "Client A", 
 /** The page's bridge, and the card and tint as a fresh page loads them (the look is shared across the page). */
 async function page(start: PlaceLook | null, answer: (swatch: string | null) => { outcome: string; look: PlaceLook | null } = (swatch) => ({ outcome: "saved", look: look({ swatch: swatch as never, color: swatch === "rose" ? "red" : null }) })) {
   vi.resetModules();
+  vi.doMock("@/state/store", () => ({ useStore: () => ({ state: { config: { workspaceBanner: null } } }) }));
+  vi.doMock("@/lib/use-owner-or-admin", () => ({ useOwnerOrAdmin: () => true }));
   let changed: () => void = () => {};
   const workspaces = { look: vi.fn(async () => start), color: vi.fn(async (swatch: string | null) => answer(swatch)), onChanged: vi.fn((callback: () => void) => { changed = callback; return () => {}; }) };
   Object.assign(window, { ogb: { workspaces } });
@@ -71,16 +73,21 @@ it("the Admin's refusal, an Admin without the route, and a failure: said plainly
   }
 });
 
-it("this computer's own page, an older app or a browser: no card, no tint", async () => {
+it("this computer's own page, an older app or a browser: no colour and no tint, only the workspace's picture", async () => {
   await page(null);
-  expect(host.innerHTML).toBe("<div></div>");
+  expect(host.querySelector("[data-swatch]")).toBeNull();
+  expect(host.querySelector("[data-place-tint]")).toBeNull();
+  expect(host.querySelector("[data-place-picture]")).toBeTruthy();
+  expect(host.textContent).toContain("Your own image, faded into the top of the sidebar.");
   await act(async () => root?.unmount());
   vi.resetModules();
+  vi.doMock("@/state/store", () => ({ useStore: () => ({ state: { config: {} } }) }));
+  vi.doMock("@/lib/use-owner-or-admin", () => ({ useOwnerOrAdmin: () => true }));
   Object.assign(window, { ogb: { workspaces: { state: vi.fn() } } });
   const { PlaceLookCard } = await import("./PlaceLookCard");
   root = createRoot(host);
   await act(async () => { root!.render(createElement(PlaceLookCard)); });
-  expect(host.innerHTML).toBe("");
+  expect(host.querySelector("[data-swatch]")).toBeNull();
 });
 
 it("main's word that the place changed (another window, the Admin): the card and tint read it again", async () => {

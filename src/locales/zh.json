@@ -3377,5 +3377,18 @@
   "placeLook.member": "只有管理员可以更改颜色。",
   "placeLook.signedOut": "登录 MausBot Cloud 才能更改颜色。",
   "placeLook.unsupported": "暂时还无法在应用中更改这个 Cloud 的颜色。",
-  "placeLook.failed": "颜色没有保存。请重试。"
+  "placeLook.failed": "颜色没有保存。请重试。",
+  "placeLook.picture": "图片",
+  "placeLook.pictureSub": "你自己的图片，淡淡融入侧边栏顶部。这里的每个人都能看到。",
+  "placeLook.useImage": "使用图片",
+  "placeLook.changeImage": "更换图片",
+  "placeLook.removeImage": "移除",
+  "placeLook.currentImage": "当前图片",
+  "placeLook.imageAdmins": "只有管理员可以更改图片。",
+  "placeLook.imageFormat": "请使用 PNG、JPEG 或 WebP 图片。",
+  "placeLook.imageRead": "无法读取这张图片。请换一张试试。",
+  "placeLook.imageSize": "这张图片太大了。请换一张较小的。",
+  "placeLook.imageMoving": "请使用静态图片。",
+  "placeLook.imageFailed": "图片没有保存。请重试。",
+  "placeLook.imageSaving": "正在保存…"
 }

@@ -1535,6 +1535,36 @@ body {
 @media (forced-colors: active) {
   .place-tint { display: none; }
 }
+/* The workspace's banner picture (PlaceTint), in place of its colour's tint: faded into the panel from the top of the
+   sidebar, dimmed and lightly blurred, so the head's words and controls stay readable over any picture. Without a
+   picture (or before it loads) the colour's tint shows; with reduced transparency or forced colours the picture never
+   does, and the tint's own rules apply. */
+.place-banner {
+  /* Its head's height and a little more, as the tint: the list's own fade band never cuts through it. */
+  height: calc(var(--glass-top, 48px) + 16px);
+  overflow: hidden;
+  -webkit-mask-image: linear-gradient(to bottom, black, rgb(0 0 0 / 0.6) 60%, transparent);
+  mask-image: linear-gradient(to bottom, black, rgb(0 0 0 / 0.6) 60%, transparent);
+}
+.place-banner img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  opacity: var(--place-banner-strength, 0.3);
+  filter: blur(1.5px) saturate(0.85);
+  transform: scale(1.04);
+}
+@container style(--code-color-scheme: dark) {
+  .place-banner img { --place-banner-strength: 0.26; filter: blur(1.5px) saturate(0.85) brightness(0.8); }
+}
+.place-tint[data-under-banner] { display: none; }
+@media (prefers-reduced-transparency: reduce) {
+  .place-banner { display: none; }
+  .place-tint[data-under-banner] { display: block; }
+}
+@media (forced-colors: active) {
+  .place-banner { display: none; }
+}
 /* The frame publishes its bars' heights. Rows rest clear of the glass,
    keyboard focus scrolls them clear, and the scrollbar runs only between the
    bars (a bar over it would swallow the drag). */
