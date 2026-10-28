@@ -190,7 +190,7 @@ describe("the card after the update", () => {
     offer = null; expect(await launch()).not.toContain(INTRO);
     offer = { ...TRIAL_OFFER, refundDays: undefined, creditUsd: undefined };
     html = await launch();
-    expect(html).toContain(INTRO); expect(html).toContain("Cloud desktops and voice included");
+    expect(html).toContain(INTRO); expect(html).toContain("Voice and cloud desktops by Boat included");
     expect(html).not.toContain("money-back"); expect(html).not.toContain("Claude credit");
   });
 
