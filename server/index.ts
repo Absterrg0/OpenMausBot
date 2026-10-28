@@ -12812,7 +12812,7 @@ ROUTES.push(createStatusRoutes({
 
 ROUTES.push(desktopViewer.route);
 ROUTES.push(createBrowserViewerRoutes({
-  upgrades, viewers: browserLive, dataDir: DATA_DIR,
+  upgrades, viewers: browserLive, dataDir: DATA_DIR, person: (auth) => (auth.kind === "session" ? actorKey(auth) : "local-owner"),
   audience: (auth, threadId) => teamHost.viewerBrowserAudience({ threadId, sees: (id) => visibleTo(viewerFor(auth)).thread(id), person: auth.kind === "session" ? actorKey(auth) : null }),
   browser: async (botId, audience) => {
     const bot = store.bot(botId);

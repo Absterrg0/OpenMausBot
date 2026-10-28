@@ -2219,7 +2219,7 @@
   "browser.control.yoursHint": "Các công cụ trình duyệt của {name} bị tạm dừng khi bạn sử dụng. Quyền điều khiển sẽ quay lại với {name} sau vài giây không có hoạt động nhập.",
   "browser.control.waiting": "Đang chờ {name} hoàn tất…",
   "browser.control.stale": "{name} đang bận nên yêu cầu chưa được gửi. Vui lòng thử lại.",
-  "browser.control.keptHint": "Các công cụ trình duyệt của {name} bị tạm dừng cho đến khi bạn trao lại quyền.",
+  "browser.control.keptHint": "Các công cụ trình duyệt của {name} bị tạm dừng cho đến khi bạn trao lại quyền. Quyền điều khiển sẽ tự quay lại với {name} sau 5 phút không có hoạt động nhập, hoặc 2 phút sau khi bạn đóng trình duyệt.",
   "browser.control.take": "Nhận quyền điều khiển",
   "browser.control.handBack": "Trao lại quyền",
   "browser.typeSecret": "Nhập mật khẩu hoặc mã…",

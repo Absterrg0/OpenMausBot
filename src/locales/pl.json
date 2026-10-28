@@ -2759,7 +2759,7 @@
   "browser.control.yoursHint": "Narzędzia przeglądarki bota {name} są wstrzymane, gdy jej używasz. Kontrola wróci do {name} po kilku sekundach bezczynności.",
   "browser.control.waiting": "Czekanie, aż {name} zakończy…",
   "browser.control.stale": "Nie wysłano tego, bo {name} jest zajęty. Spróbuj ponownie.",
-  "browser.control.keptHint": "Narzędzia przeglądarki bota {name} są wstrzymane, dopóki nie oddasz kontroli.",
+  "browser.control.keptHint": "Narzędzia przeglądarki bota {name} są wstrzymane, dopóki nie oddasz kontroli. Kontrola sama wróci do {name} po 5 minutach bezczynności albo 2 minuty po zamknięciu przeglądarki.",
   "browser.control.take": "Przejmij kontrolę",
   "browser.control.handBack": "Oddaj kontrolę",
   "browser.typeSecret": "Wpisz hasło lub kod…",

@@ -2947,7 +2947,7 @@
   "browser.control.yoursHint": "{name}’s browser tools are paused while you use it. Control goes back to {name} after a few seconds without input.",
   "browser.control.waiting": "Waiting for {name} to finish…",
   "browser.control.stale": "{name} was busy, so that wasn’t sent. Try again.",
-  "browser.control.keptHint": "{name}’s browser tools are paused until you hand back.",
+  "browser.control.keptHint": "{name}’s browser tools are paused until you hand back. Control goes back to {name} by itself after 5 minutes without input, or 2 minutes after you close the browser.",
   "browser.control.take": "Take control",
   "browser.control.handBack": "Hand back",
   "browser.typeSecret": "Type a password or code…",

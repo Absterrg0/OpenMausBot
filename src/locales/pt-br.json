@@ -2662,7 +2662,7 @@
   "browser.control.yoursHint": "As ferramentas de navegador de {name} ficam pausadas enquanto você usa. O controle volta para {name} depois de alguns segundos sem interação.",
   "browser.control.waiting": "Esperando {name} terminar…",
   "browser.control.stale": "{name} estava ocupado, então isso não foi enviado. Tente novamente.",
-  "browser.control.keptHint": "As ferramentas de navegador de {name} ficam pausadas até você devolver o controle.",
+  "browser.control.keptHint": "As ferramentas de navegador de {name} ficam pausadas até você devolver o controle. O controle volta sozinho para {name} depois de 5 minutos sem interação, ou 2 minutos depois que você fechar o navegador.",
   "browser.control.take": "Assumir o controle",
   "browser.control.handBack": "Devolver o controle",
   "browser.typeSecret": "Digitar uma senha ou código…",

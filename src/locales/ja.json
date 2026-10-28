@@ -2816,7 +2816,7 @@
   "browser.control.yoursHint": "あなたの操作中は {name} のブラウザーツールが一時停止します。数秒間入力がなければ、操作権は {name} に戻ります。",
   "browser.control.waiting": "{name} の操作が終わるのを待っています…",
   "browser.control.stale": "{name} が操作中のため、送信できませんでした。もう一度お試しください。",
-  "browser.control.keptHint": "{name}のブラウザツールは、操作を戻すまで一時停止しています。",
+  "browser.control.keptHint": "{name}のブラウザツールは、操作を戻すまで一時停止しています。入力がないまま5分たつか、ブラウザを閉じて2分たつと、操作権は自動で{name}に戻ります。",
   "browser.control.take": "操作を引き継ぐ",
   "browser.control.handBack": "操作を戻す",
   "browser.typeSecret": "パスワードまたはコードを入力…",

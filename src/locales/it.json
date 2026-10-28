@@ -2686,7 +2686,7 @@
   "browser.control.yoursHint": "Gli strumenti del browser di {name} sono in pausa mentre lo usi. Il controllo torna a {name} dopo qualche secondo di inattività.",
   "browser.control.waiting": "In attesa che {name} finisca…",
   "browser.control.stale": "{name} era occupato, quindi non è stato inviato. Riprova.",
-  "browser.control.keptHint": "Gli strumenti del browser di {name} restano in pausa finché non restituisci il controllo.",
+  "browser.control.keptHint": "Gli strumenti del browser di {name} restano in pausa finché non restituisci il controllo. Il controllo torna da solo a {name} dopo 5 minuti di inattività, o 2 minuti dopo che chiudi il browser.",
   "browser.control.take": "Prendi il controllo",
   "browser.control.handBack": "Restituisci",
   "browser.typeSecret": "Digita una password o un codice…",

@@ -2493,7 +2493,7 @@
   "browser.control.yoursHint": "Las herramientas de navegador de {name} están en pausa mientras lo usas. El control vuelve a {name} tras unos segundos sin actividad.",
   "browser.control.waiting": "Esperando a que {name} termine…",
   "browser.control.stale": "{name} estaba ocupado, así que no se envió. Inténtalo de nuevo.",
-  "browser.control.keptHint": "Las herramientas de navegador de {name} están en pausa hasta que le devuelvas el control.",
+  "browser.control.keptHint": "Las herramientas de navegador de {name} están en pausa hasta que le devuelvas el control. El control vuelve solo a {name} tras 5 minutos sin actividad, o 2 minutos después de que cierres el navegador.",
   "browser.control.take": "Tomar el control",
   "browser.control.handBack": "Devolver el control",
   "browser.typeSecret": "Escribe una contraseña o un código…",

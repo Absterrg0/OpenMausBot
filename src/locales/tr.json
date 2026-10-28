@@ -2219,7 +2219,7 @@
   "browser.control.yoursHint": "Siz kullanırken {name} adlı botun tarayıcı araçları duraklatılır. Girdi olmadan birkaç saniye geçtikten sonra kontrol tekrar {name} adlı bota geçer.",
   "browser.control.waiting": "{name} adlı botun bitirmesi bekleniyor…",
   "browser.control.stale": "{name} meşguldü, bu yüzden gönderilmedi. Tekrar deneyin.",
-  "browser.control.keptHint": "Siz geri verene kadar {name} adlı botun tarayıcı araçları duraklatıldı.",
+  "browser.control.keptHint": "Siz geri verene kadar {name} adlı botun tarayıcı araçları duraklatıldı. Girdi olmadan 5 dakika geçince veya tarayıcıyı kapattıktan 2 dakika sonra kontrol kendiliğinden {name} adlı bota geçer.",
   "browser.control.take": "Kontrolü devral",
   "browser.control.handBack": "Geri ver",
   "browser.typeSecret": "Bir parola veya kod yazın…",
