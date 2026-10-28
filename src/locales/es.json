@@ -2486,6 +2486,7 @@
   "signIn.local.explainHost": "Inicia sesión en el equipo donde se ejecuta OpenMausBot, en la ventana del navegador que usa {name} ahí. Una pestaña Navegador guarda sus propios inicios de sesión, que {name} no usa aquí. Luego pulsa «Listo».",
   "signIn.private": "Escribes tú la contraseña en la página. OpenMausBot nunca la ve.",
   "signIn.superseded": "Reemplazada por una solicitud más reciente",
+  "signIn.answeredInChat": "Respondiste en el chat",
   "signIn.retry": "Reintentar",
   "signIn.settled.done": "Sesión iniciada en {site}",
   "signIn.settled.cancelled": "Inicio de sesión en {site} rechazado",

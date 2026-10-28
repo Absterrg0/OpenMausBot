@@ -1007,6 +1007,7 @@
   "browser.passkey.lendPc": "Oder öffne OpenMausBot auf deinem PC: Er teilt seine Apps und seinen Bildschirm von selbst mit der Cloud, sodass {name} den Browser auf diesem PC nutzen kann, wo dein Passkey funktioniert.",
   "signIn.where.vm": "Melde dich auf dem privaten Desktop an, auf dem {name} arbeitet. „Öffnen“ zeigt ihn mit „Steuerung übernehmen“.",
   "signIn.where.cloud": "Melde dich auf dem Cloud-Desktop an, auf dem {name} arbeitet. „Öffnen“ zeigt ihn mit „Steuerung übernehmen“.",
+  "signIn.answeredInChat": "Du hast im Chat geantwortet",
   "settings.profiles.title": "Browser-Profile",
   "settings.profiles.subtitle": "Benannte Anmelde-Sitzungen, die jeder Bot nutzen kann. Leg eine im Browser-Tab eines Bots an; einmal anmelden, und sie bleibt.",
   "settings.profiles.empty": "Noch keine Profile — wähl „+ Profil hinzufügen…“ im Browser eines Bots.",

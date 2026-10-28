@@ -2783,6 +2783,7 @@
   "signIn.local.explainHost": "OpenMausBotが動作しているコンピューターで、{name}が使用しているブラウザウィンドウからサインインしてください。ブラウザタブは独自のサインイン情報を保持しており、ここでは{name}はそれを使用しません。サインインしたら「完了」を押してください。",
   "signIn.private": "パスワードは、ご自身でページに入力します。OpenMausBotがパスワードを目にすることはありません。",
   "signIn.superseded": "新しいリクエストに置き換えられました",
+  "signIn.answeredInChat": "チャットで返信しました",
   "signIn.retry": "もう一度試す",
   "signIn.settled.done": "{site}にサインインしました",
   "signIn.settled.cancelled": "{site}へのサインインを辞退しました",

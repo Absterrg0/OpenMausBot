@@ -48,7 +48,7 @@ import {
   isCredentialTargetId,
   type CredentialTargetId,
 } from "../shared/credential-request.ts";
-import { isPendingSignInRequest, normalizeSignInSite, signInFallbackText, signInOutcome, signInResumePrompt } from "../shared/sign-in-request.ts";
+import { isPendingSignInRequest, normalizeSignInSite, signInFallbackText, signInOutcome, signInResumePrompt, signInWaits } from "../shared/sign-in-request.ts";
 
 import { createRoomTurnLevels } from "./room-turn-level.ts";
 import { RoomMemberLock } from "./room-member-lock.ts";
@@ -2028,7 +2028,7 @@ function resumableCards(threadId: string, since: number, memberId?: string): Arr
       continue;
     }
     const signIn = message.signIn;
-    if (signIn && !signIn.resumed && !signIn.superseded) {
+    if (signIn && !signIn.resumed && !signIn.superseded && !signIn.answeredInChat) {
       open.push({ id: message.id, waits: `sign in to ${signIn.site}` });
     }
   }
@@ -7547,6 +7547,7 @@ async function acceptDirectSend(
           });
           store.setTaskAskedAt(botId, threadId, message.at);
           handoffs.steered(threadId, steerTarget, instance?.instanceId, message.id);
+          answerSignInsInChat(botId, threadId);
           return { ok: true as const, steered: true as const, threadId, message };
         }
         if (!current.busy) {
@@ -7913,6 +7914,7 @@ async function startTurn(
     queueMicrotask(drainQueuedSends);
     return userMessage;
   }
+  if (personLine) answerSignInsInChat(bot.id, threadId);
   const setupLine = takeSetupRequest(store, { botId: bot.id, threadId, line: userMessage, person: personLine, editedFrom: opts?.editedMessageId, mounted: instance.adapter.capabilities.agentsMcp === true }); if (setupLine) { userMessage = setupLine; providerText = setupTurnText(setupLine, usesNativeImageInput); } if (route.quickModel && !opts?.cardContinuation && userMessage.quickModel !== route.quickModel) userMessage = store.patchMessage(threadId, userMessage.id, { quickModel: route.quickModel }) ?? userMessage;
   const recoveryUserMessageId = opts?.coordination
     ? store.activePath(threadId).findLast(m => m.role === "user" && m.kind === "text")?.id
@@ -11965,22 +11967,45 @@ function settleSignIn(botId: string, threadId: string, messageId: string, outcom
   if (!bot || !message?.signIn) return { status: 404, body: { error: "no such sign-in request" } };
   const card = message.signIn;
   if (card.superseded) return { status: 409, body: { error: "this sign-in request was superseded by a newer one" } };
+  if (card.answeredInChat) return { status: 409, body: { error: "this sign-in request was already answered in the chat" } };
   const settled = signInOutcome(card);
   if (settled && settled !== outcome) {
     return { status: 409, body: { error: `this sign-in request was already ${settled === "done" ? "marked done" : "cancelled"}` } };
   }
   if (settled && card.resumed) return { status: 200, body: { [outcome]: true, resumed: true } };
-  if (!settled) {
-    const pleaded = computerControl.settleHelp(message.id);
-    if (card.place === "browser") browserLive.handBack(currentBrowserSession(bot.id, bot.browserProfile, teamHost.browserAudience(threadId)));
-    else for (const key of pleaded.length ? pleaded : [botComputerControlKey(bot)]) computerControl.release(key);
-  }
+  if (!settled) handSignInPlaceBack(bot, threadId, message.id, card.place);
   const savedLogin = saved?.site ?? card.savedLogin;
   const resumed = answerCardNode(threadId, message.id, savedLogin ? savedLoginResumePrompt(savedLogin) : signInResumePrompt(card.site, outcome));
   store.patchMessage(threadId, message.id, {
     signIn: { ...card, ...(outcome === "done" ? { done: true } : { cancelled: true }), ...(savedLogin ? { savedLogin } : {}), ...(resumed ? { resumed: true, error: undefined } : {}) },
   });
   return { status: 200, body: { [outcome]: true, resumed, ...(savedLogin ? { saved: true, site: savedLogin } : {}) } };
+}
+
+/** The person is through with the place the card lent them: its plea goes, and the browser or computer goes back to the bot. */
+function handSignInPlaceBack(bot: BotRecord, threadId: string, messageId: string, place: Surface): void {
+  const pleaded = computerControl.settleHelp(messageId);
+  if (place === "browser") browserLive.handBack(currentBrowserSession(bot.id, bot.browserProfile, teamHost.browserAudience(threadId)));
+  else for (const key of pleaded.length ? pleaded : [botComputerControlKey(bot)]) computerControl.release(key);
+}
+
+/** The person's own line answers every sign-in request still open in their conversation, as Done would, and ends the
+ * work parked on those cards: the turn the line starts goes on with the conversation, so nothing resumes it twice. */
+function answerSignInsInChat(botId: string, threadId: string): void {
+  const bot = store.bot(botId);
+  if (!bot) return;
+  const answered: string[] = [];
+  for (const message of store.activePath(threadId)) {
+    const card = message.signIn;
+    if (message.kind !== "signin" || !card || card.stopped || !signInWaits(card)) continue;
+    handSignInPlaceBack(bot, threadId, message.id, card.place);
+    store.patchMessage(threadId, message.id, { signIn: { ...card, answeredInChat: true, error: undefined } });
+    answered.push(message.id);
+  }
+  const parked = coordinator.parkedDirect(threadId);
+  const card = parked?.cards?.find((id) => answered.includes(id));
+  if (!parked || !card || resumableCards(threadId, parked.startedAt ?? parked.createdAt).some((open) => parked.cards!.includes(open.id))) return;
+  releaseCardNode(threadId, card, "The person answered in the chat");
 }
 
 /** The open sign-in card the person is answering, and the page its bot's browser shows (null when none a login could fill). */
@@ -11991,7 +12016,7 @@ async function signInCardPage(botId: string, threadId: string, messageId: string
   if (!bot || !message?.signIn) return { status: 404, body: { error: "no such sign-in request" } };
   const card = message.signIn;
   if (card.superseded) return { status: 409, body: { error: "this sign-in request was superseded by a newer one" } };
-  if (signInOutcome(card)) return { status: 409, body: { error: "this sign-in request was already answered" } };
+  if (signInOutcome(card) || card.answeredInChat) return { status: 409, body: { error: "this sign-in request was already answered" } };
   let cardHost: string;
   try { cardHost = new URL(card.url).hostname.toLowerCase(); }
   catch { return { status: 409, body: { error: "this sign-in request has no page address to save a login for" } }; }

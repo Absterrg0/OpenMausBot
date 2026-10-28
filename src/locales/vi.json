@@ -2178,6 +2178,7 @@
   "signIn.local.explainHost": "Đăng nhập tại máy tính mà OpenMausBot đang chạy, trong cửa sổ trình duyệt mà {name} đang sử dụng ở đó. Tab Trình duyệt duy trì các lượt đăng nhập riêng mà {name} không dùng ở đây. Sau đó nhấn Xong.",
   "signIn.private": "Bạn tự nhập mật khẩu vào trang. OpenMausBot không bao giờ nhìn thấy mật khẩu.",
   "signIn.superseded": "Đã được thay thế bằng yêu cầu mới hơn",
+  "signIn.answeredInChat": "Bạn đã trả lời trong cuộc trò chuyện",
   "signIn.retry": "Thử lại",
   "signIn.settled.done": "Đã đăng nhập vào {site}",
   "signIn.settled.cancelled": "Đã từ chối đăng nhập vào {site}",

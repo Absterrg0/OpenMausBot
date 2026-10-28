@@ -2178,6 +2178,7 @@
   "signIn.local.explainHost": "OpenMausBot'un çalıştığı bilgisayarda, {name} adlı botun orada kullandığı tarayıcı penceresinde oturum açın. Tarayıcı sekmesinin kendi oturumları vardır ve {name} burada bunları kullanmaz. Ardından Bitti'ye basın.",
   "signIn.private": "Parolayı sayfaya kendiniz yazarsınız. OpenMausBot onu asla görmez.",
   "signIn.superseded": "Daha yeni bir istek nedeniyle geçersiz kılındı",
+  "signIn.answeredInChat": "Sohbette yanıtladın",
   "signIn.retry": "Tekrar dene",
   "signIn.settled.done": "{site} için oturum açıldı",
   "signIn.settled.cancelled": "{site} için oturum açma reddedildi",

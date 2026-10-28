@@ -2647,6 +2647,7 @@
   "signIn.local.explainHost": "Accedi sul computer su cui gira OpenMausBot, nella finestra del browser che {name} sta usando lì. Una scheda Browser tiene accessi suoi, che {name} qui non usa. Poi premi Fatto.",
   "signIn.private": "La password la scrivi tu nella pagina. OpenMausBot non la vede mai.",
   "signIn.superseded": "Sostituita da una richiesta più recente",
+  "signIn.answeredInChat": "Hai risposto nella chat",
   "signIn.retry": "Riprova",
   "signIn.settled.done": "Accesso effettuato a {site}",
   "signIn.settled.cancelled": "Accesso a {site} rifiutato",

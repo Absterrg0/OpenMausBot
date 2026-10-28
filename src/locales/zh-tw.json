@@ -1824,6 +1824,7 @@
   "browser.control.stale": "{name} 正忙，因此未傳送。請再試一次。",
   "signIn.where.vm": "請在 {name} 工作的私人桌面上登入。按「開啟」會連同「接手控制」一起顯示。",
   "signIn.where.cloud": "請在 {name} 工作的雲端桌面上登入。按「開啟」會連同「接手控制」一起顯示。",
+  "signIn.answeredInChat": "你已在聊天中回覆",
   "browser.live.botBusy": "{name} 正在使用這個瀏覽器。空閒時就會開啟即時畫面…",
   "browser.input.tooSlow": "瀏覽器跟不上輸入速度，因此已停止輸入（瀏覽器可能卡住，或連線速度較慢）。請重新連接畫面後再輸入。如果仍然卡住，請重新啟動瀏覽器。",
   "browser.profiles.heldElsewhere": "另一個視窗正在使用這個瀏覽器。待其完成後再切換設定檔。",

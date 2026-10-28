@@ -1000,6 +1000,7 @@
   "browser.passkey.lendPc": "Ou ouvrez OpenMausBot sur votre PC : il partage de lui-même ses apps et son écran avec le Cloud, et {name} peut alors utiliser le navigateur de ce PC, où votre clé d’accès fonctionne.",
   "signIn.where.vm": "Connectez-vous sur le bureau privé où travaille {name}. « Ouvrir » l'affiche avec « Prendre la main ».",
   "signIn.where.cloud": "Connectez-vous sur le bureau cloud où travaille {name}. « Ouvrir » l'affiche avec « Prendre la main ».",
+  "signIn.answeredInChat": "Vous avez répondu dans le chat",
   "settings.profiles.title": "Profils de navigateur",
   "settings.profiles.subtitle": "Des sessions de connexion nommées que n'importe quel bot peut utiliser. Créez-en une depuis l'onglet Navigateur d'un bot ; connectez-vous une fois et elle reste.",
   "settings.profiles.empty": "Aucun profil pour l'instant — choisissez « + Ajouter un profil… » dans le navigateur d'un bot.",

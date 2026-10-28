@@ -70,6 +70,15 @@ export function SignInRequestCard({
 
   const stopped = card.stopped === true;
 
+  if (card.answeredInChat) {
+    return (
+      <AskSettledLine ariaLabel={t("signIn.title")}>
+        <span className="text-ink-secondary">{card.site}</span>
+        <span> · {t("signIn.answeredInChat")}</span>
+      </AskSettledLine>
+    );
+  }
+
   if (card.superseded || (stopped && !outcome)) {
     return (
       <AskSettledLine icon={<X size={13} />} ariaLabel={t("signIn.title")}>

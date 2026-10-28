@@ -2753,6 +2753,7 @@
   "signIn.local.explainHost": "Войдите на компьютере, где работает OpenMausBot, в окне браузера, которое {name} использует там. Вкладка Browser хранит свои входы, которые {name} здесь не использует. Затем нажмите «Готово».",
   "signIn.private": "Пароль вы вводите на страницу сами. OpenMausBot его никогда не видит.",
   "signIn.superseded": "Заменено более новым запросом",
+  "signIn.answeredInChat": "Вы ответили в чате",
   "signIn.retry": "Повторить",
   "signIn.settled.done": "Вход на {site} выполнен",
   "signIn.settled.cancelled": "Вход на {site} отклонён",

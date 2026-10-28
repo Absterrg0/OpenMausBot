@@ -2705,6 +2705,7 @@
   "signIn.local.explainHost": "Zaloguj się na komputerze, na którym działa OpenMausBot, w oknie przeglądarki, której używa tam {name}. Karta Przeglądarka zachowuje własne logowania, których {name} tu nie używa. Następnie naciśnij Gotowe.",
   "signIn.private": "Hasło wpisujesz w stronę samodzielnie. OpenMausBot nigdy go nie widzi.",
   "signIn.superseded": "Zastąpione nowszym żądaniem",
+  "signIn.answeredInChat": "Odpowiedziano w czacie",
   "signIn.retry": "Spróbuj ponownie",
   "signIn.settled.done": "Zalogowano do {site}",
   "signIn.settled.cancelled": "Odmówiono logowania do {site}",

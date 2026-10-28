@@ -1386,6 +1386,7 @@
   "browser.passkey.lendPc": "或者在你的 PC 上打开 OpenMausBot：它会自动与 Cloud 共享应用和屏幕，之后 {name} 就能使用那台 PC 上的浏览器，你的通行密钥在那里可用。",
   "signIn.where.vm": "请在 {name} 工作的私有桌面上登录。点“打开”会连同“接管控制”一起显示。",
   "signIn.where.cloud": "请在 {name} 工作的云端桌面上登录。点“打开”会连同“接管控制”一起显示。",
+  "signIn.answeredInChat": "你已在聊天中回复",
   "settings.profiles.title": "浏览器配置",
   "settings.profiles.subtitle": "任何机器人都能使用的具名登录会话。在机器人的浏览器标签页里创建一个；登录一次就会一直保留。",
   "settings.profiles.empty": "还没有配置——在机器人的浏览器里选择“+ 添加配置…”。",
