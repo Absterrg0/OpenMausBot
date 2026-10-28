@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import type { CloudAccountBridge, CloudAccountState, CloudPlanBridge, CloudPlanSnapshot } from "../../electron/cloud-account.mjs";
+import type { CloudAccountState, CloudPlanBridge, CloudPlanSnapshot } from "../../electron/cloud-account.mjs";
 import type { CloudCredit, CloudMachine, CloudTrial } from "../../electron/cloud-home.mjs";
 import { planTeam, teamPlan } from "../../electron/cloud-team-plan.mjs";
 import { cloudFilesBridge } from "@/lib/cloud-files";
@@ -11,10 +11,8 @@ import type { LocaleKey } from "@/locales";
 import { Card } from "./SettingsPrimitives";
 import { StagingMark } from "./cloud-buy/parts";
 import { CloudKeepHere } from "./CloudKeepHere";
-import { CloudLending } from "./CloudLending";
 import { CloudSetupSteps } from "./CloudSetupSteps";
 import { useCloudSendNotice } from "./CloudSendStrip";
-import { LentComputersCard } from "./LentComputers";
 import { OpenFilesButton } from "./OpenFilesButton";
 import { useDesktopCapabilities } from "./DesktopCapabilities";
 
@@ -44,10 +42,10 @@ function trialLines(trial: CloudTrial | undefined, credit: CloudCredit | undefin
 /**
  * Security: status and address come only from the verified native snapshot; the pairing code never reaches this page.
  * `moving`: the one-time move's own line while the bots go to My Cloud, which then opens by itself: nothing to open or
- * switch back to meanwhile. `team`: a Team or Business plan's Cloud, the team's, under the team's name; it has no Files,
- * lending or move of its own here.
+ * switch back to meanwhile. `team`: a Team or Business plan's Cloud, the team's, under the team's name; it has no Files or
+ * move of its own here.
  */
-function cloudHomeCard({ machine, busy, failed, onConnect, lending, trial = false, waking = false, moving = null, team = null }: { machine: CloudMachine; busy: boolean; failed: boolean; onConnect: () => void; lending?: CloudAccountBridge["lending"]; trial?: boolean; waking?: boolean; moving?: string | null; team?: { name: string | null } | null }) {
+function cloudHomeCard({ machine, busy, failed, onConnect, trial = false, waking = false, moving = null, team = null }: { machine: CloudMachine; busy: boolean; failed: boolean; onConnect: () => void; trial?: boolean; waking?: boolean; moving?: string | null; team?: { name: string | null } | null }) {
   const unreachable = machine.status === "ready" ? machine.unreachable : undefined;
   const connectable = machine.status === "ready" && !unreachable;
   const text = unreachable ? t(unreachable.cause === "host" ? "cloudHome.unreachableHost" : "cloudHome.unreachable")
@@ -70,7 +68,6 @@ function cloudHomeCard({ machine, busy, failed, onConnect, lending, trial = fals
         {!team && cloudFilesBridge() && <OpenFilesButton label={t("cloudHome.filesLink")} className="text-[13px] font-medium text-accent-text underline underline-offset-2 hover:text-ink" />}
       </>}
       {failed && !unreachable && <p role="alert" className="text-[13px] text-danger">{t("cloudHome.connectFailed")}</p>}
-      {lending && <CloudLending bridge={lending} moving={Boolean(moving)} />}
     </div>
   </Card>;
 }
@@ -250,7 +247,6 @@ export function CloudAccountSettings({ linkRequest = 0, cloudHome = false, teamH
       {cloudHome && teamHome ? <TeamPeopleCard team={teamHome} />
         : plan ? <CloudPlanOnCloud bridge={plan} onConnectPhone={onConnectPhone} /> : <p className="text-[13px] text-ink-secondary">{t("cloudAccount.desktopOnly")}</p>}
       {plan && !teamHome && <CloudKeepHere bridge={window.ogb?.cloudSendPage} />}
-      {cloudHome && <LentComputersCard />}
     </>;
   }
   const view = cloudPlanView(account);
@@ -315,7 +311,7 @@ export function CloudAccountSettings({ linkRequest = 0, cloudHome = false, teamH
     </Card>
     {machine && (onTeamPlan
       ? cloudHomeCard({ machine, busy, failed: homeFailed, onConnect: () => { if (team) openTeam(team.id); }, team: { name: team?.name ?? null } })
-      : cloudHomeCard({ machine, busy, failed: homeFailed, onConnect: connectHome, lending: bridge.lending, trial: Boolean(account?.trial), waking: account?.waking === true, moving }))}
+      : cloudHomeCard({ machine, busy, failed: homeFailed, onConnect: connectHome, trial: Boolean(account?.trial), waking: account?.waking === true, moving }))}
     {signed && view.kind === "paid" && !onTeamPlan && cloudPhoneCard({ ready: machine?.status === "ready", busy, failed: phoneFailed, onUse: openOnPhone })}
     <CloudKeepHere bridge={window.ogb?.cloudSendPage} />
   </>;

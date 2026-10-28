@@ -392,7 +392,7 @@ lines.on("close", () => process.exit(0));
     call = await ownersTurn(c, bot, "Check my order in my Chrome.");
     const notLent = await call("agent_browser_get_title");
     expect(notLent.isError).toBe(true);
-    expect(said(notLent)).toContain("turn on Your Chrome");
+    expect(said(notLent)).toContain("which lends its Chrome by itself");
     expect(fake.seen).toEqual([]);
 
     await connector.saveCloud(env, { folders: [], screen: false, chrome: true });
@@ -465,7 +465,7 @@ lines.on("close", () => process.exit(0));
     expect(await doorAnswer(doorUrl())).toBe("HTTP/1.1 503 Service Unavailable");
     const off = await call("agent_browser_get_title");
     expect(off.isError).toBe(true);
-    expect(said(off)).toContain("turn on Your Chrome");
+    expect(said(off)).toContain("which lends its Chrome by itself");
     expect(fake.seen).toHaveLength(seen);
     expect(fake.live.size).toBe(0);
   }, hostTimeout(60_000));

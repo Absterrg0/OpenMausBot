@@ -355,7 +355,8 @@ describe("cloudHomePrompt", () => {
 
   it("points to a lent computer only when the turn has the shared-computer tools", () => {
     expect(cloudHomePrompt(true)).toContain("check list_shared_computers: a computer they share with the Cloud is reachable through shared_computer");
-    expect(cloudHomePrompt(true)).toContain("otherwise give them [Use this computer](openmausbot://use-my-computer) to press in OpenMausBot on that computer: it asks them once");
+    expect(cloudHomePrompt(true)).toContain("otherwise ask them to open OpenMausBot on that computer, signed in to MausBot Cloud: it shares that computer with you by itself");
+    expect(cloudHomePrompt(true)).not.toContain("use-my-computer");
     expect(cloudHomePrompt(true)).not.toContain("Settings →");
     expect(cloudHomePrompt(true)).toContain("use its say field when it has one");
     expect(cloudHomePrompt(false)).not.toMatch(/shared_computer|list_shared_computers/);
@@ -374,7 +375,7 @@ describe("cloudHomePrompt", () => {
   it("names the person's computer by its platform, never a Mac unless it is one, and the product by its name", () => {
     const pc = cloudHomePrompt(true, [], [{ name: "ASH-PC", platform: "win32" }]);
     expect(pc).toContain("If they ask for something on their PC (ASH-PC), check list_shared_computers");
-    expect(pc).toContain("give them [Use my PC](openmausbot://use-my-computer) to press in OpenMausBot on that PC: it asks them once and shares that PC with you. It is a PC: call it that, never a Mac unless it is one.");
+    expect(pc).toContain("otherwise ask them to open OpenMausBot on that PC, signed in to MausBot Cloud: it shares that PC with you by itself. It is a PC: call it that, never a Mac unless it is one.");
     const mac = cloudHomePrompt(false, [], [{ name: "Ash’s MacBook", platform: "darwin" }, { name: "ASH-PC", platform: "win32" }]);
     expect(mac).toContain("You cannot see or use their Mac (Ash’s MacBook), its screen or its files from here.");
     for (const text of [pc, mac, cloudHomePrompt(true), cloudHomePrompt(true, [], [{ name: "box", platform: "linux" }])]) {

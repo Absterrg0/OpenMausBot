@@ -45,7 +45,6 @@ const credit = { instanceId: "trial", driverKind: "openai-compat", displayName: 
 
 let host: HTMLDivElement;
 let root: Root;
-let lending: { open: ReturnType<typeof vi.fn> };
 const welcome = { current: null as ReturnType<typeof useCloudWelcome> | null };
 function Probe() { welcome.current = useCloudWelcome(); return null; }
 const render = () => flushSync(() => root.render([createElement(CloudWelcome, { key: "welcome" }), createElement(Probe, { key: "probe" })]));
@@ -83,9 +82,8 @@ beforeEach(() => {
     if (patch.onboarding) return { ...fixture.state.config, onboarding: { ...fixture.state.config.onboarding, ...patch.onboarding } };
     throw new Error(`unexpected ${path}`);
   });
-  lending = { open: vi.fn().mockResolvedValue(undefined) };
   window.ogb = {
-    platform: "darwin", cloudLending: lending,
+    platform: "darwin", cloudPlan: { state: vi.fn() },
     cloudSendPage: { notice: vi.fn().mockResolvedValue(quiet), dismiss: vi.fn(), onNotice: vi.fn(() => () => {}) },
     workspaces: { state: vi.fn().mockResolvedValue({ local: false, name: "Studio Cloud", origin: CLOUD.origin }), menu: vi.fn() },
   } as unknown as typeof window.ogb;
@@ -280,24 +278,36 @@ describe("CloudWelcome", () => {
     expect(checks).toEqual(["claude", "codex", "codex"]);
   });
 
-  it("on My Cloud once it is home, the folders card names no other app on this computer: My Cloud's own Settings say what is shared", async () => {
+  it("in the app on a Cloud of the person's own, the folders card says this computer's files are used by themselves, with nothing to press", async () => {
     fixture.state.config.onboarding = { ...EMPTY_ONBOARDING, hintsSeen: [welcomeStepHint("bring"), welcomeStepHint("engine")] };
     fixture.plan = { status: "paid", tier: "pro", home: true };
     render();
     await vi.waitFor(() => expect(text()).toContain("Welcome to Studio Cloud"));
-    const folders = host.querySelector('[data-welcome-files="folders"]')?.textContent ?? "";
-    expect(folders).toContain("Bots on Studio Cloud can read the folders your computer shares, while it's on. See what it shares in Settings.");
-    expect(folders).not.toMatch(/this computer/iu);
-    click("Open Settings");
-    expect(lending.open).toHaveBeenCalledOnce();
+    const folders = host.querySelector('[data-welcome-files="folders"]')!;
+    expect(folders.textContent).toContain("Bots on Studio Cloud use the files on this computer by themselves while it's awake and OpenMausBot is open. There's nothing to set up.");
+    expect(folders.querySelector("button")).toBeNull();
   });
 
-  it("files and apps open this computer's Files and Connected apps, then it is ready and says hi to the Chief of Staff", async () => {
+  it("from a browser, or on a Team Cloud, the folders card says the desktop app shares folders through Files", async () => {
+    fixture.state.config.onboarding = { ...EMPTY_ONBOARDING, hintsSeen: [welcomeStepHint("bring"), welcomeStepHint("engine")] };
+    const desktopText = "Bots on Studio Cloud can read folders you share from your computer, even when it's off. Share them from the desktop app, under Files.";
+    delete (window.ogb as Record<string, unknown>).cloudPlan;
+    render();
+    await vi.waitFor(() => expect(text()).toContain("Welcome to Studio Cloud"));
+    expect(host.querySelector('[data-welcome-files="folders"]')?.textContent).toContain(desktopText);
+    flushSync(() => root.unmount());
+    root = createRoot(host);
+    (window.ogb as Record<string, unknown>).cloudPlan = { state: vi.fn() };
+    fixture.state.config.team = { id: "t-acme", name: "Acme" };
+    render();
+    await vi.waitFor(() => expect(text()).toContain("Welcome to Studio Cloud"));
+    expect(host.querySelector('[data-welcome-files="folders"]')?.textContent).toContain(desktopText);
+  });
+
+  it("files and apps open Connected apps, then it is ready and says hi to the Chief of Staff", async () => {
     fixture.state.config.onboarding = { ...EMPTY_ONBOARDING, hintsSeen: [welcomeStepHint("bring"), welcomeStepHint("engine")] };
     render();
     await vi.waitFor(() => expect(text()).toContain("Welcome to Studio Cloud"));
-    click("Open on this computer");
-    expect(lending.open).toHaveBeenCalledOnce();
     click("Connect apps");
     expect(fixture.dispatch).toHaveBeenCalledWith({ type: "togglePlugins", open: true, surface: "apps" });
     click("Finish");

@@ -507,7 +507,6 @@ function pageIpc(overrides = {}) {
     ensureCloudAccount: () => ({ openDashboard: async () => { calls.push(["dashboard"]); return account; }, state: () => account,
       upgradePreview: async (...args) => { calls.push(["upgrade-preview", ...args]); return { outcome: "failed" }; },
       upgrade: async (...args) => { calls.push(["upgrade", ...args]); return { outcome: "failed" }; } }),
-    openLendingSettings: async () => { calls.push(["lending"]); },
     homeWindow: { homePage: () => false },
     ...overrides,
   });
@@ -515,31 +514,13 @@ function pageIpc(overrides = {}) {
   return { handlers, calls, context, account, localContents, localFrame, cloudContents, cloudFrame };
 }
 
-test("the Cloud's setup checklist can open the lending switch here, and nothing else can", async () => {
-  const local = preload(LOCAL);
-  await local.bridge.cloudLending.open({ origin: "https://evil.example.test", folders: ["/"] });
-  assert.deepEqual(local.invoked, [["cloud-lending:open"]]);
-  const page = preload(CLOUD);
-  assert.deepEqual(Object.keys(page.bridge.cloudLending), ["open", "state", "set", "screen", "terminal", "offer", "due", "ask"]);
-  await assert.rejects(page.bridge.cloudLending.offer(), /Press Use my Mac/, "a bot's link opens the popup only from the person's click");
-  await assert.rejects(page.bridge.cloudLending.set(true), /Turn on the switch/);
-  await assert.rejects(page.bridge.cloudLending.terminal(true), /Tick Terminal/, "the terminal goes on only from the person's click");
-  await page.bridge.cloudLending.set(false);
-  await page.bridge.cloudLending.terminal(false);
-  // The page's notices only say when, and in which language: main decides whether, once per Cloud, and draws the popup.
-  await page.bridge.cloudLending.due();
-  await page.bridge.cloudLending.ask({ toString: () => "de" });
-  assert.deepEqual(page.invoked.filter(([channel]) => channel.startsWith("cloud-lending")), [["cloud-lending:set", false], ["cloud-lending:terminal", false], ["cloud-lending:due"], ["cloud-lending:ask", "de"]]);
-  const ipc = pageIpc({ mainWindow: { isDestroyed: () => false, webContents: { mainFrame: { url: `${LOCAL}/` } } }, environmentsState: { environments: [], activeId: "local" } });
-  const localContents = ipc.context.mainWindow.webContents;
-  await ipc.handlers.get("cloud-lending:open")({ sender: localContents, senderFrame: localContents.mainFrame }, { origin: "https://evil.example.test" });
-  ipc.context.mainWindow.webContents = ipc.cloudContents;
-  ipc.context.environmentsState = { environments: [{ id: "cloud", name: "My Cloud", origin: CLOUD }], activeId: "cloud" };
-  await ipc.handlers.get("cloud-lending:open")({ sender: ipc.cloudContents, senderFrame: ipc.cloudFrame });
-  assert.deepEqual(ipc.calls, [["lending"], ["lending"]]);
-  for (const event of [{ sender: ipc.cloudContents, senderFrame: { url: "https://other.example.test/" } }, { sender: {}, senderFrame: ipc.cloudFrame }]) {
-    assert.throws(() => ipc.handlers.get("cloud-lending:open")(event), /only available/);
+test("no page gets a control over lending this computer: not My Cloud's, another Cloud's or this computer's own, and main handles none", async () => {
+  for (const origin of [CLOUD, "https://omb-c-a.fly.dev", LOCAL]) {
+    const page = preload(origin, { activation: true });
+    assert.equal(page.bridge.cloudLending, undefined, origin);
+    assert.equal(page.bridge.cloudAccount?.lending, undefined, origin);
   }
+  assert.deepEqual(MAIN.match(/ipcMain\.handle\("(?:cloud-)?lending:[^"]*"/g), null, "no lending channel at all");
 });
 
 test("Settings on the person's own Cloud shows the plan read only, says when it is home, and can open the Plan page or sign in again; never switch away", async () => {
@@ -550,7 +531,7 @@ test("Settings on the person's own Cloud shows the plan read only, says when it 
   await assert.rejects(page.bridge.cloudPlan.manage(), /Choose Manage/);
   const ipc = pageIpc();
   const event = { sender: ipc.cloudContents, senderFrame: ipc.cloudFrame };
-  assert.deepEqual(Object.keys(Object.fromEntries(ipc.handlers)), ["cloud-lending:open", "cloud-plan:state", "cloud-plan:notice-seen", "cloud-plan:manage",
+  assert.deepEqual(Object.keys(Object.fromEntries(ipc.handlers)), ["cloud-plan:state", "cloud-plan:notice-seen", "cloud-plan:manage",
     "cloud-plan:upgrade-preview", "cloud-plan:upgrade"]);
   assert.deepEqual(plain(await ipc.handlers.get("cloud-plan:state")(event, { tier: "personal" })), { status: "paid", tier: "max" });
   ipc.context.homeWindow = { homePage: (asked) => asked === event };

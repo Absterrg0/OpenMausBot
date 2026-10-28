@@ -61,7 +61,7 @@ function railKeepsItsSize() {
 if (typeof window !== "undefined") {
   for (const type of ["resize", "DOMContentLoaded"]) window.addEventListener(type, () => { leaveRailRoom(); railKeepsItsSize(); });
 }
-const REMOTE_SAFE = new Set(["platform", "app", "getCapabilities", "onCapabilitiesChanged", "applySkin", "setUnreadCount", "permStatus", "workspaces", "cloudAdd", "cloudLending", "cloudPlan", "cloudSendPage", "desktopNotices", "desktopAnalytics", "desktopLanguage", "updatesConsent", "windowControls"]);
+const REMOTE_SAFE = new Set(["platform", "app", "getCapabilities", "onCapabilitiesChanged", "applySkin", "setUnreadCount", "permStatus", "workspaces", "cloudAdd", "cloudPlan", "cloudSendPage", "desktopNotices", "desktopAnalytics", "desktopLanguage", "updatesConsent", "windowControls"]);
 /** My Cloud's own page once it is the person's home (main checks the sender again): it is this app's page then. */
 const HOME_PAGE = ["home", "onChatLink", "onPackageInstall", "onOpenAppSettings", "exportDiagnostics", "openLogsFolder", "openAtLogin"];
 function updaterOffered() {
@@ -397,12 +397,6 @@ const bridge = {
       ipcRenderer.on("cloud-account:state-changed", handler);
       return () => ipcRenderer.removeListener("cloud-account:state-changed", handler);
     },
-    lending: {
-      state: () => ipcRenderer.invoke("lending:state"),
-      chooseFolder: () => ipcRenderer.invoke("lending:folder"),
-      save: input => ipcRenderer.invoke("lending:save", input),
-      stop: () => ipcRenderer.invoke("lending:stop"),
-    },
     files: {
       state: () => ipcRenderer.invoke("files:state"),
       pickFolder: () => ipcRenderer.invoke("files:pick"),
@@ -420,22 +414,6 @@ const bridge = {
         return () => ipcRenderer.removeListener("files:state-changed", handler);
       },
     },
-  } : undefined,
-  cloudLending: process.argv.includes("--omb-company-desktop=1") ? {
-    open: () => ipcRenderer.invoke("cloud-lending:open"),
-    state: () => ipcRenderer.invoke("cloud-lending:state"),
-    set: on => on !== true || isLocalPage || navigator.userActivation?.isActive === true
-      ? ipcRenderer.invoke("cloud-lending:set", on === true) : Promise.reject(new Error("Turn on the switch to lend this computer.")),
-    screen: on => on !== true || isLocalPage || navigator.userActivation?.isActive === true
-      ? ipcRenderer.invoke("cloud-lending:screen", on === true) : Promise.reject(new Error("Tick Apps and screen to lend them.")),
-    terminal: on => on !== true || isLocalPage || navigator.userActivation?.isActive === true
-      ? ipcRenderer.invoke("cloud-lending:terminal", on === true) : Promise.reject(new Error("Tick Terminal to lend it.")),
-    // A bot's Use my Mac link: opens main's own popup, only from the person's click.
-    offer: language => isLocalPage || navigator.userActivation?.isActive === true
-      ? ipcRenderer.invoke("cloud-lending:offer", String(language ?? "")) : Promise.reject(new Error("Press Use my Mac to share this computer.")),
-    // The page's notices find the moment for the Use my Mac popup; main decides whether it is due, once per Cloud.
-    due: () => ipcRenderer.invoke("cloud-lending:due"),
-    ask: language => ipcRenderer.invoke("cloud-lending:ask", String(language ?? "")),
   } : undefined,
   // Either page: the one-time move's line.
   cloudSendPage: process.argv.includes("--omb-company-desktop=1") ? {

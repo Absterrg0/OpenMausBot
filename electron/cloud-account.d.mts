@@ -140,8 +140,6 @@ export interface CloudAccountBridge {
   /** Opens a team's Cloud in this window, as the switcher does: one the verified session lists, by its id. Absent on an older app. */
   openTeam?(teamId: string): Promise<void>;
   onState(callback: (state: CloudAccountState) => void): () => void;
-  /** "Let my bots use this Mac" (docs/cloud-pro.md). */
-  lending?: import("./computer-sharing.mjs").CloudLendingBridge;
   files?: import("./cloud-sync.mjs").CloudFilesBridge;
 }
 /** On the person's own Cloud, open in this app's window: the plan, read

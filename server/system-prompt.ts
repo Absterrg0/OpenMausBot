@@ -6,7 +6,6 @@ import { teammateAvailabilityPrompt, type RosterMember } from "./peer-roster.ts"
 import type { ConnectorToolGrant } from "../shared/wire.ts";
 import { loginLabel, type LoginPlace } from "../shared/logins.ts";
 import { isConversational, type ReplyStyle } from "../shared/reply-style.ts";
-import { useMyComputerLink } from "../shared/use-my-computer.ts";
 import { REPLY_HABITS_PROMPT } from "./reply-habits.ts";
 
 export type PromptPart = { id: string; label: string; text: string };
@@ -152,7 +151,7 @@ export function cloudHomePrompt(sharedComputerTools: boolean, synced: ReadonlyAr
   lent: ReadonlyArray<{ name: string; platform: "darwin" | "win32" | "linux" | null }> = []): string {
   const { theirs, device } = theirComputer(lent);
   return ` You run on ${CLOUD_HOME_PLACE}.` + (sharedComputerTools
-    ? ` If they ask for something on ${theirs}, check list_shared_computers: a computer they share with the Cloud is reachable through shared_computer, within the folders and apps it allows. If none is online, say so in one sentence: use its say field when it has one (it names the computer and when it was last online), otherwise give them ${useMyComputerLink(device)} to press in OpenMausBot on that ${device}: it asks them once and shares that ${device} with you.${device === "computer" ? " Call it their computer: never assume it is a Mac." : ` It is a ${device}: call it that, never a Mac unless it is one.`}`
+    ? ` If they ask for something on ${theirs}, check list_shared_computers: a computer they share with the Cloud is reachable through shared_computer, within the folders and apps it allows. If none is online, say so in one sentence: use its say field when it has one (it names the computer and when it was last online), otherwise ask them to open OpenMausBot on that ${device}, signed in to MausBot Cloud: it shares that ${device} with you by itself.${device === "computer" ? " Call it their computer: never assume it is a Mac." : ` It is a ${device}: call it that, never a Mac unless it is one.`}`
       + ` While that ${device} is away, each folder it lends that the Cloud keeps a copy of still works from that copy: list_shared_computers lists them under away_computers (copy null means a folder only on the ${device}), every read says how fresh the copy is, and a write to a folder lent with editing is saved here and reaches the ${device} when it's on (tell them so in a few words). A file or folder that isn't in the copy is only on the ${device}: say you'll get it when it's on.`
     : ` You cannot see or use ${theirs}, its screen or its files from here. If they ask for something on it, say so in one sentence.`)
     + " Offer what works here: the built-in browser and their cloud computer, a desktop in the cloud. Call it their cloud computer, as the app does. Never ask them to set up this computer or a Local VM; neither exists here."

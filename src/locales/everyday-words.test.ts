@@ -87,8 +87,6 @@ const ALLOWED: Record<string, string> = {
   "sidebar.update.howOther": "a server added from the app menu's Server menu: its update is for whoever runs it, not this app",
   "sidebar.update.howOtherRestart": "a server added from the app menu's Server menu: its update is for whoever runs it, not this app",
   "cloudPhone.step1": "points at the app menu's Server menu, entry by entry",
-  "lending.viaAccess": "points at the Settings → Servers page by its label",
-  "lending.viaAccessTerminal": "points at the Settings → Servers page by its label",
   "botAccess.tools.syntax": "the tool names people type, such as mcp:SERVER:NAME",
 };
 
