@@ -146,6 +146,10 @@ Admin server, including cancellation, revocation and unchanged normal startup.
 The [personal Cloud account smoke](cloud-account.md) checks optional browser
 sign-in, server-verified Pro status and sign-out in a disposable Electron profile.
 
+The [rail of Clouds](cloud-rail.md) checks the session's list of Clouds, which
+pages may read the rail, opening a place by its id, and buying another Cloud,
+with a loopback Admin and the real app in a disposable preview.
+
 The [embedded server recovery smoke](desktop-server-recovery.md) crashes real
 Electron-owned fixture servers, verifies bounded recovery and private access,
 and proves quit cancels recovery without replaying an interrupted fixture turn.

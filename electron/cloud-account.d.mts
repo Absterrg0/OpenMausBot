@@ -21,6 +21,17 @@ export interface CloudAccountState {
   machine?: import("./cloud-home.mjs").CloudMachine;
   /** Connected: the teams this account is in, each with its Cloud; absent while it is in none. */
   teams?: import("./cloud-home.mjs").CloudTeam[];
+  /** Connected to an Admin that lists every Cloud of the person's (contract v1 `clouds`): each of them, My Cloud first.
+   * Absent from an older Admin, whose `machine` and `teams` say everything. */
+  clouds?: import("./cloud-list.mjs").CloudListEntry[];
+  /** With `clouds`: whether the Admin opens another Cloud's checkout now, and why not. */
+  addCloud?: { canAdd: true } | { canAdd: false; blocked: CloudAddBlock };
+  /** The newest OpenMausBot release the Admin knows, while it follows releases (with `clouds`); absent otherwise. */
+  latestVersion?: string;
+  /** Another Cloud this app is buying (in the last 24 hours): its id, name, swatch and plan, when its checkout opened,
+   * whether main keeps that page (`link`), and `done` once it was opened or announced. */
+  /** `cloudId` null: a checkout the Admin said is still open, before the session lists its Cloud. */
+  adding?: { cloudId: string | null; name: string; color: import("./cloud-list.mjs").CloudSwatch | null; tier: string | null; startedAt: number; link?: true; done?: true };
   /** A payment OMB Cloud received and is still linking to this account. */
   purchase?: import("./cloud-home.mjs").CloudPurchase;
   /** Connected: the free trial on this account's Cloud, when the Admin says (display only). */
@@ -55,6 +66,15 @@ export type CloudSignInVerify =
   | { outcome: Exclude<import("./cloud-signin.mjs").CloudSignInVerifyFailure, "wrong-code"> };
 /** How the Cloud is shown in this app's switcher and Settings → Servers. */
 export interface CloudHomeLook { name: string; color: import("./cloud-buy.mjs").CloudColor }
+/** Why the Admin opens no other Cloud's checkout now (contract v1 `addBlocked`). */
+export type CloudAddBlock = "cap" | "checkout_open" | "rate" | "signups_closed";
+export declare const ADD_BLOCKS: readonly CloudAddBlock[];
+/** What buying another Cloud did: `opened` its checkout in the browser; `unsupported` (this Admin sells one Cloud per
+ * account); `blocked` with the Admin's reason; or `failed` (nothing was opened). */
+export type CloudAddResult =
+  | { outcome: "opened"; state: CloudAccountState }
+  | { outcome: "unsupported" | "failed" }
+  | { outcome: "blocked"; blocked: CloudAddBlock };
 /** What opening a checkout did: `opened` in the browser; `signing-in` (signed
  * out, the browser signs in first); `conflict` (the account changed, now read
  * again); `rate-limited`; or `failed` (nothing was opened). */
@@ -212,7 +232,21 @@ export interface CloudAccountClient {
   /** Asks the Admin to start a sleeping Cloud (POST /api/cloud/desktop/wake), then reads the session again. */
   wakeHome(): Promise<"awake" | "waking" | null>;
   setWaking(on: boolean): void;
-  pairHome(): Promise<import("./cloud-home.mjs").CloudHomeGrant>;
+  /** My Cloud's one-time code, or (`cloudId`) another Cloud of the person's own that the verified session lists, its
+   * grant for that Cloud's own address only. Rejects with `gone: true` once that Cloud is no longer theirs. */
+  pairHome(cloudId?: string | null): Promise<import("./cloud-home.mjs").CloudHomeGrant>;
+  /** `origin` is a Cloud the person owns (My Cloud or another of theirs), by the verified session only. */
+  isOwnCloud(origin: string | null | undefined): boolean;
+  /** Buys another Cloud (POST /api/cloud/desktop/clouds): its checkout opens in the browser. */
+  addCloud(input: { tier: string; interval?: "month" | "year"; name: string; color?: import("./cloud-list.mjs").CloudSwatch | null }): Promise<CloudAddResult>;
+  /** A Cloud's colour on the Admin (PATCH /api/cloud/desktop/clouds/:id), for its owner or its team's Super admin and Admins. */
+  setCloudColor(cloudId: string, color: import("./cloud-list.mjs").CloudSwatch | null): Promise<{ outcome: "saved" | "refused" | "unsupported" | "failed" }>;
+  /** That checkout's page again (never a new one); false when none is kept. */
+  reopenAdd(): Promise<boolean>;
+  /** Main only (the clipboard): that checkout's page, or null. */
+  addLink(): string | null;
+  /** The Cloud being bought was opened or announced: that purchase is over. */
+  addDone(): void;
   /** A one-time code for a team's Cloud, signed by the Admin with this person's membership (POST
    * /api/cloud/desktop/teams/<id>/pairing). Rejects with `gone: true` once they are no longer in the team. */
   pairTeam(teamId: string): Promise<import("./cloud-home.mjs").CloudHomeGrant>;

@@ -1519,6 +1519,22 @@ body {
   backdrop-filter: none;
   mask-image: none;
 }
+/* The colour of the place on screen (PlaceTint), faint, from the very top of the sidebar to just below its head, under
+   everything there: the head's words and controls stay on what is still almost the plain panel. Dark skins take a
+   little more of it to show at all. Reduced transparency: a thin solid line at the top instead; forced colours: none. */
+.place-tint {
+  height: calc(var(--glass-top, 48px) + 16px);
+  background: linear-gradient(to bottom, color-mix(in srgb, var(--place-tint) var(--place-tint-strength, 16%), transparent), transparent);
+}
+@container style(--code-color-scheme: dark) {
+  .place-tint { --place-tint-strength: 26%; }
+}
+@media (prefers-reduced-transparency: reduce) {
+  .place-tint { height: 3px; background: var(--place-tint); }
+}
+@media (forced-colors: active) {
+  .place-tint { display: none; }
+}
 /* The frame publishes its bars' heights. Rows rest clear of the glass,
    keyboard focus scrolls them clear, and the scrollbar runs only between the
    bars (a bar over it would swallow the drag). */

@@ -6,6 +6,7 @@ import type { Action } from "@/state/store";
 import type { CloudPlanSnapshot } from "../../electron/cloud-account.mjs";
 import { cloudColor } from "@/lib/cloud-look";
 import { t } from "@/lib/i18n";
+import { railShown, usePlaces } from "@/lib/places";
 import { CloudTile } from "./cloud-buy/parts";
 import { SIMPLE_RAIL_BUTTON } from "./SidebarSimpleTop";
 
@@ -59,8 +60,11 @@ export function useWorkspacePlace({ cloudHome = false, howTo = false, onMenuClos
   const [error, setError] = useState("");
   useEffect(() => {
     let alive = true;
-    void bridge?.state().then((state) => { if (alive) setCurrent(state); }).catch(() => {});
-    return () => { alive = false; };
+    const read = () => void bridge?.state().then((state) => { if (alive) setCurrent(state); }).catch(() => {});
+    read();
+    // Main's word that a place changed (its colour, say): the switcher's dot follows.
+    const off = bridge?.onChanged?.(read);
+    return () => { alive = false; off?.(); };
   }, [bridge]);
   const power = useCloudPower(cloudHome || current?.home === true);
   const onLine = power.sleeps === null ? "" : t(power.sleeps ? "cloudSetup.sleepsWhenIdle" : "cloudSetup.alwaysOn");
@@ -74,9 +78,19 @@ export function useWorkspacePlace({ cloudHome = false, howTo = false, onMenuClos
   return { bridge, current, cloudHome, open, error, onLine, waking, openMenu, switchable: Boolean(bridge) && current?.home !== true };
 }
 
-export function DesktopWorkspaceSwitcher({ compact = false, inline = false, pill = false, rail = false, cloudHome = false, owner = null, howTo = false, onMenuClosed }: {
+type SwitcherProps = {
   compact?: boolean; inline?: boolean; pill?: boolean; rail?: boolean; cloudHome?: boolean; owner?: string | null; howTo?: boolean; onMenuClosed?: () => void;
-}) {
+};
+
+/** The place on screen and the native Server menu; where the rail of places shows (two places or more, a wide window), the
+ * rail switches instead. */
+export function DesktopWorkspaceSwitcher(props: SwitcherProps) {
+  const besideRail = railShown(usePlaces());
+  const switcher = <Switcher {...props} />;
+  return besideRail ? <div data-switcher-beside-rail className="contents md:hidden">{switcher}</div> : switcher;
+}
+
+function Switcher({ compact = false, inline = false, pill = false, rail = false, cloudHome = false, owner = null, howTo = false, onMenuClosed }: SwitcherProps) {
   const { bridge, current, open, error, onLine, waking, openMenu } = useWorkspacePlace({ cloudHome, howTo, onMenuClosed });
   const withPower = (name: string) => (onLine ? `${name} · ${onLine}` : name);
   // This window's home is My Cloud: it opens nothing else, so there is nothing to switch.

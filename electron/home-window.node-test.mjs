@@ -6,6 +6,7 @@ import vm from "node:vm";
 import { cloudPlanSnapshot } from "./cloud-account.mjs";
 import { installCloudPlanIpc } from "./cloud-plan-ipc.mjs";
 import { cloudPageSenderAllowed, myCloudOrigin } from "./cloud-home.mjs";
+import { otherOwnClouds } from "./cloud-list.mjs";
 import environments from "./environments.cjs";
 import localOrigin from "./local-origin.cjs";
 import { createHomeWindow, HOME_SCREEN_PATH, homeOf, installHomeWindowIpc, LOOK_MS, placeOf, QUIET_MS, routeOf, SPLASH_TEXT, splashText, TEAM_RENEW_EARLY_MS, TEAM_RENEW_MS, TEAM_RENEW_RETRY_MS, UPDATING_MS } from "./home-window.mjs";
@@ -13,6 +14,8 @@ import { createHomeWindow, HOME_SCREEN_PATH, homeOf, installHomeWindowIpc, LOOK_
 const CLOUD = "https://omb-t-1.fly.dev";
 const TEAM = "https://omb-u-acme.fly.dev";
 const ACME = { id: "team-acme", name: "Acme", role: "member", machine: { status: "ready", origin: TEAM } };
+const CLIENT = "https://omb-c-a.fly.dev";
+const CLIENT_A = { id: "c-a", name: "Client A", color: "green", role: "owner", tier: "pro", runsOn: "cloud", status: "ready", origin: CLIENT, teamId: null, primary: false };
 const LOCAL = "http://127.0.0.1:8799";
 const ACCOUNT = { id: "acct-1", email: "person@example.test" };
 const connected = (machine = {}) => ({ status: "connected", account: ACCOUNT, machine: { status: "ready", origin: CLOUD, ...machine } });
@@ -57,13 +60,15 @@ test("a sign-in keeps only a path of My Cloud's own", () => {
  * sign-in (its power word, wake, pairing code), My Cloud's answers (`cloud`), the window (where it went), the startup
  * screen and a manual clock.
  */
-function world({ journal = done(), marker = null, state = connected(), power = null, cloud = {}, team = {}, splash = true, url = "", remembered = null } = {}) {
+function world({ journal = done(), marker = null, state = connected(), power = null, cloud = {}, team = {}, client = {}, splash = true, url = "", remembered = null } = {}) {
   const w = {
     journal, marker, state, power, clock: 1_000_000, typed: 0, now: () => w.clock,
     cloud: { down: false, signedIn: true, version: "0.1.130", health: 200, wakes: true, ...cloud },
     /** The team's Cloud, answering at TEAM; `gone`: the Admin's team pairing says this person is no longer in it. */
     team: { down: false, signedIn: true, version: "0.1.130", health: 200, gone: false, ...team },
-    went: [], calls: [], fetched: [], pairs: 0, teamPairs: [], wakes: 0, waking: [], splash: [], published: [], local: [], reloads: 0, signIns: [],
+    /** Another Cloud of the person's own, answering at CLIENT; `gone`: the Admin's pairing says it is no longer theirs. */
+    client: { down: false, signedIn: true, version: "0.1.130", health: 200, gone: false, ...client },
+    went: [], calls: [], fetched: [], pairs: 0, teamPairs: [], ownPairs: [], wakes: 0, waking: [], splash: [], published: [], local: [], reloads: 0, signIns: [],
     remembered, remembers: [], left: [], dropped: [], redeemed: [],
     url, timers: [], intervals: [],
   };
@@ -80,7 +85,13 @@ function world({ journal = done(), marker = null, state = connected(), power = n
     power: () => w.power,
     async wakeHome() { w.wakes++; await w.cloud.wakeGate; if (w.cloud.wakes) w.power = { ...w.power, state: "awake" }; return "awake"; },
     setWaking: (on) => w.waking.push(on),
-    async pairHome() {
+    async pairHome(cloudId = null) {
+      if (cloudId) {
+        w.ownPairs.push(cloudId);
+        if (w.client.gone) throw Object.assign(new Error("Client A is no longer one of your Clouds."), { gone: true });
+        if (w.client.down) throw new Error("Cloud request failed.");
+        return { origin: CLIENT, code: "CCCC-LLLL-AAAA", expiresAt: w.clock + 60_000 };
+      }
       w.pairs++;
       if (w.state?.status !== "connected" || w.cloud.down) throw new Error("My Cloud is not ready to connect yet.");
       return { origin: CLOUD, code: "AAAA-BBBB-CCCC", expiresAt: w.clock + 60_000 };
@@ -102,26 +113,27 @@ function world({ journal = done(), marker = null, state = connected(), power = n
     ensureWindow: () => { w.calls.push("ensure"); },
     localOrigin: () => LOCAL,
     cookieFetch: async (url, init) => {
-      const atTeam = String(url).startsWith(TEAM), server = atTeam ? w.team : w.cloud;
-      w.fetched.push([String(url).replace(atTeam ? TEAM : CLOUD, atTeam ? "team:" : ""), init?.headers?.["x-omb-background"] ?? null]);
+      const atClient = String(url).startsWith(CLIENT), atTeam = String(url).startsWith(TEAM), server = atClient ? w.client : atTeam ? w.team : w.cloud;
+      const base = atClient ? CLIENT : atTeam ? TEAM : CLOUD;
+      w.fetched.push([String(url).replace(base, atClient ? "client:" : atTeam ? "team:" : ""), init?.headers?.["x-omb-background"] ?? null]);
       if (server.down) throw new TypeError("fetch failed");
-      const route = String(url).replace(atTeam ? TEAM : CLOUD, "");
+      const route = String(url).replace(base, "");
       if (route === "/api/health") return new Response("", { status: server.health, headers: server.health === 503 ? { "x-omb-cloud-power": "asleep" } : {} });
       if (route === "/api/auth/session") return server.signedIn ? json({ kind: "session", ...(server.expiresAt ? { expiresAt: server.expiresAt } : {}) }) : json({ error: "sign in" }, 401);
       if (route === "/api/auth/pair" && init?.method === "POST") {
-        w.redeemed.push([atTeam ? "team" : "cloud", JSON.parse(init.body)]);
+        w.redeemed.push([atClient ? "client" : atTeam ? "team" : "cloud", JSON.parse(init.body)]);
         return server.redeems === false ? json({ error: "invalid code" }, 400) : json({ kind: "session" });
       }
       if (route === "/.well-known/openmausbot/environment") return json({ version: server.version });
       return json({}, 404);
     },
     power: { asleep: () => w.power?.state === "asleep", hold: () => { w.power = { state: "asleep", since: 1 }; }, woke: () => w.calls.push("woke") },
-    go: async (url, origin, place) => { w.went.push(place?.kind === "team" ? [url, origin, place.id] : [url, origin]); w.url = url; },
+    go: async (url, origin, place) => { w.went.push(place?.kind === "team" || place?.kind === "own" ? [url, origin, place.id] : [url, origin]); w.url = url; },
     showLocal: (leaving) => { w.local.push(leaving); if (leaving) w.url = `${LOCAL}/`; },
     remembered: () => w.remembered,
     remember: (place) => { w.remembers.push(place); w.remembered = place ? { ...place, name: ACME.name, origin: TEAM } : null; },
     left: (name) => w.left.push(name),
-    drop: (place) => { w.dropped.push(place.id); w.left.push(place.name); w.remembered = null; },
+    drop: (place) => { w.dropped.push(place.id); if (place.kind !== "own") w.left.push(place.name); w.remembered = null; },
     splash: () => (splash ? { status: (text) => w.splash.push(text) } : null),
     lastInput: () => w.typed,
     publish: (view) => w.published.push(view),
@@ -486,11 +498,11 @@ function pageIpc(overrides = {}) {
     entitlement: { plan: "pro", tier: "max", status: "active", expiresAt: 1, version: 1 }, machine: { status: "ready", origin: CLOUD } };
   const context = vm.createContext({
     ipcMain: { handle: (channel, handler) => handlers.set(channel, handler), on: () => {} },
-    senderIsLocal: localOrigin.isLocalSender, workspaceSenderAllowed: environments.workspaceSenderAllowed, cloudPageSenderAllowed,
+    senderIsLocal: localOrigin.isLocalSender, workspaceSenderAllowed: environments.workspaceSenderAllowed, cloudPageSenderAllowed, otherOwnClouds,
     activeEnvironment: environments.activeEnvironment, rendererOrigin: () => LOCAL, desktopRemoteAccess: false,
     mainWindow: { isDestroyed: () => false, webContents: cloudContents },
     environmentsState: { environments: [{ id: "cloud", name: "My Cloud", origin: CLOUD }], activeId: "cloud" },
-    cloudAccount: { homeTarget: () => ({ origin: CLOUD }), state: () => account }, cloudPlanSnapshot, installCloudPlanIpc, myCloudOrigin, rememberedHome: null,
+    cloudAccount: { homeTarget: () => ({ origin: CLOUD }), state: () => account, isOwnCloud: (origin) => origin === CLOUD }, cloudPlanSnapshot, installCloudPlanIpc, myCloudOrigin, rememberedHome: null,
     cloudTrialNotices: () => ({ due: () => null, seen: (...args) => { calls.push(["notice-seen", ...args]); } }),
     ensureCloudAccount: () => ({ openDashboard: async () => { calls.push(["dashboard"]); return account; }, state: () => account,
       upgradePreview: async (...args) => { calls.push(["upgrade-preview", ...args]); return { outcome: "failed" }; },
@@ -549,7 +561,7 @@ test("Settings on the person's own Cloud shows the plan read only, says when it 
     for (const channel of ["cloud-plan:state", "cloud-plan:manage", "cloud-plan:notice-seen"]) assert.throws(() => ipc.handlers.get(channel)(sender), /only available/);
   }
   let current = { status: "reauth-required", message: "expired", account: ipc.account.account, lastPlan: { tier: "max", active: true } };
-  ipc.context.cloudAccount = { homeTarget: () => null, state: () => current };
+  ipc.context.cloudAccount = { homeTarget: () => null, state: () => current, isOwnCloud: () => false };
   assert.throws(() => ipc.handlers.get("cloud-plan:state")(event), /only available/);
   ipc.context.rememberedHome = { accountId: "a1", origin: CLOUD };
   assert.deepEqual(plain(await ipc.handlers.get("cloud-plan:state")(event)), { status: "signin", tier: "max", home: true });
@@ -809,4 +821,41 @@ test("the usage meter's Upgrade: only from the person's click, only to a plan th
     for (const channel of ["cloud-plan:upgrade-preview", "cloud-plan:upgrade"]) assert.throws(() => ipc.handlers.get(channel)(sender, "max", "app_usage"), /only available/);
   }
   assert.equal(ipc.calls.length, 2);
+});
+
+test("another Cloud of the person's own is the place asked for by its id, from the session's list; one it no longer lists is simply My Cloud again", () => {
+  const state = { ...connected(), clouds: [{ ...CLIENT_A, id: "c-home", name: "My Cloud", origin: CLOUD, primary: true }, CLIENT_A] };
+  assert.deepEqual(placeOf({ ask: { cloud: "c-a" }, state }), { kind: "own", id: "c-a", name: "Client A", role: "owner", origin: CLIENT, machine: { status: "ready", origin: CLIENT } });
+  assert.deepEqual(placeOf({ remembered: { cloud: "c-a", name: "Client A", origin: CLIENT }, state }).kind, "own");
+  assert.deepEqual(placeOf({ ask: { cloud: "c-home" }, state }), { kind: "cloud" }, "My Cloud is never another Cloud");
+  assert.deepEqual(placeOf({ ask: { cloud: "c-a" }, state: connected() }), { kind: "cloud" }, "not listed (or an older Admin): My Cloud, nothing said");
+  assert.deepEqual(placeOf({ remembered: { cloud: "c-a", name: "Client A", origin: CLIENT }, state: { status: "unavailable" } }),
+    { kind: "own", id: "c-a", name: "Client A", role: null, origin: CLIENT, machine: null }, "while the Admin can't be asked, as it was saved");
+  assert.deepEqual(placeOf({ ask: { cloud: "c-a" }, state: { ...state, clouds: [{ ...CLIENT_A, status: "setting_up", origin: null, setup: { step: "storage" } }] } }).machine,
+    { status: "provisioning", setup: { step: "storage" } });
+});
+
+test("choosing another Cloud of the person's own opens it through the Admin's pairing for that Cloud, at its own address, remembered for next time; no team renewal", async () => {
+  const w = world({ state: { ...connected(), clouds: [CLIENT_A] }, client: { signedIn: false } });
+  await w.home.show({ place: { cloud: "c-a" } });
+  assert.deepEqual(w.ownPairs, ["c-a"]);
+  assert.equal(w.pairs, 0, "never My Cloud's pairing");
+  assert.deepEqual(w.went, [[`${CLIENT}/pair#code=CCCC-LLLL-AAAA`, CLIENT, "c-a"]]);
+  assert.deepEqual(w.fetched, [["client:/api/health", "1"], ["client:/api/auth/session", null]], "a look at that Cloud only");
+  assert.deepEqual(w.remembers, [{ cloud: "c-a" }]);
+  assert.equal(w.home.placeOrigin(), CLIENT);
+  assert.equal(w.timers.length, 0, "its session lasts as My Cloud's does: nothing to renew");
+  assert.deepEqual(w.home.view(), { screen: "opening", name: "Client A" });
+});
+
+test("another Cloud the Admin says is no longer theirs is dropped at once and My Cloud opens, with no line; one being set up shows its setup with its name", async () => {
+  const w = world({ state: { ...connected(), clouds: [CLIENT_A] }, client: { signedIn: false, gone: true } });
+  await w.home.show({ place: { cloud: "c-a" } });
+  assert.deepEqual(w.dropped, ["c-a"]);
+  assert.deepEqual(w.left, [], "a Cloud of their own leaving is no team they were removed from");
+  assert.deepEqual(w.went.at(-1), [CLOUD, CLOUD], "My Cloud");
+  const setup = world({ state: { ...connected(), clouds: [{ ...CLIENT_A, status: "setting_up", setup: { step: "starting" } }] } });
+  await setup.home.show({ place: { cloud: "c-a" } });
+  assert.deepEqual(setup.home.view(), { screen: "setup", step: "starting", name: "Client A" });
+  assert.deepEqual(setup.ownPairs, [], "never paired while it is set up");
 });

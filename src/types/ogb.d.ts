@@ -163,6 +163,33 @@ const __APP_VERSION__: string;
         menu: (options?: { from?: "howto" }) => Promise<void>;
         /** One plain line for the next page, served once: a team this person is no longer in. */
         line?: () => Promise<{ kind: "left"; name: string } | null>;
+        /** The rail's circles, for this app's page and a hosted Cloud's only (empty elsewhere, and with fewer than two
+         * places). Absent on an older app. */
+        places?: () => Promise<import("../../electron/cloud-rail.mjs").RailState>;
+        /** Opens a circle main listed, by its id, through main's own switch: only from the person's click. */
+        open?: (id: string) => Promise<unknown>;
+        /** ＋'s fixed choices: buy a Cloud (this computer's own sheet), paste a server's pairing link, or type its address. */
+        add?: (choice: "cloud" | "link" | "address") => Promise<unknown>;
+        /** The colour of the place this page is, and whether it can be changed here (null on this computer's page).
+         * Absent on an older app. */
+        look?: () => Promise<import("../../electron/place-look.mjs").PlaceLook | null>;
+        /** That place's colour, from the person's click: one of the six swatches, or null for none. */
+        color?: (swatch: import("../../electron/cloud-list.mjs").CloudSwatch | null) => Promise<{ outcome: import("../../electron/place-look.mjs").PlaceColorOutcome; look: import("../../electron/place-look.mjs").PlaceLook | null }>;
+        /** Main's word that the places or the sign-in changed: read them again. */
+        onChanged?: (callback: () => void) => () => void;
+      };
+      /** Buying another Cloud from the rail's ＋, on this app's page or a hosted Cloud's; absent on an older app. */
+      cloudAdd?: {
+        state(): Promise<import("../../electron/cloud-rail.mjs").AddCloudView>;
+        /** Opens that plan's checkout in the browser, for a Cloud of this name and swatch; only from the person's click. */
+        start(tier: string, name: string, color: import("../../electron/cloud-list.mjs").CloudSwatch | null): Promise<{ outcome: "opened" | "unsupported" | "failed" } | { outcome: "blocked"; blocked: import("../../electron/cloud-account.mjs").CloudAddBlock }>;
+        reopen(): Promise<boolean>;
+        copyLink(): Promise<boolean>;
+        /** Opens the Cloud just bought, once it is ready. */
+        open(): Promise<void>;
+        interest(): Promise<void>;
+        /** The sheet is open on this page (main then says "ready" here, not with a notification). */
+        sheet(open: boolean): Promise<void>;
       };
       /** Saved servers and the active one (desktop Server menu). Present on
        * the local server's UI; a remote server's page sees a reduced bridge. */
