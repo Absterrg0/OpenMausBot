@@ -63,7 +63,7 @@ export const localFilePath = (href?: string): string | null => {
   return href;
 };
 
-export function chatUrlTransform(value: string): string {
+export function chatUrlTransform(value: string, key = "href"): string {
   if (looksLikeThreadRefUrl(value) || isUseMyComputerUrl(value)) return value;
   // Markdown-to-HTML percent-encodes a destination's backslashes (C:%5CUsers…); restore them and leave other escapes
   // for the server's single decode.
@@ -71,6 +71,7 @@ export function chatUrlTransform(value: string): string {
   if (/^file:\/\//i.test(url) || WINDOWS_PATH.test(url) || url.startsWith("\\\\")) {
     return localFilePath(url) ? url : "";
   }
+  if (key === "href" && /^obsidian:\/\//i.test(value)) return value;
   return defaultUrlTransform(value);
 }
 
@@ -588,17 +589,18 @@ function MarkdownLink({ href, children, ...rest }: { href?: string; children?: R
   const props = rest as Record<string, unknown>;
   const { threads, currentBotId, message, delivered } = useContext(MessageScopeContext);
   const linkMenu = useThreadLinkMenu(href), openPage = usePageOpener();
-  if (href && isUseMyComputerUrl(href)) return <UseMyComputerLink>{children}</UseMyComputerLink>;
-  const address = href ? parseThreadRefUrl(href) : null;
+  if (!href) return <span className="break-words">{children}</span>;
+  if (isUseMyComputerUrl(href)) return <UseMyComputerLink>{children}</UseMyComputerLink>;
+  const address = parseThreadRefUrl(href);
   const ref = address ? resolveThreadRefAddress(threads, address, currentBotId) : null;
   if (ref) return <ThreadLink target={ref} ambiguous={ref.ambiguous}>{children}</ThreadLink>;
-  if (address || (href && looksLikeThreadRefUrl(href))) return <span className="break-words">{children}</span>;
+  if (address || looksLikeThreadRefUrl(href)) return <span className="break-words">{children}</span>;
   const localPath = localFilePath(href);
   if (localPath) {
     const copy = delivered && Object.hasOwn(delivered, fileName(localPath)) ? delivered[fileName(localPath)] : undefined;
     return <LocalFileLink filePath={copy ?? localPath} name={copy ? fileName(localPath) : undefined} message={message}>{children}</LocalFileLink>;
   }
-  if (!href || !/^https?:\/\//i.test(href)) {
+  if (!/^https?:\/\//i.test(href)) {
     return (
       <a href={href} target="_blank" rel="noreferrer" dir="auto" className={LINK_CLASS}>
         {children}

@@ -590,6 +590,56 @@ describe("a bot's Use my Mac link", () => {
   });
 });
 
+describe("application and rejected Markdown links", () => {
+  it.each([
+    ["[Open Chief](obsidian://open?vault=botbrain&file=agents%2Fchief)", "obsidian://open?vault=botbrain&file=agents%2Fchief"],
+    ["[Open Chief](OBSIDIAN://open?vault=botbrain&file=agents%2fchief)", "OBSIDIAN://open?vault=botbrain&file=agents%2fchief"],
+    ["[Open Chief](ObSiDiAn://open?vault=Bot%20Brain&file=agents%2FChief%20Notes%23Inbox)", "ObSiDiAn://open?vault=Bot%20Brain&file=agents%2FChief%20Notes%23Inbox"],
+    ["[Open Chief](obsidian&#58;//open?vault=botbrain&amp;file=agents%2Fchief)", "obsidian://open?vault=botbrain&file=agents%2Fchief"],
+    ["[Open Chief][chief]\n\n[chief]: obsidian://open?vault=botbrain&file=agents%2Fchief", "obsidian://open?vault=botbrain&file=agents%2Fchief"],
+    ["<obsidian://open?vault=botbrain&file=agents%2Fchief>", "obsidian://open?vault=botbrain&file=agents%2Fchief"],
+  ])("preserves an Obsidian destination through the real Markdown renderer: %s", (text, destination) => {
+    const host = document.createElement("div");
+    host.innerHTML = renderToStaticMarkup(createElement(ChatMarkdown, { text }));
+    const link = host.querySelector("a");
+    expect(link?.getAttribute("href")).toBe(destination);
+    expect(link?.target).toBe("_blank");
+    expect(link?.rel).toBe("noreferrer");
+    expect(host.querySelectorAll("a")).toHaveLength(1);
+  });
+
+  it.each([
+    "",
+    "   ",
+    "javascript:alert(1)",
+    "JaVaScRiPt:alert(1)",
+    "javascript&#58;alert(1)",
+    "java&#x09;script:alert(1)",
+    "java&#x0a;script:alert(1)",
+    "data:text/html;base64,PHNjcmlwdD4=",
+    "vbscript:msgbox(1)",
+    "blob:https://example.test/123",
+    "shell:calc.exe",
+    "powershell:command",
+    "unlisted-app://open",
+    "obsidianx://open",
+  ])("keeps rejected or empty destinations as formatted text without a clickable link: %s", (destination) => {
+    const host = document.createElement("div");
+    host.innerHTML = renderToStaticMarkup(createElement(ChatMarkdown, { text: `[**Blocked**](${destination})` }));
+    expect(host.querySelector("strong")?.textContent).toBe("Blocked");
+    expect(host.querySelector("a, button, [role='link']")).toBeNull();
+  });
+
+  it("does not allow application URIs as image sources", () => {
+    const host = document.createElement("div");
+    host.innerHTML = renderToStaticMarkup(createElement(ChatMarkdown, {
+      text: "![Note](obsidian://open?vault=botbrain&file=agents%2Fchief)",
+    }));
+    expect(host.querySelector("img, a, button")).toBeNull();
+    expect(host.querySelector('[role="alert"]')?.textContent).toBe("Image unavailable");
+  });
+});
+
 describe("a bot's link to a page it published", () => {
   const PAGE = "https://abcdefghijklmnopqrstuvwxyz.mausbot.page/";
   const text = `Here is your dashboard: [Sales dashboard](${PAGE})`;
