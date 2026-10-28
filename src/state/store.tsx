@@ -120,11 +120,14 @@ export interface ConnectorCardData {
 }
 
 export interface SecretRequestCardData {
-  target: import("../../shared/credential-request").CredentialTargetId;
+  target: import("../../shared/credential-request").CredentialTargetId | typeof import("../../shared/credential-request").CUSTOM_SECRET_TARGET;
   label: string;
   description: string;
   placeholder: string;
   helpUrl: string;
+  delivery?: import("../../shared/credential-request").SecretDelivery;
+  reason?: string;
+  savedAt?: number;
   requestKey: string;
   provided?: boolean;
   dismissed?: boolean;

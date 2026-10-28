@@ -9,7 +9,7 @@ import type { TurnDigest } from "./digest.ts";
 import type { BotAvatarCrop, MascotFaceColor } from "./bot-avatar.ts";
 import type { BotBodyId } from "./bot-body.ts";
 import type { ReplyStyle } from "./reply-style.ts";
-import type { CredentialTargetId } from "./credential-request.ts";
+import type { CredentialTargetId, CUSTOM_SECRET_TARGET, SecretDelivery } from "./credential-request.ts";
 import type { TeamSetupRequest } from "./team-setup.ts"; import type { DefaultBotFields, HelperIntroField } from "./default-bot.ts";
 import type { SetupCardFields } from "./setup-card.ts";
 import type { RoutineRequestCardData } from "./routine-request.ts";
@@ -737,12 +737,20 @@ export interface ConnectorCardData {
 }
 
 export interface SecretRequestCardData {
-  /** Fixed allowlisted credential id; never an arbitrary config path. */
-  target: CredentialTargetId;
+  /** Fixed allowlisted credential id, never a config path; CUSTOM_SECRET_TARGET: a secret the bot names, kept off Settings. */
+  target: CredentialTargetId | typeof CUSTOM_SECRET_TARGET;
   label: string;
   description: string;
   placeholder: string;
   helpUrl: string;
+  /** A custom secret's use the person agrees to: "ref", OpenMausBot's own tools only; "file", the bot's commands. */
+  delivery?: SecretDelivery;
+  /** A custom secret: the bot's own words on why; `description` adds what the bot may do with it, and helpUrl is empty. */
+  reason?: string;
+  /** A file secret's Local VM target key, when the asking turn ran in one. */
+  vm?: string;
+  /** When a custom secret was saved; its file goes a day later. */
+  savedAt?: number;
   requestKey: string;
   phoneOperationId?: string;
   provided?: boolean;
