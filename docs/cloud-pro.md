@@ -1663,6 +1663,13 @@ without them works as before; a malformed one is dropped, never the machine):
   entitlement still decides everything.
 - `cloud.credit: {grantedUsd, remainingUsd, state}`: the trial's Claude
   credit (`active` or `used_up`), shown in Settings here and on the Cloud.
+- `clouds[]` (top level): every Cloud the person can open. The app reads one
+  thing from it, the plan's renewal (`electron/cloud-home.mjs`
+  `parseCloudRenewal`): the account's own primary Cloud's `renewal: {trial,
+  endsAt, keptDays}`, which the Admin sends only to the account that pays for
+  it while its plan runs. The state carries `renewal: {trial, cancelled,
+  renewsAt, endsAt, keptDays, team?}` without the Cloud's id, which stays in
+  main. See [Cancel trial / Cancel plan](#cancel-trial--cancel-plan).
 - `offer` (top level, beside `cloud`): what this account may buy now, only
   while it can (no plan, no Cloud, no payment being linked). See
   [Add a Cloud](#add-a-cloud) for its fields.
@@ -1690,6 +1697,47 @@ a processing payment only after an hour (most cards settle at once), and
 ending, late or ended whenever the Admin says. The page says it showed one
 with `cloud-plan:notice-seen`, which names nothing. It is an entry in the
 notice queue (below), on this computer's page and on My Cloud's own page.
+
+#### Cancel trial / Cancel plan
+
+Customers couldn't find how to cancel: the plan card only said **Manage in
+your browser**. Now, while the session's `renewal` says this account pays for a
+plan that runs, the plan card in Settings (Usage & billing → Plan in Simple
+mode, MausBot Cloud in Advanced) and on the Cloud's own page in home mode
+(`CloudPlanOnCloud`) shows **Cancel trial** during a free trial and **Cancel
+plan** otherwise (`src/components/CloudCancelPlan.tsx`). Someone in a team's
+Cloud never sees it: the Admin sends no `renewal` for a Cloud they don't pay
+for.
+
+Its sheet asks "Before you go: what's the main reason?" with one-tap chips
+(Missing a feature, Too expensive, Hard to set up, Didn't work as I expected,
+Not using it right now, Something else; tap again to let one go), two optional
+boxes ("What did you expect MausBot to do?", "What could we have done
+better?"), "Rather talk it through? Book 30 minutes with Milind", and **Keep my
+plan** and **Cancel my trial** / **Cancel my plan**. Cancelling never needs an
+answer. The page sends only the survey's words: `cloudAccount.cancelPlan` on
+this computer's page, `cloudPlan.cancel` on the Cloud's page (only from the
+person's click there). Main checks them (`cancelSurvey`: one of the reasons,
+words without one kept as `other`, each box at most 2,000 characters), sends
+`POST /api/cloud/desktop/feedback` first when anything was said, given 8 s and
+let go when it fails or is refused, then `POST
+/api/cloud/desktop/clouds/<id>/cancel` for the Cloud the verified session
+names, never one a page names. After: "Cancelled. Your trial ends on {date},
+and nothing is charged." (a paid plan: "Your plan ends on {date}. You won't be
+charged again."), "The Cloud stops then. Its files are kept {N} days, then
+deleted." (a Team Cloud: it stops for everyone in the team), and "Changed your
+mind? **Keep my plan**" (`keepPlan` / `cloudPlan.keep`, `…/keep`). A plan
+already cancelled shows when it ends and **Keep my plan** in place of Cancel,
+and the trial's own button then reads as the plain manage button.
+
+An Admin from before these routes sends no `renewal`, so the card stays as it
+was (**Manage in your browser**). If the routes are missing anyway (its own
+404, 405 or 501, never its `not_found` for the Cloud), main opens the Cloud
+page's billing (`/cloud/personal/billing`) in the browser and the sheet says
+so. Deploy the Admin before the app release that uses it.
+
+`cancel-plan-preview.html` (dev only, `pnpm dev`) shows the real cards with a
+fake bridge: `?view=settings|cloud&plan=trial|paid|team&cancelled=1&admin=old&skin=midnight|daylight&lang=de`.
 
 #### One card at a time: the notice queue
 

@@ -392,6 +392,9 @@ const bridge = {
     connectHome: () => ipcRenderer.invoke("cloud-account:connectHome"),
     connectHomeForPhone: () => ipcRenderer.invoke("cloud-account:connectHomeForPhone"),
     openTeam: teamId => ipcRenderer.invoke("cloud-account:openTeam", String(teamId)),
+    // Cancel trial / Cancel plan and Keep my plan: the survey's words only; main names the Cloud from the verified session.
+    cancelPlan: survey => ipcRenderer.invoke("cloud-account:cancelPlan", survey ?? null),
+    keepPlan: () => ipcRenderer.invoke("cloud-account:keepPlan"),
     onState: cb => {
       const handler = (_event, state) => cb(state);
       ipcRenderer.on("cloud-account:state-changed", handler);
@@ -450,6 +453,11 @@ const bridge = {
       ? ipcRenderer.invoke("cloud-plan:upgrade-preview", String(plan), String(source)) : Promise.reject(new Error("Choose Upgrade to see the price.")),
     upgrade: (plan, source) => navigator.userActivation?.isActive === true
       ? ipcRenderer.invoke("cloud-plan:upgrade", String(plan), String(source)) : Promise.reject(new Error("Choose Upgrade to change your plan.")),
+    // Cancel trial / Cancel plan and Keep my plan: only from the person's click; the survey's words only, main names the Cloud.
+    cancel: survey => isLocalPage || navigator.userActivation?.isActive === true
+      ? ipcRenderer.invoke("cloud-plan:cancel", survey ?? null) : Promise.reject(new Error("Choose Cancel to cancel your plan.")),
+    keep: () => isLocalPage || navigator.userActivation?.isActive === true
+      ? ipcRenderer.invoke("cloud-plan:keep") : Promise.reject(new Error("Choose Keep my plan to keep it.")),
   } : undefined,
   organization: process.argv.includes("--omb-company-desktop=1") ? {
     settingsOpened: () => ipcRenderer.invoke("organization:settings-opened"),

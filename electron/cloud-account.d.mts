@@ -51,7 +51,21 @@ export interface CloudAccountState {
   staging?: true;
   /** Connected: opening My Cloud waits for it to wake. */
   waking?: true;
+  /** Connected: the plan's renewal, only while this account pays for a plan that runs: what Cancel and Keep act on (display only). */
+  renewal?: import("./cloud-list.mjs").CloudRenewal;
 }
+/** The cancel sheet's reasons. */
+export type CloudCancelAnswer = "feature" | "price" | "setup" | "broken" | "later" | "other";
+/** The cancel sheet's survey: one reason (words without one are kept as `other`) and two optional boxes, at most 2,000 characters each. */
+export interface CloudCancelSurvey { answer?: CloudCancelAnswer | null; expected?: string; improve?: string }
+/** What Cancel or Keep my plan did: `cancelled` (with when it ends, from the Admin's answer, and whether the survey was kept),
+ * `kept`, `browser` (this Admin can't do it from the app yet, so the Cloud page's billing opened instead), or `failed`
+ * (nothing changed). */
+export type CloudRenewalResult =
+  | { outcome: "cancelled"; renewal: import("./cloud-list.mjs").CloudRenewal | null; surveyed: boolean; state: CloudAccountState }
+  | { outcome: "kept"; state: CloudAccountState }
+  | { outcome: "browser" }
+  | { outcome: "failed"; state: CloudAccountState };
 /** The email-code sign-in (cloud-signin.mjs). `sent`: the code is on its
  * way (`resendAt`: when another may be asked for). `browser`: this Cloud signs
  * in only in the browser (single sign-on there, or an older Admin). */
@@ -139,6 +153,9 @@ export interface CloudAccountBridge {
   connectHomeForPhone(): Promise<CloudAccountState>;
   /** Opens a team's Cloud in this window, as the switcher does: one the verified session lists, by its id. Absent on an older app. */
   openTeam?(teamId: string): Promise<void>;
+  /** Cancel trial / Cancel plan, after the survey when it says anything; Keep my plan. The Cloud is the verified session's own, never the page's. Absent on an older app. */
+  cancelPlan?(survey: CloudCancelSurvey | null): Promise<CloudRenewalResult>;
+  keepPlan?(): Promise<CloudRenewalResult>;
   onState(callback: (state: CloudAccountState) => void): () => void;
   files?: import("./cloud-sync.mjs").CloudFilesBridge;
 }
@@ -159,6 +176,8 @@ export interface CloudPlanSnapshot {
   home?: true;
   /** Verified, with an active plan: its allowances and their use this month (the usage meter). */
   usage?: import("./cloud-home.mjs").CloudUsage;
+  /** Verified, while this account pays for a plan that runs: what Cancel and Keep act on. */
+  renewal?: import("./cloud-list.mjs").CloudRenewal;
 }
 export interface CloudPlanBridge {
   state(): Promise<CloudPlanSnapshot>;
@@ -170,6 +189,9 @@ export interface CloudPlanBridge {
   /** The usage meter's Upgrade: the preview, then the change (only from the person's click). Absent on an older app. */
   upgradePreview?(plan: string, source: string): Promise<CloudUpgradePreviewResult>;
   upgrade?(plan: string, source: string): Promise<CloudUpgradeResult>;
+  /** Cancel trial / Cancel plan and Keep my plan on the Cloud's own page (only from the person's click). Absent on an older app. */
+  cancel?(survey: CloudCancelSurvey | null): Promise<CloudRenewalResult>;
+  keep?(): Promise<CloudRenewalResult>;
 }
 
 export declare const CLOUD_ORIGIN: string;
@@ -181,6 +203,9 @@ export declare function cloudTarget(env?: Record<string, string | undefined>): {
 };
 export declare const CHECKOUT_SOURCES: readonly string[];
 export declare const UPGRADE_SOURCES: readonly string[];
+export declare const CLOUD_CANCEL_ANSWERS: readonly CloudCancelAnswer[];
+/** The survey as main sends it (trimmed; words without a reason as `other`), or null when it says nothing or isn't one. */
+export declare function cancelSurvey(input: unknown): { answer: CloudCancelAnswer; expected?: string; improve?: string } | null;
 export declare function checkoutDestination(value: unknown, options?: { fixture?: boolean; staging?: boolean }): string | null;
 export declare function cloudOrigin(value?: string, fixture?: boolean): string;
 export interface CloudAccountStore {
@@ -224,6 +249,11 @@ export interface CloudAccountClient {
   upgradePreview(plan: string, source: string): Promise<CloudUpgradePreviewResult>;
   /** POST /api/cloud/desktop/upgrade with this app's own preview's confirmation, or nothing is asked. */
   upgrade(plan: string, source: string): Promise<CloudUpgradeResult>;
+  /** POST /api/cloud/desktop/feedback when the survey says anything (never in the cancel's way), then POST
+   * /api/cloud/desktop/clouds/<the session's own Cloud>/cancel. */
+  cancelPlan(survey: unknown): Promise<CloudRenewalResult>;
+  /** POST /api/cloud/desktop/clouds/<the session's own Cloud>/keep. */
+  keepPlan(): Promise<CloudRenewalResult>;
   homeTarget(): { origin: string } | null;
   /** The Admin's last word on a Cloud whose plan sleeps; null for any other. */
   power(): import("./cloud-power.mjs").CloudPower | null;
