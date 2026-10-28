@@ -10,6 +10,10 @@ describe("toolStepLabel", () => {
     [{ name: "mcp__omb__computer_batch" }, "Use the screen"],
     [{ name: "mcp__omb__screenshot" }, "Look at the screen"],
     [{ name: "mcp__claude_ai_Gmail__list_bots" }, "Check the team"],
+    [{ name: "mcp__agents__trigger" }, "Manage automations"],
+    [{ name: "mcp__agents__trigger_info" }, "Check automations"],
+    // A chip from an earlier conversation keeps the name its call had.
+    [{ name: "mcp__agents__create_trigger" }, "Create trigger"],
     [{ name: "agent_browser_click" }, "Use the browser"],
     [{ name: "GITHUB_GET_A_COMMIT" }, "Get a commit"],
     [{ name: "mcp__composio__LINEAR_CREATE_LINEAR_COMMENT" }, "Create linear comment"],

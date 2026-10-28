@@ -403,6 +403,8 @@
   "toolStep.askHelper": "Przekaż zadanie pomocnikowi",
   "toolStep.think": "Pomyśl",
   "toolStep.checkTeam": "Sprawdź zespół",
+  "toolStep.manageAutomations": "Zarządzaj automatyzacjami",
+  "toolStep.checkAutomations": "Sprawdź automatyzacje",
   "toolStep.useTool": "Użyj narzędzia",
   "attach.gallery": "Załączniki",
   "attach.gallerySingle": "1 załącznik",

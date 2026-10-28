@@ -150,6 +150,8 @@
   "toolStep.askHelper": "Giao một nhiệm vụ cho trợ lý",
   "toolStep.think": "Suy nghĩ",
   "toolStep.checkTeam": "Kiểm tra team",
+  "toolStep.manageAutomations": "Quản lý tự động hóa",
+  "toolStep.checkAutomations": "Kiểm tra tự động hóa",
   "toolStep.useTool": "Sử dụng một công cụ",
   "attach.gallery": "Tệp đính kèm",
   "attach.gallerySingle": "1 tệp đính kèm",

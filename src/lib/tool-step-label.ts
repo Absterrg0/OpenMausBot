@@ -47,6 +47,8 @@ const STEP_KEYS: Record<string, LocaleKey> = {
   agent: "toolStep.askHelper",
   think: "toolStep.think",
   list_bots: "toolStep.checkTeam",
+  trigger: "toolStep.manageAutomations",
+  trigger_info: "toolStep.checkAutomations",
   tool: "toolStep.useTool",
   other: "toolStep.useTool",
   mcp: "toolStep.useTool",

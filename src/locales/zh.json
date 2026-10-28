@@ -89,6 +89,8 @@
   "toolDetail.noOutput": "这次调用没有记录任何输出。",
   "toolDetail.previewHint": "已缩短并自动屏蔽的预览。分享前请先检查。",
   "toolStep.useComputer": "操作屏幕",
+  "toolStep.manageAutomations": "管理自动化",
+  "toolStep.checkAutomations": "查看自动化",
   "attach.gallery": "附件",
   "attach.gallerySingle": "1 个附件",
   "attach.galleryCount": "{count} 个附件",

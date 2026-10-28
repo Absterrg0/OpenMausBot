@@ -37,7 +37,7 @@ export function NewAutomation({ initialText = "", onClose, onSetUpYourself }: {
   const send = () => {
     const request = text.trim();
     if (!request || !bot) return;
-    // A normal chat message: the bot sets the automation up with create_trigger and the person sees its card there.
+    // A normal chat message: the bot sets the automation up with its trigger tool and the person sees its card there.
     dispatch({ type: "select", id: bot.id });
     dispatch({ type: "send", botId: bot.id, text: request, threadId: bot.threadId });
     onClose();

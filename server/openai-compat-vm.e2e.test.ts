@@ -213,7 +213,10 @@ describe("openai-compat Local VM tools", () => {
     await idle(bot.id);
     const continuation = requests[2];
     expect(toolNames(continuation), JSON.stringify({ tools: toolNames(continuation), requests: requests.length })).toContain("computer_screenshot");
-    expect(toolNames(continuation)).toContain("agents_select_computer");
+    expect(toolNames(requests[0])).toContain("agents_select_computer");
+    // The continuation still has the agents tools, but not a second pick: the selection route refuses one there.
+    expect(toolNames(continuation)).toContain("agents_coordinate_bots");
+    expect(toolNames(continuation)).not.toContain("agents_select_computer");
     const shown = (await api("GET", "/api/bots")).bots.find((item: any) => item.id === bot.id).messages;
     expect(shown.filter((message: any) => message.card)).toEqual([]);
   }, 60_000);

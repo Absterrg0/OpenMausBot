@@ -342,6 +342,8 @@
   "toolStep.askHelper": "Pasar una tarea a un ayudante",
   "toolStep.think": "Pensar",
   "toolStep.checkTeam": "Consultar al equipo",
+  "toolStep.manageAutomations": "Gestionar automatizaciones",
+  "toolStep.checkAutomations": "Consultar automatizaciones",
   "toolStep.useTool": "Usar una herramienta",
   "attach.gallery": "Adjuntos",
   "attach.gallerySingle": "1 adjunto",

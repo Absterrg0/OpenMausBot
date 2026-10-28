@@ -1,6 +1,8 @@
 import type { KeyboardEvent, ReactNode } from "react";
+import { botButton, type BotButton } from "@/lib/bot-button";
 import { cn } from "@/lib/cn";
 import { useAdvancedMode } from "@/lib/interface-mode";
+import type { MausColor } from "@/lib/mascot";
 import { Check, Pencil, X } from "lucide-react";
 
 export function AskCard({
@@ -115,11 +117,18 @@ export function AskSettledLine({
  * A fixed height with a centered line box keeps Arabic and Latin labels on one baseline band; vertical padding lets
  * each script's font metrics push text off center.
  */
-const ASK_CONTROL =
-  "inline-flex h-7 shrink-0 items-center justify-center gap-1.5 whitespace-nowrap rounded-full px-3 text-[13px] font-medium leading-5 transition-colors [&>svg]:shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus disabled:cursor-not-allowed disabled:opacity-40";
+const ASK_SHAPE =
+  "inline-flex h-7 shrink-0 items-center justify-center gap-1.5 whitespace-nowrap rounded-full px-3 text-[13px] font-medium leading-5 transition-colors [&>svg]:shrink-0 disabled:cursor-not-allowed";
+const ASK_LOOK = "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus disabled:opacity-40";
+const ASK_CONTROL = `${ASK_SHAPE} ${ASK_LOOK}`;
+const ASK_PRIMARY_LOOK = `${ASK_LOOK} ui-button-primary bg-accent text-accent-ink hover:brightness-110`;
 
-export const ASK_PRIMARY_BUTTON =
-  `${ASK_CONTROL} ui-button-primary bg-accent text-accent-ink hover:brightness-110`;
+export const ASK_PRIMARY_BUTTON = `${ASK_SHAPE} ${ASK_PRIMARY_LOOK}`;
+
+/** The answer a card waits for, in the asking bot's own button; the plain primary when no single bot asked. */
+export function askPrimary(color: MausColor | undefined): BotButton {
+  return botButton(color, ASK_SHAPE, ASK_PRIMARY_LOOK);
+}
 
 export const ASK_CHIP = `${ASK_CONTROL} max-w-full border`;
 export const ASK_CHIP_IDLE = "border-transparent bg-ink/[0.07] text-ink hover:bg-ink/[0.12]";

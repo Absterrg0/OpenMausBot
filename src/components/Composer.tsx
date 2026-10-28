@@ -963,10 +963,10 @@ export function Composer({
             className={cn(
               "flex shrink-0 items-center justify-center rounded-full",
               !simpleDock ? "size-8 text-ink-secondary hover:bg-raised hover:text-ink"
-                : stopInSlot ? "size-7 hover:brightness-110"
+                : stopInSlot ? cn("size-7", slot.button.className)
                 : SIMPLE_CONTROL,
             )}
-            style={stopInSlot ? { backgroundColor: slot.fill, color: slot.ink } : undefined}
+            style={stopInSlot ? slot.button.style : undefined}
             title={t("chat.stop")}
           >
             <Square size={simpleDock ? 10 : 14} className="fill-current" />
@@ -996,13 +996,11 @@ export function Composer({
             disabled={attachmentPending}
             aria-label={sendNames.label}
             title={sendNames.title}
-            style={simpleDock && !(busy && !canSteer) ? { backgroundColor: slot.fill, color: slot.ink } : undefined}
+            style={busy && !canSteer ? undefined : slot.button.style}
             className={cn(
-              "flex shrink-0 items-center justify-center rounded-full",
-              simpleDock ? "size-7 animate-[slot-fade-in_120ms_ease-out] disabled:cursor-default disabled:opacity-40" : "size-8 text-white",
-              busy && !canSteer
-                  ? "bg-raised text-ink-secondary hover:bg-raised-hover"
-                  : simpleDock ? "hover:brightness-110" : "bg-accent hover:brightness-110",
+              "flex shrink-0 items-center justify-center rounded-full disabled:cursor-default",
+              simpleDock ? "size-7 animate-[slot-fade-in_120ms_ease-out]" : "size-8",
+              busy && !canSteer ? "bg-raised text-ink-secondary hover:bg-raised-hover" : slot.button.className,
             )}
           >
             {busy && !canSteer ? <Clock size={simpleDock ? 14 : 15} /> : <ArrowUp size={16} strokeWidth={1.75} absoluteStrokeWidth />}

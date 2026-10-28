@@ -33,7 +33,7 @@ An app-event automation runs a bot when something happens in a connected app: a 
 message in a channel, a HubSpot deal changing stage. It uses Composio triggers through the managed service, on
 the desktop, a headless server and a Cloud alike:
 
-1. `create_trigger` (`when: "app_event"`) or the editor saves the automation in `app-triggers.json` in the data
+1. `trigger` (`action: "create"`, `when: "app_event"`) or the editor saves the automation in `app-triggers.json` in the data
    folder and creates its trigger on the service (`POST /v1/triggers`), which checks that the connected account
    belongs to this installation. A Gmail filter (from, subject, label, words) becomes Gmail's own search, so
    other mail never arrives; other apps match the filter as events arrive.
@@ -54,7 +54,7 @@ A Cloud counts as paid once its server presents the Admin's signed grant (`OMB_C
 Events over the limit are not run; the automation shows how many were skipped today and why.
 
 Gmail and other polled apps are checked every 15 minutes, the minimum for Composio-managed sign-ins. A server
-that uses its own Composio project key cannot watch apps yet: `list_trigger_events` and the editor say so, and a
+that uses its own Composio project key cannot watch apps yet: `trigger_info` (`action: "events"`) and the editor say so, and a
 schedule that checks the app, or a webhook, does the job instead.
 
 ## Scoped key permissions

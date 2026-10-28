@@ -18,7 +18,7 @@ import {
   ASK_CHOICE_ROW,
   ASK_SOMETHING_ELSE_FIELD,
   AskSomethingElse,
-  ASK_PRIMARY_BUTTON,
+  askPrimary,
   ASK_QUIET_BUTTON,
   ASK_SMALL_PILL,
   AskCard,
@@ -101,7 +101,7 @@ export function QuestionCard({
   typedPast = false,
 }: {
   threadId: string;
-  bot?: Pick<Bot, "name">;
+  bot?: Pick<Bot, "name"> & Partial<Pick<Bot, "color">>;
   message: Message;
   /** The person has written in the chat since: Simple mode quiets the choices, which still answer. */
   typedPast?: boolean;
@@ -222,7 +222,7 @@ export function QuestionCard({
       footer={oneTap && !draft.custom.trim() ? undefined : (
         <>
           <span className="me-auto text-[12px] text-ink-tertiary">{t("question.status.waiting")}</span>
-          <button type="button" onClick={submit} disabled={!complete} className={ASK_PRIMARY_BUTTON}>
+          <button type="button" onClick={submit} disabled={!complete} {...askPrimary(bot?.color)}>
             {simple && multi && questions.length === 1 ? t("question.done") : questions.length > 1 ? t("question.submitAll") : t("question.submit")}
           </button>
         </>

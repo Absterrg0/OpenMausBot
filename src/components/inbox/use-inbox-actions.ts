@@ -36,5 +36,8 @@ export function useInboxActions(view: InboxView | null) {
     else { readInboxRow(row); openInbox({ reading: row.id }); }
   }, [answer, openInChat]);
 
-  return { run, answer, openInChat };
+  /** The bot a line is from, whose colour its answer buttons wear; none for a teammate's line. */
+  const colorOf = (row: InboxRow) => (row.from.botId ? state.bots.find((bot) => bot.id === row.from.botId)?.color : undefined);
+
+  return { run, answer, openInChat, colorOf };
 }

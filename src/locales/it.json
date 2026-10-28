@@ -397,6 +397,8 @@
   "toolStep.askHelper": "Affida un compito a un assistente",
   "toolStep.think": "Pensa",
   "toolStep.checkTeam": "Controlla il team",
+  "toolStep.manageAutomations": "Gestisci le automazioni",
+  "toolStep.checkAutomations": "Controlla le automazioni",
   "toolStep.useTool": "Usa uno strumento",
   "attach.gallery": "Allegati",
   "attach.gallerySingle": "1 allegato",

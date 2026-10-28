@@ -8,6 +8,7 @@ import { SkillRequestPreview } from "@/components/SkillRequestPreview";
 import { APPROVAL_CODE_CHIP, toolLabel } from "./ApprovalCard";
 import { outboundSummary } from "@/lib/approval-summary";
 import { reviewedSkillSha256 } from "../../shared/skill-request";
+import { botButton } from "@/lib/bot-button";
 import { useOwnerOrAdmin } from "@/lib/use-owner-or-admin";
 import { yourComputerAsk } from "@/lib/your-computer";
 
@@ -103,8 +104,10 @@ function label(pending: Pending): string {
   return key ? t(key) : t("approval.label.requested");
 }
 
-export const APPROVAL_CONTROL =
-  "inline-flex h-7 shrink-0 items-center justify-center gap-1.5 whitespace-nowrap rounded-full px-3 text-[13px] font-medium leading-5 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus";
+const APPROVAL_SHAPE =
+  "inline-flex h-7 shrink-0 items-center justify-center gap-1.5 whitespace-nowrap rounded-full px-3 text-[13px] font-medium leading-5 transition-colors";
+const RING = "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus";
+export const APPROVAL_CONTROL = `${APPROVAL_SHAPE} ${RING}`;
 
 const COMMAND_TOOLS = new Set(["Bash", "shell"]);
 
@@ -275,6 +278,7 @@ export function PendingApprovalActions({
       rememberCommand: rememberCommand || undefined,
     });
 
+  const allow = botButton(bot?.color, cn(APPROVAL_SHAPE, "disabled:cursor-not-allowed"), cn(RING, "bg-accent text-white hover:bg-accent/90 disabled:opacity-40"));
   const showPrimary = part !== "more";
   const showMore = part !== "primary";
   const always = durableRequest ? null
@@ -317,7 +321,8 @@ export function PendingApprovalActions({
       type="button"
       onClick={() => decide("allow")}
       disabled={isSkillRequest && !reviewedSha256}
-      className={cn(APPROVAL_CONTROL, "bg-accent text-white hover:bg-accent/90 disabled:cursor-not-allowed disabled:opacity-40")}
+      className={allow.className}
+      style={allow.style}
     >
       {isTeamSetup ? pending.message.card?.options[0] : isSkillRequest
         ? pending.message.card?.skillRequest?.action === "update"

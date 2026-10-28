@@ -38,9 +38,11 @@ test("the rail: My Cloud, the person's Clouds and teams' Clouds in the session's
   assert.equal(before.length, 5);
 });
 
-test("one place, or none: no rail, the window as it was", () => {
+test("a Cloud of your own is a rail even alone, for its ＋; otherwise one place, or none: no rail, the window as it was", () => {
   const alone = { activeId: "home", environments: [{ id: "home", kind: "remote", name: "My Cloud", origin: HOME, home: true }] };
-  assert.deepEqual(railPlaces({ saved: alone, home: HOME, mine: HOME, state: session({ teams: [], clouds: parseCloudList([PRIMARY]) }) }), []);
+  assert.deepEqual(railPlaces({ saved: alone, home: HOME, mine: HOME, state: session({ teams: [], clouds: parseCloudList([PRIMARY]) }) }).map(place => place.id), ["home"],
+    "My Cloud alone, after the move: its circle, so the ＋ that buys another is there");
+  assert.deepEqual(railPlaces({ saved: alone, home: HOME, mine: HOME, state: null }), [], "signed out of Cloud: one saved place is no rail");
   assert.deepEqual(railPlaces({ saved: alone, home: null, mine: HOME, state: session({ teams: [], clouds: parseCloudList([PRIMARY]) }) }).map(place => place.id), ["local", "home"],
     "before the move, This computer and My Cloud are two places: two circles");
   assert.deepEqual(railPlaces({ saved: { activeId: "local", environments: [] }, state: null }), []);

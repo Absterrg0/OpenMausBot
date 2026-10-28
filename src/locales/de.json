@@ -74,6 +74,8 @@
   "voice.engine": "Sprachanbieter",
   "call.voiceSetup.subtitle": "Wähl einen Sprachanbieter, füge seinen Schlüssel hinzu, falls er einen braucht, und wähl dann eine Stimme.",
   "toolStep.useComputer": "Bildschirm benutzen",
+  "toolStep.manageAutomations": "Automatisierungen verwalten",
+  "toolStep.checkAutomations": "Automatisierungen prüfen",
   "teamImport.sharedTeamSafety": "Bots, Bilder, gemeinsame Anweisungen, der Chief of Staff, Gruppenchats, Playbooks und Startnotizen werden hinzugefügt. Skills kommen ausgeschaltet an und Routinen pausiert. Verbindungen kommen ohne ihre Schlüssel an; schließe sie unter Apps → MCP servers ab. Chatverläufe, Schlüssel und Passwörter, Modellwahl und Computer werden nie mitgenommen.",
   "noEngines.title": "Installiere einen Modellanbieter, um loszulegen",
   "noEngines.intro": "{app} bringt kein eigenes Modell mit — deine Bots laufen über eine auf diesem Rechner installierte KI-CLI mit deinem bestehenden Login. Richte eine davon ein und deine Bots erwachen zum Leben.",

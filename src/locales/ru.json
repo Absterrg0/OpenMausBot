@@ -409,6 +409,8 @@
   "toolStep.askHelper": "Передать задачу помощнику",
   "toolStep.think": "Обдумать",
   "toolStep.checkTeam": "Проверить команду",
+  "toolStep.manageAutomations": "Управлять автоматизациями",
+  "toolStep.checkAutomations": "Проверить автоматизации",
   "toolStep.useTool": "Использовать инструмент",
   "attach.gallery": "Вложения",
   "attach.gallerySingle": "1 вложение",

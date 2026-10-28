@@ -432,6 +432,8 @@
   "toolStep.askHelper": "Hand a task to a helper",
   "toolStep.think": "Think",
   "toolStep.checkTeam": "Check the team",
+  "toolStep.manageAutomations": "Manage automations",
+  "toolStep.checkAutomations": "Check automations",
   "toolStep.useTool": "Use a tool",
   "attach.gallery": "Attachments",
   "attach.gallerySingle": "1 attachment",

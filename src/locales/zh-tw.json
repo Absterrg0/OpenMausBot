@@ -131,6 +131,8 @@
   "toolDetail.noOutput": "這次呼叫沒有記錄任何輸出。",
   "toolDetail.previewHint": "已縮短並自動遮蔽的預覽。分享前請先檢查。",
   "toolStep.useComputer": "使用畫面",
+  "toolStep.manageAutomations": "管理自動化",
+  "toolStep.checkAutomations": "查看自動化",
   "attach.gallery": "附件",
   "attach.gallerySingle": "1 個附件",
   "attach.galleryCount": "{count} 個附件",

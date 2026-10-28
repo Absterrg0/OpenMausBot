@@ -70,6 +70,28 @@ Grok uses those two helpers to discover and call the selected MCP tools.
 Their results and calls are checked against the same original selectors.
 Pi sends the selected MCP schemas directly to the model.
 
+**OpenMausBot's own tools** sit on the server named `agents`. A few of them do
+several things, and each of those things has a name of its own, which a
+selector can use. `trigger` and `trigger_info` also cover everything they do by
+their own names; for the other tools, the tool's name means what the table lists
+for it:
+
+| Tool | Names of what it does |
+| --- | --- |
+| `trigger_info` | `list_triggers`, `list_trigger_events` (`action: "events"`) |
+| `trigger` | `create_trigger` (`action: "create"`), `manage_trigger` (every other action) |
+| `manage_room` | `create_room` (`action: "create"`), `manage_room` (every other action) |
+| `memory_update` | `memory_log` (`action: "log"`), `memory_update` (every other action) |
+| `session_search` | `session_read` (with `thread_id` and `message_id`), `session_search` |
+| `show_widget` | `update_widget` (with `widget_id`), `show_widget` |
+| `show_html` | `update_html` (with `app_id`), `show_html` |
+| `x_search` | `x_user_posts`, `x_post`, `x_profile` (by `action`), `x_search` |
+
+So `mcp:agents:trigger` in Exclude removes every change to a trigger,
+`mcp:agents:create_trigger` only stops creating one, and `mcp:agents:memory_log`
+stops only the daily log. A tool is listed when the selection allows any of what it does; each call is
+checked against what it does.
+
 ## Engine support
 
 | Engines | Available selection |
