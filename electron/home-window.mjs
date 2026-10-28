@@ -165,6 +165,7 @@ export function routeOf(url, origin) {
  *   splash?(): { status(text: string): void } | null,
  *   lastInput?(): number,
  *   publish?(view: unknown): void,
+ *   rehomed?(home: { kind: string, origin?: string }): void,
  *   versionEveryMs?: number,
  *   quietMs?: number,
  *   now?(): number,
@@ -179,12 +180,13 @@ export function routeOf(url, origin) {
  * `frozen()`: this computer's server's freeze marker. `splash()`: the startup screen while it is up. `remembered()`: the
  * team or other Cloud shown last time, with its name and origin as saved; `remember(place)`: what to open next time;
  * `left(name)`: the team shown is no longer this person's, so the window says so once; `drop(place)`: the Admin said so
- * (404 on its pairing), so the team (with that line) or the Cloud leaves the switcher now.
+ * (404 on its pairing), so the team (with that line) or the Cloud leaves the switcher now. `rehomed(home)`: home as worked
+ * out changed.
  */
 export function createHomeWindow(deps) {
   const { journal, frozen, account, restored = async () => {}, window, ensureWindow, localOrigin, cookieFetch, power, go, showLocal,
     remembered = () => null, remember = () => {}, left = () => {}, drop = (place) => { if (place.kind === "team") left(place.name); remember(null); },
-    splash = () => null, lastInput = () => 0, publish = () => {}, versionEveryMs = VERSION_EVERY_MS, quietMs = QUIET_MS,
+    splash = () => null, lastInput = () => 0, publish = () => {}, rehomed = () => {}, versionEveryMs = VERSION_EVERY_MS, quietMs = QUIET_MS,
     now = Date.now, timers = DEFAULT_TIMERS, hosts = () => null, readyStore = null, log = () => {} } = deps;
   let home = { kind: "computer" }, screen = null, status = null, opens = 0, retry = null, tries = 0, loaded = null, newer = false, repairing = null;
   /** My Cloud asked for before the move made it home (`{ open }`), until its page loads or the person goes elsewhere;
@@ -215,7 +217,11 @@ export function createHomeWindow(deps) {
       if (marker?.frozen) frozenCloud = typeof marker.cloud === "string" ? marker.cloud : true;
     }
     if (frozenCloud || awayIn(kept)) await restored();
+    const before = home;
     home = homeOf({ journal: kept, frozenCloud, state: state() });
+    if (home.kind !== before.kind || home.origin !== before.origin) {
+      try { rehomed(home); } catch {}
+    }
     return home;
   }
 
