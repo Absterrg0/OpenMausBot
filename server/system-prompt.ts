@@ -170,14 +170,27 @@ function syncedFoldersPrompt(synced: ReadonlyArray<{ computerName: string; pcPat
 export const COMPOSIO_PROMPT =
   " The user's connected apps (Gmail, Calendar, Slack, Notion, and the rest) are reachable through the composio tools — find the right one with COMPOSIO_SEARCH_TOOLS, read its arguments with COMPOSIO_GET_TOOL_SCHEMAS, then run it with COMPOSIO_MULTI_EXECUTE_TOOL. Reach for them before telling the user you have no access to a service.";
 
+/** The app tools a bot with these apps can call by name, on every engine. */
+const APP_TOOLS_PROMPT: Record<string, { label: string; tools: string }> = {
+  gmail: { label: "Gmail", tools: "gmail.search_emails, gmail.read_email and gmail.read_email_thread" },
+  googlecalendar: { label: "Google Calendar", tools: "googlecalendar.list_events and googlecalendar.list_calendars" },
+};
+
+function appToolsPrompt(apps: readonly string[]): string {
+  const named = apps.filter((app) => Object.hasOwn(APP_TOOLS_PROMPT, app)).map((app) => APP_TOOLS_PROMPT[app]!);
+  if (!named.length) return "";
+  const one = named.length === 1;
+  return ` ${named.map((app) => app.label).join(" and ")}, when connected, ${one ? "has tools of its" : "have tools of their"} own: call ${named.map((app) => app.tools).join(", and ")} directly (your engine may show them behind its own prefix, with _ for the dot), and use the composio tools for everything else.`;
+}
+
 export function composioSystemPrompt(grants: Record<string, ConnectorToolGrant> | undefined): string {
-  if (grants === undefined) return COMPOSIO_PROMPT;
+  if (grants === undefined) return COMPOSIO_PROMPT + appToolsPrompt(Object.keys(APP_TOOLS_PROMPT));
   const services = Object.keys(grants);
   if (services.length === 0) {
     return " No connected apps are assigned to this bot. If a task needs one, or an app's sign-in has expired, call COMPOSIO_MANAGE_CONNECTIONS to show the user a card that connects it, and ask them to allow that app for this bot in OpenMausBot.";
   }
   const named = services.map(connectorServiceLabel).join(", ");
-  return ` The user's connected apps assigned to this bot (${named}) are reachable through the composio tools — find the right one with COMPOSIO_SEARCH_TOOLS, read its arguments with COMPOSIO_GET_TOOL_SCHEMAS, then run it with COMPOSIO_MULTI_EXECUTE_TOOL. Only the tools this bot was granted will run; when a needed tool is refused, tell the user and ask them to grant it in OpenMausBot. Reach for the granted services before telling the user you have no access.`;
+  return ` The user's connected apps assigned to this bot (${named}) are reachable through the composio tools — find the right one with COMPOSIO_SEARCH_TOOLS, read its arguments with COMPOSIO_GET_TOOL_SCHEMAS, then run it with COMPOSIO_MULTI_EXECUTE_TOOL. Only the tools this bot was granted will run; when a needed tool is refused, tell the user and ask them to grant it in OpenMausBot. Reach for the granted services before telling the user you have no access.${appToolsPrompt(services)}`;
 }
 
 function connectorServiceLabel(slug: string): string {

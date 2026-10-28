@@ -3,6 +3,7 @@
 // and their own message started it.
 // Security: nothing else ever gets a member's connection: not a group chat, the bot's main chat, another member's chat,
 // an admin writing in theirs, a routine or a webhook. The relay checks it again on every call. Off a team nothing changes.
+import { createHash } from "node:crypto";
 import { join } from "node:path";
 
 import { audienceMember, type Audience } from "../audience.ts";
@@ -15,8 +16,10 @@ import { type McpOAuthManager, withMcpSignIn, withoutPendingSignIn } from "../mc
 import { isRemoteMcpServer, parseStoredMcpServer } from "../mcp-registry.ts";
 import { OWN_APPS_SERVER } from "../../shared/own-apps.ts";
 import { appLabel, ConnectionScopes, PeopleConnections, personAppOf, SCOPES_FILE, type BrokerAccess } from "../team-connections.ts";
+import { APP_TOOL_NAMES_ENV, APP_TOOLS_ENV, appToolsFor } from "../connector-app-tools.ts";
+import type { ConnectorScopes } from "../../shared/connector-scopes.ts";
 
-type Bot = { id: string; name: string; connectorTools?: Parameters<typeof Composio.mcpIntegration>[1]["connectorTools"] };
+type Bot = { id: string; name: string; connectorTools?: Parameters<typeof Composio.mcpIntegration>[1]["connectorTools"]; connectorScopes?: ConnectorScopes };
 type Integration = { command: string; args: string[]; env: Record<string, string> };
 
 export interface TeamConnectionsHostDeps {
@@ -58,6 +61,21 @@ export function createTeamConnectionsHost(deps: TeamConnectionsHostDeps) {
     isOwnerLive: deps.isSessionLive,
   });
   const personApps = () => (team ? scopes.person("app") : []);
+  /** The apps connected for an installation, the team's or a member's own, read at most once a minute. */
+  const connectedApps = new Map<string, { at: number; apps: Promise<string[]> }>();
+  const appsConnected = (as?: BrokerAccess): Promise<string[]> => {
+    const key = as ? createHash("sha256").update(as.url).update("\u0000").update(as.token).digest("hex") : "";
+    const cached = connectedApps.get(key);
+    if (cached && Date.now() - cached.at < 60_000) return cached.apps;
+    const apps = deps.composio.connectedServices(deps.cfg(), as)
+      .then((services) => Object.entries(services).filter(([, state]) => state.connected).map(([slug]) => slug), () => [] as string[]);
+    connectedApps.set(key, { at: Date.now(), apps });
+    return apps;
+  };
+  const withAppTools = async (bridge: Integration, bot: Bot, names: "dotted" | "plain", as?: BrokerAccess): Promise<Integration> => {
+    const tools = appToolsFor(bot, await appsConnected(as));
+    return tools.length ? { ...bridge, env: { ...bridge.env, [APP_TOOLS_ENV]: JSON.stringify(tools), [APP_TOOL_NAMES_ENV]: names } } : bridge;
+  };
   const personMcp = () => (team ? scopes.person("mcp") : []);
   const link = () => (team && deps.adminOrigin ? `${deps.adminOrigin}/cloud/team/${encodeURIComponent(team.id)}` : null);
   const without = <T,>(servers: Record<string, T>, names: readonly string[]) =>
@@ -111,18 +129,19 @@ export function createTeamConnectionsHost(deps: TeamConnectionsHostDeps) {
     link,
     turnPerson,
 
-    /** The connected-apps bridges of a turn: the team's, and in a member's own turn their own beside it. */
-    async appsIntegrations(bot: Bot, threadId: string, generation: string): Promise<{ composio?: Integration; composioOwn?: Integration }> {
+    /** The connected-apps bridges of a turn: the team's, and in a member's own turn their own beside it. `names`: how the
+     * engine spells the app tools' names. */
+    async appsIntegrations(bot: Bot, threadId: string, generation: string, names: "dotted" | "plain" = "plain"): Promise<{ composio?: Integration; composioOwn?: Integration }> {
       const cfg = deps.cfg();
       const out: { composio?: Integration; composioOwn?: Integration } = {};
       const base = { harnessUrl: deps.harnessUrl, botId: bot.id, threadId, connectorTools: bot.connectorTools };
       const shared = await deps.composio.mcpIntegration(cfg, { ...base, commsToken: deps.mint({ botId: bot.id, threadId, generation }) });
-      if (shared) out.composio = shared;
+      if (shared) out.composio = await withAppTools(shared, bot, names);
       const person = personApps().length ? turnPerson(threadId, generation) : null;
       const access = person ? people.appsAccess(person) : null;
       if (person && access) {
         const own = await deps.composio.mcpIntegration(cfg, { ...base, as: access, commsToken: deps.mint({ botId: bot.id, threadId, generation, connectorsFor: person }) });
-        if (own) out.composioOwn = own;
+        if (own) out.composioOwn = await withAppTools(own, bot, names, access);
       }
       return out;
     },
