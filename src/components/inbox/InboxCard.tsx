@@ -6,7 +6,7 @@ import { Check, CornerUpLeft, Inbox, X } from "lucide-react";
 import type { InboxRow, InboxView } from "../../../shared/inbox";
 import { t } from "@/lib/i18n";
 import { openInbox, readInboxRow, useInboxView } from "@/state/inbox";
-import { INBOX_PRIMARY, INBOX_SECONDARY } from "./InboxReading";
+import { inboxPrimary, INBOX_SECONDARY } from "./InboxReading";
 import { InboxRowItem } from "./InboxRow";
 import { askOf, CARD_ROWS, choiceResponse, choicesOf, rowsIn, tabCounts } from "./inbox-view";
 import { useInboxActions } from "./use-inbox-actions";
@@ -22,14 +22,14 @@ export function InboxCardSlot({ threadId, messageId }: { threadId: string; messa
 }
 
 function Answers({ row, view }: { row: InboxRow; view: InboxView }) {
-  const { answer } = useInboxActions(view);
+  const { answer, colorOf } = useInboxActions(view);
   const ask = askOf(row);
   const choices = choicesOf(row);
   const reading = () => { readInboxRow(row); openInbox({ reading: row.id }); };
   if (ask === "approval") {
     return (
       <>
-        <button type="button" data-inbox-action="allow" onClick={() => answer(row, { behavior: "allow" })} className={INBOX_PRIMARY}><Check size={14} aria-hidden="true" />{t("approval.action.allowOnce")}</button>
+        <button type="button" data-inbox-action="allow" onClick={() => answer(row, { behavior: "allow" })} {...inboxPrimary(colorOf(row))}><Check size={14} aria-hidden="true" />{t("approval.action.allowOnce")}</button>
         <button type="button" data-inbox-action="deny" onClick={() => answer(row, { behavior: "deny" })} className={INBOX_SECONDARY}><X size={14} aria-hidden="true" />{t("approval.action.deny")}</button>
       </>
     );

@@ -3,7 +3,8 @@
 import { useState } from "react";
 import { ArrowLeft, Check, ExternalLink, Send, X } from "lucide-react";
 import type { InboxRow, InboxView } from "../../../shared/inbox";
-import { cn } from "@/lib/cn";
+import { botButton } from "@/lib/bot-button";
+import type { MausColor } from "@/lib/mascot";
 import { t } from "@/lib/i18n";
 import type { Message } from "@/state/store";
 import { readInboxLine, replyToInboxRow } from "@/state/inbox";
@@ -14,7 +15,8 @@ import { askOf, choiceResponse, choicesOf, closeResponse, subjectOf } from "./in
 import { useInboxActions } from "./use-inbox-actions";
 
 export const INBOX_BUTTON = "inline-flex h-7 items-center gap-1.5 rounded-full px-3 text-[13px] font-medium transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent";
-export const INBOX_PRIMARY = `${INBOX_BUTTON} bg-accent text-accent-ink hover:bg-accent/90`;
+/** Allow, in the colour of the bot the line is from. */
+export const inboxPrimary = (color: MausColor | undefined) => botButton(color, INBOX_BUTTON, "bg-accent text-accent-ink hover:bg-accent/90");
 export const INBOX_SECONDARY = `${INBOX_BUTTON} bg-raised text-ink hover:bg-inset`;
 
 /** The line as the chat shows it, so a question answers here with the very card it asks with in the chat. */
@@ -29,7 +31,8 @@ function settledLabel(row: InboxRow): string {
 }
 
 export function InboxReading({ view, row, now }: { view: InboxView; row: InboxRow; now: number }) {
-  const { answer, openInChat, run } = useInboxActions(view);
+  const { answer, openInChat, run, colorOf } = useInboxActions(view);
+  const primary = inboxPrimary(colorOf(row));
   const [reply, setReply] = useState("");
   const [sending, setSending] = useState(false);
   const ask = askOf(row);
@@ -77,7 +80,7 @@ export function InboxReading({ view, row, now }: { view: InboxView; row: InboxRo
           </p>
         ))}
         {row.tab === "done" && <p className="flex items-center gap-1.5 text-[13px] text-ink-secondary"><Check size={14} aria-hidden="true" />{settledLabel(row)}</p>}
-        {ask === "question" && row.card?.questionRequest && view.threadId && <QuestionCard threadId={view.threadId} bot={{ name: row.from.name }} message={asMessage(row)} />}
+        {ask === "question" && row.card?.questionRequest && view.threadId && <QuestionCard threadId={view.threadId} bot={{ name: row.from.name, color: colorOf(row) }} message={asMessage(row)} />}
         {ask === "review" && <p className="text-[13px] text-ink-secondary">{t("inbox.reviewInChat")}</p>}
       </div>
       <footer className="space-y-2 border-t border-hairline/40 px-3 py-2.5">
@@ -85,7 +88,7 @@ export function InboxReading({ view, row, now }: { view: InboxView; row: InboxRo
           <div className="flex flex-wrap items-center gap-1.5">
             {ask === "approval" ? (
               <>
-                <button type="button" data-inbox-action="allow" onClick={() => answer(row, { behavior: "allow" })} className={INBOX_PRIMARY}><Check size={14} aria-hidden="true" />{t("approval.action.allowOnce")}</button>
+                <button type="button" data-inbox-action="allow" onClick={() => answer(row, { behavior: "allow" })} {...primary}><Check size={14} aria-hidden="true" />{t("approval.action.allowOnce")}</button>
                 <button type="button" data-inbox-action="deny" onClick={() => answer(row, { behavior: "deny" })} className={INBOX_SECONDARY}><X size={14} aria-hidden="true" />{t("approval.action.deny")}</button>
               </>
             ) : !row.card?.questionRequest && choices.map((choice) => (
@@ -99,7 +102,7 @@ export function InboxReading({ view, row, now }: { view: InboxView; row: InboxRo
               onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void send(reply); } }}
               className="min-h-[2.5rem] flex-1 resize-none rounded-xl border border-hairline/50 bg-panel px-3 py-2 text-[13px] text-ink placeholder:text-ink-tertiary focus:border-accent/60 focus:outline-none" />
             <button type="submit" disabled={!reply.trim() || sending} aria-label={t("chat.send")} title={t("chat.send")}
-              className={cn("flex size-9 shrink-0 items-center justify-center rounded-full bg-accent text-accent-ink", (!reply.trim() || sending) && "opacity-50")}>
+              {...botButton(colorOf(row), "flex size-9 shrink-0 items-center justify-center rounded-full", "bg-accent text-accent-ink disabled:opacity-50")}>
               <Send size={15} aria-hidden="true" />
             </button>
           </form>

@@ -421,11 +421,11 @@ export const Transcript = memo(function Transcript({
           <CancelledTurnRow onRetry={canRetryRoom ? retryRoom : undefined} />
         ) :
           m.kind === "secret" && m.secret && m.from?.botId ? (
-            <SecretRequestCard botId={m.from.botId} threadId={group.threadId} message={m} />
+            <SecretRequestCard botId={m.from.botId} color={m.from.color} threadId={group.threadId} message={m} />
           ) : m.kind === "signin" && m.signIn && m.from?.botId ? (
-            <SignInRequestCard botId={m.from.botId} botName={m.from.name} threadId={group.threadId} message={m} />
+            <SignInRequestCard botId={m.from.botId} botName={m.from.name} color={m.from.color} threadId={group.threadId} message={m} />
           ) : m.kind === "connector" && m.connector && m.from?.botId ? (
-            <ConnectorCard botId={m.from.botId} threadId={group.threadId} message={m} />
+            <ConnectorCard botId={m.from.botId} color={m.from.color} threadId={group.threadId} message={m} />
           ) : m.kind === "options" && m.card?.requestId && m.card.questionRequest ? (
             <div className="flex justify-start">
               <MessageBoundary fallbackText={m.card.subtitle || m.card.title || ""}>

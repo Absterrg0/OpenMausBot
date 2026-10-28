@@ -978,6 +978,26 @@
   background: color-mix(in srgb, var(--color-ink) 15%, transparent);
 }
 
+/* A primary action that belongs to one bot wears that bot's flat bubble tone in every skin. Unlayered, like the
+   neutral pill above, so no utility repaints it. Its focus ring is the global one, 2px off the fill, so it reads on
+   any bot colour; a disabled one takes the same quiet colours as a disabled accent button. */
+.bot-button {
+  border-color: transparent;
+  background-color: var(--bot-button);
+  color: var(--bot-button-ink);
+}
+.bot-button:enabled:hover {
+  background-color: var(--bot-button-hover);
+}
+.bot-button:enabled:active {
+  background-color: var(--bot-button-pressed);
+}
+.bot-button:disabled {
+  background-color: var(--color-raised-hover);
+  color: var(--color-ink-secondary);
+  opacity: 1;
+}
+
 /* Shiki emits both palettes so cached blocks follow the nearest skin without
    re-tokenizing. Scope the scheme to code; native controls keep their styling. */
 .chat-md .shiki {

@@ -5,17 +5,19 @@ import { credentialResumeOutcome, credentialSaveRequest, isConfigCredentialTarge
 import { credentialProvider } from "@/lib/analytics-allowlist";
 import { cn } from "@/lib/cn";
 import { keySaved, keySaveFailure, savedKeyResult } from "@/lib/product-events";
-import { api, useStore, type ConfigStatus, type Message } from "@/state/store";
-import { ASK_FIELD, ASK_PRIMARY_BUTTON, ASK_QUIET_BUTTON, AskCard, AskSettledLine, returnFocusToComposer } from "./AskCard";
+import { api, useStore, type Bot, type ConfigStatus, type Message } from "@/state/store";
+import { ASK_FIELD, askPrimary, ASK_QUIET_BUTTON, AskCard, AskSettledLine, returnFocusToComposer } from "./AskCard";
 
 // Security: the value goes straight to the host's settings, never into the chat.
 
 export function SecretRequestCard({
   botId,
+  color,
   threadId,
   message,
 }: {
   botId: string;
+  color?: Bot["color"];
   threadId: string;
   message: Message;
 }) {
@@ -192,7 +194,7 @@ export function SecretRequestCard({
               aria-label={secret.label}
               className={cn(ASK_FIELD, "min-w-[10rem] flex-1")}
             />
-            <button type="submit" disabled={saving || (!value.trim() && !savedLocally)} className={ASK_PRIMARY_BUTTON}>
+            <button type="submit" disabled={saving || (!value.trim() && !savedLocally)} {...askPrimary(color)}>
               {saving ? <Loader2 size={14} className="animate-spin" /> : <LockKeyhole size={14} />}
               {savedLocally ? "Continue task" : "Save securely"}
             </button>

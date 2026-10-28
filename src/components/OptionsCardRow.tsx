@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import type { Message } from "@/state/store";
+import type { Bot, Message } from "@/state/store";
 import { ApprovalCard } from "./ApprovalCard";
 import { HelperIntro } from "./HelperIntro";
 import { MessageBoundary } from "./MessageBoundary";
@@ -16,11 +16,12 @@ function typedPast(card: Message, transcript: Message[]): boolean {
   return index >= 0 && transcript.slice(index + 1).some((later) => later.role === "user" && later.kind === "text");
 }
 
-export function optionsCardRow({ message: m, transcript, botId, botName, threadId }: {
+export function optionsCardRow({ message: m, transcript, botId, botName, botColor, threadId }: {
   message: Message;
   transcript: Message[];
   botId: string;
   botName: string;
+  botColor?: Bot["color"];
   threadId: string;
 }): ReactNode {
   // MausBot's follow-up is drawn under its intro (HelperIntro), never as a row of its own.
@@ -29,7 +30,7 @@ export function optionsCardRow({ message: m, transcript, botId, botName, threadI
     <HelperIntro botId={botId} threadId={threadId} message={m} answered={shouldHideOnboardingCard(m, transcript)}
       followup={transcript.find((entry) => entry.helperFollowup)} />
   ) : m.card?.requestId && m.card.questionRequest ? (
-    <QuestionCard threadId={threadId} bot={{ name: botName }} message={m} typedPast={typedPast(m, transcript)} />
+    <QuestionCard threadId={threadId} bot={{ name: botName, color: botColor }} message={m} typedPast={typedPast(m, transcript)} />
   ) : m.card?.requestId && m.card.tool ? (
     <ApprovalCard bot={{ name: botName }} message={m} threadId={threadId} />
   ) : shouldHideOnboardingCard(m, transcript) ? null : (
