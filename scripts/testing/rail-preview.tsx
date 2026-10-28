@@ -14,7 +14,8 @@ import "../../src/styles.css";
 // ?mode=simple Simple mode, ?sheet=add|server|cloud|name|connect opens ＋'s sheet there (?adding=setting_up: a Cloud
 // being bought; connect: a signed-in server's), ?places=many the list past eight (?more opens it), ?places=servers the
 // person's own servers that signed in. ?look=<colour>|none is the place's colour (its tint), ?member a team's Cloud
-// its member is on, ?settings=look Settings → Appearance at the place's colour.
+// its member is on, ?settings=look Settings → Appearance at the place's colour, ?menu=<id> that circle's own menu (a
+// right-click: its colour).
 const params = new URLSearchParams(location.search);
 setAnalyticsEnabled(false);
 setEmailGateDone("skipped");
@@ -47,7 +48,10 @@ const tint = params.get("look") ?? (member ? "purple" : "blue");
 const color = tint === "none" ? null : (tint as PlaceLook["color"]);
 const listed = params.get("places") === "many" ? MANY : params.get("places") === "servers" ? SERVERS : FEW;
 // The place on screen wears the colour its tint is drawn in.
-const rail: RailState = { places: listed.map(({ active: _active, ...entry }) => (entry.id === (member ? "acme" : "home") ? { ...entry, color, active: true as const } : entry)),
+// Every place but one still being made has its colour changed from its circle; a team's member only sees it.
+const painted = (entry: RailPlace): RailPlace => (entry.opens || entry.server ? { ...entry, paint: { swatch: entry.color ? SWATCH[entry.color] ?? null : null,
+  ...(member && entry.id === "acme" ? { locked: "member" as const } : {}) } } : entry);
+const rail: RailState = { places: listed.map(({ active: _active, ...entry }) => painted(entry.id === (member ? "acme" : "home") ? { ...entry, color, active: true as const } : entry)),
   add: { cloud: true, link: true, address: false } };
 let look: PlaceLook = { name: member ? "Acme team" : "My Cloud", color, swatch: color ? SWATCH[color] ?? null : null,
   change: member ? null : "admin", ...(member ? { reason: "member" as const } : {}) };
@@ -74,6 +78,10 @@ Object.assign(window, { ogb: {
     state: async () => ({ local: false, name: "My Cloud", origin: "https://omb-u-1.fly.dev", color: "blue" }),
     menu: ok, line: async () => null, places: async () => rail, open: ok, add: ok, onChanged: () => () => {},
     look: async () => look,
+    recolor: async (id: string, swatch: CloudSwatch) => {
+      rail.places = rail.places.map((entry) => (entry.id === id ? { ...entry, color: COLOR[swatch], paint: { swatch } } : entry));
+      return { outcome: "saved", look: null };
+    },
     color: async (swatch: CloudSwatch) => { look = { ...look, swatch, color: COLOR[swatch] }; return { outcome: "saved", look }; },
   },
   cloudAdd: { state: async () => addView, start: async () => ({ outcome: "opened" }), reopen: async () => true, copyLink: async () => true, open: ok, interest: ok, sheet: ok },
@@ -107,3 +115,8 @@ if (params.get("settings") === "look") {
     .then(() => document.querySelector("[data-place-look]")?.closest(".rounded-xl")?.scrollIntoView({ block: "center" }));
 }
 if (params.has("more")) void click("[data-rail-more-button]");
+const menu = params.get("menu");
+if (menu) {
+  const opened = () => { const circle = document.querySelector(`[data-rail-place="${menu}"]`); if (circle) circle.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true })); else setTimeout(opened, 100); };
+  opened();
+}

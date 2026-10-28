@@ -1,9 +1,18 @@
 # The rail of Clouds and its ＋
 
-Once a person has two places or more (their Clouds, their teams' Clouds,
-servers they connected by hand), a narrow rail of circles at the window's left
-edge switches between them, and ＋ buys another Cloud or adds a server of
-their own. With one place there is no rail, and the window looks as before.
+Once a person has two places or more in all (This computer counts while it is
+a place; their Clouds, their teams' Clouds, servers they connected by hand), a
+narrow rail of circles at the window's left edge switches between them, and ＋
+buys another Cloud or adds a server of their own. With one place there is no
+rail, and the window looks as before.
+
+The rail is the window's own chrome, not a page's: this app's page `/rail` in a
+view of its own at the left edge (electron/chrome-rail.mjs), beside whichever
+place's page the window shows, at every width and on every place, whatever that
+server runs. The page beside it moves over by the rail's width (the app's
+preload, at any zoom). The rail's sheets cover the window while open. The place
+on screen is named under its circle, and beside the rail the sidebar's switcher
+and the profile menu's Switch to… step aside.
 Nothing here needs a real MausBot Cloud account, a payment or the Electron app.
 
 ## Contract
@@ -16,10 +25,10 @@ Nothing here needs a real MausBot Cloud account, a payment or the Electron app.
   it through the Admin's `pairing` with that Cloud's id and takes only a grant
   for its own address. My Cloud stays the one home.
 - The rail's list carries names, colours and states, never an address, and goes
-  only to this app's own page and to pages of Clouds MausBot runs that the
-  verified session lists. A server's own page gets none; its switcher stays the
-  native Server menu. A circle opens only a place main listed, by its id, and
-  only from the person's click.
+  only to the rail's own page. No place's page reads it, not even this
+  computer's or a Cloud's; a page learns only that the rail stands beside it. A
+  circle opens only a place main listed, by its id, through main's own switch,
+  and only from the person's click.
 - Buying another Cloud sends the plan, a name and a swatch to the Admin, which
   answers with a checkout this app opens in the browser; the sheet then follows
   the payment and the setup. An Admin that sells one Cloud per account (no
@@ -32,6 +41,13 @@ Nothing here needs a real MausBot Cloud account, a payment or the Electron app.
   (`PATCH /api/cloud/desktop/clouds/:id`, its owner or its team's admins; a
   member sees it locked), a server connected by hand on this computer. An
   Admin without that route changes nothing and says so.
+- The window's own rail changes the colour of every place it lists, whatever
+  that place's server runs (an older server's page has no such setting): a
+  right-click on a circle, or on its row past eight, opens that place's menu
+  with the six swatches. The same rules decide where it is kept
+  (`workspaces:recolor`, the rail's own page only, an id main listed); a
+  signed-in server not connected here is changed on the Admin. This computer
+  keeps today's look and has no menu.
 - A workspace may also have a banner picture, kept on its own server beside its
   other pictures (`GET`, `PUT` and `DELETE /api/workspace/banner`; changing it
   is an admin's, seeing it anyone's signed in there). The app shrinks it to
@@ -50,8 +66,8 @@ Nothing here needs a real MausBot Cloud account, a payment or the Electron app.
 ## Automated fixtures
 
 ```sh
-node --test electron/cloud-list.node-test.mjs electron/cloud-account-clouds.node-test.mjs electron/cloud-rail.node-test.mjs electron/home-window.node-test.mjs electron/place-look.node-test.mjs
-pnpm exec vitest run src/components/PlacesRail.test.ts src/components/cloud-buy/AddCloudFlow.test.ts src/components/PlaceLookCard.test.ts
+node --test electron/cloud-list.node-test.mjs electron/cloud-account-clouds.node-test.mjs electron/cloud-rail.node-test.mjs electron/chrome-rail.node-test.mjs electron/home-window.node-test.mjs electron/place-look.node-test.mjs
+pnpm exec vitest run src/components/PlacesRail.test.ts src/components/ChromeRail.test.ts src/components/cloud-buy/AddCloudFlow.test.ts src/components/PlaceLookCard.test.ts
 pnpm exec vitest run server/workspace-banner.test.ts server/routes/workspace-banner.test.ts server/workspace-banner.e2e.test.ts src/lib/place-banner.test.ts src/components/PlacePicture.test.ts
 ```
 
@@ -59,11 +75,12 @@ The account tests answer as a loopback Admin, with and without `clouds`. The
 rail tests load the production preload and check which page gets the list,
 which ids open, and that a circle, ＋, checkout and a colour change act only
 from a click. The colour tests check who may change a place's colour and where
-it is kept, that nothing is saved when the Admin refuses, and that the tint
-follows at once. The banner tests run pictures a real encoder made, carrying
-EXIF, ICC, XMP and text, through the server's checks, and a real Team Cloud
-where its Super admin sets the banner, a member sees it but can't change it,
-and a signed-out request gets nothing.
+it is kept, from its own page and from the rail's menu, that nothing is saved
+when the Admin refuses, and that the tint follows at once. The banner tests
+run pictures a real encoder made, carrying EXIF, ICC, XMP and text, through
+the server's checks, and a real Team Cloud where its Super admin sets the
+banner, a member sees it but can't change it, and a signed-out request gets
+nothing.
 
 ## Rendered workflow
 
@@ -78,10 +95,10 @@ its owner, eleven for the list past eight. A headless Chrome in a throwaway
 profile photographs the rail in Advanced and Simple mode (with the place's
 tint), the list past eight, ＋'s two choices, the steps for a server of one's
 own, the plans, the name and colour of a new Cloud and its setup, the person's
-signed-in servers and the steps to connect one, the colour in Settings for an
-admin and for a team member, and a banner picture (drawn by the script and kept
-through the fixture server's own route) in the sidebar and in Settings, each in
-the Daylight and Midnight skins.
+signed-in servers and the steps to connect one, the colour in Settings and in
+a circle's own menu for an admin and for a team member, and a banner picture
+(drawn by the script and kept through the fixture server's own route) in the
+sidebar and in Settings, each in the Daylight and Midnight skins.
 `--only rail,look-settings` limits it to some views. Without `--shots` it
 prints the preview's address and waits for Ctrl-C.
 

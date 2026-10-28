@@ -1,18 +1,22 @@
 // The rail at the window's left edge once a person has two places or more: one circle per Cloud, team's Cloud or server,
 // the place on screen marked, ⋯ for the rest past eight, ＋ last. Main lists the places and opens one by its id; the rail
-// never names an address.
-import { useEffect, useRef, useState, type CSSProperties } from "react";
+// never names an address. A right-click on a circle (or its row past eight) opens that place's menu: its colour, changed
+// here for every place whatever its server runs.
+import { useEffect, useRef, useState, type CSSProperties, type MouseEvent as ReactMouseEvent } from "react";
 import { Laptop, MoreHorizontal, Plus, Search, Server } from "lucide-react";
+import type { CloudSwatch } from "../../electron/cloud-list.mjs";
+import type { PlaceColorOutcome } from "../../electron/place-look.mjs";
 import { track } from "@/lib/analytics";
 import { cn } from "@/lib/cn";
 import { cloudColor, cloudColorFill } from "@/lib/cloud-look";
 import { activeLocale, t } from "@/lib/i18n";
 import { localizedRelativeTime } from "@/lib/memory";
 import { useAdvancedMode } from "@/lib/interface-mode";
-import { placeInitials, railShown, usePlaces, type RailPlace } from "@/lib/places";
+import { placeInitials, recolorPlace, usePlaces, type RailPlace } from "@/lib/places";
 import { useDesktopCapabilities } from "./DesktopCapabilities";
 import { MENU_ROW, MENU_SHEET } from "./menu-recipe";
 import { PlaceAddSheet } from "./PlaceAddSheet";
+import { SwatchRadios } from "./SwatchRadios";
 
 /** Circles before ⋯ opens the searchable list of every place. */
 export const RAIL_SHOWN = 8;
@@ -72,10 +76,27 @@ export function PlaceMark({ place, size = CIRCLE }: { place: RailPlace; size?: n
   </span>;
 }
 
-function PlaceCircle({ place, calm, canPair, onOpen }: { place: RailPlace; calm: boolean; canPair: boolean; onOpen: (place: RailPlace) => void }) {
+/** A place's menu opens where it was asked for: beside its circle, or its row past eight. */
+type MenuAt = { place: RailPlace; from: HTMLElement };
+/** The right-click (or the keyboard's menu key) on a place with a colour to show opens its menu; elsewhere, nothing. */
+const menuOpener = (place: RailPlace, onMenu: (at: MenuAt) => void) => (event: ReactMouseEvent<HTMLElement>) => {
+  event.preventDefault();
+  if (place.paint) onMenu({ place, from: event.currentTarget });
+};
+
+/** How far down the rail an element of it sits, in the rail's own units (offsets, not the screen's: the rail's page
+ * takes out the zoom it shares with this app's page). */
+export function topWithin(element: HTMLElement, rail: HTMLElement): number {
+  let top = 0;
+  for (let at: HTMLElement | null = element; at && at !== rail; at = at.offsetParent as HTMLElement | null) top += at.offsetTop;
+  for (let up = element.parentElement; up && up !== rail; up = up.parentElement) top -= up.scrollTop;
+  return top;
+}
+
+function PlaceCircle({ place, calm, canPair, onOpen, onMenu }: { place: RailPlace; calm: boolean; canPair: boolean; onOpen: (place: RailPlace) => void; onMenu: (at: MenuAt) => void }) {
   const label = placeLabel(place), acts = placeActs(place, canPair);
   return <button type="button" aria-label={label} title={label} aria-current={place.active ? "page" : undefined} aria-disabled={acts ? undefined : true}
-    data-rail-place={place.id} data-rail-kind={place.kind} onClick={() => { if (acts && !place.active) onOpen(place); }}
+    data-rail-place={place.id} data-rail-kind={place.kind} onClick={() => { if (acts && !place.active) onOpen(place); }} onContextMenu={menuOpener(place, onMenu)}
     className={cn("relative shrink-0 rounded-full transition-[box-shadow,opacity] duration-150 focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-focus",
       place.active ? cn("ring-2 ring-offset-2 ring-offset-panel", calm ? "ring-ink/45" : "ring-ink/75")
         : acts ? "hover:ring-2 hover:ring-ink/15 hover:ring-offset-2 hover:ring-offset-panel" : cn("cursor-default", !place.offline && "opacity-75"))}>
@@ -89,8 +110,40 @@ function PlaceCircle({ place, calm, canPair, onOpen }: { place: RailPlace; calm:
   </button>;
 }
 
+/** A place's own menu on the window's rail: its name and its colour, in the six swatches, saved by main for every place
+ * whatever its server runs (on the Admin for a Cloud). A team member sees who may change it. */
+function PlaceMenu({ place, top, onClose }: { place: RailPlace; top: number; onClose: () => void }) {
+  const paint = place.paint;
+  const [pending, setPending] = useState<CloudSwatch | null>(null);
+  const [outcome, setOutcome] = useState<PlaceColorOutcome | null>(null);
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => { ref.current?.querySelector<HTMLElement>("[role='radio'][tabindex='0']")?.focus(); }, []);
+  if (!paint) return null;
+  const name = place.kind === "computer" ? t("rail.thisComputer") : place.name;
+  const choose = (swatch: CloudSwatch) => {
+    if (paint.locked || pending || swatch === paint.swatch) return;
+    setPending(swatch); setOutcome(null);
+    void recolorPlace(place.id, swatch).then((answer) => { setPending(null); setOutcome(answer); if (answer === "saved") onClose(); });
+  };
+  const note = paint.locked === "member" || outcome === "refused" ? t("placeLook.member") : paint.locked === "signed-out" ? t("placeLook.signedOut")
+    : outcome === "unsupported" ? t("placeLook.unsupported") : null;
+  return <div ref={ref} role="dialog" aria-label={name} data-rail-menu={place.id} className={cn("absolute left-full z-50 ml-2 w-72", MENU_SHEET)} style={{ top }}
+    onKeyDown={(event) => { if (event.key === "Escape") { event.stopPropagation(); onClose(); } }}>
+    <div className="flex items-center gap-2 px-2 pt-1">
+      <PlaceMark place={place} size={22} />
+      <span className="min-w-0 flex-1 truncate text-[13px] font-semibold text-ink">{name}</span>
+    </div>
+    <p className="px-2 pt-1 text-[12px] text-ink-secondary">{t("placeLook.title")}</p>
+    <div className="px-2 pb-1.5 pt-0.5">
+      <SwatchRadios value={pending ?? paint.swatch} onChange={choose} label={t("placeLook.aria", { name })} disabled={Boolean(paint.locked)} />
+    </div>
+    {note && <p data-rail-menu-note className="px-2 pb-1 text-[12px] text-ink-secondary">{note}</p>}
+    {outcome === "failed" && <p role="alert" className="px-2 pb-1 text-[12px] text-danger">{t("placeLook.failed")}</p>}
+  </div>;
+}
+
 /** Every place, searchable: ⋯ once there are more than RAIL_SHOWN. */
-function MorePlaces({ places, canPair, onOpen, onClose }: { places: RailPlace[]; canPair: boolean; onOpen: (place: RailPlace) => void; onClose: () => void }) {
+function MorePlaces({ places, canPair, onOpen, onMenu, onClose }: { places: RailPlace[]; canPair: boolean; onOpen: (place: RailPlace) => void; onMenu: (at: MenuAt) => void; onClose: () => void }) {
   const [query, setQuery] = useState("");
   const found = matchingPlaces(places, query);
   return <div role="dialog" aria-label={t("rail.search")} data-rail-more className={cn("absolute bottom-0 left-full z-50 ml-2 w-64", MENU_SHEET)}
@@ -103,7 +156,8 @@ function MorePlaces({ places, canPair, onOpen, onClose }: { places: RailPlace[];
     </label>
     <ul className="max-h-72 overflow-y-auto">
       {found.map((place) => <li key={place.id}>
-        <button type="button" disabled={!placeActs(place, canPair)} aria-current={place.active ? "page" : undefined} onClick={() => { onOpen(place); onClose(); }} className={cn(MENU_ROW, "h-9")}>
+        <button type="button" disabled={!placeActs(place, canPair)} aria-current={place.active ? "page" : undefined} onClick={() => { onOpen(place); onClose(); }}
+          onContextMenu={menuOpener(place, (menu) => { onClose(); onMenu(menu); })} className={cn(MENU_ROW, "h-9")}>
           <PlaceMark place={place} size={22} />
           <span className="min-w-0 flex-1 truncate">{placeLabel(place)}</span>
         </button>
@@ -113,21 +167,31 @@ function MorePlaces({ places, canPair, onOpen, onClose }: { places: RailPlace[];
   </div>;
 }
 
-export function PlacesRail() {
+/** `chrome`: the window's own rail (ChromeRail), drawn whatever the window's width, whose sheets ask main for the whole
+ * window while open. Without it, a rail drawn on a page from a list main gave that page: wide windows only. */
+export function PlacesRail({ chrome = false }: { chrome?: boolean }) {
   const state = usePlaces();
   const calm = !useAdvancedMode();
   const { capabilities } = useDesktopCapabilities();
   const [more, setMore] = useState(false);
   const [adding, setAdding] = useState(false);
   const [connecting, setConnecting] = useState<string | null>(null);
+  const [menu, setMenu] = useState<{ place: RailPlace; top: number } | null>(null);
   const moreRef = useRef<HTMLDivElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const navRef = useRef<HTMLElement>(null);
   useEffect(() => {
-    if (!more) return;
-    const away = (event: MouseEvent) => { if (!moreRef.current?.contains(event.target as Node)) setMore(false); };
+    if (!more && !menu) return;
+    const away = (event: MouseEvent) => {
+      if (!moreRef.current?.contains(event.target as Node)) setMore(false);
+      if (!menuRef.current?.contains(event.target as Node)) setMenu(null);
+    };
     window.addEventListener("mousedown", away);
     return () => window.removeEventListener("mousedown", away);
-  }, [more]);
-  if (!railShown(state)) return null;
+  }, [more, menu]);
+  const covering = more || adding || connecting !== null || menu !== null;
+  useEffect(() => { if (chrome) void window.ogb?.rail?.expand(covering)?.catch(() => {}); }, [chrome, covering]);
+  if (!state.places.length) return null;
   const bridge = window.ogb?.workspaces;
   const open = (place: RailPlace) => {
     if (!place.opens) { if (place.pairs) setConnecting(place.name); return; }
@@ -141,12 +205,23 @@ export function PlacesRail() {
   const noDrag = draggable ? ({ WebkitAppRegion: "no-drag" } as CSSProperties) : undefined;
   const shown = shownPlaces(state.places);
   const canPair = state.add.link || state.add.address, canAdd = state.add.cloud || canPair;
-  return <nav aria-label={t("rail.label")} data-places-rail style={drag}
-    className={cn("relative hidden w-16 shrink-0 flex-col items-center bg-panel md:flex", calm ? "border-r border-ink/[0.04]" : "border-r border-hairline/50")}>
+  // The menu opens next to the circle or row it was asked from (measured now, while that row is there), within the rail.
+  const openMenu = ({ place, from }: MenuAt) => {
+    const nav = navRef.current;
+    setMenu({ place, top: nav ? Math.max(8, Math.min(topWithin(from, nav) - 6, nav.clientHeight - 200)) : 8 });
+  };
+  return <nav ref={navRef} aria-label={t("rail.label")} data-places-rail style={drag}
+    className={cn("relative w-16 shrink-0 flex-col items-center bg-panel", chrome ? "flex h-full" : "hidden md:flex", calm ? "border-r border-ink/[0.04]" : "border-r border-hairline/50")}>
     {/* The macOS traffic lights sit over the rail's top; nothing here takes a click before they end. */}
     <div aria-hidden="true" className={macInset ? "h-[52px] shrink-0" : "h-3 shrink-0"} />
     <ul className="flex min-h-0 flex-col items-center gap-2.5 overflow-y-auto px-1 py-1" style={noDrag}>
-      {shown.map((place) => <li key={place.id} className="flex"><PlaceCircle place={place} calm={calm} canPair={canPair} onOpen={open} /></li>)}
+      {shown.map((place) => <li key={place.id} className="flex flex-col items-center">
+        <PlaceCircle place={place} calm={calm} canPair={canPair} onOpen={open} onMenu={openMenu} />
+        {/* The place on screen, named: a server's own page may name it nowhere. */}
+        {place.active && <span aria-hidden="true" data-rail-caption className="mt-1 line-clamp-2 w-[60px] break-words text-center text-[11px] leading-tight text-ink-secondary">
+          {place.kind === "computer" ? t("rail.thisComputer") : place.name}
+        </span>}
+      </li>)}
     </ul>
     <div className="relative mt-2.5 flex flex-col items-center gap-2.5 pb-3" style={noDrag} ref={moreRef}>
       {state.places.length > RAIL_SHOWN && <button type="button" aria-label={t("rail.more", { count: state.places.length })} title={t("rail.more", { count: state.places.length })}
@@ -154,12 +229,16 @@ export function PlacesRail() {
         className="grid size-[38px] place-items-center rounded-full text-ink-secondary hover:bg-ink/[0.06] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus aria-expanded:bg-ink/[0.06]">
         <MoreHorizontal size={18} aria-hidden="true" />
       </button>}
-      {more && <MorePlaces places={state.places} canPair={canPair} onOpen={open} onClose={() => setMore(false)} />}
+      {more && <MorePlaces places={state.places} canPair={canPair} onOpen={open} onMenu={openMenu} onClose={() => setMore(false)} />}
       {canAdd && <button type="button" aria-label={t("rail.add")} title={t("rail.add")} aria-haspopup="dialog" data-rail-add onClick={() => { track("rail_add", { step: "opened" }); setAdding(true); }}
         className="grid size-[38px] place-items-center rounded-full border border-dashed border-ink/25 text-ink-secondary hover:border-ink/40 hover:bg-ink/[0.04] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus">
         <Plus size={18} aria-hidden="true" />
       </button>}
     </div>
+    {/* The list is read again while it is open: the menu shows the place as main lists it now. */}
+    {menu && <div ref={menuRef} style={noDrag}>
+      <PlaceMenu key={menu.place.id} place={state.places.find((entry) => entry.id === menu.place.id) ?? menu.place} top={menu.top} onClose={() => setMenu(null)} />
+    </div>}
     {adding && <PlaceAddSheet choices={state.add} onClose={() => setAdding(false)} />}
     {connecting !== null && <PlaceAddSheet choices={state.add} connect={{ name: connecting }} onClose={() => setConnecting(null)} />}
   </nav>;

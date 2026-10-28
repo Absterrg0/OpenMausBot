@@ -13,6 +13,9 @@ export type PlaceColorOutcome = "saved" | "refused" | "unsupported" | "failed";
 export declare function swatchOf(color: unknown): import("./cloud-list.mjs").CloudSwatch | null;
 export declare function listedCloudOf(entry: any, session?: { clouds?: import("./cloud-list.mjs").CloudListEntry[] | null; homeOrigin?: string | null }): import("./cloud-list.mjs").CloudListEntry | null;
 export declare function placeLook(entry: any, session?: { clouds?: import("./cloud-list.mjs").CloudListEntry[] | null; homeOrigin?: string | null }): (PlaceLook & { cloudId?: string }) | null;
+export declare const SIGNED_IN: string;
+export declare function listedLook(cloud: import("./cloud-list.mjs").CloudListEntry | null | undefined): (PlaceLook & { cloudId?: string }) | null;
+export declare function railPaint(look: PlaceLook | null, color: unknown): { swatch: import("./cloud-list.mjs").CloudSwatch | null; locked?: "member" | "signed-out" } | null;
 export declare function pageLook(look: (PlaceLook & { cloudId?: string }) | null): PlaceLook | null;
 export declare function installPlaceLook(deps: {
   ipcMain: { handle(channel: string, handler: (...args: any[]) => unknown): void };
@@ -21,4 +24,5 @@ export declare function installPlaceLook(deps: {
   session: () => { clouds?: import("./cloud-list.mjs").CloudListEntry[] | null; homeOrigin?: string | null };
   setColor: (cloudId: string, swatch: import("./cloud-list.mjs").CloudSwatch | null) => Promise<{ outcome: PlaceColorOutcome }>;
   save: (id: string, color: import("./cloud-buy.mjs").CloudColor | null) => void;
+  rail?: { owns(event: unknown): boolean; places(): Array<{ id: string; paint?: unknown }>; saved(id: string): any };
 }): { look(): (PlaceLook & { cloudId?: string }) | null };

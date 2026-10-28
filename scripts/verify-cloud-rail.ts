@@ -31,6 +31,8 @@ const VIEWS: Array<{ name: string; query: string; ready: string; height?: number
   { name: "connect-server", query: "places=servers&sheet=connect", ready: "[data-place-add='connect-server']" },
   { name: "look-settings", query: "look=teal&settings=look", ready: "[data-place-look='admin']" },
   { name: "look-member", query: "member=1&settings=look", ready: "[data-place-look='locked']" },
+  { name: "rail-colour", query: "places=servers&look=teal&menu=vps", ready: "[data-rail-menu='vps']" },
+  { name: "rail-colour-member", query: "member=1&menu=acme", ready: "[data-rail-menu-note]" },
   // The workspace's banner picture, kept on the fixture server first (each view after it shows it).
   { name: "banner", query: "", ready: "[data-place-banner] img", banner: true },
   { name: "banner-simple", query: "mode=simple", ready: "[data-place-banner] img", banner: true },

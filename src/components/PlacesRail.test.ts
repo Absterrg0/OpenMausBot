@@ -189,3 +189,63 @@ it("a server of the person's own on an older release than the newest has a quiet
   expect(host.querySelector('[data-rail-place="s-old"] [data-rail-update]')).toBeNull();
   expect(host.querySelector('[data-rail-place="s-old"] [data-rail-dot]')).toBeTruthy();
 });
+
+it("the window's own rail: drawn at every width, the place on screen named under its circle, and its sheets cover the window while open", async () => {
+  const expand = vi.fn(async () => {});
+  Object.assign(window, { ogb: { workspaces, cloudAdd, rail: { expand, onSkin: () => () => {} } } });
+  await mount(createElement(PlacesRail, { chrome: true }));
+  const nav = host.querySelector("[data-places-rail]")!;
+  expect(nav.className).toContain("flex h-full");
+  expect(nav.className, "never hidden on a narrow window").not.toContain("hidden");
+  expect([...host.querySelectorAll("[data-rail-caption]")].map((caption) => caption.textContent)).toEqual(["My Cloud"]);
+  expect(expand.mock.calls.at(-1)).toEqual([false]);
+  await click(host.querySelector("[data-rail-add]"));
+  expect(expand.mock.calls.at(-1), "＋'s sheet covers the window").toEqual([true]);
+  await act(async () => { window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })); });
+  await act(async () => { await Promise.resolve(); });
+  expect(expand.mock.calls.at(-1), "and gives it back once closed").toEqual([false]);
+});
+
+it("beside the window's own rail (main says so; the page never reads the list), the sidebar's switcher and Switch to… step aside at every width", async () => {
+  rail = { places: [], add: { cloud: false, link: false, address: false }, beside: true };
+  await mount(createElement("div", null, createElement(PlacesRail), createElement(DesktopWorkspaceSwitcher, { inline: true })));
+  expect(host.querySelector("[data-places-rail]"), "no rail drawn on the page itself").toBeNull();
+  expect(host.querySelector("[data-switcher-beside-rail]")?.className).toBe("hidden");
+  const { placeMenuItems } = await import("./SidebarProfileMenu");
+  const place = { bridge: workspaces, current: { local: false, name: "Office" }, cloudHome: false, onLine: "", openMenu: () => {}, switchable: true } as never;
+  expect(placeMenuItems(place, { owner: null, onCloudSettings: () => {} }).map((item) => item.key)).toEqual(["place", "switch-place"]);
+  expect(placeMenuItems(place, { owner: null, onCloudSettings: () => {}, besideRail: true }).map((item) => item.key), "one switcher: the rail").toEqual(["place"]);
+});
+
+it("a right-click on a circle opens its place's menu: its colour, saved by main whatever its server runs; a member sees who may change it; this computer has none", async () => {
+  const expand = vi.fn(async () => {});
+  const recolor = vi.fn(async () => ({ outcome: "saved" as const, look: null }));
+  rail = { places: [
+    place("local", "This computer", { kind: "computer", active: true }),
+    place("vps", "Office", { kind: "server", paint: { swatch: null } }),
+    place("acme", "Acme", { kind: "team", color: "purple", paint: { swatch: "violet", locked: "member" } }),
+  ], add: { cloud: false, link: true, address: false } };
+  Object.assign(window, { ogb: { workspaces: { ...workspaces, recolor }, cloudAdd, rail: { expand, onSkin: () => () => {} } } });
+  await mount(createElement(PlacesRail, { chrome: true }));
+  const settle = () => act(async () => { for (let i = 0; i < 6; i++) await Promise.resolve(); });
+  const menuOf = async (id: string) => {
+    await act(async () => { host.querySelector(`[data-rail-place="${id}"]`)!.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true })); });
+    return host.querySelector(`[data-rail-menu="${id}"]`);
+  };
+  expect(await menuOf("local"), "this computer keeps today's look: no menu").toBeNull();
+  expect(expand.mock.calls.at(-1), "nor anything covering the window").toEqual([false]);
+  const menu = await menuOf("vps");
+  expect(menu?.getAttribute("aria-label")).toBe("Office");
+  expect(expand.mock.calls.at(-1), "the menu covers the window while open").toEqual([true]);
+  await click(menu!.querySelector("[data-swatch='green']"));
+  await settle();
+  expect(recolor).toHaveBeenCalledWith("vps", "green");
+  expect(host.querySelector("[data-rail-menu]"), "saved: the menu closes, and the circle follows main's list").toBeNull();
+  expect(expand.mock.calls.at(-1)).toEqual([false]);
+  const locked = await menuOf("acme");
+  expect(locked?.querySelector("[data-rail-menu-note]")?.textContent).toBe("Only its admins can change its color.");
+  expect([...locked!.querySelectorAll<HTMLButtonElement>("[data-swatch]")].every((swatch) => swatch.disabled), "a member sees it, and can't change it").toBe(true);
+  expect(locked!.querySelector("[aria-checked='true']")?.getAttribute("data-swatch")).toBe("violet");
+  await act(async () => { locked!.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })); });
+  expect(host.querySelector("[data-rail-menu]")).toBeNull();
+});

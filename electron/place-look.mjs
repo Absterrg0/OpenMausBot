@@ -3,8 +3,13 @@
 // every app of theirs follows it: its owner or its team's Super admin and Admins change it there; everyone else sees it.
 // A server the person connected by hand keeps the colour this app saved for it, and so does a Cloud an older Admin
 // keeps no colour for. A page learns and changes only the colour of the place it is; this computer's own page has none.
+// The window's own rail changes the colour of any place it lists (a right-click on its circle), whatever that place's
+// server runs: the same rules, from this app's own page.
 import environments from "./environments.cjs";
 import { CLOUD_SWATCH_COLORS, CLOUD_SWATCHES, swatchColor } from "./cloud-list.mjs";
+
+/** The rail's id for a server of the person's own that signed in with their account and is not saved here. */
+export const SIGNED_IN = "signed-in:";
 
 /** The swatch a saved colour is offered as (CLOUD_SWATCH_COLORS the other way); null for none, or a colour no swatch has. */
 export function swatchOf(color) {
@@ -43,6 +48,17 @@ export function placeLook(entry, { clouds = null, homeOrigin = null } = {}) {
   return { ...base, change: "local" };
 }
 
+/** A server of the person's own that signed in with their account, not saved here: its colour is the Admin's. */
+export function listedLook(cloud) {
+  if (!cloud) return null;
+  const swatch = CLOUD_SWATCHES.includes(cloud.color) ? cloud.color : null;
+  const base = { name: cloud.name, color: swatchColor(swatch), swatch };
+  return cloud.role === "member" ? { ...base, change: null, reason: "member" } : { ...base, change: "admin", cloudId: cloud.id };
+}
+
+/** What the rail's circle says of a look: the swatch of the colour it shows, and why only others change it, if so. */
+export const railPaint = (look, color) => (look ? { swatch: swatchOf(color), ...(look.change ? {} : { locked: look.reason ?? "member" }) } : null);
+
 /** What the page sees of it: never the Cloud's id. */
 export function pageLook(look) {
   if (!look) return null;
@@ -55,22 +71,34 @@ export function pageLook(look) {
  * each behind main's window guard. `place()`: the saved place on screen, which the guard made sure the asking page is;
  * `session()`: the verified session's Clouds and My Cloud's address; `setColor(cloudId, swatch)`: the Admin's change
  * (cloud-account.mjs setCloudColor); `save(id, color)`: this app's saved place, at once, so its circle and the top of
- * its sidebar follow before the session is read again.
+ * its sidebar follow before the session is read again. `rail`: the window's own rail, which changes the colour of any
+ * place it lists with a colour to show (`workspaces:recolor`, its circle's id and a swatch): `owns(event)` its page
+ * asks, `places()` railPlaces' list now, `saved(id)` that saved place.
  */
-export function installPlaceLook({ ipcMain, guard, place, session, setColor, save }) {
+export function installPlaceLook({ ipcMain, guard, place, session, setColor, save, rail = null }) {
   const look = () => placeLook(place(), session());
-  ipcMain.handle("workspaces:look", guard(() => pageLook(look())));
-  ipcMain.handle("workspaces:color", guard(async (_event, swatch) => {
+  /** `entry`'s place (none: a server of theirs only the Admin lists) takes `swatch`; `now()` is its look at each step. */
+  const recolor = async (entry, now, swatch) => {
     if (!(swatch === null || CLOUD_SWATCHES.includes(swatch))) throw new Error("Choose one of the colors.");
-    const entry = place(), current = placeLook(entry, session());
+    const current = now();
     if (!current) throw new Error("This place has no color to change.");
     if (!current.change) return { outcome: "refused", look: pageLook(current) };
     if (current.change === "admin") {
       const result = await setColor(current.cloudId, swatch);
-      if (result?.outcome !== "saved") return { outcome: result?.outcome === "refused" || result?.outcome === "unsupported" ? result.outcome : "failed", look: pageLook(look()) };
+      if (result?.outcome !== "saved") return { outcome: result?.outcome === "refused" || result?.outcome === "unsupported" ? result.outcome : "failed", look: pageLook(now()) };
     }
-    save(entry.id, swatchColor(swatch));
-    return { outcome: "saved", look: pageLook(look()) };
-  }));
+    if (entry) save(entry.id, swatchColor(swatch));
+    return { outcome: "saved", look: pageLook(now()) };
+  };
+  ipcMain.handle("workspaces:look", guard(() => pageLook(look())));
+  ipcMain.handle("workspaces:color", guard((_event, swatch) => recolor(place(), look, swatch)));
+  if (rail) ipcMain.handle("workspaces:recolor", (event, id, swatch) => {
+    if (!rail.owns(event)) throw new Error("workspaces:recolor is only available to the window's rail");
+    if (!rail.places().some(listed => listed.id === id && listed.paint)) return Promise.reject(new Error("That place isn't here any more."));
+    const entry = rail.saved(id);
+    const now = () => (entry ? placeLook(rail.saved(id) ?? entry, session())
+      : listedLook(session().clouds?.find(cloud => `${SIGNED_IN}${cloud.id}` === id && cloud.managed === false) ?? null));
+    return recolor(entry, now, swatch);
+  });
   return { look };
 }

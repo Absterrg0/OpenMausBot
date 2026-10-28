@@ -27,10 +27,14 @@ export interface RailPlace {
   pairs?: true;
   /** It runs an older release than the newest the Admin names: time to update it. */
   update?: { version: string; latest: string };
+  /** Its colour is changed from the rail (a right-click on its circle): the swatch it shows, and why only its admins or a
+   * sign-in may change it, if so. None for this computer, and for a Cloud still being made. */
+  paint?: { swatch: import("./cloud-list.mjs").CloudSwatch | null; locked?: "member" | "signed-out" };
 }
 /** ＋'s choices here: buying a Cloud, pasting a server's pairing link, typing its address on this computer's Settings. */
 export interface RailAddChoices { cloud: boolean; link: boolean; address: boolean }
-export interface RailState { places: RailPlace[]; add: RailAddChoices }
+/** `beside`: a place's page, which never reads the list, learns that the window's rail stands beside it. */
+export interface RailState { places: RailPlace[]; add: RailAddChoices; beside?: true }
 /** Buying another Cloud as a page sees it: what the sheet says, never the account, an address or the checkout page. */
 export type AddCloudView =
   | { signedIn: false }
@@ -52,6 +56,5 @@ export type AddCloudView =
     };
   };
 export declare const RAIL_MIN_PLACES: number;
-export declare function hostedCloudOrigin(origin: unknown, input: { state: unknown; mine?: string | null }): boolean;
 export declare function railPlaces(input: { saved: { environments: any[]; activeId: string }; home?: string | null; mine?: string | null; state?: unknown }): RailPlace[];
 export declare function addCloudView(state: unknown, offer: import("./cloud-home.mjs").CloudOffer | null): AddCloudView;

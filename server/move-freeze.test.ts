@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
-import { createMoveFreeze, ENDED_REFUSAL, HOME_SCREEN, MOVED_REFUSAL } from "./move-freeze.ts";
+import { createMoveFreeze, ENDED_REFUSAL, HOME_SCREEN, MOVED_REFUSAL, RAIL_PAGE } from "./move-freeze.ts";
 import type { MoveWait } from "./move-waits.ts";
 import { createMoveFreezeRoutes } from "./routes/move-freeze.ts";
 import { PASS } from "./routes/table.ts";
@@ -66,7 +66,7 @@ describe("this computer's copy, frozen at the move", () => {
     expect(freeze.cloud()).toBeNull();
     freeze.freeze("https://omb-t-1.fly.dev");
     for (const path of ["/", "/settings", "/desktop-viewer", "/pair", "/chats/b1"]) expect(freeze.screen(path), path).toBe(HOME_SCREEN);
-    for (const path of [HOME_SCREEN, "/assets/index-1a2b.js", "/favicon.svg", "/manifest.webmanifest"]) expect(freeze.screen(path), path).toBeNull();
+    for (const path of [HOME_SCREEN, RAIL_PAGE, "/assets/index-1a2b.js", "/favicon.svg", "/manifest.webmanifest"]) expect(freeze.screen(path), path).toBeNull();
     expect(freeze.cloud()).toBe("https://omb-t-1.fly.dev");
     expect(createMoveFreeze({ dataDir: dir }).cloud(), "after a restart too").toBe("https://omb-t-1.fly.dev");
     freeze.unfreeze();

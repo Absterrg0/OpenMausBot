@@ -82,12 +82,12 @@ type SwitcherProps = {
   compact?: boolean; inline?: boolean; pill?: boolean; rail?: boolean; cloudHome?: boolean; owner?: string | null; howTo?: boolean; onMenuClosed?: () => void;
 };
 
-/** The place on screen and the native Server menu; where the rail of places shows (two places or more, a wide window), the
- * rail switches instead. */
+/** The place on screen and the native Server menu; where a rail of places stands beside the page, the rail switches
+ * instead: the window's own rail at every width, one drawn on the page on a wide window. */
 export function DesktopWorkspaceSwitcher(props: SwitcherProps) {
-  const besideRail = railShown(usePlaces());
+  const places = usePlaces();
   const switcher = <Switcher {...props} />;
-  return besideRail ? <div data-switcher-beside-rail className="contents md:hidden">{switcher}</div> : switcher;
+  return railShown(places) ? <div data-switcher-beside-rail className={places.beside ? "hidden" : "contents md:hidden"}>{switcher}</div> : switcher;
 }
 
 function Switcher({ compact = false, inline = false, pill = false, rail = false, cloudHome = false, owner = null, howTo = false, onMenuClosed }: SwitcherProps) {

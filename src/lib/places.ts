@@ -1,5 +1,7 @@
 import { useEffect, useState } from "react";
+import type { CloudSwatch } from "../../electron/cloud-list.mjs";
 import type { RailPlace, RailState } from "../../electron/cloud-rail.mjs";
+import type { PlaceColorOutcome } from "../../electron/place-look.mjs";
 
 const NONE: RailState = { places: [], add: { cloud: false, link: false, address: false } };
 let current: RailState = NONE;
@@ -43,8 +45,18 @@ export function usePlaces(): RailState {
   return state;
 }
 
-/** Whether the rail shows on this page: main lists places only when there are at least two. */
-export const railShown = (state: RailState): boolean => state.places.length > 0;
+/** A place's colour, chosen in its menu on the window's rail: main saves it (on the Admin for a Cloud) whatever that
+ * place's server runs, and the circle shows it once the list is read again. */
+export async function recolorPlace(id: string, swatch: CloudSwatch | null): Promise<PlaceColorOutcome> {
+  const answer = await bridge()?.recolor?.(id, swatch).catch(() => null);
+  if (!answer) return "failed";
+  if (answer.outcome === "saved") void refreshPlaces();
+  return answer.outcome;
+}
+
+/** Whether a rail of places stands beside this page: the window's own (main says so: `beside`), or one drawn on it from a
+ * list main gave it (two places or more). */
+export const railShown = (state: RailState): boolean => state.beside === true || state.places.length > 0;
 
 /** A circle's letters: the first of up to two words, so "Client A" is CA and "Acme" is A. */
 export function placeInitials(name: string): string {

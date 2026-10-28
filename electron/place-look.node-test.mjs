@@ -3,6 +3,7 @@ import test from "node:test";
 
 import { listedColors, parseCloudList } from "./cloud-list.mjs";
 import environments from "./environments.cjs";
+import { railPlaces } from "./cloud-rail.mjs";
 import { createHomePlaces } from "./home-places.mjs";
 import { installPlaceLook, pageLook, placeLook, swatchOf } from "./place-look.mjs";
 
@@ -71,6 +72,33 @@ test("a page changes only its own place's colour: a Cloud's on the Admin first, 
   const computer = ipc({ entry: null });
   assert.equal(await computer.call("workspaces:look"), null, "this computer's page has no colour");
   await assert.rejects(computer.call("workspaces:color", "rose"), /no color/);
+});
+
+test("the window's rail changes the colour of any place it lists, whatever its server runs: this app's for a server connected by hand, the Admin's for a Cloud and a signed-in server; never from a page, never an unlisted place", async () => {
+  const handlers = new Map(), asked = [], saved = [], RAIL = { id: "rail" };
+  const clouds = parseCloudList([CLOUDS[0], CLOUDS[1], cloud({ id: "c-acme", name: "Acme", teamId: "team-acme", role: "member", origin: TEAM }),
+    cloud({ id: "s-mini", name: "Mac mini", color: null, tier: null, runsOn: "server", managed: false, status: "ready", origin: null })]);
+  let state = { activeId: "home", environments: [home, own, team("member"), typed] };
+  const listed = () => railPlaces({ saved: state, home: null, mine: HOME, state: { status: "connected", clouds } });
+  installPlaceLook({ ipcMain: { handle: (channel, handler) => handlers.set(channel, handler) }, guard: handler => handler,
+    place: () => state.environments.find(candidate => candidate.id === state.activeId) ?? null, session: () => ({ clouds, homeOrigin: HOME }),
+    setColor: async (id, swatch) => { asked.push([id, swatch]); return { outcome: "saved" }; },
+    save: (id, color) => { saved.push([id, color]); state = environments.withPlaceColor(state, id, color); },
+    rail: { owns: event => event.sender === RAIL, places: listed, saved: id => state.environments.find(entry => entry.id === id && entry.kind !== "local") ?? null } });
+  const recolor = (sender, ...args) => handlers.get("workspaces:recolor")({ sender }, ...args);
+  assert.deepEqual(await recolor(RAIL, "vps", "amber"), { outcome: "saved", look: { name: "Office", color: "yellow", swatch: "amber", change: "local" } },
+    "a server connected by hand, whatever release it runs: this app keeps it");
+  assert.deepEqual(listed().find(place => place.id === "vps").paint, { swatch: "amber" }, "its circle follows");
+  assert.equal((await recolor(RAIL, "a", "rose")).outcome, "saved");
+  assert.equal((await recolor(RAIL, "signed-in:s-mini", "blue")).outcome, "saved");
+  assert.deepEqual(asked, [["c-a", "rose"], ["s-mini", "blue"]], "a Cloud's and a signed-in server's on the Admin");
+  assert.deepEqual(saved, [["vps", "yellow"], ["a", "red"]], "a signed-in server not saved here has nothing here to change");
+  assert.deepEqual(await recolor(RAIL, "acme", "rose"), { outcome: "refused", look: { name: "Acme", color: null, swatch: null, change: null, reason: "member" } });
+  assert.equal(asked.length, 2, "a member's choice reaches nobody");
+  assert.throws(() => recolor({ id: "page" }, "vps", "rose"), /only available to the window's rail/, "no place's page, not even this computer's");
+  await assert.rejects(recolor(RAIL, "somewhere", "rose"), /isn't here/);
+  await assert.rejects(recolor(RAIL, "local", "rose"), /isn't here/, "this computer keeps today's look");
+  await assert.rejects(recolor(RAIL, "vps", "chartreuse"), /Choose one of the colors/);
 });
 
 test("a saved place's colour: set, cleared to none, an unknown one ignored; the Admin's for My Cloud and teams once chosen there", () => {

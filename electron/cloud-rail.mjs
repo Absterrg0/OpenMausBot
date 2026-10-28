@@ -1,18 +1,18 @@
-// The rail of places at the left of the window (the renderer's PlacesRail) and its ＋: main builds the list, says who
-// may read it, and does what a circle or ＋ asks through main's own switch and dialogs.
+// The rail of places at the left of the window (the renderer's PlacesRail, drawn by the window's own chrome rail page,
+// chrome-rail.mjs) and its ＋: main builds the list, says who may read it, and does what a circle or ＋ asks through
+// main's own switch and dialogs.
 //
-// Security: the list carries names, colours and states, never an address, and goes only to this app's own page and to
-// pages of Clouds MausBot runs that the verified session lists (the person's own Clouds and their teams' Clouds). A
-// server the person connected by hand, or a Cloud on a server of their own, runs a page anyone may have written, so it
-// would learn the names of the person's other places; it gets none, and the native Server menu stays its switcher. A
-// circle names a saved place by its id; main opens only an id it listed itself.
+// Security: the list carries names, colours and states, never an address, and goes only to the rail's own page, this
+// app's. No place's page reads it, not even this computer's or a Cloud's: a server the person connected by hand runs a
+// page anyone may have written, and would learn the names of the person's other places. A page learns only that the
+// rail stands beside it. A circle names a saved place by its id; main opens only an id it listed itself.
 import environments from "./environments.cjs";
 import { cleanCloudListName, CLOUD_SWATCHES, cloudSetupProgress, olderRelease, otherOwnClouds, ownCloud, signedInServers, stepProgress, swatchColor } from "./cloud-list.mjs";
 import { machineSetup } from "./cloud-home.mjs";
+import { listedLook, placeLook, railPaint, SIGNED_IN } from "./place-look.mjs";
 
 export const RAIL_MIN_PLACES = 2;
 const PENDING = "pending:";
-const SIGNED_IN = "signed-in:";
 
 /** A server or computer of the person's own that signed in with their account, as its circle says it: online while the
  * Admin heard from it in the last few minutes, else offline since when it was last seen; and an older release than the
@@ -20,23 +20,13 @@ const SIGNED_IN = "signed-in:";
 const serverState = (listed, latest = null) => ({ server: true, ...(listed.status !== "ready" ? { offline: true } : {}), ...(listed.lastSeenAt ? { lastSeenAt: listed.lastSeenAt } : {}),
   ...(listed.version && latest && olderRelease(listed.version, latest) ? { update: { version: listed.version, latest } } : {}) });
 
-/** A Cloud's address is one MausBot runs for this person: My Cloud (`mine`), or a Cloud the verified session lists on
- * MausBot Cloud. Without the session's list of Clouds (an older Admin), a team's Cloud it lists, all of which MausBot runs. */
-export function hostedCloudOrigin(origin, { state, mine = null }) {
-  if (typeof origin !== "string" || !origin) return false;
-  if (origin === mine) return true;
-  const connected = state?.status === "connected" ? state : null;
-  if (!connected) return false;
-  if (Array.isArray(connected.clouds)) return connected.clouds.some(cloud => cloud.origin === origin && cloud.runsOn === "cloud");
-  return (connected.teams ?? []).some(team => team?.machine?.origin === origin);
-}
-
 const machineProgress = machine => {
   const setup = machineSetup(machine);
   return setup ? stepProgress(setup.step) : null;
 };
 
-/** One saved place as a circle: what it is, its colour and how it is doing, from the session's word for it. */
+/** One saved place as a circle: what it is, its colour (and who may change it from the rail) and how it is doing, from
+ * the session's word for it. */
 function circle(entry, { activeId, mine, state }) {
   const connected = state?.status === "connected" ? state : null;
   const listed = connected?.clouds?.find(cloud => cloud.origin === entry.origin) ?? null;
@@ -46,7 +36,8 @@ function circle(entry, { activeId, mine, state }) {
   const progress = listed ? cloudSetupProgress(listed) : machineProgress(machine);
   const problem = listed ? listed.status === "payment_problem" && listed.role === "owner" : entry.origin === mine && machine?.status === "payment-problem";
   const color = environments.ENTRY_COLORS.includes(entry.color) ? entry.color : listed ? swatchColor(listed.color) : null;
-  return { id: entry.id, name: entry.name, color, kind, opens: true, ...(entry.id === activeId ? { active: true } : {}),
+  const paint = railPaint(placeLook(entry, { clouds: connected?.clouds ?? null, homeOrigin: mine }), color);
+  return { id: entry.id, name: entry.name, color, kind, opens: true, ...(paint ? { paint } : {}), ...(entry.id === activeId ? { active: true } : {}),
     ...(progress !== null ? { progress } : {}), ...(problem ? { attention: true } : {}), ...(listed?.managed === false ? serverState(listed, connected?.latestVersion ?? null) : {}) };
 }
 
@@ -56,7 +47,7 @@ function circle(entry, { activeId, mine, state }) {
  * A server of theirs that signed in with their account comes next: one saved here already is that saved place (online
  * or not), one not connected to this app yet shows how to connect it, and one only reachable on its own network has
  * nothing to open. A Cloud of theirs the Admin is still making (no address yet) is there too, not yet to open. Fewer
- * than RAIL_MIN_PLACES places besides this computer: no rail at all, the window as it was.
+ * than RAIL_MIN_PLACES places in all, This computer counted while it is one: no rail at all, the window as it was.
  * @param {{ saved: { environments: any[], activeId: string }, home?: string | null, mine?: string | null, state?: any }} input
  */
 export function railPlaces({ saved, home = null, mine = null, state = null }) {
@@ -73,11 +64,11 @@ export function railPlaces({ saved, home = null, mine = null, state = null }) {
       ...(cloud.status === "checkout" ? { waiting: true } : {}) }));
   const savedOrigins = new Set(saved.environments.map(entry => entry.origin).filter(Boolean));
   const servers = signedInServers(clouds).filter(cloud => !cloud.origin || !savedOrigins.has(cloud.origin))
-    .map(cloud => ({ id: `${SIGNED_IN}${cloud.id}`, name: cloud.name, color: swatchColor(cloud.color), kind: "server", opens: false,
+    .map(cloud => ({ id: `${SIGNED_IN}${cloud.id}`, name: cloud.name, color: swatchColor(cloud.color), kind: "server", opens: false, paint: railPaint(listedLook(cloud), swatchColor(cloud.color)),
       ...(cloud.origin ? { pairs: true } : { ownNetwork: true }), ...serverState(cloud, connected?.latestVersion ?? null) }));
   const places = [...remote, ...servers, ...making];
-  if (places.length < RAIL_MIN_PLACES) return [];
-  return home ? places : [{ id: environments.LOCAL_ID, name: "This computer", color: null, kind: "computer", opens: true, ...(saved.activeId === environments.LOCAL_ID ? { active: true } : {}) }, ...places];
+  const all = home ? places : [{ id: environments.LOCAL_ID, name: "This computer", color: null, kind: "computer", opens: true, ...(saved.activeId === environments.LOCAL_ID ? { active: true } : {}) }, ...places];
+  return all.length < RAIL_MIN_PLACES ? [] : all;
 }
 
 /** What buying another Cloud looks like from a page: no account, address or checkout page, only what the sheet says. */
@@ -125,25 +116,32 @@ const plain = value => (typeof value === "string" ? value : "");
 const CHOICES = Object.freeze(["cloud", "link", "address"]);
 
 /**
- * The rail's and ＋'s channels, each behind main's window guard (`guard`) and allowed only on a page `trusted` vouches
- * for (this app's own, or a hosted Cloud's). `places()` is railPlaces' list now; `open(id)` main's own switch; `add`
- * the ＋ sheet's fixed actions; `account()` the MausBot Cloud sign-in.
+ * The rail's and ＋'s channels, each behind main's guard (`guard`: the window's page, or the rail's own). Only the rail's
+ * page (`lists`) reads the list and opens or adds a place; ＋'s buying sheet also runs on a page `trusted` vouches for
+ * (the rail's, or this computer's own). Any other page learns only whether the rail stands beside it (`beside`).
+ * `places()` is railPlaces' list now; `open(id)` main's own switch; `add` the ＋ sheet's fixed actions; `account()` the
+ * MausBot Cloud sign-in; `targets()` the pages told when something changed.
  */
-export function installCloudRail({ ipcMain, guard, trusted, places, open, add, account, clipboard, openCloud, window }) {
+export function installCloudRail({ ipcMain, guard, trusted, lists = trusted, beside = () => false, places, open, add, account, clipboard, openCloud, targets }) {
   let sheetOpen = false, sent = "";
   const allowed = (channel, handler) => guard((event, ...args) => {
     if (!trusted(event)) throw new Error(`${channel} is only available in this app's window`);
     return handler(event, ...args);
   });
   const handle = (channel, handler) => ipcMain.handle(channel, allowed(channel, handler));
+  const listed = (channel, handler) => ipcMain.handle(channel, guard((event, ...args) => {
+    if (!lists(event)) throw new Error(`${channel} is only available in this app's window`);
+    return handler(event, ...args);
+  }));
   const view = async () => addCloudView(account()?.state() ?? null, account() ? await account().offer().catch(() => null) : null);
-  ipcMain.handle("workspaces:places", guard((event) => (trusted(event) ? { places: places(), add: add.choices() } : { places: [], add: { cloud: false, link: false, address: false } })));
-  handle("workspaces:open", (_event, id) => {
+  ipcMain.handle("workspaces:places", guard((event) => (lists(event) ? { places: places(), add: add.choices() }
+    : { places: [], add: { cloud: false, link: false, address: false }, ...(beside() ? { beside: true } : {}) })));
+  listed("workspaces:open", (_event, id) => {
     const place = places().find(entry => entry.id === plain(id) && entry.opens);
     if (!place) throw new Error("That place isn't here any more.");
     return open(place.id);
   });
-  handle("workspaces:add", (_event, choice) => {
+  listed("workspaces:add", (_event, choice) => {
     if (!CHOICES.includes(choice) || !add.choices()[choice]) throw new Error("That isn't something to add here.");
     return add.run(choice);
   });
@@ -165,7 +163,7 @@ export function installCloudRail({ ipcMain, guard, trusted, places, open, add, a
   });
   handle("cloud-add:open", async () => {
     const adding = account()?.state().adding;
-    if (!adding) throw new Error("There is no new Cloud to open.");
+    if (!adding?.cloudId) throw new Error("There is no new Cloud to open.");
     await openCloud(adding.cloudId);
     account()?.addDone();
   });
@@ -182,8 +180,7 @@ export function installCloudRail({ ipcMain, guard, trusted, places, open, add, a
       const key = JSON.stringify([places(), add.choices(), account()?.state().adding ?? null, account()?.state().addCloud ?? null]);
       if (key === sent) return;
       sent = key;
-      const win = window();
-      if (win && !win.isDestroyed()) win.webContents.send("workspaces:changed");
+      for (const target of targets()) if (target && !target.isDestroyed()) target.send("workspaces:changed");
     },
   };
 }
