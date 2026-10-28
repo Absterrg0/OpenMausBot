@@ -112,6 +112,11 @@ creating, switching between and recovering named local environments by hand on
 a packaged desktop install; the control surface cannot drive it, so it is not
 in the map above.
 
+The [talk shortcut recipe](talk-shortcut.md) checks hold-to-talk from any app, the
+reply box and the Quick asks chat by hand on a packaged side-by-side build; the
+control surface cannot drive a global shortcut or the microphone, so it is not
+in the map above.
+
 The [move to My Cloud fixture](cloud-send.md) runs this computer's server and a
 Cloud home with the desktop's own wiring between them, and runs and checks the
 one-time move as main does.

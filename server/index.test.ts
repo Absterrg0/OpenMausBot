@@ -1604,6 +1604,8 @@ describe("harness HTTP API", () => {
     expect(theirs.status).toBe(202);
     expect(theirs.body.message).toMatchObject({ role: "user", sender: { name: "Safari on Mac" } });
 
+    // A message steers into a turn its engine is running; one sent while that turn is still being set up waits for it.
+    await expect.poll(() => claudePrompts().some((line) => line.includes("from the paired person")), { timeout: 10_000 }).toBe(true);
     const steered = await person.call("POST", `/api/bots/${bot.id}/messages`, { text: "and one more" });
     expect(steered.status).toBe(202);
     expect(steered.body.message).toMatchObject({ steered: true, sender: { name: "Safari on Mac" } });

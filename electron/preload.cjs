@@ -63,7 +63,7 @@ if (typeof window !== "undefined") {
 }
 const REMOTE_SAFE = new Set(["platform", "app", "getCapabilities", "onCapabilitiesChanged", "applySkin", "setUnreadCount", "permStatus", "workspaces", "cloudAdd", "cloudPlan", "cloudSendPage", "desktopNotices", "desktopAnalytics", "desktopLanguage", "updatesConsent", "windowControls"]);
 /** My Cloud's own page once it is the person's home (main checks the sender again): it is this app's page then. */
-const HOME_PAGE = ["home", "onChatLink", "onPackageInstall", "onOpenAppSettings", "exportDiagnostics", "openLogsFolder", "openAtLogin"];
+const HOME_PAGE = ["home", "onChatLink", "onPackageInstall", "onOpenAppSettings", "exportDiagnostics", "openLogsFolder", "openAtLogin", "callActive"];
 function updaterOffered() {
   try { return ipcRenderer.sendSync("update:offered") === true; } catch { return false; }
 }
@@ -243,6 +243,14 @@ const bridge = {
     ipcRenderer.on("speech:end", handler);
     return () => ipcRenderer.removeListener("speech:end", handler);
   },
+  talkShortcut: {
+    state: () => ipcRenderer.invoke("talk-shortcut:state"),
+    set: (change) => ipcRenderer.invoke("talk-shortcut:set", {
+      ...(typeof change?.enabled === "boolean" ? { enabled: change.enabled } : {}),
+      ...(typeof change?.key === "string" ? { key: change.key } : {}),
+    }),
+  },
+  callActive: (active) => ipcRenderer.invoke("call:active", active === true).then(() => undefined),
   onOpenAppSettings: (cb) => {
     appSettingsListeners.add(cb);
     queueMicrotask(() => {

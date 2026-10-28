@@ -104,6 +104,8 @@ export function createHomeWindow(deps: {
   splash?(): { status(text: string): void } | null;
   lastInput?(): number;
   publish?(view: HomeView): void;
+  /** Home as worked out changed: this computer, My Cloud (`origin`), or the sign-in screen. */
+  rehomed?(home: Home): void;
   versionEveryMs?: number;
   quietMs?: number;
   now?(): number;

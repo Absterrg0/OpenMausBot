@@ -45,6 +45,10 @@ export interface TeamConnectionsHostDeps {
 
 const list = (names: readonly string[]) => names.length <= 1 ? names.join("") : `${names.slice(0, -1).join(", ")} and ${names.at(-1)}`;
 
+/** How long a read of an installation's connected apps stands, how soon a failed first read is tried again, and how long a
+ * turn waits for an installation's first answer. */
+const APPS_FRESH_MS = 60_000, APPS_RETRY_MS = 10_000, FIRST_APPS_WAIT_MS = 3_000;
+
 export function createTeamConnectionsHost(deps: TeamConnectionsHostDeps) {
   const team = deps.team;
   const scopes = new ConnectionScopes(join(deps.dataDir, SCOPES_FILE));
@@ -61,16 +65,23 @@ export function createTeamConnectionsHost(deps: TeamConnectionsHostDeps) {
     isOwnerLive: deps.isSessionLive,
   });
   const personApps = () => (team ? scopes.person("app") : []);
-  /** The apps connected for an installation, the team's or a member's own, read at most once a minute. */
-  const connectedApps = new Map<string, { at: number; apps: Promise<string[]> }>();
-  const appsConnected = (as?: BrokerAccess): Promise<string[]> => {
+  /** The apps connected for an installation, the team's or a member's own. A turn never waits on a refresh: what is known
+   * is used at once, and read again in the background once it is a minute old. Only an installation's first answer is
+   * waited for, at most a few seconds, and a failed first read is tried again soon; `primeApps` reads the team's at start. */
+  const connectedApps = new Map<string, { at: number; apps: string[] | null; reading: Promise<void> | null }>();
+  const appsConnected = async (as?: BrokerAccess): Promise<string[]> => {
     const key = as ? createHash("sha256").update(as.url).update("\u0000").update(as.token).digest("hex") : "";
-    const cached = connectedApps.get(key);
-    if (cached && Date.now() - cached.at < 60_000) return cached.apps;
-    const apps = deps.composio.connectedServices(deps.cfg(), as)
-      .then((services) => Object.entries(services).filter(([, state]) => state.connected).map(([slug]) => slug), () => [] as string[]);
-    connectedApps.set(key, { at: Date.now(), apps });
-    return apps;
+    const entry = connectedApps.get(key) ?? { at: -Infinity, apps: null, reading: null };
+    connectedApps.set(key, entry);
+    if (!entry.reading && Date.now() - entry.at >= (entry.apps ? APPS_FRESH_MS : APPS_RETRY_MS)) {
+      entry.reading = deps.composio.connectedServices(deps.cfg(), as).then((services) => {
+        entry.apps = Object.entries(services).filter(([, state]) => state.connected).map(([slug]) => slug);
+      }, () => {}).finally(() => { entry.at = Date.now(); entry.reading = null; });
+    }
+    if (!entry.apps && entry.reading) {
+      await Promise.race([entry.reading, new Promise<void>((resolve) => { setTimeout(resolve, FIRST_APPS_WAIT_MS).unref?.(); })]);
+    }
+    return entry.apps ?? [];
   };
   const withAppTools = async (bridge: Integration, bot: Bot, names: "dotted" | "plain", as?: BrokerAccess): Promise<Integration> => {
     const tools = appToolsFor(bot, await appsConnected(as));
@@ -128,6 +139,10 @@ export function createTeamConnectionsHost(deps: TeamConnectionsHostDeps) {
     personMcp,
     link,
     turnPerson,
+    /** At start: the team's installation's apps are read now, so the first turn need not wait for them. */
+    primeApps(): void {
+      if (deps.composio.configured(deps.cfg())) void appsConnected();
+    },
 
     /** The connected-apps bridges of a turn: the team's, and in a member's own turn their own beside it. `names`: how the
      * engine spells the app tools' names. */

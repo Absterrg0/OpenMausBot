@@ -8,6 +8,7 @@ import { AnalyticsRow } from "./AnalyticsRow";
 import { UpdatesConsentRow } from "./UpdatesConsent";
 import { OpenAtLoginRow } from "./OpenAtLoginRow";
 import { DefaultBotSidebarRow } from "./DefaultBotControls";
+import { TalkShortcutRow } from "./TalkShortcutRow";
 import { DiagnosticsRow } from "./DiagnosticsRow";
 import { EnginesSettings } from "./EnginesSettings";
 import { LocalComputerSection } from "./LocalComputerSection";
@@ -77,6 +78,7 @@ export function SimpleGeneralPage({ has, peopleOpen, onLooks }: { has: Has; peop
           <SettingsRows>
             <OpenAtLoginRow simple />
             <DefaultBotSidebarRow simple />
+            <TalkShortcutRow />
             <AnalyticsRow simple />
           </SettingsRows>
         </SettingsGroup>
