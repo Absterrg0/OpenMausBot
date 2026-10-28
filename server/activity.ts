@@ -193,6 +193,7 @@ function readToolRuns(eventsDir: string, threadId: string): ActivityRow[] {
           ...(event.turnId ? { turnId: event.turnId } : {}),
           // A bridged call reads as the tool it ran, only where the title itself names the agents server.
           tool: bridgedCallName(event.title ?? "unknown", event.input, { serverNamed: true }),
+          ...(event.step ? { summary: event.step.detail ?? event.step.target } : {}),
           outcome: "running",
         }, event.input),
       );

@@ -1,3 +1,4 @@
+import { spawn } from "node:child_process";
 import { appendFileSync, mkdtempSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
@@ -6,7 +7,7 @@ import { describe, expect, it } from "vitest";
 
 import { removeTempDir } from "../../testing/cleanup.ts";
 import {
-  classifyQuiet, describeQuiet, LogTail, parseOpenCodeLogLine, parseQwenLogLine, quietKey, sampleProcessTree, treePids,
+  classifyQuiet, describeQuiet, LogTail, parseOpenCodeLogLine, parseQwenLogLine, quietKey, sampleProcessTree, startedSince, treePids,
 } from "./quiet-status.ts";
 import { qwenDebugLogPath } from "./qwen.ts";
 
@@ -144,6 +145,34 @@ describe("LogTail", () => {
 describe("process probe", () => {
   it("walks a process tree", () => {
     expect(treePids([{ pid: 2, ppid: 1 }, { pid: 3, ppid: 2 }, { pid: 4, ppid: 9 }], 1)).toEqual([1, 2, 3]);
+  });
+
+  it("counts only what a tool call started: never the engine itself, nor the tool servers it started before", () => {
+    const rows = [
+      { pid: 10, ppid: 1, startedAt: 60_200 },
+      { pid: 11, ppid: 10, startedAt: 1_000 },
+      { pid: 12, ppid: 10, startedAt: 60_000 },
+      { pid: 13, ppid: 12, startedAt: 60_500 },
+      { pid: 14, ppid: 10, startedAt: null },
+      { pid: 20, ppid: 1, startedAt: 61_000 },
+    ];
+    expect(startedSince(rows, 10, 61_000), "an engine started for this very turn, as Codex's app-server is, is still not the call").toEqual([12, 13]);
+    expect(startedSince(rows, 10, 90_000)).toEqual([]);
+  });
+
+  it.skipIf(process.platform === "win32")("samples a tool call's own processes, and reads nothing it did not start as unknown", async () => {
+    const since = Date.now();
+    const child = spawn(process.execPath, ["-e", "const t = Date.now(); while (Date.now() - t < 2500) {} setInterval(() => {}, 1000);"], { stdio: "ignore" });
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 2_700));
+      const own = await sampleProcessTree(process.pid, since);
+      // Linux procps prints TIME in whole seconds: 2.5 s of spinning reads at least one even on a busy runner.
+      expect(own.cpuMs).not.toBeNull();
+      expect(own.cpuMs!).toBeGreaterThanOrEqual(1_000);
+      expect(await sampleProcessTree(process.pid, Date.now() + 60_000)).toEqual({ cpuMs: null, connections: null });
+    } finally {
+      child.kill();
+    }
   });
 
   it.skipIf(process.platform === "win32")("counts this process's open connections and CPU", async () => {

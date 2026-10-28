@@ -91,3 +91,22 @@ export const CODEX_SIGN_IN_EXPIRED = "Codex's ChatGPT sign-in has expired. Sign 
 export function codexSignInExpired(raw: string): string {
   return `${CODEX_SIGN_IN_EXPIRED} Codex said: ${raw.slice(0, 300)}`;
 }
+
+export class CodexRpcError extends Error {
+  code: unknown;
+
+  constructor(error: { code?: unknown; message?: string }) {
+    super(error.message ?? JSON.stringify(error));
+    this.code = error.code;
+  }
+}
+
+export function missingNativeCodexThread(error: unknown, cursor: string): boolean {
+  // Codex's local thread/resume rejection, verified with an empty native home; unknown versions fail closed.
+  return error instanceof CodexRpcError && error.code === -32600 &&
+    error.message === `no rollout found for thread id ${cursor}`;
+}
+
+/** Codex refuses to resume an archived session: "session <id> is archived. Run `codex unarchive <id>` to unarchive it first." */
+export const archivedNativeCodexThread = (error: unknown, cursor: string): boolean =>
+  error instanceof CodexRpcError && error.message.includes(cursor) && /\bis archived\b/.test(error.message);

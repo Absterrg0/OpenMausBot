@@ -4,8 +4,8 @@ import { createPortal } from "react-dom";
 import { Activity, Archive, Bot as BotIcon, Check, ChevronRight, ClipboardCopy, Crown, FolderPlus, Library, Loader2, MessageSquarePlus, MoreHorizontal, Pencil, PanelLeftClose, PanelLeftOpen, Phone, Pin, PinOff, Plus, Search, TextQuote, Trash2, Users, X } from "lucide-react";
 import { api, useStore, formatTime, visibleMessages, currentTaskBot, botOpensTo, openBot, openThread, type Action, type AppState, type Bot, type BotProject, type Group, type InstanceInfo, type Message } from "@/state/store";
 import { approvalModeFor } from "../../shared/approval-mode";
-import { liveActivityLabel, turnNowPhrases } from "@/lib/live-activity";
-import { useTurnLive } from "@/state/turn-status";
+import { liveActivityLabel } from "@/lib/live-activity";
+import { SidebarWorkingStep } from "./SidebarWorkingStep";
 import { llmThreadTitlesEnabled } from "@/lib/feature-flags";
 
 import { BotAvatar } from "./Avatar";
@@ -24,7 +24,6 @@ import { BulkSelectFilters, ThreadListFooter, deleteThreadsInBulk, useBulkSelect
  
 import { StackedMauses } from "./StackedMauses";
 import { LocalComputerAutoWarning } from "./LocalComputerAutoWarning";
-import { WorkingDots } from "./WorkingIndicator";
 import { nextRename } from "@/lib/rename";
 import { useDesktopCapabilities } from "./DesktopCapabilities";
 import { MIN_QUERY, SearchResults } from "./SearchResults";
@@ -723,11 +722,6 @@ export function useVisibleMessages(bot: Bot): Message[] {
   return useMemo(() => visibleMessages({ messages, activeLeafId }), [messages, activeLeafId]);
 }
 
-function WorkingPhrase({ threadId, last }: { threadId: string; last?: Message }) {
-  const live = useTurnLive(threadId);
-  return <span dir="auto" data-sidebar-working-phrase="" className="truncate">{turnNowPhrases(live.status, last)?.phrases[0] ?? t("chat.activity.thinking")}</span>;
-}
-
 export const BotListItem = memo(function BotListItem(props: BotRowProps) {
   const advanced = useAdvancedMode();
   const { bot, selected, deleting, mascotMotion, reveal, pendingQueued, instances, liveCall, density, quiet, query, dispatch, onMenu, renameRequest } = props;
@@ -867,13 +861,8 @@ export const BotListItem = memo(function BotListItem(props: BotRowProps) {
             </span>
           ) : (
             <span className={cn("flex min-w-0 items-center gap-1.5 truncate text-[13px] leading-[18px]", waiting ? simpleRow ? "text-warning" : "font-semibold text-warning" : "text-ink-secondary")}>
-              {working && simpleList ? (
-                <WorkingPhrase threadId={bot.threadId} last={last} />
-              ) : working ? (
-                <span className="flex h-[1.5em] items-center" role="status">
-                  <WorkingDots size={3.5} />
-                  <span className="sr-only">{t("sidebar.preview.working")}</span>
-                </span>
+              {working ? (
+                <SidebarWorkingStep bot={bot} last={last} />
               ) : (
                 <span dir="auto" className="truncate">{waiting ? t("sidebar.preview.waiting") : teammateWait ? t("sidebar.preview.waitingOnTeammate") : queued ? t("task.queued") : botPreview(bot, visible, instances, advanced)}</span>
               )}

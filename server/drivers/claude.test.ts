@@ -591,6 +591,21 @@ describe("ClaudeDriver turns (fake CLI)", () => {
     expect(beat).toBeLessThan(types.lastIndexOf("item.completed"));
   });
 
+  it("names the CLI process while a long tool runs, and no process once the turn is over", async () => {
+    const release = join(scratch, "release");
+    await create(undefined, {
+      FAKE_CLAUDE_TOOL_CALLS: JSON.stringify([{ name: "Bash", input: { command: "python3 scrape.py" }, hold: "idle" }]), FAKE_CLAUDE_RELEASE: release,
+    });
+    await instance.adapter.sendTurn({ threadId: "t-engine-pid", text: "scrape" });
+    await recorder.until((e) => e.type === "item.started" && e.itemType === "tool");
+    const pid = instance.adapter.enginePid?.("t-engine-pid");
+    expect(pid).toEqual(expect.any(Number));
+    expect(() => process.kill(pid!, 0), "the CLI running this turn").not.toThrow();
+    writeFileSync(release, "go");
+    await recorder.until((e) => e.type === "turn.completed");
+    expect(instance.adapter.enginePid?.("t-engine-pid")).toBeUndefined();
+  });
+
   it("reports a long Write's input as it streams, after the bot's words and before its tool call", async () => {
     await create("slow-write", { FAKE_CLAUDE_WRITE_BYTES: "6144", FAKE_CLAUDE_WRITE_STEP_MS: "5" });
     await instance.adapter.sendTurn({ threadId: "t-slow-write", text: "build a dashboard" });

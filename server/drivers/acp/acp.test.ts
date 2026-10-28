@@ -2033,6 +2033,25 @@ describe("ACP turns (fake CLI)", () => {
     expect(types.lastIndexOf("turn.progress")).toBeLessThan(types.indexOf("item.completed"));
   });
 
+  it("shows a running tool's output and names the agent process while the tool runs", async () => {
+    const gate = join(scratch, "slow-tool-done");
+    Object.assign(process.env, { FAKE_ACP_TOOL_GATE: gate, FAKE_ACP_TOOL_OUTPUT: "Collecting 12 items\npage 3 of 40" });
+    try {
+      await create(QwenAgentDriver, "slow-tool");
+      await instance.adapter.sendTurn({ threadId: "t-slow-output", text: "go" });
+      expect(await recorder.until(e => e.type === "item.output")).toMatchObject({ itemId: "tc-slow", text: "Collecting 12 items\npage 3 of 40", whole: true });
+      const pid = instance.adapter.enginePid?.("t-slow-output");
+      expect(pid).toEqual(expect.any(Number));
+      expect(() => process.kill(pid!, 0)).not.toThrow();
+      writeFileSync(gate, "done");
+      await recorder.until(e => e.type === "turn.completed");
+      expect(instance.adapter.enginePid?.("t-slow-output")).toBeUndefined();
+    } finally {
+      delete process.env.FAKE_ACP_TOOL_GATE;
+      delete process.env.FAKE_ACP_TOOL_OUTPUT;
+    }
+  });
+
   it.each([GrokAgentDriver, QwenAgentDriver])("still fails $driverKind when it goes silent once its tool has finished", async (driver) => {
     process.env.OPENMAUS_ACP_PROMPT_IDLE_TIMEOUT_MS = "150";
     await create(driver, "stall-after-tool");

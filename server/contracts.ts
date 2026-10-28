@@ -280,6 +280,8 @@ export interface ProviderAdapter {
    * A driver that cannot read an attached image refuses the whole steer. */
   steer?(threadId: ThreadId, text: string, images?: readonly TurnImageInput[]): Promise<SteerOutcome>;
   hasSession(threadId: ThreadId): boolean;
+  /** The local process running this thread's engine, while there is one: a long tool call's own processes are under it. */
+  enginePid?(threadId: ThreadId): number | undefined;
   stopAll(): Promise<void>;
   onEvent(listener: RuntimeEventListener): () => void;
   /** `ping` sends one tool-less forked request without touching the thread's session; `hold` keeps the live session open until

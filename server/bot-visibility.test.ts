@@ -411,6 +411,21 @@ describe("a Team Cloud's audiences", () => {
     expect(routineRunVisible({ botId: "pub", threadId: "t-pub" }, admin)).toBe(true);
   });
 
+  it("sends what a bot is doing now only to someone who may see that chat, as the Activity panel does", () => {
+    const admin = new VisibleSet(open, openGroups, BEN_ADMIN, undefined, { of: audienceOf, person: BEN_KEY });
+    const ctx: FrameContext = { visible: admin, webhook: () => undefined, freshBot: () => undefined, freshGroup: () => undefined };
+    const seen: StreamSeen = { bots: new Set(open.map((bot) => bot.id)), groups: new Set(["room-pub"]) };
+    const step = (threadId: string) => ({ kind: "runtime", event: { type: "turn.progress", threadId, activity: "command", itemId: "c1",
+      target: "payroll.py", detail: "python3 payroll.py --month 10", quiet: { kind: "busy" }, tail: ["paid 12 of 40"] } });
+    const started = (threadId: string) => ({ kind: "runtime", event: { type: "item.started", itemType: "tool", threadId, itemId: "c1",
+      title: "Bash", step: { activity: "command", target: "payroll.py", detail: "python3 payroll.py --month 10" } } });
+    for (const frame of [step("t-pub-2"), started("t-pub-2"), { kind: "message", threadId: "t-pub-2", message: { tool: { name: "Bash", step: { activity: "command", target: "payroll.py" } } } }]) {
+      expect(frameForMember(frame, ctx, seen), JSON.stringify(frame)).toBeUndefined();
+    }
+    const own = step("t-pub");
+    expect(frameForMember(own, ctx, seen)).toBe(own);
+  });
+
   it("finds every conversation a request names: a task in the path, the query and the body", () => {
     expect(requestThreadIds("/api/bots/pub/tasks/t-pub-2", new URLSearchParams())).toEqual(["t-pub-2"]);
     expect(requestThreadIds("/api/bots/pub/tasks/t-pub-2/title", new URLSearchParams("threadId=t-x"))).toEqual(["t-pub-2", "t-x"]);

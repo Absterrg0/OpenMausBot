@@ -656,13 +656,7 @@ function decodeConfig(raw: unknown): ClaudeConfig {
 
 function firstText(content: unknown): string {
   if (typeof content === "string") return content;
-  if (Array.isArray(content)) {
-    return content
-      .filter((b) => b?.type === "text" && b.text)
-      .map((b) => b.text)
-      .join("");
-  }
-  return "";
+  return Array.isArray(content) ? content.filter((b) => b?.type === "text" && b.text).map((b) => b.text).join("") : "";
 }
 
 /** A turn's cost from total_cost_usd, which is the process's running total (2.1.282): the growth
@@ -2091,6 +2085,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
           return behavior === "allow" ? "allowed-once" : behavior === "answer" ? "answered" : "rejected";
         },
         hasSession: (threadId) => active.has(threadId),
+        enginePid: (threadId) => (active.has(threadId) ? sessions.get(threadId)?.child.pid : undefined),
         cacheKeepWarm: {
           ping: async (threadId, options) => {
             const live = sessions.get(threadId);

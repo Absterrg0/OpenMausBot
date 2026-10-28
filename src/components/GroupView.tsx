@@ -1171,7 +1171,7 @@ export function GroupView({ group }: { group: Group }) {
               visible={presenceVisible}
               phrases={activity?.phrases}
               phase={activity?.phase}
-              size={activity?.size}
+              size={activity?.size} hover={activity?.hover} quiet={live.status && "quiet" in live.status ? live.status.quiet : undefined}
               seed={`${group.id}:${group.turnStartedAt ?? ""}:${speaker?.id ?? ""}`}
               answering={popping !== null}
               since={speaker ? group.turnStartedAt ?? null : null}

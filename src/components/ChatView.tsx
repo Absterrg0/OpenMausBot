@@ -56,8 +56,7 @@ import { normalizeState, stateForBot } from "@/lib/mascot";
 import { peerLine, peerRequest, type PeerLine } from "@/lib/peer-message";
 import { showWorkingDots } from "@/lib/turn-tail";
 import { lastNonReceipt } from "@/lib/receipts";
-import { turnNowPhrases } from "@/lib/live-activity"; import { useTurnLive } from "@/state/turn-status";
-import { friendlyNowPhrases } from "@/lib/friendly-activity";
+import { useTurnLive } from "@/state/turn-status"; import { useTurnNow } from "./NowCard";
 import { ChatMarkdown } from "./ChatMarkdown";
 import { liveToolIds } from "@/lib/tool-liveness";
 import { VoiceNoteBubble, type VoiceNoteAttachment } from "./VoiceNoteBubble";
@@ -949,7 +948,7 @@ export function ChatView({ bot: profile }: { bot: Bot }) {
   }, [lastTypedMessage]);
 
   const lastMessage = lastNonReceipt(messages);
-  const live = useTurnLive(bot.threadId), activity = advanced ? turnNowPhrases(live.status, lastMessage) : friendlyNowPhrases(live.status, lastMessage);
+  const live = useTurnLive(bot.threadId), now = useTurnNow(bot, messages, lastMessage, live, advanced);
   const toolInFlight = (lastMessage?.kind === "activity" && lastMessage.tool?.ok === undefined) || Boolean(live.status && live.status.activity !== "thinking" && live.status.activity !== "reply");
   // The mascot and its status line stay for the whole turn; only its end hides them, never a timer.
   const waiting = Boolean(bot.busy && bot.activity !== "waiting-on-you" && showWorkingDots(bot.busy, lastMessage, undefined, live.ended));
@@ -1250,10 +1249,8 @@ export function ChatView({ bot: profile }: { bot: Bot }) {
             className={cn(!advanced && presenceUnderBubble && SIMPLE_STACKED)}
             label={teammatesWorking ? t("chat.teammatesWorking") : undefined}
             visible={presenceVisible}
-            phrases={teammatesWorking ? undefined : activity?.phrases}
-            phase={activity?.phase}
-            detail={advanced ? undefined : turnNowPhrases(live.status, lastMessage)?.phrases?.[0]}
-            size={activity?.size}
+            {...now}
+            phrases={teammatesWorking ? undefined : now.phrases}
             seed={`${bot.id}:${bot.threadId ?? ""}:${busySince ?? ""}`}
             answering={popping !== null}
             since={busySince}

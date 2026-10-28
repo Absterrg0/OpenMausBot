@@ -3,7 +3,8 @@
 // probed from the agent's debug log and its process tree's connections and CPU.
 
 import { execFile } from "node:child_process";
-import { closeSync, fstatSync, openSync, readSync } from "node:fs";
+import { closeSync, existsSync, fstatSync, openSync, readSync } from "node:fs";
+import { join } from "node:path";
 
 import { redactSecretsInText } from "../../redact.ts";
 
@@ -22,6 +23,15 @@ export const formatQuietLimit = (ms: number): string =>
 
 /** Silence before the first "what is it doing" notice (OMB_ACP_QUIET_NOTICE_MS overrides). */
 export const DEFAULT_QUIET_NOTICE_MS = 60_000;
+/** How often a quiet turn or a long tool call is looked at again (OMB_ACP_QUIET_TICK_MS overrides). */
+export const DEFAULT_QUIET_TICK_MS = 15_000;
+
+const knob = (name: string, fallback: number): number => {
+  const ms = Number(process.env[name]);
+  return Number.isFinite(ms) && ms > 0 ? ms : fallback;
+};
+export const quietNoticeMs = (): number => knob("OMB_ACP_QUIET_NOTICE_MS", DEFAULT_QUIET_NOTICE_MS);
+export const quietTickMs = (): number => knob("OMB_ACP_QUIET_TICK_MS", DEFAULT_QUIET_TICK_MS);
 
 export type LogSignal =
   | { kind: "retry"; status: number | null; delayMs: number | null; attempt: number | null }
@@ -133,6 +143,19 @@ const run = (file: string, args: string[], timeoutMs = 4_000): Promise<string | 
     });
   });
 
+// A server can run with a narrowed PATH (a sealed test fixture runs with node's folder alone); ps and lsof are still
+// found where the system keeps them.
+const SYSTEM_DIRS = ["/bin", "/usr/bin", "/usr/sbin", "/sbin"];
+const systemTools = new Map<string, string>();
+const systemTool = (name: string): string => {
+  let path = systemTools.get(name);
+  if (path === undefined) {
+    path = SYSTEM_DIRS.map((dir) => join(dir, name)).find((candidate) => existsSync(candidate)) ?? name;
+    systemTools.set(name, path);
+  }
+  return path;
+};
+
 /** `ps` TIME: [[dd-]hh:]mm:ss[.cc] */
 function psTimeMs(raw: string): number | null {
   const m = /^(?:(\d+)-)?(?:(\d+):)?(\d+):(\d+(?:\.\d+)?)$/.exec(raw.trim());
@@ -159,35 +182,53 @@ export function treePids(rows: Array<{ pid: number; ppid: number }>, root: numbe
   return out;
 }
 
-async function samplePosix(root: number): Promise<ProcessSample> {
-  const table = await run("ps", ["-A", "-o", "pid=,ppid=,time="]);
+/** A process start is read to the second (`ps` etime), so a call's own processes may look this much older than it. */
+const START_SLACK_MS = 2_000;
+
+/** What one tool call is running: the root's descendants that started since the call did, not the root itself. */
+export function startedSince(rows: Array<{ pid: number; ppid: number; startedAt: number | null }>, root: number, since: number): number[] {
+  const startOf = new Map(rows.map((r) => [r.pid, r.startedAt]));
+  return treePids(rows, root).filter((pid) => pid !== root && (startOf.get(pid) ?? -Infinity) >= since - START_SLACK_MS);
+}
+
+async function samplePosix(root: number, since?: number): Promise<ProcessSample> {
+  const table = await run(systemTool("ps"), ["-A", "-o", "pid=,ppid=,time=,etime="]);
   if (table === null) return { cpuMs: null, connections: null };
-  const rows: Array<{ pid: number; ppid: number; cpuMs: number | null }> = [];
+  const now = Date.now();
+  const rows: Array<{ pid: number; ppid: number; cpuMs: number | null; startedAt: number | null }> = [];
   for (const line of table.split("\n")) {
-    const [pid, ppid, time] = line.trim().split(/\s+/);
+    const [pid, ppid, time, elapsed] = line.trim().split(/\s+/);
     if (!pid || !ppid || !time) continue;
-    rows.push({ pid: Number(pid), ppid: Number(ppid), cpuMs: psTimeMs(time) });
+    const age = elapsed ? psTimeMs(elapsed) : null;
+    rows.push({ pid: Number(pid), ppid: Number(ppid), cpuMs: psTimeMs(time), startedAt: age === null ? null : now - age });
   }
-  const pids = treePids(rows, root);
   if (!rows.some((r) => r.pid === root)) return { cpuMs: null, connections: null };
+  const pids = since === undefined ? treePids(rows, root) : startedSince(rows, root, since);
+  if (!pids.length) return { cpuMs: null, connections: null };
   let cpuMs = 0;
   for (const r of rows) if (pids.includes(r.pid)) cpuMs += r.cpuMs ?? 0;
-  const lsof = await run("lsof", ["-nP", "-a", "-p", pids.join(","), "-iTCP", "-sTCP:ESTABLISHED", "-Fn"]);
+  const lsof = await run(systemTool("lsof"), ["-nP", "-a", "-p", pids.join(","), "-iTCP", "-sTCP:ESTABLISHED", "-Fn"]);
   // -Fn prints one `n<addr>` line per connection
   const connections = lsof === null ? null : lsof.split("\n").filter((l) => l.startsWith("n")).length;
   return { cpuMs, connections };
 }
 
-async function sampleWindows(root: number): Promise<ProcessSample> {
+async function sampleWindows(root: number, since?: number): Promise<ProcessSample> {
+  const own = since === undefined ? ""
+    : `$from=[DateTimeOffset]::FromUnixTimeMilliseconds(${Math.floor(since - START_SLACK_MS)}).LocalDateTime;` +
+      `$ids=@($all|Where-Object{($ids -contains $_.ProcessId) -and $_.ProcessId -ne ${root} -and $_.CreationDate -ge $from}|ForEach-Object{$_.ProcessId});` +
+      "if(-not $ids.Count){Write-Output 'none';exit};";
   const script =
     "$ErrorActionPreference='SilentlyContinue';" +
-    "$all=Get-CimInstance Win32_Process|Select-Object ProcessId,ParentProcessId,KernelModeTime,UserModeTime;" +
+    "$all=Get-CimInstance Win32_Process|Select-Object ProcessId,ParentProcessId,KernelModeTime,UserModeTime,CreationDate;" +
     `$ids=@(${root});$q=@(${root});` +
     "while($q.Count){$p=$q[0];$q=@($q|Select-Object -Skip 1);foreach($c in $all|Where-Object{$_.ParentProcessId -eq $p}){if($ids -notcontains $c.ProcessId){$ids+=$c.ProcessId;$q+=$c.ProcessId}}};" +
+    own +
     "$cpu=($all|Where-Object{$ids -contains $_.ProcessId}|ForEach-Object{[double]$_.KernelModeTime+[double]$_.UserModeTime}|Measure-Object -Sum).Sum/10000;" +
     "$n=@(Get-NetTCPConnection -State Established|Where-Object{$ids -contains $_.OwningProcess}).Count;" +
     "Write-Output \"$cpu $n\"";
   const out = await run("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], 8_000);
+  if (out?.trim() === "none") return { cpuMs: null, connections: null };
   const [cpu, n] = (out ?? "").trim().split(/\s+/);
   const cpuMs = Number(cpu);
   const connections = Number(n);
@@ -197,9 +238,10 @@ async function sampleWindows(root: number): Promise<ProcessSample> {
   };
 }
 
-/** A missing tool or a refused query reads as null (unknown), never as idle. */
-export function sampleProcessTree(pid: number): Promise<ProcessSample> {
-  return (process.platform === "win32" ? sampleWindows(pid) : samplePosix(pid))
+/** A missing tool or a refused query reads as null (unknown), never as idle. With `since`, only the processes the tree
+ * started from then on count, without the root: what one tool call is running, not the engine or its tool servers. */
+export function sampleProcessTree(pid: number, since?: number): Promise<ProcessSample> {
+  return (process.platform === "win32" ? sampleWindows(pid, since) : samplePosix(pid, since))
     .catch(() => ({ cpuMs: null, connections: null }));
 }
 

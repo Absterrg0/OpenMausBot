@@ -16,7 +16,7 @@
 //       MCP; FAKE_ACP_REDELEGATE_FILE, FAKE_ACP_TASKID_FILE; a hand-off result wake gets a fixed line)
 //     | echo-gated (echo the whole prompt; hold until FAKE_ACP_GATE_FILE exists) | safe-agent-reads
 //     | stall-after-text | stall-after-tool (then silent forever) | slow-tool (silent for FAKE_ACP_TOOL_MS, or until
-//       FAKE_ACP_TOOL_GATE exists when set)
+//       FAKE_ACP_TOOL_GATE exists when set; FAKE_ACP_TOOL_OUTPUT is the text its running call shows meanwhile)
 //     | quiet-then-answer (silent for FAKE_ACP_QUIET_MS; with QWEN_HOME, append FAKE_ACP_QWEN_LOG lines to
 //       Qwen's debug log every FAKE_ACP_LOG_EVERY_MS; with XDG_DATA_HOME, append FAKE_ACP_OPENCODE_LOG lines once to
 //       OpenCode's shared log, {session} replaced by the session id) | mcp-tools (list each mcpServers entry's tools with
@@ -924,7 +924,8 @@ function handle(msg: any) {
           out({ jsonrpc: "2.0", method: "session/update", params: { update: { toolCallId: "tc-slow", ...update } } });
         // ACP's default status is pending: this tool_call carries none.
         tool({ sessionUpdate: "tool_call", title: "sleep", kind: "execute", rawInput: { command: "sleep 45 && echo done" } });
-        tool({ sessionUpdate: "tool_call_update", status: "in_progress" });
+        const printed = process.env.FAKE_ACP_TOOL_OUTPUT;
+        tool({ sessionUpdate: "tool_call_update", status: "in_progress", ...(printed ? { content: [{ type: "content", content: { type: "text", text: printed } }] } : {}) });
         const finish = () => tool({ sessionUpdate: "tool_call_update", status: "completed", rawOutput: { output: "done" } });
         if (mode === "stall-after-tool") {
           finish();

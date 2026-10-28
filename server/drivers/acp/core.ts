@@ -20,7 +20,7 @@ import { runAcpOneShot } from "./background-text.ts";
 import { sanitizeAcpToolMessage } from "./tool-log.ts";
 import { stripLeakedSystemHarnessMessages } from "../../../shared/system-message-guard.ts";
 import {
-  classifyQuiet, DEFAULT_QUIET_NOTICE_MS, describeQuiet, formatQuietLimit, lastSeenPhrase, LogTail, promptIdleTimeoutMs, quietKey, sampleProcessTree,
+  classifyQuiet, describeQuiet, formatQuietLimit, lastSeenPhrase, LogTail, promptIdleTimeoutMs, quietKey, quietNoticeMs, quietTickMs, sampleProcessTree,
   type LogSignal, type ProcessSample, type QuietState,
 } from "./quiet-status.ts";
 import { readSessionReport } from "./session-reports.ts";
@@ -65,7 +65,7 @@ import { engineIdleMs, sessionIdlePolicy } from "../session-idle.ts";
 import { classifyError } from "../retry.ts";
 import { engineFailureKind, engineFailureMessage, stopCause } from "../engine-errors.ts";
 import { narrowsNativeTools, parseToolScope } from "../../../shared/tool-scope.ts";
-import { acpMcpServers, type AcpMcpServer } from "../turn-mcp.ts"; import { acpToolProgress } from "../tool-progress.ts";
+import { acpMcpServers, type AcpMcpServer } from "../turn-mcp.ts"; import { acpToolOutput, acpToolProgress } from "../tool-progress.ts";
 import { learnedToolCountLimit, mcpToolBudget, retryUnderToolLimit } from "../../tool-count-limit.ts"; import { instanceEnvNames } from "../../bot-box/env.ts";
 
 /** Failures fixed on the provider account, not by retrying; the reporting process stays pooled. */
@@ -520,8 +520,8 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
       });
 
       const startQuietWatch = (threadId: string, session: AcpSession, current: AcpTurn) => {
-        const noticeAfterMs = envOr("OMB_ACP_QUIET_NOTICE_MS", DEFAULT_QUIET_NOTICE_MS);
-        const tickMs = envOr("OMB_ACP_QUIET_TICK_MS", 15_000);
+        const noticeAfterMs = quietNoticeMs();
+        const tickMs = quietTickMs();
         const { sessionId } = session;
         const logPath = support.statusLog && sessionId ? support.statusLog.path(session.env, sessionId) : null;
         const tail = logPath ? new LogTail(logPath) : null;
@@ -968,7 +968,7 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
             }
           }
           // A call still running (its kind, file and diff so far) feeds the chat's status line.
-          const draft = acpToolProgress(u); if (draft) emit({ ...base(threadId, current.turnId), ...draft });
+          for (const live of [acpToolProgress(u), acpToolOutput(u)]) if (live) emit({ ...base(threadId, current.turnId), ...live });
         };
 
         const session: AcpSession = {
@@ -1739,6 +1739,7 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
             return finish(decision.behavior, "user", decision.message, decision.always === true);
           },
           hasSession: (threadId) => active.has(threadId),
+          enginePid: (threadId) => (active.has(threadId) ? sessions.get(threadId)?.child.pid : undefined),
           stopAll: async () => {
             for (const { stop } of active.values()) stop();
             for (const threadId of Array.from(sessions.keys())) closeSession(threadId, "stopAll");

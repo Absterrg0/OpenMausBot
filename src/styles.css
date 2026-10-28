@@ -1876,7 +1876,46 @@ html[data-cloud-intent-morph] [data-tour="composer"] { view-transition-name: clo
   from { opacity: 0; }
 }
 .turn-phrase-in { animation: shimmer 2s linear infinite, turn-phrase-in 0.32s ease-out both; }
+.turn-now-toggle {
+  display: flex;
+  min-width: 0;
+  max-width: 100%;
+  align-items: center;
+  gap: 6px;
+  margin: -4px -6px;
+  padding: 4px 6px;
+  border-radius: 8px;
+  text-align: start;
+  cursor: pointer;
+}
+.turn-now-toggle:hover, .turn-now-toggle[aria-expanded="true"] {
+  background: color-mix(in srgb, var(--color-ink) 5%, transparent);
+}
+.turn-now-toggle:focus-visible {
+  outline: 1.5px solid var(--color-focus);
+  outline-offset: 1px;
+}
+.turn-now-chevron {
+  flex-shrink: 0;
+  color: var(--color-ink-tertiary);
+  transition: transform 160ms ease-out;
+}
+@keyframes turn-now-in {
+  from { opacity: 0; transform: translateY(-2px); }
+}
+.turn-now-card {
+  margin-top: 8px;
+  margin-inline-start: 44px;
+  width: min(560px, calc(100% - 44px));
+  border-radius: 14px;
+  background: var(--color-composer);
+  box-shadow: 0 0 0 0.5px color-mix(in srgb, var(--color-ink) 10%, transparent);
+  padding: 10px 12px;
+  animation: turn-now-in 160ms ease-out both;
+}
 @media (prefers-reduced-motion: reduce) {
+  .turn-now-card { animation: none; }
+  .turn-now-chevron { transition: none; }
   .animate-caret, .animate-msg-in, .animate-shimmer, .animate-pop-in, .animate-pop-out { animation: none; }
   .animate-status-pulse { animation: none; opacity: 0.6; }
   .thinking-shimmer { background: none; color: var(--color-ink-secondary); }
