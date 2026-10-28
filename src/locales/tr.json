@@ -150,6 +150,8 @@
   "toolStep.askHelper": "Bir yardımcıya görev ver",
   "toolStep.think": "Düşün",
   "toolStep.checkTeam": "Ekibi kontrol et",
+  "toolStep.manageAutomations": "Otomasyonları yönet",
+  "toolStep.checkAutomations": "Otomasyonları kontrol et",
   "toolStep.useTool": "Araç kullan",
   "attach.gallery": "Ekler",
   "attach.gallerySingle": "1 ek",

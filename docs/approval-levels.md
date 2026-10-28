@@ -271,7 +271,7 @@ silently substitute unrestricted access when a mode is rejected.
 OpenMausBot's built-in agents MCP server describes its scoped reads with
 explicit read-only, non-destructive, idempotent, closed-world metadata:
 `list_bots`, `list_rooms`, `list_threads`, `assignment_status`,
-`session_search`, `session_read`, `list_triggers`, and `skills_list`.
+`session_search`, `trigger_info`, and `skills_list`.
 Session recall still enforces own-bot access and records its existing room
 disclosure audit. These hints do not grant access to another bot's conversations.
 Writes, credential requests, proposals, and third-party tools do not inherit

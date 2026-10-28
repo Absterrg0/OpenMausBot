@@ -298,7 +298,7 @@ describe("shared sentences", () => {
     }
     expect(LEARN_PROMPT).toContain("only when the user explicitly asks to revise that exact name");
     // Triggers have no pending state: the bot sets them up in the same turn and the person undoes from the card.
-    expect(TRIGGER_PROMPT).toContain("set it up with create_trigger in this turn");
+    expect(TRIGGER_PROMPT).toContain("set it up with trigger action=create in this turn");
     expect(TRIGGER_PROMPT).toContain("Do not ask for confirmation");
     expect(TRIGGER_PROMPT).toContain("Edit, Pause and Undo");
     expect(TRIGGER_PROMPT).not.toMatch(/pending|explicitly asks/);

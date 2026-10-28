@@ -7,6 +7,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { childEnv } from "../testing/omb-env.ts";
 import { ToolResults } from "../tool-results.ts";
 import { waitForExit } from "../testing/cleanup.ts";
+import { fullInputSchema } from "./agents-catalog.ts";
 
 const PROXY = join(dirname(fileURLToPath(import.meta.url)), "agents-proxy.ts");
 const TOKEN = "test-comms-token";
@@ -150,7 +151,7 @@ function setProposalResponse(tool: string, response: unknown) {
 
 const proposalCases = [
   { tool: "propose_profile", args: { name: "Kiwi" } },
-  { tool: "propose_team_setup", args: { operations: [] } },
+  { tool: "propose_team_setup", args: { reason: "Fixture plan", operations: [{ action: "update", botId: "bot-helper", fields: { title: "Fixture" } }] } },
   { tool: "propose_bot_deletion", args: { bot_id: "bot-helper", reason: "User requested deletion" } },
   { tool: "skill_manage", args: { action: "create", skill_md: "---\nname: fixture-skill\ndescription: Fixture only\n---\n# Fixture\n", source: "conversation" } },
   { tool: "skill_manage", args: { action: "update", skill_name: "fixture-skill", skill_md: "---\nname: fixture-skill\ndescription: Updated fixture\n---\n# Fixture\n", source: "conversation" } },
@@ -460,6 +461,8 @@ beforeAll(async () => {
       OMB_SHARED_COMPUTERS_ENABLED: "1",
       // A Chief's turn, so the Chief-only team tools are mounted too.
       OMB_CHIEF_OF_STAFF: "1",
+      // A person's own request, which may pick its computer.
+      OMB_COMPUTER_SELECTION: "1",
     },
     stdio: ["pipe", "pipe", "inherit"],
   });
@@ -505,7 +508,7 @@ describe("agents-proxy MCP surface", () => {
     const credential = list.result.tools.find((entry: { name: string }) => entry.name === "request_credential");
     expect(credential.description).toContain("after the user saves or declines");
     expect(credential.description).not.toContain("apply the change immediately");
-    for (const name of ["create_room", "manage_room"]) {
+    for (const name of ["manage_room"]) {
       const description = list.result.tools.find((entry: { name: string }) => entry.name === name).description;
       expect(description).toContain("Follow the tool result under the effective access level");
       expect(description).not.toContain("If peer approval is enabled");
@@ -542,7 +545,7 @@ describe("agents-proxy MCP surface", () => {
 
   it.each(["failed", "cancelled", "denied"])("does not misreport a %s team result as applied or pending", async state => {
     teamRequestResponse = { state, result: { state, error: "Fixture target changed", bots: [], newTeams: [] } };
-    const response = await callTool("propose_team_setup", { operations: [] });
+    const response = await callTool("propose_team_setup", { reason: "Fixture plan", operations: [{ action: "update", botId: "bot-helper", fields: { title: "Fixture" } }] });
     expect(response.result.isError).toBe(true);
     expect(response.result.content[0].text).toContain("Fixture target changed");
     expect(response.result.content[0].text).toContain("Do not claim it was applied");
@@ -633,9 +636,7 @@ describe("agents-proxy MCP surface", () => {
       "vm_exec",
       "attach_file",
       "show_widget",
-      "update_widget",
       "show_html",
-      "update_html",
       "publish_page",
       "unpublish_page",
       "post_to_room",
@@ -644,7 +645,6 @@ describe("agents-proxy MCP surface", () => {
       "list_team_library",
       "propose_team_setup",
       "propose_bot_deletion",
-      "create_room",
       "manage_room",
       "request_credential",
       "request_sign_in",
@@ -654,13 +654,9 @@ describe("agents-proxy MCP surface", () => {
       "report_bug",
       "memory_update",
       "retry_thread",
-      "memory_log",
       "session_search",
-      "session_read",
-      "list_triggers",
-      "list_trigger_events",
-      "create_trigger",
-      "manage_trigger",
+      "trigger_info",
+      "trigger",
       "propose_profile",
       "propose_model",
       "propose_team_memory",
@@ -681,7 +677,8 @@ describe("agents-proxy MCP surface", () => {
     const status = tool("assignment_status");
     expect(status.description).toContain("Read-only");
     expect(status.description).toContain("never needs this to wait");
-    expect(status.inputSchema.properties.wait_ms).toMatchObject({ type: "integer", minimum: 0, maximum: 240_000 });
+    expect(status.inputSchema.properties.wait_ms).toEqual({ type: "integer", description: expect.stringContaining("at most 240000") });
+    expect(fullInputSchema("assignment_status")).toMatchObject({ properties: { wait_ms: { type: "integer", minimum: 0 } } });
     expect(status.inputSchema.required ?? []).toEqual([]);
     expect(JSON.stringify(list.result.tools)).not.toMatch(/Brief synchronous consultation|DEFAULT FOR ASSIGNING WORK|BLOCKING status tool|Never call it in the same turn as delegate_bot|Deprecated alias/);
     for (const name of ["post_to_room", "create_bot", "retry_thread", "list_bots"]) {
@@ -746,7 +743,7 @@ describe("agents-proxy MCP surface", () => {
       "list_shared_computers",
       "assignment_status", "list_bots", "list_rooms", "list_threads",
       "list_team_setup",
-      "session_search", "session_read", "list_triggers", "list_trigger_events", "skills_list",
+      "session_search", "trigger_info", "skills_list",
     ];
     expect(list.result.tools.filter((tool: any) => tool.annotations?.readOnlyHint)
       .map((tool: any) => tool.name)).toEqual(readNames);
@@ -766,8 +763,10 @@ describe("agents-proxy MCP surface", () => {
 
   it("publishes a flat trigger schedule schema that survives provider conversion", async () => {
     const list = await rpc("tools/list");
-    const create = list.result.tools.find((t: { name: string }) => t.name === "create_trigger");
-    expect(create.inputSchema.required).toEqual(["when", "name", "instructions"]);
+    const create = list.result.tools.find((t: { name: string }) => t.name === "trigger");
+    expect(create.inputSchema.required).toEqual(["action"]);
+    expect(create.inputSchema.properties.action.enum).toEqual(["create", "update", "pause", "resume", "run_now", "delete"]);
+    expect(Object.keys(create.inputSchema.properties)).not.toContain("changes");
     expect(create.inputSchema.properties.when.enum).toEqual(["schedule", "app_event", "webhook", "limit_reset"]);
     expect(create.inputSchema.properties.repeat.enum).toEqual(["once", "every_reset"]);
     const schedule = create.inputSchema.properties.schedule;
@@ -779,6 +778,7 @@ describe("agents-proxy MCP surface", () => {
     expect(schedule.properties.expression.description).toContain("MON#2");
     expect(schedule.properties.timeZone.description).toContain("IANA");
     expect(create.description).toContain("never ask for confirmation first");
+    expect(fullInputSchema("trigger")).toMatchObject({ properties: { timeout_minutes: { minimum: 5, maximum: 240 }, schedule: { properties: { every_minutes: { minimum: 5, maximum: 1_440 } } } } });
     expect(schedule.properties.weekdays.items.enum).toEqual([
       "monday",
       "tuesday",
@@ -789,11 +789,11 @@ describe("agents-proxy MCP surface", () => {
       "sunday",
     ]);
     expect(create.inputSchema.properties).not.toHaveProperty("duration_minutes");
-    expect(create.inputSchema.properties.timeout_minutes).toMatchObject({ minimum: 5, maximum: 240 });
+    expect(create.inputSchema.properties.timeout_minutes.description).toContain("from 5 to 240 minutes");
     expect(create.inputSchema.properties.continuity).toMatchObject({ type: "boolean" });
     expect(create.inputSchema.properties.run_on_startup).toMatchObject({ type: "boolean" });
     expect(create.inputSchema.properties.clear_timeout.type).toBe("boolean");
-    expect(schedule.properties.every_minutes).toMatchObject({ minimum: 5, maximum: 1_440 });
+    expect(schedule.properties.every_minutes.description).toContain("from 5 to 1440");
     expect(schedule.properties.window_start.type).toBe("string");
     expect(schedule.properties.window_end.type).toBe("string");
     expect(schedule.properties.ends_at.type).toBe("string");
@@ -1305,7 +1305,8 @@ describe("agents-proxy MCP surface", () => {
     const tools = await rpc("tools/list");
     const schema = tools.result.tools.find((tool: { name: string }) => tool.name === "memory_update").inputSchema;
     // No pattern on free-text params: constrained decoding collapses a patterned field to a minimal satisfier.
-    expect(schema.properties.text).toMatchObject({ minLength: 1, maxLength: 1000 });
+    expect(fullInputSchema("memory_update")).toMatchObject({ properties: { text: { minLength: 1 } } });
+    expect(schema.properties.action.enum).toEqual(["append", "replace", "remove", "supersede", "forget", "log"]);
     expect(schema.properties.text).not.toHaveProperty("pattern");
     memoryStatus = 409;
     memoryResponse = { error: "oldText must match exactly once in the latest memory." };
@@ -1335,14 +1336,13 @@ describe("agents-proxy MCP surface", () => {
     memoryResponse = { ok: true, truncated: false };
   });
 
-  it("memory_log appends to today's log through the harness and says so, never loading it anywhere", async () => {
+  it("memory_update action=log appends to today's log through the harness and says so, never loading it anywhere", async () => {
     const tools = await rpc("tools/list");
-    const tool = tools.result.tools.find((t: { name: string }) => t.name === "memory_log");
+    const tool = tools.result.tools.find((t: { name: string }) => t.name === "memory_update");
     expect(tool.description).toContain("what happened, not what is true");
-    expect(tool.description).toContain("Logs are never loaded into your prompt");
-    expect(tool.inputSchema.required).toEqual(["text"]);
+    expect(tool.description).toContain("logs never load into your prompt");
     expect(tool.inputSchema.properties.text).not.toHaveProperty("pattern");
-    const logged = await callTool("memory_log", { text: "shipped 0.1.70", fromBotId: "spoofed" });
+    const logged = await callTool("memory_update", { action: "log", text: "shipped 0.1.70", fromBotId: "spoofed" });
     expect(logged.result.isError).toBe(false);
     expect(logged.result.content[0].text).toBe('Logged to memory/log/2026-09-10.md: - 14:03 · from chat "Deploy" · shipped 0.1.70');
     expect(lastMemoryLogBody).toEqual({ fromBotId: "bot-asker", fromThreadId: "thread-asker-routine", text: "shipped 0.1.70" });
@@ -1356,7 +1356,7 @@ describe("agents-proxy MCP surface", () => {
     const list = await rpc("tools/list");
     const tool = list.result.tools.find((t: { name: string }) => t.name === "session_search");
     expect(tool.inputSchema.required).toBeUndefined();
-    expect(Object.keys(tool.inputSchema.properties)).toEqual(["query", "since", "until", "limit", "scope"]);
+    expect(Object.keys(tool.inputSchema.properties)).toEqual(["query", "since", "until", "limit", "scope", "thread_id", "message_id"]);
     expect(tool.description).toContain("OWN earlier conversations");
 
     const res = await callTool("session_search", { query: "audit broken links", limit: 5 });
@@ -1370,7 +1370,7 @@ describe("agents-proxy MCP surface", () => {
     expect(text).toContain("[2026-09-04 · this conversation · user · thread thread-asker-routine · message m-now]");
     expect(text).toContain('[2026-09-02 · task "Vendor follow-up" · @Scout (another bot — not your user) · thread thread-asker · message m-peer]');
     expect(text).not.toContain("· user · thread thread-asker ·");
-    expect(text).toContain("call session_read with its thread and message ids");
+    expect(text).toContain("call session_search with its thread_id and message_id");
 
     sessionSearchResponse = { hits: [], memoryHits: [] };
     const empty = await callTool("session_search", { query: "nothing like this" });
@@ -1602,7 +1602,7 @@ describe("agents-proxy MCP surface", () => {
 
   it("advertises VPS-compatible default execution separately from the Boat runner", async () => {
     const list = await rpc("tools/list");
-    const routine = list.result.tools.find((entry: { name: string }) => entry.name === "create_trigger");
+    const routine = list.result.tools.find((entry: { name: string }) => entry.name === "trigger");
     expect(routine.inputSchema.properties.run_on.enum).toEqual(["maus", "box"]);
     expect(routine.inputSchema.properties.run_on.description).toContain("INCLUDING a self-hosted VPS");
   });
@@ -2076,9 +2076,9 @@ describe("standing external runtime", () => {
 
   it("sees the same one tool surface as every turn: the switches it sets change nothing", async () => {
     const list = await externalRpc("tools/list");
-    // the main child is a Chief's turn; this one is not, so only the role differs
-    const chiefOnly = ["create_bot", "list_team_setup", "list_team_library", "propose_team_setup", "propose_bot_deletion", "create_room", "manage_room", "retry_thread"];
-    const everyTurn = (await rpc("tools/list")).result.tools.filter((tool: any) => !chiefOnly.includes(tool.name));
+    // the main child is a Chief's turn that may pick its computer; this one is neither, so only those differ
+    const chiefOnly = ["create_bot", "list_team_setup", "list_team_library", "propose_team_setup", "propose_bot_deletion", "manage_room", "retry_thread"];
+    const everyTurn = (await rpc("tools/list")).result.tools.filter((tool: any) => !chiefOnly.includes(tool.name) && tool.name !== "select_computer");
     const names = list.result.tools.map((tool: any) => tool.name);
     expect(names).toEqual(everyTurn.map((tool: any) => tool.name));
     const teamwork = ["list_room_targets", "coordinate_bots", "assignment_status", "list_bots", "list_rooms", "list_threads", "close_thread", "start_thread", "post_to_room"];
@@ -2195,14 +2195,14 @@ describe("with computer sharing off and no Chief of Staff (the defaults)", () =>
   it("shows a bot that is not a Chief none of the Chief-only tools or parameters", async () => {
     type ListedTool = { name: string; description: string; inputSchema: { properties: Record<string, unknown> } };
     const tools = new Map(((await gatedRpc("tools/list")).result.tools as ListedTool[]).map((tool) => [tool.name, tool]));
-    for (const name of ["create_bot", "list_team_setup", "propose_team_setup", "propose_bot_deletion", "create_room", "manage_room", "retry_thread"]) {
+    for (const name of ["create_bot", "list_team_setup", "propose_team_setup", "propose_bot_deletion", "manage_room", "retry_thread"]) {
       expect(tools.has(name), name).toBe(false);
     }
     for (const name of ["propose_profile", "propose_model"]) {
       expect(tools.get(name)!.inputSchema.properties).not.toHaveProperty("for_bot_id");
       expect(tools.get(name)!.description).not.toContain("for_bot_id");
     }
-    expect(tools.get("manage_trigger")!.inputSchema.properties).toHaveProperty("for_bot_id");
+    expect(tools.get("trigger")!.inputSchema.properties).toHaveProperty("for_bot_id");
   });
 
   it("refuses a Chief-only tool called by name without reaching the harness", async () => {
@@ -2329,8 +2329,8 @@ describe("tool bridge", () => {
   }
 
   /** The main child's switches: a Chief with skills and shared computers. */
-  const CHIEF = { OMB_SKILL_AUTHORING_ENABLED: "1", OMB_SHARED_COMPUTERS_ENABLED: "1", OMB_CHIEF_OF_STAFF: "1" };
-  const CHIEF_ONLY = ["create_bot", "list_team_setup", "propose_team_setup", "propose_bot_deletion", "create_room", "manage_room", "retry_thread"];
+  const CHIEF = { OMB_SKILL_AUTHORING_ENABLED: "1", OMB_SHARED_COMPUTERS_ENABLED: "1", OMB_CHIEF_OF_STAFF: "1", OMB_COMPUTER_SELECTION: "1" };
+  const CHIEF_ONLY = ["create_bot", "list_team_setup", "propose_team_setup", "propose_bot_deletion", "manage_room", "retry_thread"];
   const HOT = ["tool_result_read", "list_room_targets", "coordinate_bots", "list_bots", "list_rooms", "select_computer", "attach_file", "publish_page", "post_to_room", "request_credential", "request_sign_in", "fill_login", "memory_update"];
   let chief: Rpc;
   let plain: Rpc;
@@ -2350,8 +2350,8 @@ describe("tool bridge", () => {
 
   beforeAll(async () => {
     chief = startProxy({ ...CHIEF, OMB_AGENTS_TOOL_BRIDGE: "1" });
-    // not a Chief, nothing optional: the defaults, bridged
-    plain = startProxy({ OMB_AGENTS_TOOL_BRIDGE: "1" });
+    // not a Chief, nothing optional, a person's own request: bridged
+    plain = startProxy({ OMB_COMPUTER_SELECTION: "1", OMB_AGENTS_TOOL_BRIDGE: "1" });
     off = startProxy({ ...CHIEF, OMB_AGENTS_TOOL_BRIDGE: "0" });
     for (const proxy of [chief, plain, off]) {
       expect((await proxy("initialize", { protocolVersion: "2024-11-05" })).result.serverInfo.name).toBe("openmausbot-agents");
@@ -2385,11 +2385,11 @@ describe("tool bridge", () => {
       expect(await describes(chief), name).toContain(name);
       expect(await describes(plain), name).not.toContain(name);
     }
-    expect(await describes(chief)).toContain("create_trigger");
-    expect(await describes(plain)).toContain("create_trigger");
+    expect(await describes(chief)).toContain("trigger");
+    expect(await describes(plain)).toContain("trigger_info");
     // find_tool is a read and carries the marks the catalog's reads do; use_tool claims nothing
     const [findTool, useTool] = (await listed(chief)).slice(-2);
-    expect(findTool.annotations).toEqual(unbridged.get("list_triggers").annotations);
+    expect(findTool.annotations).toEqual(unbridged.get("trigger_info").annotations);
     expect(findTool.annotations).toMatchObject({ readOnlyHint: true });
     expect(useTool.annotations).toBeUndefined();
   });
@@ -2413,7 +2413,7 @@ describe("tool bridge", () => {
     const unbridged = new Map((await listed(rpc)).map((tool) => [tool.name, tool]));
     const matches = matchesOf(await find(chief, "schedule a recurring task every morning"));
     expect(matches.length).toBeLessThanOrEqual(3);
-    const { name, description, inputSchema } = unbridged.get("create_trigger");
+    const { name, description, inputSchema } = unbridged.get("trigger");
     expect(matches[0]).toEqual({ name, description, inputSchema });
     expect(matchesOf(await find(chief, "create a new specialist bot"))[0]!.name).toBe("create_bot");
     // a search that could not be made is a failed call, told how to search
@@ -2434,7 +2434,7 @@ describe("tool bridge", () => {
   it("use_tool runs a hidden tool end to end, with the request and the result a direct call gives", async () => {
     const routine = { when: "schedule", name: "Morning brief", instructions: "Summarize today's priorities.", schedule: { type: "weekly", time: "09:00", weekdays: ["monday", "friday"] }, timeout_minutes: 15 };
     // found first, as a bot would, from how a person would ask
-    expect(matchesOf(await find(chief, "schedule a recurring task every morning"))[0]!.name).toBe("create_trigger");
+    expect(matchesOf(await find(chief, "schedule a recurring task every morning"))[0]!.name).toBe("trigger");
     lastRoutineRequestBody = null;
     const direct = await callTool("create_trigger", routine);
     const directBody = lastRoutineRequestBody;

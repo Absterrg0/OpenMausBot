@@ -6,6 +6,7 @@ import { stripControlPlaneEnv } from "../config.ts";
 import type { SendTurnInput } from "../contracts.ts";
 import { augmentedPath } from "../env-path.ts";
 import { killCliTree, spawnCli } from "../procs.ts";
+import { AGENTS_TOOL_ALIASES } from "./agents-aliases.ts";
 import { bridgedCallTarget, unbridgedServer } from "./agents-bridge.ts";
 import { chatImage, type ChatImagePart } from "./chat-images.ts";
 import { CALL_TOOL, directoryCallTarget, isDirectoryTool } from "../mcp-directory.ts";
@@ -373,6 +374,15 @@ export async function mountChatTools(integrations: SendTurnInput["integrations"]
         registered.set(definition.function.name, tool);
         definitions.push(definition);
       }
+      // Unlisted, so a call by an alias in an earlier tool call reaches the agents server, which runs it as its action
+      // tool; the server holds it to that tool's full schema.
+      if (agents) {
+        for (const [alias, { tool: target }] of Object.entries(AGENTS_TOOL_ALIASES)) {
+          const listed = staged.find((entry) => entry.tool.name === target);
+          const name = chatToolName(server, alias);
+          if (listed && !registered.has(name)) registered.set(name, { ...listed.tool, name: alias, schema: compileToolSchema({ type: "object" }) });
+        }
+      }
     }
     if (signal.aborted || closed) throw aborted();
   } catch (error) { await close(); throw error; }
@@ -381,15 +391,16 @@ export async function mountChatTools(integrations: SendTurnInput["integrations"]
     if (closed || signal.aborted) throw new ChatToolSessionError("MCP session closed");
     const tool = registered.get(name);
     if (!tool) throw new Error("The requested tool was not advertised for this turn");
-    const excluded = (runs: string | undefined) => scope !== undefined && runs !== undefined
-      && !allowsTool(scope, { kind: "mcp", server: tool.server, name: runs });
+    const inner = object(args) ? args.arguments ?? {} : {};
+    const excluded = (runs: string | undefined, runArgs: unknown = args ?? {}) => scope !== undefined && runs !== undefined
+      && !allowsTool(scope, { kind: "mcp", server: tool.server, name: runs }, runArgs);
       // A directory mistake ran nothing and must not end the turn as a failed call.
     const directory = tool.searched && isDirectoryTool(tool.name);
     // Security: should a bridged agents server answer here, use_tool is also judged by the tool it names.
-    if (!directory && (excluded(tool.name) || (tool.agents && excluded(bridgedCallTarget(tool.name, args))))) throw new Error("Tool selection excludes this tool");
+    if (!directory && (excluded(tool.name) || (tool.agents && excluded(bridgedCallTarget(tool.name, args), inner)))) throw new Error("Tool selection excludes this tool");
     omitBlankDefaults(tool.builtInBrowser, tool.name, args);
     if (!object(args) || (!directory && !tool.schema(args))) throw new Error("Tool arguments do not match the advertised input schema; use its required fields and types");
-    if (tool.searched && excluded(target(tool, args))) throw new Error("Tool selection excludes this tool");
+    if (tool.searched && excluded(target(tool, args), inner)) throw new Error("Tool selection excludes this tool");
   };
   const view = (name: string, args: Record<string, unknown>): ChatToolCallView => {
     const tool = registered.get(name);

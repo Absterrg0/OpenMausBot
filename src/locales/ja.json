@@ -410,6 +410,8 @@
   "toolStep.askHelper": "ヘルパーにタスクを依頼",
   "toolStep.think": "思考",
   "toolStep.checkTeam": "チームを確認",
+  "toolStep.manageAutomations": "自動化を管理",
+  "toolStep.checkAutomations": "自動化を確認",
   "toolStep.useTool": "ツールを使用",
   "attach.gallery": "添付ファイル",
   "attach.gallerySingle": "添付ファイル 1 件",

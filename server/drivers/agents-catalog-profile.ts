@@ -19,6 +19,11 @@ export interface CatalogProfile {
   team?: boolean;
   /** The person's MausBot with a Chief's powers: its notification tools are mounted. */
   mausbot?: boolean;
+  /** A person's own request that may pick its computer: select_computer is mounted. Every other turn (a hand-off, a
+   * routine, a room, a continuation) is refused a selection, so it is not shown the tool. */
+  computerSelection?: boolean;
+  /** A room's turn: the widget and page tools, which rooms refuse, are not mounted. */
+  room?: boolean;
 }
 
 /** Everything is off unless the harness says "1". */
@@ -35,5 +40,7 @@ export function catalogProfileFromEnv(env: NodeJS.ProcessEnv): CatalogProfile {
     escalations: env.OMB_ESCALATIONS === "1",
     team: env.OMB_TEAM_PEOPLE === "1",
     mausbot: env.OMB_MAUSBOT === "1",
+    computerSelection: env.OMB_COMPUTER_SELECTION === "1",
+    room: env.OMB_ROOM === "1",
   };
 }
