@@ -22,7 +22,7 @@ const RESERVE_MS = 90_000, SETTLED_MS = 30_000;
 const TICK_MS = 2_000, RELIEF_COOLDOWN_MS = 15_000, NOTICE_REPEAT_MS = 10 * 60_000, STOP_GRACE_MS = 5_000;
 /** Engines that run each thread's turns in processes of their own. */
 export const ENGINE_PROCESS_KINDS: ReadonlySet<string> = new Set(["claudeAgent", "codex", "opencodeGo", "grokAgent", "geminiAgent", "kimiAgent",
-  "droidAgent", "cursorAgent", "qwenAgent", "hermesAgent", "clineAgent", "customAcp", "piAgent", "antigravityAgent"]);
+  "droidAgent", "cursorAgent", "qwenAgent", "hermesAgent", "clineAgent", "copilotAgent", "customAcp", "piAgent", "antigravityAgent"]);
 
 export interface HostMemory { totalBytes: number; availableBytes: number; swapFreeBytes: number; oomKills: number | null; fullStall10: number | null }
 

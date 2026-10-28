@@ -13,6 +13,8 @@ import { newBotDefaultsSchema, type NewBotDefaults } from "./new-bot-defaults.ts
 import { replaySettings } from "./replay-settings.ts";
 import { EFFORT_LEVELS, type EffortLevel } from "../shared/wire.ts";
 import { isModelVariant, type InstanceConfigMap, type McpServerSpec, type ModelSelection } from "./contracts.ts";
+import { API_KEY_FLEET, DEFAULT_FLEET, OPENAI_API_INSTANCE, OPENROUTER_API_INSTANCE, CLAUDE_API_INSTANCE, PRODUCT_FLEET_ADDITIONS } from "./instance-fleets.ts";
+export { CLAUDE_API_INSTANCE, OPENAI_API_INSTANCE, OPENROUTER_API_INSTANCE, XAI_API_INSTANCE } from "./instance-fleets.ts";
 import { DEFAULT_WINDOW_MINUTES, MAX_WINDOW_MINUTES } from "./cache-keepwarm.ts";
 import { PROVIDER_ICON_PRESETS, providerIconError } from "../shared/provider-icon.ts";
 import { helperStoredShape, type HelperConfig } from "./side-jobs.ts";
@@ -1204,71 +1206,7 @@ function injectedEnvironment(cfg: AppConfig, instanceId: string, driver: string)
   return environment;
 }
 
-export const OPENAI_API_INSTANCE = "openai";
-export const OPENROUTER_API_INSTANCE = "openrouter";
-export const XAI_API_INSTANCE = "xaiApi";
-export const CLAUDE_API_INSTANCE = "claudeApi";
-const API_KEY_FLEET: InstanceConfigMap = {
-  [OPENAI_API_INSTANCE]: {
-    driver: "openai-compat", displayName: "OpenAI", access: "api", icon: { kind: "preset", preset: "openai" },
-    config: { url: "https://api.openai.com/v1", apiKeyEnv: "OMB_OPENAI_API_KEY", catalog: "openai" },
-  },
-  [CLAUDE_API_INSTANCE]: {
-    driver: "claudeAgent", displayName: "Claude (API key)", access: "api", icon: { kind: "preset", preset: "anthropic" },
-    config: { requireApiKey: true },
-  },
-  [XAI_API_INSTANCE]: { driver: "grok", displayName: "xAI", access: "api", icon: { kind: "preset", preset: "xai" } },
-  [OPENROUTER_API_INSTANCE]: {
-    driver: "openai-compat", displayName: "OpenRouter", access: "api", icon: { kind: "preset", preset: "openrouter" },
-    config: { url: "https://openrouter.ai/api/v1", apiKeyEnv: "OMB_OPENROUTER_API_KEY" },
-  },
-};
-
 export function instanceConfigs(cfg: AppConfig): InstanceConfigMap {
-  // Google retired Gemini CLI for the free/Pro/Ultra tiers on 2026-06-18; enterprise licences restore it with
-  // `{"instances": {"gemini": {"driver": "geminiAgent"}}}`.
-  const DEFAULT_FLEET: InstanceConfigMap = {
-    grok: { driver: "grokAgent" },
-    kimi: { driver: "kimiAgent" },
-    droid: { driver: "droidAgent" },
-    cursor: { driver: "cursorAgent" },
-    claude: { driver: "claudeAgent" },
-    codex: { driver: "codex" },
-    chatgpt: { driver: "codex", displayName: "ChatGPT plan", config: { authMode: "chatgpt-plan" } },
-    antigravity: { driver: "antigravityAgent" },
-    opencodeGo: { driver: "opencodeGo" },
-    openaiCompat: { driver: "openai-compat" },
-    mistral: { driver: "mistral" },
-    cerebras: { driver: "cerebras" },
-    groq: { driver: "groq" },
-    meta: { driver: "meta" },
-    deepseek: { driver: "deepseekAgent" },
-    museCode: { driver: "museCode" },
-    ...API_KEY_FLEET,
-    qwen: { driver: "qwenAgent" },
-    hermes: { driver: "hermesAgent" },
-    cline: { driver: "clineAgent" },
-    pi: { driver: "piAgent" },
-  };
-  const CUSTOM_ONLY = {
-    qwen: { driver: "qwenAgent" },
-    hermes: { driver: "hermesAgent" },
-    cline: { driver: "clineAgent" },
-    pi: { driver: "piAgent" },
-  } as const;
-  const PRODUCT_FLEET_ADDITIONS = {
-    chatgpt: { driver: "codex", displayName: "ChatGPT plan", config: { authMode: "chatgpt-plan" } },
-    cursor: { driver: "cursorAgent" },
-    openaiCompat: { driver: "openai-compat" },
-    mistral: { driver: "mistral" },
-    cerebras: { driver: "cerebras" },
-    groq: { driver: "groq" },
-    meta: { driver: "meta" },
-    deepseek: { driver: "deepseekAgent" },
-    museCode: { driver: "museCode" },
-    ...API_KEY_FLEET,
-    ...CUSTOM_ONLY,
-  } as const;
   const configured = cfg.instances && Object.keys(cfg.instances).length ? cfg.instances : null;
   const map: InstanceConfigMap = withoutComputerEngine(configured ? { ...configured } : { ...DEFAULT_FLEET });
   if (

@@ -237,7 +237,7 @@ process.stdout.write(JSON.stringify({ success: true, data: args[0] === "session"
 `, { mode: 0o755 });
   chmodSync(join(home, "agent-browser"), 0o755);
   writeFileSync(join(dataDir, "config.json"), JSON.stringify({ instances: {
-    ...Object.fromEntries(["codex", "cursor", "openaiCompat", "qwen", "hermes", "pi", "grok"].map((id) => [id, { driver: "not-a-real-driver" }])),
+    ...Object.fromEntries(["codex", "cursor", "githubCopilot", "openaiCompat", "qwen", "hermes", "pi", "grok"].map((id) => [id, { driver: "not-a-real-driver" }])),
     claude: { driver: "claudeAgent", displayName: "Claude", config: { cli } },
   } }));
   website = createServer((req, res) => {

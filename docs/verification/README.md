@@ -231,6 +231,10 @@ The [custom ACP model fixture](custom-acp-models.md) checks native model and
 thinking choices, independent bot defaults and thread overrides, and retained
 settings and catalogs after restart with an offline ACP engine.
 
+The [GitHub Copilot engine checks](copilot-engine.md) cover its ACP catalog,
+model and effort selection, sign-in detection, and moving a bot or conversation
+between Claude, Copilot and a custom ACP agent with fake engines.
+
 The [mobile generated-image checks](mobile-generated-images.md) cover native image
 attachments and message-scoped download authorization using isolated fixtures.
 

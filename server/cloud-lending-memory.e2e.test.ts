@@ -187,7 +187,7 @@ await import(${JSON.stringify(fake)});
   writeFileSync(join(dataDir, "config.json"), JSON.stringify({
     memory: { captureQuietMs: 1_000 },
     instances: {
-      ...Object.fromEntries(["codex", "cursor", "openaiCompat", "qwen", "hermes", "pi", "claude"].map((id) => [id, { driver: "not-a-real-driver" }])),
+      ...Object.fromEntries(["codex", "cursor", "githubCopilot", "openaiCompat", "qwen", "hermes", "pi", "claude"].map((id) => [id, { driver: "not-a-real-driver" }])),
       held: { driver: "claudeAgent", displayName: "Held", config: { cli: held } },
       done: { driver: "claudeAgent", displayName: "Done", config: { cli: done } },
       brief: { driver: "claudeAgent", displayName: "Brief", config: { cli: brief } },
