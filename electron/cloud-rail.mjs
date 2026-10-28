@@ -47,7 +47,8 @@ function circle(entry, { activeId, mine, state }) {
  * A server of theirs that signed in with their account comes next: one saved here already is that saved place (online
  * or not), one not connected to this app yet shows how to connect it, and one only reachable on its own network has
  * nothing to open. A Cloud of theirs the Admin is still making (no address yet) is there too, not yet to open. Fewer
- * than RAIL_MIN_PLACES places in all, This computer counted while it is one: no rail at all, the window as it was.
+ * than RAIL_MIN_PLACES places in all, This computer counted while it is one: no rail at all, the window as it was, unless
+ * the person has a Cloud of their own: then its one circle is the rail, for the ＋ that buys another.
  * @param {{ saved: { environments: any[], activeId: string }, home?: string | null, mine?: string | null, state?: any }} input
  */
 export function railPlaces({ saved, home = null, mine = null, state = null }) {
@@ -68,7 +69,7 @@ export function railPlaces({ saved, home = null, mine = null, state = null }) {
       ...(cloud.origin ? { pairs: true } : { ownNetwork: true }), ...serverState(cloud, connected?.latestVersion ?? null) }));
   const places = [...remote, ...servers, ...making];
   const all = home ? places : [{ id: environments.LOCAL_ID, name: "This computer", color: null, kind: "computer", opens: true, ...(saved.activeId === environments.LOCAL_ID ? { active: true } : {}) }, ...places];
-  return all.length < RAIL_MIN_PLACES ? [] : all;
+  return all.length < (clouds.some(ownCloud) ? 1 : RAIL_MIN_PLACES) ? [] : all;
 }
 
 /** What buying another Cloud looks like from a page: no account, address or checkout page, only what the sheet says. */
