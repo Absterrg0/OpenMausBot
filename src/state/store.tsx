@@ -233,7 +233,7 @@ export interface ModelSelection {
   variant?: string;
 }
 
-export interface Task extends Pick<WireTask, "private" | "setupRequest" | "inbox"> {
+export interface Task extends Pick<WireTask, "private" | "setupRequest" | "inbox" | "openAsks"> {
   waitingForTeammates?: boolean;
   threadId: string;
   routineRunId?: string;

@@ -1008,6 +1008,7 @@
   "sidebar.people.title": "成員",
   "sidebar.people.you": "{name}（你）",
   "sidebar.people.yourInbox": "你的收件匣：寄給你的一切都在這裡",
+  "sidebar.people.yourInboxWaiting": "你的收件匣：待你處理，{count}",
   "sidebar.people.mention": "寫給 {name}",
   "orgChart.mode.departments": "部門",
   "orgChart.mode.people": "回報關係",

@@ -6324,6 +6324,7 @@
   "sidebar.people.title": "Osoby",
   "sidebar.people.you": "{name} (ty)",
   "sidebar.people.yourInbox": "Twoja skrzynka: wszystko, co do ciebie trafia",
+  "sidebar.people.yourInboxWaiting": "Twoja skrzynka: czeka na ciebie, {count}",
   "sidebar.people.mention": "Napisz do: {name}",
   "helperIntro.watch": "Pilnuję też Twojego dnia i wysyłam Ci krótkie podsumowanie.",
   "approval.yourComputer.browserSite": "Muszę użyć aplikacji {app}, w której jesteś zalogowany na {site}. Zezwolić raz?",

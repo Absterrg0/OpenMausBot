@@ -1610,6 +1610,7 @@
   "sidebar.people.title": "Люди",
   "sidebar.people.you": "{name} (вы)",
   "sidebar.people.yourInbox": "Ваши входящие: всё, что вам отправили",
+  "sidebar.people.yourInboxWaiting": "Ваши входящие: ждут вас, {count}",
   "sidebar.people.mention": "Написать: {name}",
   "orgChart.mode.departments": "Отделы",
   "orgChart.mode.people": "Кому кто подчиняется",

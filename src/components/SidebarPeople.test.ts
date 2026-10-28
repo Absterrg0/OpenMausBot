@@ -3,7 +3,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { initialState, StoreContext, type AppState, type Bot, type Message } from "@/state/store";
-import { setTeamPeople, type TeamPeople } from "@/state/team-people";
+import { needsYouVersion, setTeamPeople, type TeamPeople } from "@/state/team-people";
 
 import { InboxAnswers, InboxCaption, RelayLabel } from "./InboxLine";
 import { inboxBotOf, SidebarPeople } from "./SidebarPeople";
@@ -37,6 +37,25 @@ describe("the team's people in the sidebar", () => {
     expect(render(createElement(SidebarPeople, { compact: false }))).toBe("");
     setTeamPeople({ ...asMarco, people: [MARCO] });
     expect(render(createElement(SidebarPeople, { compact: false }))).toBe("");
+  });
+
+  it("counts the asks waiting on you on your inbox row, and shows no count when none wait", () => {
+    setTeamPeople(asMarco);
+    const inbox = (openAsks?: number) => bot({ id: "mc", name: "Marco's Chief", chiefOfStaff: true, reportsTo: MARCO.email,
+      tasks: [{ threadId: "inbox", title: "Inbox", createdAt: 1, inbox: true, ...(openAsks ? { openAsks } : {}) }] });
+    const waiting = render(createElement(SidebarPeople, { compact: false }), { bots: [inbox(2)] });
+    expect(waiting).toMatch(/aria-label="Your inbox: waiting on you, 2"[^>]*data-person="marco@acme.test"/);
+    expect(waiting).toMatch(/data-inbox-waiting="2"[^>]*>2<\/span>/);
+    expect(render(createElement(SidebarPeople, { compact: true }), { bots: [inbox(2)] }), "on the rail too").toContain('data-inbox-waiting="2"');
+    const none = render(createElement(SidebarPeople, { compact: false }), { bots: [inbox()] });
+    expect(none).toContain('aria-label="Your inbox: everything sent to you"');
+    expect(none).not.toContain("data-inbox-waiting");
+  });
+
+  it("refreshes Needs you as soon as an ask in the inbox is answered or closed", () => {
+    const tasks = (openAsks?: number) => [bot({ id: "mc", tasks: [{ threadId: "inbox", title: "Inbox", createdAt: 1, inbox: true, ...(openAsks ? { openAsks } : {}) }] })];
+    expect(needsYouVersion(tasks(1), [], [])).not.toBe(needsYouVersion(tasks(), [], []));
+    expect(needsYouVersion(tasks(2), [], [])).toBe(needsYouVersion(tasks(2), [], []));
   });
 
   it("finds the person's inbox with their own Chief, else their own MausBot", () => {

@@ -701,6 +701,7 @@
   "sidebar.people.title": "成员",
   "sidebar.people.you": "{name}（你）",
   "sidebar.people.yourInbox": "你的收件箱：发给你的一切都在这里",
+  "sidebar.people.yourInboxWaiting": "你的收件箱：待你处理，{count}",
   "sidebar.people.mention": "写给 {name}",
   "orgChart.mode.departments": "部门",
   "orgChart.mode.people": "汇报关系",

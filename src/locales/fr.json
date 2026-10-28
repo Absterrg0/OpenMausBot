@@ -443,6 +443,7 @@
   "sidebar.people.title": "Personnes",
   "sidebar.people.you": "{name} (vous)",
   "sidebar.people.yourInbox": "Votre boîte de réception : tout ce qu'on vous envoie",
+  "sidebar.people.yourInboxWaiting": "Votre boîte de réception : en attente de vous, {count}",
   "sidebar.people.mention": "Écrire à {name}",
   "orgChart.mode.departments": "Départements",
   "orgChart.mode.people": "Qui rend compte à qui",

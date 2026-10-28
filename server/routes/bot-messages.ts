@@ -167,7 +167,8 @@ export function createBotMessageRoutes(deps: BotMessageRouteDeps): RouteHandler 
   /** widget -> sendId of a press on its way in: a second tap before acceptance must not send a second answer. */
   const pressesInFlight = new Map<string, string | undefined>();
   const appMessageRate = new AppMessageRate();
-  return async ({ req, res, path, method, auth, json, readBody }) => {
+  const route: RouteHandler = async (ctx) => {
+    const { req, res, path, method, auth, json, readBody } = ctx;
     let m: RegExpMatchArray | null = null;
     const requirePinnedClientThread = pinnedClientThread(auth, req);
     const routines = deps.routines();
@@ -499,7 +500,11 @@ export function createBotMessageRoutes(deps: BotMessageRouteDeps): RouteHandler 
     if (m && method === "POST") {
       const body = await readBody(req);
       const selected = requestedTaskBot(m[1], body.threadId);
-      const bot = botForThread(selected.id, answeredIn(selected.threadId, String(body.requestId)))!;
+      const answering = answeredIn(selected.threadId, String(body.requestId));
+      if (answering !== selected.threadId && !store.taskByThread(selected.id, answering)) {
+        return route({ ...ctx, path: `/api/threads/${selected.threadId}/respond`, readBody: async () => body });
+      }
+      const bot = botForThread(selected.id, answering)!;
       const behavior = requestBehavior(body.behavior);
       const reviewedSha256 = typeof body.reviewedSha256 === "string" ? body.reviewedSha256 : undefined;
       if (!behavior) return json(res, 400, { error: "behavior must be allow, deny, or answer" });
@@ -749,4 +754,5 @@ export function createBotMessageRoutes(deps: BotMessageRouteDeps): RouteHandler 
     }
     return PASS;
   };
+  return route;
 }

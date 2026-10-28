@@ -54,7 +54,7 @@ export interface TeamMessagesDeps {
   sees(person: { email: string; role: TeamRole }): { bot(botId: string): boolean; thread(threadId: string): boolean };
   notify(notification: Notification): void;
   /** What the inbox needs from the server: whose asks are whose, hand-offs, a bot carrying on, the assistant's reads. */
-  inbox: Pick<PersonInboxDeps, "askedPerson" | "handedFrom" | "continueTurn"> & Partial<Pick<PersonInboxDeps, "notes" | "ensureOwnBot">> & {
+  inbox: Pick<PersonInboxDeps, "askedPerson" | "handedFrom" | "continueTurn"> & Partial<Pick<PersonInboxDeps, "notes" | "ensureOwnBot" | "changed">> & {
     representative?: Omit<RepresentativeDeps, "timeZone"> & Partial<Pick<RepresentativeDeps, "timeZone">>;
   };
   now?: () => number;
@@ -267,6 +267,23 @@ export function createTeamMessages(deps: TeamMessagesDeps) {
   const arrivedOn = new Map<string, string>();
   const sessionPerson = (auth: RequestAuth) => (auth.kind === "session" && auth.session.email ? byKey(keyOf(auth.session.email)) : undefined);
 
+  /** A reply this inbox's own person wrote to one of its lines: it goes back where the line came from, and this inbox's
+   * bot takes no turn. Null for any other line, which is sent as usual. */
+  function replyIn(auth: RequestAuth, threadId: string, replyToId: string, text: string, line: { sendId?: string; sender?: ResolvedSender; reaction?: string }): { status: number; message?: Message; error?: string } | null {
+    const me = sessionPerson(auth);
+    if (!team || !me || inbox.personOf(threadId) !== me.key) return null;
+    const item = inbox.replyable(threadId, replyToId);
+    if (!item) return null;
+    const again = line.sendId ? store.messagesFor(threadId).find((message) => message.sendId === line.sendId) : undefined;
+    if (again) return { status: 202, message: again };
+    if (recent(threadId).length >= MESSAGE_PERSON_HOURLY) return { status: 429, error: tooMany().text };
+    const posted = store.appendMessage(threadId, { role: "user", kind: "text", text, replyToId, ...(line.sendId ? { sendId: line.sendId } : {}),
+      ...(line.sender ? { sender: line.sender } : {}), ...(line.reaction ? { reaction: line.reaction } : {}) });
+    const back = answerFromInbox(threadId, null, item, text);
+    if (back.status !== 200) store.appendMessage(threadId, { role: "bot", kind: "activity", tool: { name: `Not passed to ${item.from}`, ok: false, output: back.text } });
+    return { status: 202, message: posted };
+  }
+
   function inboxPrompt(threadId: string, own: string | null): string {
     if (!own || inbox.personOf(threadId) !== own) return "";
     const person = byKey(own);
@@ -305,20 +322,15 @@ export function createTeamMessages(deps: TeamMessagesDeps) {
       const text = people + inboxPrompt(threadId, own);
       return text ? `${text}\n` : "";
     },
-    /** A reply this inbox's own person wrote to one of its lines: it goes back where the line came from, and this
-     * inbox's bot takes no turn. Null for any other line, which is sent as usual. */
-    replyIn(auth: RequestAuth, threadId: string, replyToId: string, text: string, line: { sendId?: string; sender?: ResolvedSender }): { status: number; message?: Message; error?: string } | null {
-      const me = sessionPerson(auth);
-      if (!team || !me || inbox.personOf(threadId) !== me.key) return null;
-      const item = inbox.replyable(threadId, replyToId);
-      if (!item) return null;
-      const again = line.sendId ? store.messagesFor(threadId).find((message) => message.sendId === line.sendId) : undefined;
-      if (again) return { status: 202, message: again };
-      if (recent(threadId).length >= MESSAGE_PERSON_HOURLY) return { status: 429, error: tooMany().text };
-      const posted = store.appendMessage(threadId, { role: "user", kind: "text", text, replyToId, ...(line.sendId ? { sendId: line.sendId } : {}), ...(line.sender ? { sender: line.sender } : {}) });
-      const back = answerFromInbox(threadId, null, item, text);
-      if (back.status !== 200) store.appendMessage(threadId, { role: "bot", kind: "activity", tool: { name: `Not passed to ${item.from}`, ok: false, output: back.text } });
-      return { status: 202, message: posted };
+    replyIn,
+    /** A 👍 or 👎 this inbox's own person gives one of its lines: their answer, back where the line came from, as a
+     * reply would be. Null for any other line, which the reaction reaches as usual. */
+    reactedIn(auth: RequestAuth, threadId: string, messageId: string, emoji: string, line: { sendId: string; sender?: ResolvedSender }): Promise<{ queued: false; repeated?: true }> | null {
+      const repeated = store.messagesFor(threadId).some((message) => message.sendId === line.sendId);
+      const passed = replyIn(auth, threadId, messageId, emoji, { ...line, reaction: emoji });
+      if (!passed) return null;
+      if (passed.status >= 400) return Promise.reject(Object.assign(new Error(passed.error ?? "That answer can't be passed back."), { status: passed.status }));
+      return Promise.resolve(repeated ? { queued: false, repeated: true } : { queued: false });
     },
     /** This person's Needs you lines: the messages in their inbox they have not opened, newest first. */
     needsYou(auth: RequestAuth): NeedsYouItem[] {

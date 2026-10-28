@@ -1611,6 +1611,7 @@
   "sidebar.people.title": "メンバー",
   "sidebar.people.you": "{name}（あなた）",
   "sidebar.people.yourInbox": "あなたの受信箱：あなた宛てのものがすべて届きます",
+  "sidebar.people.yourInboxWaiting": "あなたの受信箱：あなたの対応待ち、{count} 件",
   "sidebar.people.mention": "{name}さんに書く",
   "orgChart.mode.departments": "部署",
   "orgChart.mode.people": "報告関係",

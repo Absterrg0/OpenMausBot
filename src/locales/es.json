@@ -1419,6 +1419,7 @@
   "sidebar.people.title": "Personas",
   "sidebar.people.you": "{name} (tú)",
   "sidebar.people.yourInbox": "Tu bandeja de entrada: todo lo que te envían",
+  "sidebar.people.yourInboxWaiting": "Tu bandeja de entrada: te esperan, {count}",
   "sidebar.people.mention": "Escribir a {name}",
   "orgChart.mode.departments": "Departamentos",
   "orgChart.mode.people": "Quién reporta a quién",

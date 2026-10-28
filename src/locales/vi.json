@@ -1175,6 +1175,7 @@
   "sidebar.people.title": "Mọi người",
   "sidebar.people.you": "{name} (bạn)",
   "sidebar.people.yourInbox": "Hộp thư của bạn: mọi thứ gửi cho bạn",
+  "sidebar.people.yourInboxWaiting": "Hộp thư của bạn: đang chờ bạn, {count}",
   "sidebar.people.mention": "Viết cho {name}",
   "orgChart.mode.departments": "Phòng ban",
   "orgChart.mode.people": "Ai báo cáo cho ai",
