@@ -74,17 +74,11 @@ afterEach(async () => {
 describe("official Antigravity catalog", () => {
   it("uses current Gemini 3.8 variants as the offline fallback", () => {
     expect(STATIC_ANTIGRAVITY_MODELS).toEqual({
-      default: "gemini-3.8-flash",
+      default: "gemini-3.8-flash-high",
       options: [
-        {
-          id: "gemini-3.8-flash",
-          label: "Gemini 3.8 Flash",
-          variants: [
-            { id: "low", label: "Low" },
-            { id: "medium", label: "Medium" },
-            { id: "high", label: "High" },
-          ],
-        },
+        { id: "gemini-3.8-flash-high", label: "Gemini 3.8 Flash (High)" },
+        { id: "gemini-3.8-flash-medium", label: "Gemini 3.8 Flash (Medium)" },
+        { id: "gemini-3.8-flash-low", label: "Gemini 3.8 Flash (Low)" },
       ],
     });
   });
@@ -723,10 +717,9 @@ describe("Antigravity driver over shared ACP", () => {
         GEMINI_API_KEY: "must-not-leak",
         GOOGLE_API_KEY: "also-must-not-leak",
         FAKE_ACP_AUTH_METHOD: "oauth-personal",
-        FAKE_ACP_MODELS: "gemini-3.8-flash",
+        FAKE_ACP_MODELS: "gemini-3.8-flash-high,gemini-3.8-flash-low",
         FAKE_ACP_VARIANTS: JSON.stringify({
-          "gemini-3.8-flash": {
-            id: "thinking_level",
+          "gemini-3.8-flash-low": {
             currentValue: "medium",
             options: [
               { value: "low", name: "Low" },
@@ -750,9 +743,8 @@ describe("Antigravity driver over shared ACP", () => {
       text: "hello",
       approvalMode,
       resumeCursor: "fake-acp-session",
-      // Existing bots can have the pre-variant fallback ID saved. The official
-      // runtime only accepts the base model plus its thinking-level option.
-      model: "gemini-3.8-flash-high",
+      model: "gemini-3.8-flash-low",
+      variant: "high",
       integrations: {
         custom: { docs: { command: "docs-mcp", args: ["serve"], env: { TOKEN: "scoped" } } },
       },
@@ -770,8 +762,9 @@ describe("Antigravity driver over shared ACP", () => {
     expect(dumpState.env.AGY_ACP_DEFAULT_MODEL).toBeUndefined();
     const calls = JSON.parse(readFileSync(`${dump}.config.json`, "utf8"));
     expect(calls).toEqual([
+      { method: "session/set_config_option", params: { sessionId: "fake-acp-session", configId: "model", value: "gemini-3.8-flash-low" } },
       { method: "session/set_config_option", params: { sessionId: "fake-acp-session", configId: "mode", value: approvalMode === "full" ? "yolo" : approvalMode === "edits" ? "auto_edit" : "default" } },
-      { method: "session/set_config_option", params: { sessionId: "fake-acp-session", configId: "thinking_level", value: "high" } },
+      { method: "session/set_config_option", params: { sessionId: "fake-acp-session", configId: "effort", value: "high" } },
     ]);
     const mcp = JSON.parse(readFileSync(`${dump}.mcp.json`, "utf8"));
     expect(mcp).toEqual([{ name: "docs", command: "docs-mcp", args: ["serve"], env: [{ name: "TOKEN", value: "scoped" }] }]);

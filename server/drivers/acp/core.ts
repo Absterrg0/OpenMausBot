@@ -229,8 +229,6 @@ export interface AcpSupport {
     model: string | undefined,
     env: Record<string, string | undefined>,
   ): string | undefined;
-  /** Normalize a legacy selection after the live session catalog is known. */
-  normalizeSessionSelection?(turn: SendTurnInput, offeredModels: readonly string[]): SendTurnInput;
   /** Per-session settings between session/new (or load) and the first prompt. Some CLIs ignore argv
    * and take the model/mode over the wire (droid); a throw fails the turn rather than run another model. */
   configureSession?(ctx: {
@@ -1366,14 +1364,8 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
               if (support.selectModel) {
                 const { configId } = support.selectModel;
                 selectedModel = modelControls.modelOf(session.sessionConfigResult);
-                const offered = offeredModels(session.sessionConfigResult, configId);
-                const normalized = support.normalizeSessionSelection?.(cliTurn, offered) ?? cliTurn;
-                if (normalized !== cliTurn) {
-                  cliTurn = normalized;
-                  current.turn = cliTurn;
-                  variant = cliTurn.variant;
-                }
                 const wanted = cliTurn.model;
+                const offered = offeredModels(session.sessionConfigResult, configId);
                 if (support.sessionModelEnv && !session.launchModel && offered.length) accountModels = new Set(offered);
                 // A pooled process missing a catalog model predates the catalog: fail and respawn, never run another (the catalog holds picker ids; `wanted` may be the resolved wire id, so check both).
                 staleProcess = Boolean(support.fallbackModel && wanted && !launchedThisTurn && offered.length
