@@ -2508,5 +2508,8 @@
   "placeLook.imageMoving": "Utilisez une image fixe.",
   "placeLook.imageFailed": "L'image n'a pas été enregistrée. Réessayez.",
   "placeLook.imageSaving": "Enregistrement…",
-  "cloudWelcome.files.foldersLent": "Les bots de {name} utilisent d’eux-mêmes les fichiers de cet ordinateur tant qu’il est allumé et qu’OpenMausBot est ouvert. Rien à configurer."
+  "cloudWelcome.files.foldersLent": "Les bots de {name} utilisent d’eux-mêmes les fichiers de cet ordinateur tant qu’il est allumé et qu’OpenMausBot est ouvert. Rien à configurer.",
+  "secretCard.ref": "OpenMausBot le conserve pour un seul usage par ses propres outils. Votre bot ne le voit jamais, et il n’est jamais ajouté au chat.",
+  "secretCard.file": "Enregistré dans un fichier privé que les commandes de votre bot peuvent lire pendant 24 heures, puis supprimé. Il n’est jamais ajouté au chat.",
+  "secretCard.resumed": "Le bot a repris"
 }

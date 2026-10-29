@@ -232,7 +232,7 @@
     },
     {
       "name": "request_credential",
-      "description": "Ask for a supported API key or a 1Password service account token (onePasswordToken) through OpenMausBot's secure credential flow: the app shows a secure entry card, as does a freshly QR-paired phone; older pairings show how to pair again. Never claim a secure field opened unless this request succeeds, and never ask the user to paste a secret into chat. OpenMausBot saves it and never returns it to you. After calling this tool, end the turn; OpenMausBot resumes the task after the user saves or declines.",
+      "description": "Ask the person for a secret on a secure card in the app or a QR-paired phone, never in chat. credential_id: a key OpenMausBot keeps (onePasswordToken: a 1Password service account token). Other secrets: label, reason, delivery. You never see the value; end the turn, and you resume when they save or decline.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -245,18 +245,38 @@
               "ttsKey",
               "fishAudioKey",
               "openaiImageApiKey",
-              "onePasswordToken"
-            ],
-            "description": "The credential the current task requires."
+              "onePasswordToken",
+              "composioApiKey",
+              "openaiApiKey",
+              "anthropicApiKey",
+              "openrouterApiKey",
+              "mistralApiKey",
+              "cerebrasApiKey",
+              "groqApiKey",
+              "metaApiKey",
+              "deepseekApiKey"
+            ]
+          },
+          "label": {
+            "type": "string",
+            "description": "Other secret's card title, e.g. Stripe secret key."
           },
           "reason": {
             "type": "string",
-            "description": "Optional short, non-sensitive explanation of why the task needs it."
+            "description": "Short, non-sensitive: why, and where to find it."
+          },
+          "placeholder": {
+            "type": "string"
+          },
+          "delivery": {
+            "type": "string",
+            "enum": [
+              "ref",
+              "file"
+            ],
+            "description": "ref: a one-use secretRef for add_mcp_server. file: a private file your commands read."
           }
-        },
-        "required": [
-          "credential_id"
-        ]
+        }
       }
     },
     {

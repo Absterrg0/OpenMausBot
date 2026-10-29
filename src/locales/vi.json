@@ -4979,5 +4979,8 @@
   "placeLook.imageMoving": "Hãy dùng hình ảnh tĩnh.",
   "placeLook.imageFailed": "Chưa lưu được hình ảnh. Hãy thử lại.",
   "placeLook.imageSaving": "Đang lưu…",
-  "cloudWelcome.files.foldersLent": "Bot trên {name} tự dùng các tệp trên máy tính này khi máy đang thức và OpenMausBot đang mở. Không cần thiết lập gì."
+  "cloudWelcome.files.foldersLent": "Bot trên {name} tự dùng các tệp trên máy tính này khi máy đang thức và OpenMausBot đang mở. Không cần thiết lập gì.",
+  "secretCard.ref": "OpenMausBot giữ nó cho một lần dùng bởi chính công cụ của mình. Bot của bạn không bao giờ thấy nó, và nó không bao giờ được thêm vào cuộc trò chuyện.",
+  "secretCard.file": "Được lưu vào một tệp riêng tư mà các lệnh của bot có thể đọc trong 24 giờ, sau đó bị xóa. Nó không bao giờ được thêm vào cuộc trò chuyện.",
+  "secretCard.resumed": "Bot đã tiếp tục"
 }

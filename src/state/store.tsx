@@ -119,20 +119,7 @@ export interface ConnectorCardData {
   stopped?: boolean;
 }
 
-export interface SecretRequestCardData {
-  target: import("../../shared/credential-request").CredentialTargetId;
-  label: string;
-  description: string;
-  placeholder: string;
-  helpUrl: string;
-  requestKey: string;
-  provided?: boolean;
-  dismissed?: boolean;
-  superseded?: boolean;
-  resumed?: boolean;
-  error?: string;
-  stopped?: boolean;
-}
+export type SecretRequestCardData = Omit<import("../../shared/wire").SecretRequestCardData, "phoneOperationId" | "vm">;
 
 export type ComputerControlState = { held: boolean; helpReason: string | null; help?: import("../../shared/wire").ComputerHelpRef | null };
 

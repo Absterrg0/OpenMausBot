@@ -6767,5 +6767,8 @@
   "keys.search.aria": "Search API keys",
   "keys.search.none": "No keys match “{query}”.",
   "keys.openPage": "Open API keys",
-  "engineSetup.apiKey.inline": "Paste it here. It saves and checks itself, and the models show up here."
+  "engineSetup.apiKey.inline": "Paste it here. It saves and checks itself, and the models show up here.",
+  "secretCard.ref": "OpenMausBot keeps it for one use by its own tools. Your bot never sees it, and it is never added to chat.",
+  "secretCard.file": "Saved to a private file your bot's commands can read for 24 hours, then deleted. It is never added to chat.",
+  "secretCard.resumed": "Bot resumed"
 }

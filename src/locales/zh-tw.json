@@ -4363,5 +4363,8 @@
   "placeLook.imageMoving": "請使用靜態圖片。",
   "placeLook.imageFailed": "圖片沒有儲存。請再試一次。",
   "placeLook.imageSaving": "正在儲存…",
-  "cloudWelcome.files.foldersLent": "只要這台電腦處於喚醒狀態且 OpenMausBot 已開啟，{name} 上的機器人就會自動使用這台電腦上的檔案，無需任何設定。"
+  "cloudWelcome.files.foldersLent": "只要這台電腦處於喚醒狀態且 OpenMausBot 已開啟，{name} 上的機器人就會自動使用這台電腦上的檔案，無需任何設定。",
+  "secretCard.ref": "OpenMausBot 會保管它，只供自己的工具使用一次。你的機器人永遠看不到它，它也不會出現在聊天中。",
+  "secretCard.file": "儲存在一個私密檔案中，你的機器人的指令可在 24 小時內讀取，之後刪除。它不會出現在聊天中。",
+  "secretCard.resumed": "機器人已繼續"
 }

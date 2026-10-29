@@ -2526,5 +2526,8 @@
   "placeLook.imageMoving": "Verwende ein unbewegtes Bild.",
   "placeLook.imageFailed": "Das Bild wurde nicht gespeichert. Versuche es noch einmal.",
   "placeLook.imageSaving": "Wird gespeichert…",
-  "cloudWelcome.files.foldersLent": "Bots auf {name} nutzen die Dateien auf diesem Computer von selbst, solange er wach und OpenMausBot geöffnet ist. Du musst nichts einrichten."
+  "cloudWelcome.files.foldersLent": "Bots auf {name} nutzen die Dateien auf diesem Computer von selbst, solange er wach und OpenMausBot geöffnet ist. Du musst nichts einrichten.",
+  "secretCard.ref": "OpenMausBot bewahrt es für eine einzige Nutzung durch seine eigenen Werkzeuge auf. Dein Bot sieht es nie, und es landet nie im Chat.",
+  "secretCard.file": "Wird in einer privaten Datei gespeichert, die die Befehle deines Bots 24 Stunden lang lesen können, und danach gelöscht. Es landet nie im Chat.",
+  "secretCard.resumed": "Bot fortgesetzt"
 }

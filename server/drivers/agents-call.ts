@@ -522,6 +522,7 @@ export async function callTool(called: string, input: Json, context: ToolCallCon
   }
   if (name === "request_credential") {
     const credentialId = args.credential_id;
+    if (credentialId === undefined || credentialId === "") return requestCustomSecret(args, context);
     if (!isCredentialTargetId(credentialId)) {
       return { text: "request_credential needs a supported credential_id.", isError: true };
     }
@@ -872,4 +873,21 @@ export async function callTool(called: string, input: Json, context: ToolCallCon
     };
   }
   return { text: `Unknown tool: ${name}`, isError: true };
+}
+
+/** A secret OpenMausBot does not keep: the person agrees to one use, and the bot gets a secretRef or a file path back. */
+async function requestCustomSecret(args: Json, context: ToolCallContext): Promise<ToolCallResult> {
+  const r = await context.client.apiResponse("/api/internal/request-credential", {
+    method: "POST",
+    body: JSON.stringify({ fromBotId: context.botId, fromThreadId: context.threadId, label: args.label, reason: args.reason, placeholder: args.placeholder, delivery: args.delivery }),
+  });
+  const label = typeof r.body.label === "string" ? r.body.label : "the secret";
+  if (!r.ok) return { text: String(r.body.error ?? `request_credential failed (HTTP ${r.status}).`), isError: true };
+  if (typeof r.body.text === "string") return { text: `${r.body.text} Continue the task.` };
+  const asked = r.body.savedAs === "ref"
+    ? ` ${label} was saved earlier for OpenMausBot's tools only, not as a file for your commands (not a file request), so this card asks for it again.`
+    : r.body.savedAs === "file" ? ` ${label} was saved earlier as a file for your commands, not as a secretRef, so this card asks for it again.` : "";
+  return {
+    text: `A secure card for ${label} is ready in OpenMausBot, on the computer and on a freshly QR-paired phone.${asked} End this turn now and say in one line that you are waiting for it; OpenMausBot resumes you when the person saves or declines, and tells you how to use it. Never ask for it in chat.`,
+  };
 }

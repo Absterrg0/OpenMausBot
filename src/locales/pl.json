@@ -6328,5 +6328,8 @@
   "computer.problem.localNotReady": "Boty nie mogą jeszcze korzystać z tego komputera. Uruchom ponownie OpenMausBot i spróbuj jeszcze raz.",
   "computer.problem.localNeedsApp": "Tylko aplikacja OpenMausBot na tym komputerze może pozwolić botowi z niego korzystać. Otwórz tu aplikację, aby z niego korzystać.",
   "computer.problem.localWindows": "Boty nie mogą teraz korzystać z tego komputera PC. Uruchom ponownie OpenMausBot, a jeśli to nie pomoże, otwórz Ustawienia → Diagnostyka.",
-  "computer.problem.localMac": "Boty nie mogą jeszcze korzystać z tego Maca. Sprawdź, czy OpenMausBot ma zgodę w sekcjach Nagrywanie ekranu i Dostępność w Ustawieniach systemowych → Prywatność i ochrona, a potem uruchom go ponownie."
+  "computer.problem.localMac": "Boty nie mogą jeszcze korzystać z tego Maca. Sprawdź, czy OpenMausBot ma zgodę w sekcjach Nagrywanie ekranu i Dostępność w Ustawieniach systemowych → Prywatność i ochrona, a potem uruchom go ponownie.",
+  "secretCard.ref": "OpenMausBot przechowuje go do jednego użycia przez własne narzędzia. Twój bot nigdy go nie widzi i nigdy nie trafia on do czatu.",
+  "secretCard.file": "Zapisany w prywatnym pliku, który polecenia twojego bota mogą czytać przez 24 godziny, a potem usunięty. Nigdy nie trafia do czatu.",
+  "secretCard.resumed": "Bot wznowił pracę"
 }

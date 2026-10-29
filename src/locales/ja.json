@@ -6434,5 +6434,8 @@
   "computer.problem.localNotReady": "ボットはまだこのコンピューターを使えません。OpenMausBot を再起動して、もう一度お試しください。",
   "computer.problem.localNeedsApp": "ボットにこのコンピューターを使わせることができるのは、ここにある OpenMausBot アプリだけです。使うには、ここでアプリを開いてください。",
   "computer.problem.localWindows": "ボットは今この PC を使えません。OpenMausBot を再起動し、それでも直らない場合は「設定 → 診断」を開いてください。",
-  "computer.problem.localMac": "ボットはまだこの Mac を使えません。「システム設定 → プライバシーとセキュリティ」の「画面収録」と「アクセシビリティ」で OpenMausBot が許可されているか確認してから、再起動してください。"
+  "computer.problem.localMac": "ボットはまだこの Mac を使えません。「システム設定 → プライバシーとセキュリティ」の「画面収録」と「アクセシビリティ」で OpenMausBot が許可されているか確認してから、再起動してください。",
+  "secretCard.ref": "OpenMausBotが自分のツールで1回だけ使うために保管します。ボットが値を見ることはなく、チャットにも追加されません。",
+  "secretCard.file": "ボットのコマンドが24時間だけ読める非公開ファイルに保存され、その後削除されます。チャットには追加されません。",
+  "secretCard.resumed": "ボットが再開しました"
 }

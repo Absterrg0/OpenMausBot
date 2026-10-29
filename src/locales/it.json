@@ -6206,5 +6206,8 @@
   "computer.problem.localNotReady": "I bot non possono ancora usare questo computer. Riavvia OpenMausBot e riprova.",
   "computer.problem.localNeedsApp": "Solo l'app OpenMausBot su questo computer può farlo usare a un bot. Apri l'app qui per usarlo.",
   "computer.problem.localWindows": "Al momento i bot non possono usare questo PC. Riavvia OpenMausBot e, se non basta, apri Impostazioni → Diagnostica.",
-  "computer.problem.localMac": "I bot non possono ancora usare questo Mac. Controlla che OpenMausBot sia consentito in Registrazione schermo e Accessibilità, in Impostazioni di Sistema → Privacy e sicurezza, poi riavvialo."
+  "computer.problem.localMac": "I bot non possono ancora usare questo Mac. Controlla che OpenMausBot sia consentito in Registrazione schermo e Accessibilità, in Impostazioni di Sistema → Privacy e sicurezza, poi riavvialo.",
+  "secretCard.ref": "OpenMausBot lo conserva per un solo uso da parte dei suoi strumenti. Il tuo bot non lo vede mai e non viene mai aggiunto alla chat.",
+  "secretCard.file": "Salvato in un file privato che i comandi del tuo bot possono leggere per 24 ore, poi eliminato. Non viene mai aggiunto alla chat.",
+  "secretCard.resumed": "Il bot ha ripreso"
 }

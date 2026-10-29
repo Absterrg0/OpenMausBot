@@ -506,7 +506,7 @@ describe("agents-proxy MCP surface", () => {
       expect(description).toContain("does not elevate another bot's execution permissions");
     }
     const credential = list.result.tools.find((entry: { name: string }) => entry.name === "request_credential");
-    expect(credential.description).toContain("after the user saves or declines");
+    expect(credential.description).toContain("you resume when they save or decline");
     expect(credential.description).not.toContain("apply the change immediately");
     for (const name of ["manage_room"]) {
       const description = list.result.tools.find((entry: { name: string }) => entry.name === name).description;
@@ -686,9 +686,11 @@ describe("agents-proxy MCP surface", () => {
       expect(tool(name).description, name).not.toMatch(/\b(delegate_bot|ask_bot)\b/);
     }
     const credential = tool("request_credential");
-    expect(credential.description).toContain("the app shows a secure entry card, as does a freshly QR-paired phone");
-    expect(credential.description).toContain("1Password service account token (onePasswordToken)");
-    expect(credential.description).toContain("Never claim a secure field opened unless this request succeeds");
+    expect(credential.description).toContain("on a secure card in the app or a QR-paired phone, never in chat");
+    expect(credential.description).toContain("onePasswordToken: a 1Password service account token");
+    expect(credential.description).toContain("You never see the value");
+    expect(Object.keys(credential.inputSchema.properties)).toEqual(["credential_id", "label", "reason", "placeholder", "delivery"]);
+    expect(credential.inputSchema.required).toBeUndefined();
   });
 
   it("select_computer inspects actual choices with a GET when no target is given", async () => {
@@ -1146,6 +1148,20 @@ describe("agents-proxy MCP surface", () => {
     expect(lastFillBody).toEqual({ fromBotId: "bot-asker", fromThreadId: "thread-asker-routine", submit: false });
     await callTool("fill_login", { submit: true });
     expect(lastFillBody).toEqual({ fromBotId: "bot-asker", fromThreadId: "thread-asker-routine" });
+  });
+
+  it("asks for any other secret by its name, reason and delivery, never its value", async () => {
+    const res = await callTool("request_credential", { label: "Stripe secret key", reason: "To create test charges.", placeholder: "sk_test_…", delivery: "file" });
+    expect(res.result.isError).toBeFalsy();
+    expect(res.result.content[0].text).toMatch(/^A secure card for OpenCode API key is ready in OpenMausBot, on the computer and on a freshly QR-paired phone\. End this turn now/u);
+    expect(lastCredentialBody).toEqual({
+      fromBotId: "bot-asker",
+      fromThreadId: "thread-asker-routine",
+      label: "Stripe secret key",
+      reason: "To create test charges.",
+      placeholder: "sk_test_…",
+      delivery: "file",
+    });
   });
 
   it("rejects credential ids outside the fixed allowlist locally", async () => {
