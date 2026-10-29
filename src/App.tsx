@@ -64,6 +64,7 @@ import { ChatNotice } from "@/components/ChatErrorBanner";
 import { loadingLine } from "@/lib/app-loading";
 import { useAiSwitchKeeper } from "@/lib/ai-switch";
 import { useChiefStepOpen } from "@/lib/default-bot";
+import { WebPanelPage } from "@/components/WebPanelPage";
 
 function Shell({ viewer }: { viewer: WelcomeViewer | null }) {
   const { state, dispatch } = useStore();
@@ -134,7 +135,7 @@ function Shell({ viewer }: { viewer: WelcomeViewer | null }) {
   const [localVmWorkspaceBotId, setLocalVmWorkspaceBotId] = useState<string | null>(null);
   const menuButtonRef = useRef<HTMLButtonElement>(null);
   const previousViewRef = useRef(state.activeView);
-  const calendarOriginRef = useRef<"chat" | "team-map">("chat");
+  const calendarOriginRef = useRef<"chat" | "team-map" | "web-panel">("chat");
   const loading = loadingLine({ connected: state.connected, hydrated: state.hydrated === true, developer: import.meta.env.DEV });
   const group = state.groups.find((g) => g.id === state.selectedId);
   const chiefStep = useChiefStepOpen();
@@ -216,7 +217,7 @@ function Shell({ viewer }: { viewer: WelcomeViewer | null }) {
 
   useEffect(() => {
     if (state.activeView === "routines" && previousViewRef.current !== "routines") {
-      calendarOriginRef.current = previousViewRef.current === "team-map" ? "team-map" : "chat";
+      calendarOriginRef.current = previousViewRef.current === "team-map" || previousViewRef.current === "web-panel" ? previousViewRef.current : "chat";
     }
     previousViewRef.current = state.activeView;
   }, [state.activeView]);
@@ -246,8 +247,12 @@ function Shell({ viewer }: { viewer: WelcomeViewer | null }) {
       dispatch({ type: "showTeamMap" });
       return;
     }
+    if (calendarOriginRef.current === "web-panel" && state.webPanelId) {
+      dispatch({ type: "showWebPanel", id: state.webPanelId });
+      return;
+    }
     dispatch({ type: "select", id: state.selectedId });
-  }, [dispatch, state.selectedId]);
+  }, [dispatch, state.selectedId, state.webPanelId]);
   const openCalendarRoom = useCallback((id: string) => {
     dispatch({ type: "select", id });
   }, [dispatch]);
@@ -333,6 +338,8 @@ function Shell({ viewer }: { viewer: WelcomeViewer | null }) {
         <TeamMapPage />
       ) : state.activeView === "files" ? (
         <FilesView />
+      ) : state.activeView === "web-panel" ? (
+        <WebPanelPage />
       ) : state.activeView === "routines" ? (
         <TriggersPage onBack={closeCalendar} onOpenRoom={openCalendarRoom} />
       ) : !remoteClient && localVmWorkspaceBotId ? (
