@@ -487,7 +487,7 @@ const support: AcpSupport = {
     }
   },
 
-  pickAuthMethod: (methods) => (methods.some((m) => m.id === "cached_token") ? "cached_token" : null),
+  pickAuthMethod: (methods) => ["cached_token", "grok.com"].find((id) => methods.some((m) => m.id === id)) ?? null,
   authFailure: "fail",
   isAuthenticated: (env) => grokSignedIn(env),
 
