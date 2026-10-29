@@ -204,7 +204,7 @@ export function PlacesRail({ chrome = false }: { chrome?: boolean }) {
   const drag = draggable ? ({ WebkitAppRegion: "drag" } as CSSProperties) : undefined;
   const noDrag = draggable ? ({ WebkitAppRegion: "no-drag" } as CSSProperties) : undefined;
   const shown = shownPlaces(state.places);
-  const canPair = state.add.link || state.add.address, canAdd = state.add.cloud || canPair;
+  const canPair = state.add.link || state.add.address, canAdd = state.add.cloud || canPair || state.add.organization === true;
   // The menu opens next to the circle or row it was asked from (measured now, while that row is there), within the rail.
   const openMenu = ({ place, from }: MenuAt) => {
     const nav = navRef.current;

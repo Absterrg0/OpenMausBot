@@ -25,8 +25,12 @@ let host: HTMLDivElement, root: Root | null = null;
 let rail: RailState;
 const workspaces = { state: vi.fn(async () => ({ local: false, name: "My Cloud" })), menu: vi.fn(async () => {}), places: vi.fn(async () => rail),
   open: vi.fn(async () => {}), add: vi.fn(async () => {}), onChanged: vi.fn(() => () => {}) };
-const cloudAdd = { state: vi.fn(async () => ({ signedIn: true, hasCloud: true, supported: false, canAdd: false, offer: null, count: 1, home: { name: "My Cloud", color: null } })),
-  start: vi.fn(), reopen: vi.fn(), copyLink: vi.fn(), open: vi.fn(), interest: vi.fn(async () => {}), sheet: vi.fn(async () => {}) };
+type Organizations = { canAdd: boolean; blocked?: "no_team_plan" | "limit" | "rate" | "off"; count: number; max: number };
+let organizations: Organizations | undefined;
+const cloudAdd = { state: vi.fn(async () => ({ signedIn: true, hasCloud: true, supported: false, canAdd: false, offer: null, count: 1, home: { name: "My Cloud", color: null },
+  ...(organizations ? { organizations } : {}) })),
+  start: vi.fn(), reopen: vi.fn(), copyLink: vi.fn(), open: vi.fn(), interest: vi.fn(async () => {}), sheet: vi.fn(async () => {}),
+  organization: vi.fn(async (): Promise<{ outcome: "added" | "taken" | "unsupported" | "failed" } | { outcome: "blocked"; blocked: "no_team_plan" | "limit" | "rate" | "off" }> => ({ outcome: "added" })) };
 async function mount(element: ReturnType<typeof createElement>) {
   root = createRoot(host);
   await act(async () => { await refreshPlaces(); root!.render(element); });
@@ -36,6 +40,7 @@ const click = async (element: Element | null | undefined) => { expect(element).t
 beforeEach(() => {
   setLocale("en");
   rail = { places: PLACES, add: { cloud: true, link: true, address: false } };
+  organizations = undefined;
   Object.assign(window, { ogb: { workspaces, cloudAdd } });
   vi.clearAllMocks();
   host = document.createElement("div"); document.body.append(host);
@@ -114,6 +119,81 @@ it("＋ offers buying a Cloud or adding the person's own server; the server's th
   await click([...steps.querySelectorAll("button")].find((button) => button.textContent === "Paste pairing link"));
   expect(workspaces.add.mock.calls).toEqual([["link"]]);
   expect(document.querySelector("[data-place-add-sheet]")).toBeNull();
+});
+
+const type = async (input: Element | null, value: string) => {
+  expect(input).toBeTruthy();
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, value);
+    input!.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+};
+const createButton = () => [...document.querySelectorAll<HTMLButtonElement>('[data-place-add="organization"] button[type="submit"]')][0];
+
+it("＋ for the account a Team plan's organizations are billed to: New organization first; a name and a color add it at once, no checkout, and the sheet closes", async () => {
+  rail = { places: PLACES, add: { cloud: true, link: true, address: false, organization: true } };
+  organizations = { canAdd: true, count: 3, max: 10 };
+  await mount(createElement(PlacesRail));
+  await click(host.querySelector("[data-rail-add]"));
+  const sheet = document.querySelector("[data-place-add-sheet]")!;
+  expect([...sheet.querySelectorAll("[data-place-add-choice]")].map((choice) => choice.getAttribute("data-place-add-choice"))).toEqual(["organization", "cloud", "server"]);
+  await click(sheet.querySelector('[data-place-add-choice="organization"]'));
+  await act(async () => { await Promise.resolve(); });
+  const form = document.querySelector('[data-place-add="organization"]')!;
+  expect(form.querySelector("h2")?.textContent).toBe("New organization");
+  expect(form.textContent).toContain("nothing to pay now");
+  expect(form.querySelector("[data-org-count]")?.textContent).toBe("Organization 4 of 10");
+  expect(createButton()?.disabled, "a name first").toBe(true);
+  await type(form.querySelector("input"), "  Client   B ");
+  expect(form.querySelector("[data-org-preview]")?.textContent).toBe("Client B");
+  await click(form.querySelector("[data-swatch='violet']"));
+  await click(createButton());
+  await act(async () => { await Promise.resolve(); });
+  expect(cloudAdd.organization.mock.calls).toEqual([["Client B", "violet"]]);
+  expect(cloudAdd.start, "never a checkout").not.toHaveBeenCalled();
+  expect(document.querySelector("[data-place-add-sheet]"), "added: the rail shows it being set up").toBeNull();
+});
+
+it("New organization says plainly why it can't be added: the plan has as many as it can, the name is taken, or it didn't work; nothing else is offered then", async () => {
+  rail = { places: PLACES, add: { cloud: false, link: false, address: false, organization: true } };
+  organizations = { canAdd: false, blocked: "limit", count: 10, max: 10 };
+  await mount(createElement(PlacesRail));
+  await click(host.querySelector("[data-rail-add]"));
+  await act(async () => { await Promise.resolve(); });
+  const form = document.querySelector('[data-place-add="organization"]')!;
+  expect(form, "the only choice opens at once").toBeTruthy();
+  expect(form.querySelector("[data-org-problem]")?.textContent).toBe("Your Team plan has as many organizations as it can have. Email us to add more.");
+  await type(form.querySelector("input"), "Client K");
+  expect(createButton()?.disabled).toBe(true);
+  // Closed for a reason this app doesn't know: the neutral word, not the limit.
+  await act(async () => root?.unmount()); root = null; document.body.innerHTML = ""; host = document.createElement("div"); document.body.append(host);
+  organizations = { canAdd: false, count: 2, max: 10 };
+  await mount(createElement(PlacesRail));
+  await click(host.querySelector("[data-rail-add]"));
+  await act(async () => { await Promise.resolve(); });
+  expect(document.querySelector('[data-place-add="organization"] [data-org-problem]')?.textContent).toBe("New organizations aren't available right now.");
+  await act(async () => root?.unmount()); root = null; document.body.innerHTML = ""; host = document.createElement("div"); document.body.append(host);
+  organizations = { canAdd: true, count: 2, max: 10 };
+  await mount(createElement(PlacesRail));
+  await click(host.querySelector("[data-rail-add]"));
+  await act(async () => { await Promise.resolve(); });
+  const again = document.querySelector('[data-place-add="organization"]')!;
+  await type(again.querySelector("input"), "Client A");
+  for (const [answer, said] of [
+    [{ outcome: "taken" }, "Another of your organizations has that name. Choose another."],
+    [{ outcome: "blocked", blocked: "rate" }, "Too many organizations were added just now. Try again in a few minutes."],
+    [{ outcome: "unsupported" }, "Nothing was added. Try again in a moment."],
+  ] as const) {
+    cloudAdd.organization.mockResolvedValueOnce(answer);
+    await click(createButton());
+    await act(async () => { await Promise.resolve(); });
+    expect(again.querySelector("[data-org-problem]")?.textContent).toBe(said);
+  }
+  cloudAdd.organization.mockRejectedValueOnce(new Error("main went away"));
+  await click(createButton());
+  await act(async () => { await Promise.resolve(); });
+  expect(again.querySelector("[data-org-problem]")?.textContent).toBe("Nothing was added. Try again in a moment.");
+  expect(document.querySelector("[data-place-add-sheet]"), "the sheet stays open to try again").toBeTruthy();
 });
 
 it("Buy a Cloud, for someone whose Admin sells one Cloud per account: the calm word, never an error", async () => {

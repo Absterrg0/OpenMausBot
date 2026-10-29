@@ -88,6 +88,8 @@ export function addCloudView(state, offer) {
     canAdd: Boolean(clouds) && connected.addCloud?.canAdd !== false,
     ...(connected.addCloud?.canAdd === false ? { blocked: connected.addCloud.blocked } : {}),
     offer: offer ?? null, count: Math.max(owned.length, has ? 1 : 0),
+    ...(connected.organizations ? { organizations: { canAdd: connected.organizations.canAdd, count: connected.organizations.count, max: connected.organizations.max,
+      ...(connected.organizations.blocked ? { blocked: connected.organizations.blocked } : {}) } } : {}),
     ...(home ? { home: { name: home.name, color: swatchColor(home.color) } } : {}),
     ...(adding ? { adding: { name: adding.name, color: adding.color, tier: adding.tier, startedAt: adding.startedAt, status,
       ...(listed && cloudSetupProgress(listed) !== null ? { progress: cloudSetupProgress(listed) } : {}), ...(adding.link ? { link: true } : {}), ...(adding.done ? { done: true } : {}) } } : {}),
@@ -135,8 +137,11 @@ export function installCloudRail({ ipcMain, guard, trusted, lists = trusted, bes
     return handler(event, ...args);
   }));
   const view = async () => addCloudView(account()?.state() ?? null, account() ? await account().offer().catch(() => null) : null);
-  ipcMain.handle("workspaces:places", guard((event) => (lists(event) ? { places: places(), add: add.choices() }
-    : { places: [], add: { cloud: false, link: false, address: false }, ...(beside() ? { beside: true } : {}) })));
+  // ＋'s choices: main's, and a new organization while this account runs a Team plan's organizations (unless the Admin has
+  // turned adding them off).
+  const choices = () => { const organizations = account()?.state().organizations; return { ...add.choices(), organization: Boolean(organizations) && organizations.blocked !== "off" }; };
+  ipcMain.handle("workspaces:places", guard((event) => (lists(event) ? { places: places(), add: choices() }
+    : { places: [], add: { cloud: false, link: false, address: false, organization: false }, ...(beside() ? { beside: true } : {}) })));
   listed("workspaces:open", (_event, id) => {
     const place = places().find(entry => entry.id === plain(id) && entry.opens);
     if (!place) throw new Error("That place isn't here any more.");
@@ -154,6 +159,14 @@ export function installCloudRail({ ipcMain, guard, trusted, lists = trusted, bes
     const cleanName = cleanCloudListName(plain(name)), swatch = CLOUD_SWATCHES.includes(color) ? color : null;
     if (!plans.some(plan => plan.tier === plain(tier)) || !cleanName) throw new Error("Choose a plan and a name to continue.");
     const result = await client.addCloud({ tier: plain(tier), interval: "month", name: cleanName, color: swatch });
+    return result.outcome === "blocked" ? { outcome: "blocked", blocked: result.blocked } : { outcome: result.outcome };
+  });
+  handle("cloud-add:organization", async (_event, name, color) => {
+    const client = account();
+    if (!client) throw new Error("Sign in to MausBot Cloud first.");
+    const cleanName = cleanCloudListName(plain(name)), swatch = CLOUD_SWATCHES.includes(color) ? color : null;
+    if (!cleanName) throw new Error("Give the organization a name to continue.");
+    const result = await client.addOrganization({ name: cleanName, color: swatch });
     return result.outcome === "blocked" ? { outcome: "blocked", blocked: result.blocked } : { outcome: result.outcome };
   });
   handle("cloud-add:reopen", () => account()?.reopenAdd() ?? false);
@@ -178,7 +191,7 @@ export function installCloudRail({ ipcMain, guard, trusted, lists = trusted, bes
     sheetOpen: () => sheetOpen,
     /** The places or the sign-in changed: the page that shows the rail reads it again (a signal only, never the list). */
     changed() {
-      const key = JSON.stringify([places(), add.choices(), account()?.state().adding ?? null, account()?.state().addCloud ?? null]);
+      const key = JSON.stringify([places(), choices(), account()?.state().adding ?? null, account()?.state().addCloud ?? null]);
       if (key === sent) return;
       sent = key;
       for (const target of targets()) if (target && !target.isDestroyed()) target.send("workspaces:changed");

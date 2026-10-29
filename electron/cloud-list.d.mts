@@ -34,6 +34,13 @@ export interface CloudListEntry {
  */
 export interface CloudRenewal { trial: boolean; cancelled: boolean; renewsAt: number | null; endsAt: number | null; keptDays: number | null; team?: string }
 export declare function parseCloudRenewal(clouds: unknown): (CloudRenewal & { cloudId: string }) | null;
+/** Why an organization can't be added to the Team plan now. */
+export type OrganizationBlock = "no_team_plan" | "limit" | "rate" | "off";
+/** The session's `organizations`: the Team plan this account pays for, whether ＋ may add an organization to it now (else
+ * why), and how many it has of how many. */
+export interface CloudOrganizations { planCloudId: string; canAdd: boolean; blocked?: OrganizationBlock; count: number; max: number }
+export declare const ORGANIZATION_BLOCKS: readonly OrganizationBlock[];
+export declare function parseOrganizations(input: unknown): CloudOrganizations | null;
 export declare const MAX_CLOUDS: number;
 export declare const CLOUD_LIST_STATUSES: readonly CloudListStatus[];
 export declare const CLOUD_SWATCH_COLORS: Readonly<Record<CloudSwatch, import("./cloud-buy.mjs").CloudColor | null>>;

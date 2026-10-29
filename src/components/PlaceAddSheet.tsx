@@ -1,7 +1,8 @@
-// ＋ at the end of the rail: one sheet, two choices. Buy a Cloud (the buying sheet: another Cloud right here, or the
-// first one on this computer's own sheet) or add a server of the person's own through today's pairing link.
+// ＋ at the end of the rail: one sheet of choices. A new organization on the Team plan the person pays for (when they run
+// one), buy a Cloud (the buying sheet: another Cloud right here, or the first one on this computer's own sheet), or add a
+// server of the person's own through today's pairing link.
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { Check, Cloud, Copy, Server, X } from "lucide-react";
+import { Building2, Check, Cloud, Copy, Server, X } from "lucide-react";
 import type { RailAddChoices } from "../../electron/cloud-rail.mjs";
 import { track } from "@/lib/analytics";
 import { cn } from "@/lib/cn";
@@ -9,6 +10,7 @@ import { useCopyFeedback } from "@/lib/copy-text";
 import { t } from "@/lib/i18n";
 import type { LocaleKey } from "@/locales";
 import { AddCloudFlow } from "./cloud-buy/AddCloudFlow";
+import { NewOrganization } from "./cloud-buy/NewOrganization";
 import { BackLink, Heading } from "./cloud-buy/parts";
 
 /** The commands a server of the person's own runs to be reached from this app. */
@@ -109,8 +111,9 @@ export function RailSheet({ wide = false, focusKey, onClose, children }: { wide?
 }
 
 export function PlaceAddSheet({ choices, connect = null, onClose }: { choices: RailAddChoices; connect?: { name: string } | null; onClose: () => void }) {
-  const server = choices.link || choices.address;
-  const [view, setView] = useState<"choose" | "cloud" | "server">(connect ? "server" : choices.cloud && server ? "choose" : choices.cloud ? "cloud" : "server");
+  const server = choices.link || choices.address, organization = choices.organization === true;
+  const several = [organization, choices.cloud, server].filter(Boolean).length > 1;
+  const [view, setView] = useState<"choose" | "cloud" | "server" | "organization">(connect ? "server" : several ? "choose" : organization ? "organization" : choices.cloud ? "cloud" : "server");
   const [wide, setWide] = useState(false);
   const workspaces = window.ogb?.workspaces;
   const choose = (choice: "cloud" | "link" | "address") => {
@@ -122,11 +125,13 @@ export function PlaceAddSheet({ choices, connect = null, onClose }: { choices: R
     {view === "choose" && <div data-place-add="choose" className="flex flex-col gap-5 px-[30px] pb-[26px] pt-7">
       <Heading title={t("rail.add")} />
       <div className="flex flex-col gap-3 sm:flex-row">
-        <Choice kind="cloud" icon={<Cloud size={19} />} title={t("rail.buy")} sub={t("rail.buySub")} onClick={() => setView("cloud")} />
-        <Choice kind="server" icon={<Server size={19} />} title={t("rail.own")} sub={t("rail.ownSub")} onClick={() => setView("server")} />
+        {organization && <Choice kind="organization" icon={<Building2 size={19} />} title={t("rail.org")} sub={t("rail.orgSub")} onClick={() => setView("organization")} />}
+        {choices.cloud && <Choice kind="cloud" icon={<Cloud size={19} />} title={t("rail.buy")} sub={t("rail.buySub")} onClick={() => setView("cloud")} />}
+        {server && <Choice kind="server" icon={<Server size={19} />} title={t("rail.own")} sub={t("rail.ownSub")} onClick={() => setView("server")} />}
       </div>
     </div>}
-    {view === "server" && <OwnServerSteps choices={choices} onBack={choices.cloud && !connect ? () => setView("choose") : null} onChoose={choose} connect={connect} />}
-    {view === "cloud" && <AddCloudFlow onClose={onClose} onFirstCloud={() => choose("cloud")} onWide={setWide} onBack={server ? () => setView("choose") : null} />}
+    {view === "server" && <OwnServerSteps choices={choices} onBack={several && !connect ? () => setView("choose") : null} onChoose={choose} connect={connect} />}
+    {view === "cloud" && <AddCloudFlow onClose={onClose} onFirstCloud={() => choose("cloud")} onWide={setWide} onBack={several ? () => setView("choose") : null} />}
+    {view === "organization" && <NewOrganization onClose={onClose} onBack={several ? () => setView("choose") : null} />}
   </RailSheet>;
 }

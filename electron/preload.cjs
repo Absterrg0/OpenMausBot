@@ -172,6 +172,8 @@ const bridge = {
       ? ipcRenderer.invoke("cloud-add:open") : Promise.reject(new Error("Choose Open to open it.")),
     interest: () => ipcRenderer.invoke("cloud-add:interest"),
     sheet: (open) => ipcRenderer.invoke("cloud-add:sheet", open === true),
+    organization: (name, color) => isLocalPage || navigator.userActivation?.isActive === true
+      ? ipcRenderer.invoke("cloud-add:organization", String(name), color === null ? null : String(color)) : Promise.reject(new Error("Choose Create organization.")),
   },
   getCapabilities: () => ipcRenderer.invoke("desktop:capabilities"),
   onCapabilitiesChanged: (cb) => {

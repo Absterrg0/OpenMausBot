@@ -99,6 +99,20 @@ export function parseCloudList(input) {
   return clouds;
 }
 
+/** Why the Admin can't add an organization to a Team plan now: none of the account's runs, the plan has as many as it can,
+ * too many were added in the last hour, or adding them was turned off. */
+export const ORGANIZATION_BLOCKS = Object.freeze(["no_team_plan", "limit", "rate", "off"]);
+/**
+ * The session's `organizations` (contract v1, additive): the Team plan this account pays for whose organizations it runs,
+ * whether one may be added now (else why), and how many it has of how many. Null without one, or from an older Admin.
+ */
+export function parseOrganizations(input) {
+  if (!record(input) || typeof input.planCloudId !== "string" || !CLOUD_ID.test(input.planCloudId) || typeof input.canAdd !== "boolean") return null;
+  if (!Number.isSafeInteger(input.count) || input.count < 0 || !Number.isSafeInteger(input.max) || input.max < 1) return null;
+  const blocked = ORGANIZATION_BLOCKS.includes(input.addBlocked) ? input.addBlocked : null;
+  return { planCloudId: input.planCloudId, canAdd: input.canAdd, ...(blocked && !input.canAdd ? { blocked } : {}), count: input.count, max: input.max };
+}
+
 /** OMB_CLOUD_STOPPED_HOLD_DAYS allows parts of a day, and at most 60. */
 const keptDays = value => value === null ? null : typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 60 ? value : undefined;
 /**

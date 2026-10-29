@@ -14,11 +14,12 @@ const PRIMARY = entry({ id: "c-home", name: "My Cloud", color: null, origin: HOM
 const paid = { plan: "pro", tier: "pro", status: "active", expiresAt: NOW + 30 * 86400_000, version: 1 };
 const grant = (origin) => ({ cloudContractVersion: 1, origin, code: "ABCD-EFGH-JK23", expiresAt: NOW + 60_000 });
 
-/** A fake Admin: the session says `f.session`, pairing answers `f.pairing(body)`, adding a Cloud answers `f.add(body)`. */
+/** A fake Admin: the session says `f.session`, pairing answers `f.pairing(body)`, adding a Cloud answers `f.add(body)`, adding
+ * an organization `f.organization(body)`. */
 async function admin(t) {
   const f = { requests: [], browsers: [], timer: null, delay: null,
     session: { cloud: { state: "ready", origin: HOME, pairingAvailable: true } },
-    pairing: () => [200, grant(HOME)], add: () => [404, { error: "not_found" }], patch: () => [404, { error: "not_found" }] };
+    pairing: () => [200, grant(HOME)], add: () => [404, { error: "not_found" }], patch: () => [404, { error: "not_found" }], organization: () => [404, { error: "not_found" }] };
   const server = createServer(async (req, res) => {
     let body = ""; for await (const chunk of req) body += chunk;
     const parsed = body ? JSON.parse(body) : undefined;
@@ -29,6 +30,7 @@ async function admin(t) {
       account: { id: "acct-1", email: "person@example.test" }, entitlement: paid, ...f.session }]);
     if (req.url === "/api/cloud/desktop/pairing" && req.method === "POST") return send(f.pairing(parsed));
     if (req.url === "/api/cloud/desktop/clouds" && req.method === "POST") return send(f.add(parsed));
+    if (req.url === "/api/cloud/desktop/organizations" && req.method === "POST") return send(f.organization(parsed));
     if (req.url.startsWith("/api/cloud/desktop/clouds/") && req.method === "PATCH") return send(f.patch(decodeURIComponent(req.url.slice("/api/cloud/desktop/clouds/".length)), parsed));
     if (req.url === "/api/public/config") return send([200, { plans: [{ tier: "pro", price: { currency: "USD", interval: "month", amount: 4900 } }], trial: { days: 7 } }]);
     send([404, { error: "not_found" }]);
@@ -203,4 +205,47 @@ test("a Cloud's colour is the Admin's: PATCH with the swatch, then the session r
   assert.equal(f.requests.filter(row => row.method === "PATCH").length, patches, "neither was asked");
   await assert.rejects(f.client.setCloudColor("c-a", "chartreuse"), /Invalid Cloud color/);
   await assert.rejects(f.client.setCloudColor("../c-a", "blue"), /Invalid Cloud color/);
+});
+
+const PLAN = "5d4c3b2a-1f0e-4d9c-8b7a-6f5e4d3c2b1a", ORGANIZATION = "3c4d5e6f-7a8b-4c9d-8e1f-2a3b4c5d6e7f";
+test("a new organization on the Team plan this account pays for: its name and swatch go to the Admin, nothing opens, and the session is read again", async t => {
+  const f = await admin(t);
+  f.session = { ...f.session, clouds: [PRIMARY, entry({ id: PLAN, name: "Agency", tier: "team", origin: TEAM, teamId: "team-1", primary: false })],
+    organizations: { planCloudId: PLAN, canAdd: true, count: 1, max: 10, seats: { used: 3, limit: 20 } } };
+  await f.client.start();
+  assert.deepEqual(f.client.state().organizations, { planCloudId: PLAN, canAdd: true, count: 1, max: 10 });
+  await assert.rejects(f.client.addOrganization({ name: "" }), /Invalid organization/);
+  await assert.rejects(f.client.addOrganization({ name: "Client B", color: "url(x)" }), /Invalid organization/);
+  assert.equal(f.requests.some(row => row.route.endsWith("/organizations")), false, "nothing malformed is sent");
+  f.organization = body => [201, { cloudContractVersion: 1, cloud: entry({ id: ORGANIZATION, name: body.name, color: body.color, tier: "team", status: "setting_up", origin: null, teamId: "team-2" }) }];
+  const reads = f.requests.filter(row => row.route.endsWith("/session")).length;
+  assert.deepEqual(await f.client.addOrganization({ name: "  Client   B ", color: "rose" }), { outcome: "added", cloudId: ORGANIZATION });
+  assert.deepEqual(f.requests.find(row => row.route.endsWith("/organizations")), { route: "/api/cloud/desktop/organizations", method: "POST", body: { name: "Client B", color: "rose" } });
+  assert.equal(f.requests.filter(row => row.route.endsWith("/session")).length, reads + 1, "the rail then shows it being set up");
+  assert.deepEqual(f.browsers, [], "no checkout: the plan already pays for it");
+  await f.client.addOrganization({ name: "Client C" });
+  assert.deepEqual(f.requests.filter(row => row.route.endsWith("/organizations")).at(-1).body, { name: "Client C" }, "no swatch: the Admin picks one");
+});
+
+test("the Admin's word on a new organization: the name is taken, the plan has as many as it can or isn't running, too many at once, or an Admin without them", async t => {
+  const f = await admin(t);
+  await f.client.start();
+  assert.deepEqual(await f.client.addOrganization({ name: "Client B" }), { outcome: "unsupported" }, "no organizations in the session: nothing is asked");
+  assert.equal(f.requests.some(row => row.route.endsWith("/organizations")), false);
+  f.session = { ...f.session, clouds: [PRIMARY], organizations: { planCloudId: PLAN, canAdd: true, count: 2, max: 10, seats: { used: 3, limit: 5 } } };
+  await f.client.refresh();
+  for (const [answer, outcome] of [
+    [[409, { error: "name_taken" }], { outcome: "taken" }],
+    [[409, { error: "organization_unavailable", addBlocked: "limit" }], { outcome: "blocked", blocked: "limit" }],
+    [[409, { error: "organization_unavailable", addBlocked: "no_team_plan" }], { outcome: "blocked", blocked: "no_team_plan" }],
+    [[409, { error: "organization_unavailable", addBlocked: "mystery" }], { outcome: "failed" }],
+    [[429, { error: "rate_limited", interval: 60 }], { outcome: "blocked", blocked: "rate" }],
+    [[404, { error: "not_found" }], { outcome: "unsupported" }],
+    [[400, { error: "invalid_request" }], { outcome: "failed" }],
+    [[500, { error: "oops" }], { outcome: "failed" }],
+  ]) {
+    f.organization = () => answer;
+    assert.deepEqual(await f.client.addOrganization({ name: "Client B" }), outcome, JSON.stringify(answer));
+  }
+  assert.deepEqual(f.browsers, []);
 });

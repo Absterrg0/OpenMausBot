@@ -103,8 +103,10 @@ test("a server of the person's own that signed in with their account: one saved 
 
 function rail(over = {}) {
   const handlers = new Map(), opened = [], ran = [], sent = [];
-  const w = { trusted: true, lists: true, beside: true, state: session(), offer: { recommended: "pro", plans: [{ tier: "pro", amount: 4900 }] }, added: [] };
+  const w = { trusted: true, lists: true, beside: true, state: session(), offer: { recommended: "pro", plans: [{ tier: "pro", amount: 4900 }] }, added: [], organized: [],
+    organization: { outcome: "added", cloudId: "c-new" } };
   const account = { state: () => w.state, offer: async () => w.offer, addCloud: async (input) => { w.added.push(input); return { outcome: "opened", state: w.state }; },
+    addOrganization: async (input) => { w.organized.push(input); return w.organization; },
     reopenAdd: async () => true, addLink: () => "https://test.checkout.dodopayments.com/x", addDone: () => { w.done = true; }, interest: async () => {} };
   const installed = installCloudRail({ ipcMain: { handle: (channel, handler) => handlers.set(channel, handler) }, guard: handler => handler, trusted: () => w.trusted,
     lists: () => w.lists, beside: () => w.beside,
@@ -119,10 +121,10 @@ test("the rail's channels: the list only for the rail's own page, a circle only 
   const r = rail();
   assert.deepEqual((await r.call("workspaces:places")).places.map(place => place.id), ["home", "a", "acme", "vps"]);
   r.w.lists = false;
-  assert.deepEqual(await r.call("workspaces:places"), { places: [], add: { cloud: false, link: false, address: false }, beside: true },
+  assert.deepEqual(await r.call("workspaces:places"), { places: [], add: { cloud: false, link: false, address: false, organization: false }, beside: true },
     "a place's page, this computer's and a Cloud's included, learns only that the rail stands beside it");
   r.w.beside = false;
-  assert.deepEqual(await r.call("workspaces:places"), { places: [], add: { cloud: false, link: false, address: false } });
+  assert.deepEqual(await r.call("workspaces:places"), { places: [], add: { cloud: false, link: false, address: false, organization: false } });
   assert.throws(() => r.call("workspaces:open", "a"), /only available/);
   assert.throws(() => r.call("workspaces:add", "link"), /only available/);
   assert.equal(typeof await r.call("cloud-add:state"), "object", "＋'s buying sheet still runs on a page main vouches for (this computer's own)");
@@ -156,6 +158,28 @@ test("buying another Cloud from a page: the plan must be on sale, the name is ch
     home: { name: "My Cloud", color: null }, adding: { name: "Client A", color: "green", tier: "pro", startedAt: 1, status: "ready", link: true } });
   r.w.trusted = false;
   for (const channel of ["cloud-add:state", "cloud-add:start", "cloud-add:open", "cloud-add:copy-link", "cloud-add:interest"]) assert.throws(() => r.call(channel), /only available/, channel);
+});
+
+test("New organization on ＋: only while this account runs a Team plan's organizations and the Admin hasn't turned adding them off; the name is checked, the page gets only the outcome", async () => {
+  const r = rail(), plan = { planCloudId: "5d4c3b2a-1f0e-4d9c-8b7a-6f5e4d3c2b1a", canAdd: true, count: 2, max: 10 };
+  assert.equal((await r.call("workspaces:places")).add.organization, false, "no Team plan's organizations: no such choice");
+  r.w.state = session({ organizations: plan });
+  assert.deepEqual((await r.call("workspaces:places")).add, { cloud: true, link: true, address: false, organization: true });
+  r.w.state = session({ organizations: { ...plan, canAdd: false, blocked: "limit" } });
+  assert.equal((await r.call("workspaces:places")).add.organization, true, "at the plan's limit it is still there, to say so");
+  r.w.state = session({ organizations: { ...plan, canAdd: false, blocked: "off" } });
+  assert.equal((await r.call("workspaces:places")).add.organization, false, "turned off on the Admin: not offered");
+  r.installed.changed(); r.w.state = session({ organizations: plan }); r.installed.changed();
+  assert.deepEqual(r.sent.filter(item => item === "rail:workspaces:changed"), ["rail:workspaces:changed", "rail:workspaces:changed"], "the rail reads ＋'s choices again");
+  await assert.rejects(r.call("cloud-add:organization", " ", "rose"), /Give the organization a name/);
+  assert.deepEqual(await r.call("cloud-add:organization", "  Client   B ", "url(x)"), { outcome: "added" }, "only the outcome, never an id");
+  assert.deepEqual(r.w.organized, [{ name: "Client B", color: null }], "the name folded; an unknown swatch is none");
+  r.w.organization = { outcome: "blocked", blocked: "limit" };
+  assert.deepEqual(await r.call("cloud-add:organization", "Client C", "rose"), { outcome: "blocked", blocked: "limit" });
+  assert.deepEqual(addCloudView(session({ organizations: { ...plan, canAdd: false, blocked: "limit" } }), null).organizations, { canAdd: false, blocked: "limit", count: 2, max: 10 });
+  assert.equal(addCloudView(session(), null).organizations, undefined);
+  r.w.trusted = false;
+  assert.throws(() => r.call("cloud-add:organization", "Client D", null), /only available/);
 });
 
 test("what the add sheet says: an older Admin is one Cloud for now, the Admin's cap says why, and a new Cloud's setup is followed", () => {
@@ -213,7 +237,7 @@ function preload(origin, { activation = false } = {}) {
 test("a Cloud's page gets the rail and the add sheet's narrow bridges; a circle, ＋ and checkout open only from the person's click", async () => {
   const page = preload(HOME);
   assert.deepEqual(Object.keys(page.bridge.workspaces), ["state", "menu", "line", "places", "open", "add", "look", "color", "recolor", "onChanged"]);
-  assert.deepEqual(Object.keys(page.bridge.cloudAdd), ["state", "start", "reopen", "copyLink", "open", "interest", "sheet"]);
+  assert.deepEqual(Object.keys(page.bridge.cloudAdd), ["state", "start", "reopen", "copyLink", "open", "interest", "sheet", "organization"]);
   await page.bridge.workspaces.places();
   await page.bridge.cloudAdd.state();
   await assert.rejects(page.bridge.workspaces.open("a"), /Choose a place/);
@@ -222,6 +246,7 @@ test("a Cloud's page gets the rail and the add sheet's narrow bridges; a circle,
   await assert.rejects(page.bridge.cloudAdd.reopen(), /Reopen checkout/);
   await assert.rejects(page.bridge.cloudAdd.copyLink(), /Copy link/);
   await assert.rejects(page.bridge.cloudAdd.open(), /Open/);
+  await assert.rejects(page.bridge.cloudAdd.organization("Client B", "rose"), /Create organization/);
   await assert.rejects(page.bridge.workspaces.color("rose"), /Choose a color/, "a page changes its place's colour only from the person's click");
   await assert.rejects(page.bridge.workspaces.recolor("vps", "rose"), /Choose a color/);
   await page.bridge.workspaces.look();
@@ -232,7 +257,9 @@ test("a Cloud's page gets the rail and the add sheet's narrow bridges; a circle,
   await clicked.bridge.cloudAdd.start("pro", "Client B", null);
   await clicked.bridge.workspaces.color("rose");
   await clicked.bridge.workspaces.color(null);
-  assert.deepEqual(clicked.invoked, [["workspaces:open", "a"], ["workspaces:add", "link"], ["cloud-add:start", "pro", "Client B", null], ["workspaces:color", "rose"], ["workspaces:color", null]]);
+  await clicked.bridge.cloudAdd.organization({ toString: () => "Client C" }, null);
+  assert.deepEqual(clicked.invoked, [["workspaces:open", "a"], ["workspaces:add", "link"], ["cloud-add:start", "pro", "Client B", null], ["workspaces:color", "rose"], ["workspaces:color", null],
+    ["cloud-add:organization", "Client C", null]]);
   assert.equal(page.bridge.cloudAccount, undefined, "never the account bridge");
   const local = preload(LOCAL);
   await local.bridge.workspaces.open("a");

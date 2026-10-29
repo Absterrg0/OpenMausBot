@@ -31,8 +31,9 @@ export interface RailPlace {
    * sign-in may change it, if so. None for this computer, and for a Cloud still being made. */
   paint?: { swatch: import("./cloud-list.mjs").CloudSwatch | null; locked?: "member" | "signed-out" };
 }
-/** ＋'s choices here: buying a Cloud, pasting a server's pairing link, typing its address on this computer's Settings. */
-export interface RailAddChoices { cloud: boolean; link: boolean; address: boolean }
+/** ＋'s choices here: buying a Cloud, pasting a server's pairing link, typing its address on this computer's Settings, and
+ * a new organization on the Team plan this account pays for (absent from an older app's main). */
+export interface RailAddChoices { cloud: boolean; link: boolean; address: boolean; organization?: boolean }
 /** `beside`: a place's page, which never reads the list, learns that the window's rail stands beside it. */
 export interface RailState { places: RailPlace[]; add: RailAddChoices; beside?: true }
 /** Buying another Cloud as a page sees it: what the sheet says, never the account, an address or the checkout page. */
@@ -49,6 +50,9 @@ export type AddCloudView =
     offer: import("./cloud-home.mjs").CloudOffer | null;
     /** How many Clouds of their own they have: the next one is suggested as "Cloud {count + 1}". */
     count: number;
+    /** For the account a Team plan with organizations is billed to: whether a new one may be added now (else why), how many
+     * it has of how many. */
+    organizations?: { canAdd: boolean; blocked?: import("./cloud-list.mjs").OrganizationBlock; count: number; max: number };
     home?: { name: string; color: import("./cloud-buy.mjs").CloudColor | null };
     adding?: {
       name: string; color: import("./cloud-list.mjs").CloudSwatch | null; tier: string | null; startedAt: number;
