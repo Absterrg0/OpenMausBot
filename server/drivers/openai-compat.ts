@@ -88,10 +88,12 @@ export function advertisedContextWindow(row: Record<string, unknown>): number | 
 
 const DEFAULT_EFFORTS = ["low", "medium", "high"];
 
-/** The `reasoning_effort` values a /models row advertises: its own `reasoning_effort_levels`, or OpenAI's three when
- * `supported_parameters` only names the field. */
+/** The `reasoning_effort` values a /models row advertises: `reasoning_effort_levels`, OpenRouter's
+ * `reasoning.supported_efforts`, or OpenAI's three when `supported_parameters` only names the field. */
 export function advertisedEfforts(row: Record<string, unknown>): ModelVariantOption[] | undefined {
-  const listed = Array.isArray(row.reasoning_effort_levels) ? row.reasoning_effort_levels.filter(isModelVariant) : [];
+  const reasoning = row.reasoning && typeof row.reasoning === "object" ? row.reasoning as Record<string, unknown> : {};
+  const published = Array.isArray(row.reasoning_effort_levels) ? row.reasoning_effort_levels : reasoning.supported_efforts;
+  const listed = Array.isArray(published) ? published.filter(isModelVariant) : [];
   const levels = listed.length ? [...new Set(listed)]
     : Array.isArray(row.supported_parameters) && row.supported_parameters.includes("reasoning_effort") ? DEFAULT_EFFORTS : [];
   return levels.length ? levels.map((id) => ({ id, label: id[0]!.toUpperCase() + id.slice(1) })) : undefined;
@@ -299,18 +301,24 @@ export const OpenAICompatDriver: ProviderDriver<OpenAICompatConfig> = {
       models: () => catalog,
       refreshModels: fetchModels,
       modelVariants: true,
-      requestBody: (model, messages, stream, variant) => ({
-        model,
-        messages,
-        stream,
-        stream_options: stream ? { include_usage: true } : undefined,
-        ...(variant && catalog.options.find((option) => option.id === model)?.variants?.some((offered) => offered.id === variant)
-          ? { reasoning_effort: variant }
-          : {}),
-        ...(config.provider && isOpenRouterUrl(config.url)
-          ? { provider: { order: [config.provider], allow_fallbacks: false } }
-          : {}),
-      }),
+      requestBody: (model, messages, stream, variant) => {
+        const effort = variant && catalog.options.find((option) => option.id === model)?.variants?.some((offered) => offered.id === variant)
+          ? variant
+          : undefined;
+        // OpenRouter routes to a provider that ignores an unsupported parameter unless require_parameters is set.
+        const routing = isOpenRouterUrl(config.url) ? {
+          ...(config.provider ? { order: [config.provider], allow_fallbacks: false } : {}),
+          ...(effort ? { require_parameters: true } : {}),
+        } : {};
+        return {
+          model,
+          messages,
+          stream,
+          stream_options: stream ? { include_usage: true } : undefined,
+          ...(effort ? { reasoning_effort: effort } : {}),
+          ...(Object.keys(routing).length ? { provider: routing } : {}),
+        };
+      },
       httpErrorLabel: "upstream",
       missingKeyError: missingKey,
       unavailableReason: missingKey,

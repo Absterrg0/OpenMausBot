@@ -9,21 +9,23 @@ const models = {
   data: [
     { id: "deepseek-v4.1-flash", reasoning_effort_levels: ["low", "medium", "high"] },
     { id: "router-model", supported_parameters: ["tools", "reasoning_effort"] },
+    { id: "openrouter-model", supported_parameters: ["reasoning_effort"], reasoning: { supported_efforts: ["max", "high", "low", "none"] } },
     { id: "plain-model" },
   ],
 };
 const reply = 'data: {"choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n';
 
-async function fixture() {
+async function fixture(url = "https://api.example.test/v1") {
   const bodies: Record<string, unknown>[] = [];
-  vi.stubGlobal("fetch", vi.fn(async (url: string | URL, init?: RequestInit) => {
-    if (String(url).endsWith("/models")) return Response.json(models);
+  vi.stubGlobal("fetch", vi.fn(async (input: string | URL, init?: RequestInit) => {
+    if (String(input).endsWith("/models")) return Response.json(models);
+    if (!String(input).endsWith("/chat/completions")) return new Response("", { status: 404 });
     bodies.push(JSON.parse(String(init?.body)));
     return new Response(reply, { headers: { "content-type": "text/event-stream" } });
   }));
   const instance = await OpenAICompatDriver.create({
     instanceId: "openai-compat-1", displayName: "Flatt", enabled: true,
-    config: OpenAICompatDriver.decodeConfig({ url: "https://api.example.test/v1", apiKeyEnv: "K" }),
+    config: OpenAICompatDriver.decodeConfig({ url, apiKeyEnv: "K" }),
     environment: { K: "fixture-key" },
   });
   await instance.refreshModels?.();
@@ -45,6 +47,7 @@ it("offers the reasoning efforts a model advertises on /models", async () => {
   expect(variants).toEqual({
     "deepseek-v4.1-flash": ["low", "medium", "high"],
     "router-model": ["low", "medium", "high"],
+    "openrouter-model": ["max", "high", "low", "none"],
     "plain-model": undefined,
   });
   await instance.dispose();
@@ -56,5 +59,12 @@ it("sends the chosen effort as reasoning_effort, and nothing the model does not 
   expect(await turn("deepseek-v4.1-flash")).not.toHaveProperty("reasoning_effort");
   expect(await turn("deepseek-v4.1-flash", "turbo")).not.toHaveProperty("reasoning_effort");
   expect(await turn("plain-model", "high")).not.toHaveProperty("reasoning_effort");
+  await instance.dispose();
+});
+
+it("asks OpenRouter for a provider that applies the chosen effort, and leaves routing alone otherwise", async () => {
+  const { instance, turn } = await fixture("https://openrouter.ai/api/v1");
+  expect(await turn("openrouter-model", "max")).toMatchObject({ reasoning_effort: "max", provider: { require_parameters: true } });
+  expect(await turn("openrouter-model")).not.toHaveProperty("provider");
   await instance.dispose();
 });
