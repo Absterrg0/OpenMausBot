@@ -116,7 +116,7 @@ interface RuntimeOptions<Config> {
   apiKey: string;
   apiUrl: string;
   models: () => ModelCatalog;
-  requestBody(model: string, messages: OpenAIChatMessage[], stream: boolean): Record<string, unknown>;
+  requestBody(model: string, messages: OpenAIChatMessage[], stream: boolean, variant?: string): Record<string, unknown>;
   httpErrorLabel: string;
   missingKeyError: string;
   unavailableReason: string;
@@ -127,6 +127,8 @@ interface RuntimeOptions<Config> {
   nativeLog: NativeLog;
   refreshModels?: () => Promise<void>;
   generateModel?: () => string;
+  /** The catalog lists `variants` per model and requestBody applies the turn's pick. */
+  modelVariants?: boolean;
   reasoning?: boolean;
   /** Cerebras rejects `reasoning_content` and takes `reasoning`. */
   reasoningReplayField?: "reasoning_content" | "reasoning";
@@ -341,6 +343,7 @@ export function createOpenAIChatRuntime<Config>(options: RuntimeOptions<Config>)
     onDelta?: (delta: string, kind: "assistant_text" | "reasoning_text") => void,
     tools: ChatToolDefinition[] = [],
     onUsage?: TextGenerationOptions["onUsage"],
+    variant?: string,
   ): Promise<Completion> => {
     const timeoutController = new AbortController();
     let idleTimer: NodeJS.Timeout | null = null;
@@ -360,7 +363,7 @@ export function createOpenAIChatRuntime<Config>(options: RuntimeOptions<Config>)
         : timeoutController.signal;
 
       const payload = JSON.stringify({
-        ...options.requestBody(model, messages, stream),
+        ...options.requestBody(model, messages, stream, variant),
         ...(tools.length ? { tools } : {}),
       });
       const send = options.timeoutMs > FETCH_LIMIT_MS ? fetchPastLimit : fetch;
@@ -689,7 +692,7 @@ export function createOpenAIChatRuntime<Config>(options: RuntimeOptions<Config>)
                 streamed = true;
                 if (streamKind === "assistant_text") answerStreamed = true;
                 delta(text, streamKind);
-              }, tools.definitions);
+              }, tools.definitions, undefined, turn.variant);
               delta("", "assistant_text", true);
               delta("", "reasoning_text", true);
               break;
@@ -956,6 +959,7 @@ export function createOpenAIChatRuntime<Config>(options: RuntimeOptions<Config>)
         highlevelMcp: options.tools !== false,
         deviceMcp: options.tools !== false,
         queueing: true,
+        ...(options.modelVariants ? { modelVariants: true } : {}),
         ...(options.tools !== false ? { askTool: { kind: "native" as const, name: ASK_USER_TOOL } } : {}),
         guestTurns: "confined" },
       sendTurn,

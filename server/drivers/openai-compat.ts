@@ -1,6 +1,6 @@
 // Transcript-replay driver for OpenRouter, Groq, Together, llama.cpp, and
 // other endpoints that speak the OpenAI chat-completions contract.
-import type { ModelCatalog, ProviderDriver } from "../contracts.ts";
+import { isModelVariant, type ModelCatalog, type ModelVariantOption, type ProviderDriver } from "../contracts.ts";
 import { isLoopback } from "../provider-key-check.ts";
 import { lmStudioV1Catalog } from "./local-inject.ts";
 import { createOpenAIChatRuntime } from "./openai-chat.ts";
@@ -84,6 +84,17 @@ export function advertisedContextWindow(row: Record<string, unknown>): number | 
   if (provider && typeof provider === "object") limits.push(positiveTokens((provider as Record<string, unknown>).context_length));
   const valid = limits.filter((value): value is number => value !== undefined);
   return valid.length ? Math.min(...valid) : undefined;
+}
+
+const DEFAULT_EFFORTS = ["low", "medium", "high"];
+
+/** The `reasoning_effort` values a /models row advertises: its own `reasoning_effort_levels`, or OpenAI's three when
+ * `supported_parameters` only names the field. */
+export function advertisedEfforts(row: Record<string, unknown>): ModelVariantOption[] | undefined {
+  const listed = Array.isArray(row.reasoning_effort_levels) ? row.reasoning_effort_levels.filter(isModelVariant) : [];
+  const levels = listed.length ? [...new Set(listed)]
+    : Array.isArray(row.supported_parameters) && row.supported_parameters.includes("reasoning_effort") ? DEFAULT_EFFORTS : [];
+  return levels.length ? levels.map((id) => ({ id, label: id[0]!.toUpperCase() + id.slice(1) })) : undefined;
 }
 
 function isOpenRouterUrl(url: string): boolean {
@@ -237,10 +248,12 @@ export const OpenAICompatDriver: ProviderDriver<OpenAICompatConfig> = {
           seen.add(id);
           const label = typeof row.name === "string" && row.name.trim() ? row.name : id;
           const contextWindow = advertisedContextWindow(row);
+          const variants = advertisedEfforts(row);
           options.push({
             id,
             label: openRouter ? freeLabel(label, row) : label,
             ...(contextWindow ? { contextWindow } : {}),
+            ...(variants ? { variants } : {}),
             ...(config.catalog === "openai" ? {} : { custom: true }),
           });
         }
@@ -285,11 +298,15 @@ export const OpenAICompatDriver: ProviderDriver<OpenAICompatConfig> = {
       nudgeAnnouncedAction: true,
       models: () => catalog,
       refreshModels: fetchModels,
-      requestBody: (model, messages, stream) => ({
+      modelVariants: true,
+      requestBody: (model, messages, stream, variant) => ({
         model,
         messages,
         stream,
         stream_options: stream ? { include_usage: true } : undefined,
+        ...(variant && catalog.options.find((option) => option.id === model)?.variants?.some((offered) => offered.id === variant)
+          ? { reasoning_effort: variant }
+          : {}),
         ...(config.provider && isOpenRouterUrl(config.url)
           ? { provider: { order: [config.provider], allow_fallbacks: false } }
           : {}),
