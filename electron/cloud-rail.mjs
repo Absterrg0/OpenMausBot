@@ -68,7 +68,9 @@ export function railPlaces({ saved, home = null, mine = null, state = null }) {
     .map(cloud => ({ id: `${SIGNED_IN}${cloud.id}`, name: cloud.name, color: swatchColor(cloud.color), kind: "server", opens: false, paint: railPaint(listedLook(cloud), swatchColor(cloud.color)),
       ...(cloud.origin ? { pairs: true } : { ownNetwork: true }), ...serverState(cloud, connected?.latestVersion ?? null) }));
   const places = [...remote, ...servers, ...making];
-  const all = home ? places : [{ id: environments.LOCAL_ID, name: "This computer", color: null, kind: "computer", opens: true, ...(saved.activeId === environments.LOCAL_ID ? { active: true } : {}) }, ...places];
+  const computer = environments.savedPlace(saved, environments.LOCAL_ID), color = computer.color ?? null;
+  const all = home ? places : [{ id: computer.id, name: computer.name, color, kind: "computer", opens: true, paint: railPaint(placeLook(computer), color),
+    ...(saved.activeId === environments.LOCAL_ID ? { active: true } : {}) }, ...places];
   return all.length < (clouds.some(ownCloud) ? 1 : RAIL_MIN_PLACES) ? [] : all;
 }
 

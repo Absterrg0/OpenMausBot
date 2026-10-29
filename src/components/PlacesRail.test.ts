@@ -297,11 +297,11 @@ it("beside the window's own rail (main says so; the page never reads the list), 
   expect(placeMenuItems(place, { owner: null, onCloudSettings: () => {}, besideRail: true }).map((item) => item.key), "one switcher: the rail").toEqual(["place"]);
 });
 
-it("a right-click on a circle opens its place's menu: its colour, saved by main whatever its server runs; a member sees who may change it; this computer has none", async () => {
+it("a right-click on a circle opens its place's menu: its colour, saved by main whatever its server runs, This computer's too; a member sees who may change it", async () => {
   const expand = vi.fn(async () => {});
   const recolor = vi.fn(async () => ({ outcome: "saved" as const, look: null }));
   rail = { places: [
-    place("local", "This computer", { kind: "computer", active: true }),
+    place("local", "This computer", { kind: "computer", active: true, color: "teal", paint: { swatch: "green" } }),
     place("vps", "Office", { kind: "server", paint: { swatch: null } }),
     place("acme", "Acme", { kind: "team", color: "purple", paint: { swatch: "violet", locked: "member" } }),
   ], add: { cloud: false, link: true, address: false } };
@@ -312,8 +312,14 @@ it("a right-click on a circle opens its place's menu: its colour, saved by main 
     await act(async () => { host.querySelector(`[data-rail-place="${id}"]`)!.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true })); });
     return host.querySelector(`[data-rail-menu="${id}"]`);
   };
-  expect(await menuOf("local"), "this computer keeps today's look: no menu").toBeNull();
-  expect(expand.mock.calls.at(-1), "nor anything covering the window").toEqual([false]);
+  expect(host.querySelector('[data-rail-place="local"] span')?.getAttribute("style"), "This computer's circle wears its colour").toContain("var(--identity-teal)");
+  const own = await menuOf("local");
+  expect([own?.getAttribute("aria-label"), own?.querySelector("[aria-checked='true']")?.getAttribute("data-swatch")]).toEqual(["This computer", "green"]);
+  expect(own!.querySelector("[data-swatch='slate']")?.getAttribute("aria-label"), "the plain swatch says what it does").toBe("None");
+  await click(own!.querySelector("[data-swatch='slate']"));
+  await settle();
+  expect(recolor).toHaveBeenCalledWith("local", "slate");
+  expect([host.querySelector("[data-rail-menu]"), expand.mock.calls.at(-1)]).toEqual([null, [false]]);
   const menu = await menuOf("vps");
   expect(menu?.getAttribute("aria-label")).toBe("Office");
   expect(expand.mock.calls.at(-1), "the menu covers the window while open").toEqual([true]);

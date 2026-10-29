@@ -36,25 +36,30 @@ Nothing here needs a real MausBot Cloud account, a payment or the Electron app.
   account for now".
 - The place on screen tints the top of its sidebar in its colour, faintly
   (`.place-tint`, stronger in dark skins, a thin line with reduced
-  transparency, none with forced colours); no colour, no tint. Settings →
-  Appearance changes it with the same six swatches: a Cloud's on the Admin
+  transparency, none with forced colours); no colour, no tint. Every place
+  starts plain. Settings → Appearance changes it with the same six swatches,
+  the plain one named None: a Cloud's on the Admin
   (`PATCH /api/cloud/desktop/clouds/:id`, its owner or its team's admins; a
-  member sees it locked), a server connected by hand on this computer. An
-  Admin without that route changes nothing and says so.
+  member sees it locked), This computer's and a server's connected by hand in
+  this app (`environments.json`: This computer's as `localColor`, beside the
+  saved places, whether or not the app is signed in). An Admin without that
+  route changes nothing and says so.
 - The window's own rail changes the colour of every place it lists, whatever
   that place's server runs (an older server's page has no such setting): a
   right-click on a circle, or on its row past eight, opens that place's menu
   with the six swatches. The same rules decide where it is kept
   (`workspaces:recolor`, the rail's own page only, an id main listed); a
-  signed-in server not connected here is changed on the Admin. This computer
-  keeps today's look and has no menu.
+  signed-in server not connected here is changed on the Admin. This computer's
+  circle wears its colour and has the same menu.
 - A workspace may also have a banner picture, kept on its own server beside its
   other pictures (`GET`, `PUT` and `DELETE /api/workspace/banner`; changing it
-  is an admin's, seeing it anyone's signed in there). The app shrinks it to
-  1600 px across at most and draws it afresh as WebP or JPEG under 400 KB; the
-  server checks it again (kind, size, still, readable) and keeps none of its
-  metadata. It shows faded into the top of the sidebar, in front of the
-  colour's tint, which shows when there is no picture or it won't load.
+  is an admin's, seeing it anyone's signed in there). On this computer that is
+  its own server, and the desktop app's page is its owner. The app shrinks it
+  to 1600 px across at most and draws it afresh as WebP or JPEG under 400 KB;
+  the server checks it again (kind, size, still, readable) and keeps none of
+  its metadata. It shows faded into the top of the sidebar, in front of the
+  colour's tint, which shows when there is no picture or it won't load. A
+  browser shows the picture, which is on the server, and no colour.
 - The person's own servers and computers that signed in with their account come
   in the same list (`managed: false`, on a server, with or without an address).
   They are never a Cloud of theirs to pair with or lend to: the rail shows them
@@ -98,9 +103,18 @@ own, the plans, the name and colour of a new Cloud and its setup, the person's
 signed-in servers and the steps to connect one, the colour in Settings and in
 a circle's own menu for an admin and for a team member, and a banner picture
 (drawn by the script and kept through the fixture server's own route) in the
-sidebar and in Settings, each in the Daylight and Midnight skins.
-`--only rail,look-settings` limits it to some views. Without `--shots` it
-prints the preview's address and waits for Ctrl-C.
+sidebar and in Settings, each in the Daylight and Midnight skins. The
+`computer` views are this computer's own page on a desktop with no Cloud
+instead: the sidebar plain, in a colour and with a picture, the Appearance card
+in Advanced and Simple mode, and its circle and menu with the rail beside it.
+`--only rail,look-settings` limits it to some views and `--size 1338x870` sets
+the window (1280x800 by default). Without `--shots` it prints the preview's
+address and waits for Ctrl-C.
+
+This computer's card, with no colour or picture yet
+(`evidence/sidebar-look-everyone/`):
+
+![This computer's Sidebar color and Sidebar picture in Settings, plain](evidence/sidebar-look-everyone/after-card-simple-daylight.png)
 
 This is not production qualification: the places and the purchase are the
 preview's fixtures, and no Admin, browser checkout or desktop window is

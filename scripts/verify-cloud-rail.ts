@@ -1,8 +1,9 @@
 // The rail of Clouds and its ＋ sheet in the real app, as a Cloud's page in the desktop window shows them, against a
 // disposable fake-engine server; the desktop bridge's rail and add-a-Cloud answers are the preview's own fixtures.
-// Run: node --experimental-strip-types scripts/verify-cloud-rail.ts [--shots <dir> [--only <view,view>]]
+// Run: node --experimental-strip-types scripts/verify-cloud-rail.ts [--shots <dir> [--only <view,view>] [--size <width>x<height>]]
 // With --shots it photographs each view in a light and a dark skin with a headless Chrome in a throwaway profile
-// (OMB_CDP_CHROME, else the installed Google Chrome) and exits; without, it prints the preview's address and waits.
+// (OMB_CDP_CHROME, else the installed Google Chrome) at twice the window's size (1280x800 unless --size says) and
+// exits; without, it prints the preview's address and waits.
 import { spawn } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -16,6 +17,10 @@ const at = process.argv.indexOf("--shots");
 const shots = at === -1 ? null : resolve(process.argv[at + 1] ?? "");
 const onlyAt = process.argv.indexOf("--only");
 const only = onlyAt === -1 ? null : new Set((process.argv[onlyAt + 1] ?? "").split(",").filter(Boolean));
+const sizeAt = process.argv.indexOf("--size");
+const size = /^(\d{3,4})x(\d{3,4})$/.exec(sizeAt === -1 ? "1280x800" : process.argv[sizeAt + 1] ?? "");
+if (!size) throw new Error("--size takes the window's width and height, such as 1338x870");
+const [WIDTH, HEIGHT] = [Number(size[1]), Number(size[2])];
 const CHROME = process.env.OMB_CDP_CHROME ?? "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
 /** Each view: its query, what must be on screen before the picture, and the window's height. */
 const VIEWS: Array<{ name: string; query: string; ready: string; height?: number; banner?: true }> = [
@@ -30,13 +35,30 @@ const VIEWS: Array<{ name: string; query: string; ready: string; height?: number
   { name: "rail-servers", query: "places=servers&look=teal", ready: "[data-rail-server]" },
   { name: "connect-server", query: "places=servers&sheet=connect", ready: "[data-place-add='connect-server']" },
   { name: "look-settings", query: "look=teal&settings=look", ready: "[data-place-look='admin']" },
+  { name: "look-settings-simple", query: "look=teal&mode=simple&settings=look", ready: "[data-place-look='admin']" },
   { name: "look-member", query: "member=1&settings=look", ready: "[data-place-look='locked']" },
+  { name: "look-member-simple", query: "member=1&mode=simple&settings=look", ready: "[data-place-look='locked']" },
   { name: "rail-colour", query: "places=servers&look=teal&menu=vps", ready: "[data-rail-menu='vps']" },
   { name: "rail-colour-member", query: "member=1&menu=acme", ready: "[data-rail-menu-note]" },
+  // This computer's own page on a desktop with no Cloud: plain, in a colour, its Settings, and the rail beside it.
+  { name: "computer", query: "place=computer", ready: "[data-sidebar-top-row]" },
+  { name: "computer-simple", query: "place=computer&mode=simple", ready: "[data-sidebar-top-row]" },
+  { name: "computer-colour", query: "place=computer&look=teal", ready: "[data-place-tint]" },
+  { name: "computer-colour-simple", query: "place=computer&look=teal&mode=simple", ready: "[data-place-tint]" },
+  { name: "computer-settings", query: "place=computer&settings=look", ready: "[data-place-picture]" },
+  { name: "computer-settings-simple", query: "place=computer&mode=simple&settings=look", ready: "[data-place-picture]" },
+  { name: "computer-colour-settings", query: "place=computer&look=teal&settings=look", ready: "[data-place-look='local'] [aria-checked='true']" },
+  { name: "computer-colour-settings-simple", query: "place=computer&look=teal&mode=simple&settings=look", ready: "[data-place-look='local'] [aria-checked='true']" },
+  { name: "computer-rail", query: "place=computer&look=teal&rail=1", ready: "[data-rail-place='local']" },
+  { name: "computer-rail-colour", query: "place=computer&look=teal&rail=1&menu=local", ready: "[data-rail-menu='local']" },
   // The workspace's banner picture, kept on the fixture server first (each view after it shows it).
   { name: "banner", query: "", ready: "[data-place-banner] img", banner: true },
   { name: "banner-simple", query: "mode=simple", ready: "[data-place-banner] img", banner: true },
   { name: "banner-settings", query: "settings=look", ready: "[data-place-picture='set']", banner: true },
+  { name: "computer-banner", query: "place=computer", ready: "[data-place-banner] img", banner: true },
+  { name: "computer-banner-simple", query: "place=computer&mode=simple", ready: "[data-place-banner] img", banner: true },
+  { name: "computer-banner-settings", query: "place=computer&settings=look", ready: "[data-place-picture='set']", banner: true },
+  { name: "computer-banner-settings-simple", query: "place=computer&mode=simple&settings=look", ready: "[data-place-picture='set']", banner: true },
 ];
 const SKINS = [{ id: "daylight", look: "light" }, { id: "midnight", look: "dark" }];
 
@@ -69,8 +91,8 @@ async function openChrome(profile: string) {
   });
   const evaluate = async (expression: string) => (await send("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true })).result?.value;
   return {
-    async shoot(url: string, ready: string, file: string, height = 800) {
-      await send("Emulation.setDeviceMetricsOverride", { width: 1280, height, deviceScaleFactor: 2, mobile: false });
+    async shoot(url: string, ready: string, file: string, height = HEIGHT) {
+      await send("Emulation.setDeviceMetricsOverride", { width: WIDTH, height, deviceScaleFactor: 2, mobile: false });
       await send("Page.navigate", { url });
       const end = Date.now() + 60_000;
       const condition = `Boolean(document.querySelector(${JSON.stringify(ready)}) && document.querySelector("[data-sidebar-bot-row], [data-sidebar-hero]"))`;

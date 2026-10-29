@@ -135,7 +135,7 @@ function PlaceMenu({ place, top, onClose }: { place: RailPlace; top: number; onC
     </div>
     <p className="px-2 pt-1 text-[12px] text-ink-secondary">{t("placeLook.title")}</p>
     <div className="px-2 pb-1.5 pt-0.5">
-      <SwatchRadios value={pending ?? paint.swatch} onChange={choose} label={t("placeLook.aria", { name })} disabled={Boolean(paint.locked)} />
+      <SwatchRadios value={pending ?? paint.swatch} onChange={choose} label={t("placeLook.aria", { name })} disabled={Boolean(paint.locked)} offset="menu" none />
     </div>
     {note && <p data-rail-menu-note className="px-2 pb-1 text-[12px] text-ink-secondary">{note}</p>}
     {outcome === "failed" && <p role="alert" className="px-2 pb-1 text-[12px] text-danger">{t("placeLook.failed")}</p>}

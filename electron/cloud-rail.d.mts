@@ -28,7 +28,7 @@ export interface RailPlace {
   /** It runs an older release than the newest the Admin names: time to update it. */
   update?: { version: string; latest: string };
   /** Its colour is changed from the rail (a right-click on its circle): the swatch it shows, and why only its admins or a
-   * sign-in may change it, if so. None for this computer, and for a Cloud still being made. */
+   * sign-in may change it, if so. None for a Cloud still being made. */
   paint?: { swatch: import("./cloud-list.mjs").CloudSwatch | null; locked?: "member" | "signed-out" };
 }
 /** ＋'s choices here: buying a Cloud, pasting a server's pairing link, typing its address on this computer's Settings, and

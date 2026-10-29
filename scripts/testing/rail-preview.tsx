@@ -15,7 +15,8 @@ import "../../src/styles.css";
 // being bought; connect: a signed-in server's), ?places=many the list past eight (?more opens it), ?places=servers the
 // person's own servers that signed in. ?look=<colour>|none is the place's colour (its tint), ?member a team's Cloud
 // its member is on, ?settings=look Settings → Appearance at the place's colour, ?menu=<id> that circle's own menu (a
-// right-click: its colour).
+// right-click: its colour). ?place=computer is this computer's own page instead, on a desktop with no Cloud: no rail,
+// or with ?rail one beside it (this computer and a server connected by hand).
 const params = new URLSearchParams(location.search);
 setAnalyticsEnabled(false);
 setEmailGateDone("skipped");
@@ -42,19 +43,22 @@ const SERVERS: RailPlace[] = [
 ];
 const MANY = [...FEW, ...["Delta", "Echo Studio", "Fable", "Gamma Ltd", "Harbor"].map((name, n) => place(`x${n}`, name, { color: (["teal", "yellow", "red", "purple", "blue"] as const)[n] }))];
 const member = params.has("member");
+const computer = params.get("place") === "computer";
+const COMPUTER: RailPlace[] = [place("local", "This computer", { kind: "computer" }), place("vps", "Office", { kind: "server" })];
 const SWATCH: Record<string, CloudSwatch> = { blue: "blue", teal: "green", yellow: "amber", red: "rose", purple: "violet" };
 const COLOR: Record<CloudSwatch, PlaceLook["color"]> = { blue: "blue", green: "teal", amber: "yellow", rose: "red", violet: "purple", slate: null };
-const tint = params.get("look") ?? (member ? "purple" : "blue");
+const tint = params.get("look") ?? (computer ? "none" : member ? "purple" : "blue");
 const color = tint === "none" ? null : (tint as PlaceLook["color"]);
-const listed = params.get("places") === "many" ? MANY : params.get("places") === "servers" ? SERVERS : FEW;
+const listed = computer ? (params.has("rail") ? COMPUTER : []) : params.get("places") === "many" ? MANY : params.get("places") === "servers" ? SERVERS : FEW;
+const onScreen = computer ? "local" : member ? "acme" : "home";
 // The place on screen wears the colour its tint is drawn in.
 // Every place but one still being made has its colour changed from its circle; a team's member only sees it.
 const painted = (entry: RailPlace): RailPlace => (entry.opens || entry.server ? { ...entry, paint: { swatch: entry.color ? SWATCH[entry.color] ?? null : null,
   ...(member && entry.id === "acme" ? { locked: "member" as const } : {}) } } : entry);
-const rail: RailState = { places: listed.map(({ active: _active, ...entry }) => painted(entry.id === (member ? "acme" : "home") ? { ...entry, color, active: true as const } : entry)),
-  add: { cloud: true, link: true, address: false } };
-let look: PlaceLook = { name: member ? "Acme team" : "My Cloud", color, swatch: color ? SWATCH[color] ?? null : null,
-  change: member ? null : "admin", ...(member ? { reason: "member" as const } : {}) };
+const rail: RailState = { places: listed.map(({ active: _active, ...entry }) => painted(entry.id === onScreen ? { ...entry, color, active: true as const } : entry)),
+  add: { cloud: true, link: true, address: computer } };
+let look: PlaceLook = { name: computer ? "This computer" : member ? "Acme team" : "My Cloud", color, swatch: color ? SWATCH[color] ?? null : null,
+  change: computer ? "local" : member ? null : "admin", ...(member ? { reason: "member" as const } : {}) };
 let openSettings: ((section?: string) => void) | null = null;
 const offer = { recommended: "pro", refundDays: 14, plans: [
   { tier: "starter", label: "Starter", amount: 1500, allowances: { cpus: 2, cpuKind: "shared" as const, memoryMb: 2048, diskGb: 10, maxDiskGb: 20, computers: 15, computerHours: 100, voiceCharacters: 30_000, sleeps: true as const } },
@@ -67,7 +71,7 @@ const addView: AddCloudView = { signedIn: true, hasCloud: true, supported: true,
 const ok = async () => {};
 Object.assign(window, { ogb: {
   platform: "darwin",
-  app: { version: "0.1.130", ownPage: false },
+  app: { version: "0.1.130", ownPage: computer },
   getCapabilities: async () => ({ host: { platform: "darwin", label: "macOS", session: "unknown", packaged: true }, windowChrome: "mac-inset",
     screenPreview: { available: false, interaction: "none" }, dictation: { available: false, engine: "none", onDevice: false },
     localComputer: { available: false, support: "unsupported", enabled: false, status: "unavailable" } }),
@@ -75,17 +79,25 @@ Object.assign(window, { ogb: {
   onOpenAppSettings: (callback: (section?: string) => void) => { openSettings = callback; return () => {}; },
   applySkin: ok, setUnreadCount: () => {}, permStatus: async () => ({}),
   workspaces: {
-    state: async () => ({ local: false, name: "My Cloud", origin: "https://omb-u-1.fly.dev", color: "blue" }),
+    state: async () => (computer ? { local: true, name: "This computer" } : { local: false, name: "My Cloud", origin: "https://omb-u-1.fly.dev", color: "blue" }),
     menu: ok, line: async () => null, places: async () => rail, open: ok, add: ok, onChanged: () => () => {},
     look: async () => look,
     recolor: async (id: string, swatch: CloudSwatch) => {
-      rail.places = rail.places.map((entry) => (entry.id === id ? { ...entry, color: COLOR[swatch], paint: { swatch } } : entry));
+      rail.places = rail.places.map((entry) => (entry.id === id ? { ...entry, color: COLOR[swatch], paint: { swatch: COLOR[swatch] ? swatch : null } } : entry));
       return { outcome: "saved", look: null };
     },
-    color: async (swatch: CloudSwatch) => { look = { ...look, swatch, color: COLOR[swatch] }; return { outcome: "saved", look }; },
+    color: async (swatch: CloudSwatch) => { look = { ...look, swatch: COLOR[swatch] ? swatch : null, color: COLOR[swatch] }; return { outcome: "saved", look }; },
   },
   cloudAdd: { state: async () => addView, start: async () => ({ outcome: "opened" }), reopen: async () => true, copyLink: async () => true, open: ok, interest: ok, sheet: ok },
 } });
+
+if (member) {
+  // The fixture server takes this browser for its owner; a team's member is signed in without the admin scope.
+  const fixtureFetch = window.fetch.bind(window);
+  window.fetch = (input, init) => (new URL(input instanceof Request ? input.url : String(input), location.href).pathname === "/api/auth/session"
+    ? Promise.resolve(Response.json({ kind: "session", id: "member", label: "Bob's Mac", scopes: ["client"], expiresAt: Date.now() + 3_600_000 }))
+    : fixtureFetch(input, init));
+}
 
 createRoot(document.getElementById("root")!).render(<App />);
 
@@ -108,11 +120,24 @@ const sheet = params.get("sheet");
 if (sheet === "connect") void click('[data-rail-place="signed-in:s-render"]');
 else if (sheet) void click("[data-rail-add]").then(() => (sheet === "server" ? click('[data-place-add-choice="server"]') : sheet === "add" ? undefined : click('[data-place-add-choice="cloud"]')))
   .then(() => (sheet === "name" ? click("[data-plan-buy='pro']") : undefined));
+/** A Settings row's own button, by the row's title (Simple mode's pages name no section). */
+const clickRow = (title: string) => new Promise<void>((resolve) => {
+  const tick = () => {
+    const row = [...document.querySelectorAll<HTMLElement>("[role='group'][aria-labelledby]")]
+      .find((group) => document.getElementById(group.getAttribute("aria-labelledby") ?? "")?.textContent === title);
+    const button = row?.querySelector<HTMLElement>("button");
+    if (button) { button.click(); resolve(); } else setTimeout(tick, 100);
+  };
+  tick();
+});
 if (params.get("settings") === "look") {
   const opened = () => new Promise<void>((resolve) => { const tick = () => { if (openSettings) { openSettings(); resolve(); } else setTimeout(tick, 100); }; tick(); });
-  void opened().then(() => click('[data-settings-section="appearance"]'))
+  void opened().then(() => (params.get("mode") === "simple" ? clickRow("More looks") : click('[data-settings-section="appearance"]')))
     .then(() => new Promise<void>((resolve) => setTimeout(resolve, 300)))
-    .then(() => document.querySelector("[data-place-look]")?.closest(".rounded-xl")?.scrollIntoView({ block: "center" }));
+    .then(() => {
+      const shown = document.querySelector("[data-place-look], [data-place-picture]");
+      (shown?.closest("[data-sidebar-look], .rounded-xl") ?? shown)?.scrollIntoView({ block: "center" });
+    });
 }
 if (params.has("more")) void click("[data-rail-more-button]");
 const menu = params.get("menu");

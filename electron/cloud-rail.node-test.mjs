@@ -34,8 +34,13 @@ test("the rail: My Cloud, the person's Clouds and teams' Clouds in the session's
   ], "each colour changed from the rail, but a team's by its admins alone");
   for (const origin of [HOME, CLIENT_A, TEAM, VPS, "/Users/person/lab"]) assert.equal(JSON.stringify(places).includes(origin), false, origin);
   const before = railPlaces({ saved: saved("local"), home: null, mine: HOME, state: session() });
-  assert.deepEqual(before[0], { id: "local", name: "This computer", color: null, kind: "computer", opens: true, active: true }, "before the move, this computer is a place too, in today's look");
+  assert.deepEqual(before[0], { id: "local", name: "This computer", color: null, kind: "computer", opens: true, paint: { swatch: null }, active: true },
+    "before the move, this computer is a place too: plain until a colour is picked, from its circle's menu as well");
   assert.equal(before.length, 5);
+  const teal = railPlaces({ saved: { ...saved("local"), localColor: "teal" }, home: null, mine: HOME, state: session() })[0];
+  assert.deepEqual([teal.color, teal.paint], ["teal", { swatch: "green" }], "its circle takes the colour this app keeps for it");
+  assert.equal(railPlaces({ saved: { ...saved("home"), localColor: "teal" }, home: HOME, mine: HOME, state: session() }).some(place => place.kind === "computer"), false,
+    "once My Cloud is home, this computer is no circle, whatever its colour");
 });
 
 test("a Cloud of your own is a rail even alone, for its ＋; otherwise one place, or none: no rail, the window as it was", () => {
