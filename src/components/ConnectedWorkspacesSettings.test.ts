@@ -185,3 +185,10 @@ it("a Cloud of the person's own has no lending control here, since this computer
   expect(labels.filter(label => /Computer access for (My Cloud|Client A)|use this/.test(label))).toEqual([]);
   expect(render().html).not.toContain("data-cloud-lending-link");
 });
+
+it("shows local environment controls in Simplified Chinese", async () => {
+  stubEnvironments(); setLocale("zh"); await mount();
+  const { html } = render();
+  expect(html).toContain("每个环境都有自己的机器人、会话和数据文件夹");
+  expect(html).not.toContain("Separate setups on this computer");
+});
