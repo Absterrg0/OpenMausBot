@@ -200,10 +200,11 @@ function connectorServiceLabel(slug: string): string {
     .join(" ");
 }
 
-export function customMcpPrompt(names: string[]): string {
-  if (names.length === 0) return "";
+export function customMcpPrompt(names: string[], off: ReadonlyArray<{ name: string; error: string }> = []): string {
   const list = names.map((name) => `"${name}"`).join(", ");
-  return ` The user also added ${names.length === 1 ? "an MCP server" : "MCP servers"} for you: ${list}. Use their available tools under the engine's normal approval rules.`;
+  const mounted = names.length === 0 ? "" : ` The user also added ${names.length === 1 ? "an MCP server" : "MCP servers"} for you: ${list}. Use their available tools under the engine's normal approval rules.`;
+  const left = off.map(({ name, error }) => ` The MCP server "${name}" is off for you because it doesn't start for you (${error}); it is tried again on its own.`).join("");
+  return mounted + left;
 }
 export const CREDENTIAL_PROMPT =
   " If a supported API key is missing for the service actually needed, use request_credential to create a secure credential request; a 1Password service account token, for signing in with logins from a 1Password vault, is one too (credential_id onePasswordToken). Before requesting a computer-provider key, inspect the configured targets with select_computer; an existing self-hosted VPS does not need Boat credentials. Do not request a different provider's key merely because a task mentions cloud. For any other secret (a Stripe or npm token, a webhook signing secret), give request_credential a label, reason and delivery: ref for add_mcp_server, file for your own commands. A freshly QR-paired mobile app or the desktop app can show the secure entry card. Never claim it opened unless the request succeeded, and never ask the user to paste credentials into chat.";

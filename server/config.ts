@@ -20,7 +20,7 @@ import { PROVIDER_ICON_PRESETS, providerIconError } from "../shared/provider-ico
 import { helperStoredShape, type HelperConfig } from "./side-jobs.ts";
 import { loopGuardConfigSchema, type LoopGuardConfig } from "./host/loop-guard.ts";
 import { migrateLegacyFeatureFlags } from "./legacy-feature-flags.ts";
-import { isRemoteMcpServer, parseStoredMcpServer } from "./mcp-registry.ts";
+import { isRemoteMcpServer, mcpServerServes, parseStoredMcpServer } from "./mcp-registry.ts";
 import { parseJson, schemaIssue, type JsonObject, type JsonValue } from "./schema.ts";
 import { deciderConfigSchema, type DeciderConfig } from "./decider/config.ts";
 import { browserEngineConfigSchema, isValidCdpTarget, type BrowserEngineConfig } from "./browser/config.ts";
@@ -1283,7 +1283,7 @@ function skipMcpEntry(name: string, why: string): void {
   console.error(`mcpServers.${JSON.stringify(name)} skipped — ${why}`);
 }
 
-export function customMcpServers(cfg: AppConfig, only?: string[]): Record<string, CustomMcpServer> {
+export function customMcpServers(cfg: AppConfig, only?: string[], botId?: string): Record<string, CustomMcpServer> {
   const out: Record<string, CustomMcpServer> = {};
   for (const [name, raw] of Object.entries(cfg.mcpServers ?? {})) {
     if (only && !only.includes(name)) continue;
@@ -1292,7 +1292,7 @@ export function customMcpServers(cfg: AppConfig, only?: string[]): Record<string
       skipMcpEntry(name, `${parsed.error} Expected { "command": "npx", "args": [...], "env": { ... } } or { "type": "http", "url": "https://…", "headers": { ... } }`);
       continue;
     }
-    if (!parsed.server.enabled || parsed.server.runsOn) continue; // a server of another computer's never starts here
+    if (!parsed.server.enabled || parsed.server.runsOn || !mcpServerServes(parsed.server, botId)) continue; // another computer's or bot's own
     out[name] = isRemoteMcpServer(parsed.server)
       ? { type: parsed.server.type, url: parsed.server.url, headers: parsed.server.headers }
       : { command: parsed.server.command, args: parsed.server.args, env: parsed.server.env };

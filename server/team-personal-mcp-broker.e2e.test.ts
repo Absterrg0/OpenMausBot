@@ -73,7 +73,7 @@ describe.skipIf(process.platform === "win32")("a member's own MCP server and the
     expect(BOX_BROKER_PORT).toBe(18080);
 
     // Ada's own turn in her private chat, as the server mounts it for a boxed engine.
-    const custom = await host.turnMcp({}, "ada-chat", "gen-1");
+    const custom = await host.turnMcp({ id: "scout", name: "Scout" }, "ada-chat", "gen-1");
     expect((custom["mi-boda-hq"] as RemoteMcpSpec).headers).toEqual({ Authorization: ADA_KEY });
     mounted = brokerRemoteMcp(custom, { botId: "scout", threadId: "ada-chat" }, broker);
   });

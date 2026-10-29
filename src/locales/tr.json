@@ -776,6 +776,7 @@
   "notifications.status.failed": "Başarısız oldu",
   "notifications.status.deferred": "Ertelendi",
   "notifications.status.spend": "Harcama",
+  "notifications.status.notice": "Bilgi",
   "settings.roomTurns.title": "Grup turları",
   "settings.roomTurns.subtitle": "Bir gruptaki bot turu için olağan maksimum süreyi belirleyin. Bir sohbet kendi süresini seçebilir.",
   "settings.roomTurns.label": "Maksimum tur süresi",
@@ -4996,5 +4997,7 @@
   "cloudWelcome.files.foldersLent": "{name} üzerindeki botlar, bu bilgisayar uyanık ve OpenMausBot açık olduğu sürece dosyalarını kendiliğinden kullanır. Ayarlanacak bir şey yok.",
   "secretCard.ref": "OpenMausBot onu kendi araçlarının tek bir kullanımı için saklar. Botunuz onu asla görmez ve sohbete asla eklenmez.",
   "secretCard.file": "Botunuzun komutlarının 24 saat boyunca okuyabileceği özel bir dosyaya kaydedilir, sonra silinir. Sohbete asla eklenmez.",
-  "secretCard.resumed": "Bot devam etti"
+  "secretCard.resumed": "Bot devam etti",
+  "mcp.ownBot": "Yalnızca {bot} için: dosyaları {bot} botunun kendi klasöründe.",
+  "mcp.offFor": "{bots} için kapalı, çünkü onlarda başlamıyor. Kendiliğinden yeniden denetlenir."
 }

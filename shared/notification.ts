@@ -25,7 +25,10 @@ export type NotifyKind =
   | "spend"
   /** The main agent's brief has something new that needs the person, or a
    * meeting prep or reminder it posted with no AI turn. Personal installs only. */
-  | "brief";
+  | "brief"
+  /** Something OpenMausBot changed on its own that the person hears about
+   * once: a tool turned off for the bots it doesn't start for. */
+  | "notice";
 
 export interface Notification {
   kind: NotifyKind;

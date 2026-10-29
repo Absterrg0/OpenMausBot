@@ -776,6 +776,7 @@
   "notifications.status.failed": "Thất bại",
   "notifications.status.deferred": "Đã hoãn",
   "notifications.status.spend": "Chi tiêu",
+  "notifications.status.notice": "Thông báo",
   "settings.roomTurns.title": "Lượt trong group",
   "settings.roomTurns.subtitle": "Đặt mức tối đa thông thường cho một lượt của bot trong group. Mỗi cuộc trò chuyện có thể chọn giới hạn riêng.",
   "settings.roomTurns.label": "Thời lượng lượt tối đa",
@@ -4996,5 +4997,7 @@
   "cloudWelcome.files.foldersLent": "Bot trên {name} tự dùng các tệp trên máy tính này khi máy đang thức và OpenMausBot đang mở. Không cần thiết lập gì.",
   "secretCard.ref": "OpenMausBot giữ nó cho một lần dùng bởi chính công cụ của mình. Bot của bạn không bao giờ thấy nó, và nó không bao giờ được thêm vào cuộc trò chuyện.",
   "secretCard.file": "Được lưu vào một tệp riêng tư mà các lệnh của bot có thể đọc trong 24 giờ, sau đó bị xóa. Nó không bao giờ được thêm vào cuộc trò chuyện.",
-  "secretCard.resumed": "Bot đã tiếp tục"
+  "secretCard.resumed": "Bot đã tiếp tục",
+  "mcp.ownBot": "Chỉ dành cho {bot}: các tệp của nó nằm trong thư mục riêng của {bot}.",
+  "mcp.offFor": "Đã tắt cho {bots} vì nó không khởi động được với họ. Nó sẽ tự được kiểm tra lại."
 }

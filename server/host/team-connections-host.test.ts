@@ -162,29 +162,31 @@ describe("apps each person connects", () => {
   });
 });
 
+const BOT = { id: "bot-1", name: "Bot" };
+
 describe("MCP servers each person connects", () => {
   it("gives a member's own turn her key, never the team's, and no other turn either", async () => {
     const { host, dataDir } = setup();
     adaConnected(host, dataDir);
-    const own = await host.turnMcp({}, "ada-chat", "g");
+    const own = await host.turnMcp(BOT, "ada-chat", "g");
     expect(own.mail).toEqual({ type: "http", url: "https://mail.example/mcp", headers: { Authorization: "Bearer ada-own-mail-key" } });
     expect(own.console, "the team's server is the team's, with its key").toEqual({ type: "http", url: "https://console.example/mcp", headers: { Authorization: "Bearer team-console-key" } });
     for (const thread of ["room-chat", "main-chat", "cleo-chat"]) {
-      const elsewhere = await host.turnMcp({}, thread, "g");
+      const elsewhere = await host.turnMcp(BOT, thread, "g");
       expect(elsewhere.mail, thread).toBeUndefined();
       expect(JSON.stringify(elsewhere), thread).not.toContain("ada-own-mail-key");
       expect(JSON.stringify(elsewhere), thread).not.toContain("team-mail-key");
     }
     const admin = setup({ requester: { "ada-chat": BEN } });
     adaConnected(admin.host, admin.dataDir);
-    expect((await admin.host.turnMcp({}, "ada-chat", "g")).mail, "Ben writing in Ada's chat").toBeUndefined();
-    expect(host.engineMcp({}).mail, "with no conversation in view: the team's only").toBeUndefined();
+    expect((await admin.host.turnMcp(BOT, "ada-chat", "g")).mail, "Ben writing in Ada's chat").toBeUndefined();
+    expect(host.engineMcp(BOT).mail, "with no conversation in view: the team's only").toBeUndefined();
   });
 
   it("pins a member's key to the server's address: re-pointed, it is not sent", async () => {
     const { host, dataDir } = setup({ servers: { mail: { type: "http", url: "https://elsewhere.example/mcp", headers: {}, enabled: true } } });
     adaConnected(host, dataDir);
-    expect((await host.turnMcp({}, "ada-chat", "g")).mail).toBeUndefined();
+    expect((await host.turnMcp(BOT, "ada-chat", "g")).mail).toBeUndefined();
   });
 
   it("keeps members' keys in a folder of its own that no backup carries", () => {

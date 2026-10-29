@@ -2543,5 +2543,8 @@
   "cloudWelcome.files.foldersLent": "Bots auf {name} nutzen die Dateien auf diesem Computer von selbst, solange er wach und OpenMausBot geöffnet ist. Du musst nichts einrichten.",
   "secretCard.ref": "OpenMausBot bewahrt es für eine einzige Nutzung durch seine eigenen Werkzeuge auf. Dein Bot sieht es nie, und es landet nie im Chat.",
   "secretCard.file": "Wird in einer privaten Datei gespeichert, die die Befehle deines Bots 24 Stunden lang lesen können, und danach gelöscht. Es landet nie im Chat.",
-  "secretCard.resumed": "Bot fortgesetzt"
+  "secretCard.resumed": "Bot fortgesetzt",
+  "notifications.status.notice": "Hinweis",
+  "mcp.ownBot": "Nur für {bot}: Die Dateien liegen im eigenen Ordner von {bot}.",
+  "mcp.offFor": "Aus für {bots}, weil er dort nicht startet. Er wird von selbst erneut geprüft."
 }

@@ -21,6 +21,7 @@ import type { ConnectorScopes } from "../../shared/connector-scopes.ts";
 
 type Bot = { id: string; name: string; connectorTools?: Parameters<typeof Composio.mcpIntegration>[1]["connectorTools"]; connectorScopes?: ConnectorScopes };
 type Integration = { command: string; args: string[]; env: Record<string, string> };
+type McpBot = { id: string; name: string; mcpServers?: string[] };
 
 export interface TeamConnectionsHostDeps {
   team: CloudTeam | null;
@@ -36,7 +37,7 @@ export interface TeamConnectionsHostDeps {
   mint(capability: { botId: string; threadId: string; generation: string; connectorsFor?: string }): string;
   mcpOAuth: McpOAuthManager;
   /** The bot's enabled MCP servers, as policy allows them, before any sign-in is attached. */
-  botMcp(bot: { mcpServers?: string[] }): Record<string, McpServerSpec>;
+  botMcp(bot: McpBot): Record<string, McpServerSpec>;
   isSessionLive(id: string): boolean;
   /** The connected-apps service a member's own installation is made on; null: none here. */
   brokerUrl(): string | null;
@@ -207,7 +208,7 @@ export function createTeamConnectionsHost(deps: TeamConnectionsHostDeps) {
 
     /** A turn's MCP servers: the team's (never a `person` server's team credential), plus, in a member's own turn, the
      * `person` servers they connected, with their own key or sign-in. */
-    async turnMcp(bot: { mcpServers?: string[] }, threadId: string, generation: string): Promise<Record<string, McpServerSpec>> {
+    async turnMcp(bot: McpBot, threadId: string, generation: string): Promise<Record<string, McpServerSpec>> {
       const all = deps.botMcp(bot), names = personMcp();
       const out = await withMcpSignIn(without(all, names), deps.mcpOAuth);
       const person = names.length ? turnPerson(threadId, generation) : null;
@@ -222,7 +223,7 @@ export function createTeamConnectionsHost(deps: TeamConnectionsHostDeps) {
     },
 
     /** The bot's servers with no conversation in view (the setup preview, approval keys, chat apps): the team's only. */
-    engineMcp(bot: { mcpServers?: string[] }): Record<string, McpServerSpec> {
+    engineMcp(bot: McpBot): Record<string, McpServerSpec> {
       return withoutPendingSignIn(without(deps.botMcp(bot), personMcp()), deps.mcpOAuth);
     },
 

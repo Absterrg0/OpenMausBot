@@ -867,8 +867,11 @@ export async function callTool(called: string, input: Json, context: ToolCallCon
       headerKeys ? `Header names on file: ${headerKeys}.` : "",
     ].filter(Boolean).join(" ");
     const local = transport === "command" ? " Enabling a local command runs that command on their computer." : "";
+    const keptIn = Array.isArray(saved.keptIn) ? saved.keptIn.filter((path): path is string => typeof path === "string") : [];
+    const own = (saved.own === true ? " It uses files in your own folder, so it works only for you, not for other bots." : "")
+      + (keptIn.length ? ` Its files were in this conversation's temporary folder, so they were copied to ${keptIn.join(", ")} in your own folder, and it runs from there: change them there.` : "");
     return {
-      text: `Saved MCP server “${serverName}”${where} switched off. It stays off in MCP server settings until the user turns it on.${local}${named ? ` ${named}` : ""}`,
+      text: `Saved MCP server “${serverName}”${where} switched off. It stays off in MCP server settings until the user turns it on.${local}${own}${named ? ` ${named}` : ""}`,
     };
   }
   return { text: `Unknown tool: ${name}`, isError: true };

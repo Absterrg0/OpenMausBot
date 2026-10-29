@@ -2937,6 +2937,14 @@ describe("ClaudeDriver turns (fake CLI)", () => {
     expect(dumpedPid(dump)).not.toBe(failedLaunch);
   });
 
+  it("reports which of the turn's own MCP servers did not connect, and none of OpenMausBot's", async () => {
+    await create(undefined, { FAKE_CLAUDE_MCP_FAILED: "agents,blender,stranger" });
+    const custom = { blender: { command: "/usr/bin/python3", args: ["/srv/blender.py"], env: {} }, notes: { command: "npx", args: ["notes-mcp"], env: {} } };
+    const turn = await instance.adapter.sendTurn({ threadId: "t-custom-failed", text: "one", integrations: { custom } });
+    await recorder.until((e) => e.type === "turn.completed" && e.turnId === turn.turnId);
+    expect(recorder.events.filter((e) => e.type === "session.started").map((e) => (e as { mcpFailed?: string[] }).mcpFailed)).toEqual([["blender"]]);
+  });
+
   it("books each turn of a retained process at its own cost, not the process's running total", async () => {
     await create();
     const dump = join(scratch, "dump.json");

@@ -43,6 +43,8 @@ export type RuntimeEvent = RuntimeEventBase &
         /** the provider refused the turn's resumeCursor and this new session
          * was started from the turn's recoveryText */
         rebuilt?: boolean;
+        /** the turn's `custom` MCP servers the engine reported could not connect */
+        mcpFailed?: string[];
       }
     | { type: "session.model-variants"; model: string; variants: ModelVariantState }
     | { type: "session.exited"; reason?: string }
