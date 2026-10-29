@@ -21,7 +21,7 @@ export const OPENROUTER_FAILURES = {
 } as const;
 
 const TIER_TIMEOUT_MS = 5_000;
-const FIRST_TURN_WAIT_MS = 4_000;
+export const FIRST_TURN_WAIT_MS = 4_000;
 const REMEMBERED_KEYS = 32;
 
 type Option = ModelCatalog["options"][number];
@@ -105,8 +105,8 @@ export function openRouterFailure(text: string, model: string): string | null {
   return null;
 }
 
-/** A turn or helper call without a chosen model waits briefly for `loading` (the key's tier and the catalog), so it
- * runs on the free default; OpenRouter's refusals reach the chat in plain words. */
+/** A helper call without a chosen model waits briefly for `loading` (the key's tier and the catalog), so it runs on
+ * the free default; OpenRouter's refusals reach the chat in plain words. */
 export function withOpenRouterTurns(instance: ProviderInstance, loading: Promise<unknown>): ProviderInstance {
   const settled = async () => {
     let timer: NodeJS.Timeout | undefined;
@@ -122,7 +122,6 @@ export function withOpenRouterTurns(instance: ProviderInstance, loading: Promise
     if (event.type === "turn.completed") turnModels.delete(event.threadId);
   });
   adapter.sendTurn = async (turn) => {
-    if (!turn.model) await settled();
     turnModels.set(turn.threadId, turn.model || instance.models.default);
     return send(turn);
   };

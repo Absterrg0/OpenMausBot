@@ -1,11 +1,14 @@
 // Transcript-replay driver for OpenRouter, Groq, Together, llama.cpp, and
 // other endpoints that speak the OpenAI chat-completions contract.
-import { isModelVariant, type ModelCatalog, type ModelVariantOption, type ProviderDriver } from "../contracts.ts";
+import {
+  isModelVariant, newId, TurnNotStartedError, type ModelCatalog, type ModelVariantOption, type ProviderDriver, type ProviderInstance,
+  type SendTurnInput,
+} from "../contracts.ts";
 import { isLoopback } from "../provider-key-check.ts";
 import { lmStudioV1Catalog } from "./local-inject.ts";
 import { createOpenAIChatRuntime } from "./openai-chat.ts";
 import {
-  freeDefault, freeFallbackCatalog, freeLabel, freeToolModels, freeToolsFirst, isOpenRouterOrigin, openRouterFreeTier,
+  FIRST_TURN_WAIT_MS, freeDefault, freeFallbackCatalog, freeLabel, freeToolModels, freeToolsFirst, isOpenRouterOrigin, openRouterFreeTier,
   withOpenRouterTurns, type OpenRouterModelRow,
 } from "./openrouter-free.ts";
 
@@ -87,6 +90,7 @@ export function advertisedContextWindow(row: Record<string, unknown>): number | 
 }
 
 const DEFAULT_EFFORTS = ["low", "medium", "high"];
+const EFFORT_LABELS: Record<string, string> = { xhigh: "X-High" };
 
 const validEfforts = (list: unknown) => Array.isArray(list) ? [...new Set(list.filter(isModelVariant))] : [];
 
@@ -97,7 +101,44 @@ export function advertisedEfforts(row: Record<string, unknown>, fromParameters =
   const reasoning = row.reasoning && typeof row.reasoning === "object" ? row.reasoning as Record<string, unknown> : {};
   const listed = [validEfforts(row.reasoning_effort_levels), validEfforts(reasoning.supported_efforts)].find((list) => list.length);
   const levels = listed ?? (fromParameters && Array.isArray(row.supported_parameters) && row.supported_parameters.includes("reasoning_effort") ? DEFAULT_EFFORTS : []);
-  return levels.length ? levels.map((id) => ({ id, label: id[0]!.toUpperCase() + id.slice(1) })) : undefined;
+  return levels.length ? levels.map((id) => ({ id, label: EFFORT_LABELS[id] ?? id[0]!.toUpperCase() + id.slice(1) })) : undefined;
+}
+
+/** A turn that `needsCatalog` waits up to FIRST_TURN_WAIT_MS for `loading`; a stop on its thread, stopAll or dispose
+ * in the meantime rejects it with TurnNotStartedError, so it never starts. */
+export function withCatalogWait(
+  instance: ProviderInstance,
+  loading: Promise<unknown>,
+  needsCatalog: (turn: SendTurnInput) => boolean,
+): ProviderInstance {
+  const { adapter } = instance;
+  const { sendTurn, interruptTurn, stopAll } = adapter;
+  const dispose = instance.dispose;
+  const waiting = new Map<string, () => void>();
+  const cancelAll = () => { for (const cancel of waiting.values()) cancel(); };
+  adapter.sendTurn = async (turn) => {
+    if (!needsCatalog(turn)) return sendTurn(turn);
+    let cancelled = false;
+    let timer: NodeJS.Timeout | undefined;
+    let cancel = () => {};
+    await new Promise<void>((resolve) => {
+      cancel = () => { cancelled = true; resolve(); };
+      waiting.set(turn.threadId, cancel);
+      timer = setTimeout(resolve, FIRST_TURN_WAIT_MS);
+      loading.then(() => resolve(), () => resolve());
+    });
+    clearTimeout(timer);
+    if (waiting.get(turn.threadId) === cancel) waiting.delete(turn.threadId);
+    if (cancelled) throw new TurnNotStartedError(newId(), "The turn was stopped before it started.");
+    return sendTurn(turn);
+  };
+  adapter.interruptTurn = async (threadId, turnId) => {
+    waiting.get(threadId)?.();
+    return interruptTurn(threadId, turnId);
+  };
+  adapter.stopAll = async () => { cancelAll(); return stopAll(); };
+  instance.dispose = async () => { cancelAll(); return dispose(); };
+  return instance;
 }
 
 function isOpenRouterUrl(url: string): boolean {
@@ -342,14 +383,9 @@ export const OpenAICompatDriver: ProviderDriver<OpenAICompatConfig> = {
         }),
       },
     });
-    if (loading) {
-      const send = runtime.adapter.sendTurn;
-      // A saved effort is checked against the catalog, so a turn sent at startup waits for /models.
-      runtime.adapter.sendTurn = async (turn) => {
-        if (turn.variant !== undefined) await loading.catch(() => {});
-        return send(turn);
-      };
-    }
-    return openRouter && loading ? withOpenRouterTurns(runtime, loading) : runtime;
+    if (!loading) return runtime;
+    const instance = openRouter ? withOpenRouterTurns(runtime, loading) : runtime;
+    // A saved effort is checked against the catalog; OpenRouter's free default comes from it.
+    return withCatalogWait(instance, loading, (turn) => turn.variant !== undefined || (openRouter && !turn.model));
   },
 };

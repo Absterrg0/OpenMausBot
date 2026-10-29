@@ -1,9 +1,9 @@
 import { afterEach, expect, it, vi } from "vitest";
 
-import type { RuntimeEvent } from "../contracts.ts";
-import { OpenAICompatDriver } from "./openai-compat.ts";
+import { TurnNotStartedError, type ProviderInstance, type RuntimeEvent } from "../contracts.ts";
+import { OpenAICompatDriver, withCatalogWait } from "./openai-compat.ts";
 
-afterEach(() => vi.unstubAllGlobals());
+afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers(); });
 
 const models = {
   data: [
@@ -11,12 +11,13 @@ const models = {
     { id: "router-model", supported_parameters: ["tools", "reasoning_effort"] },
     { id: "openrouter-model", supported_parameters: ["reasoning_effort"], reasoning: { supported_efforts: ["max", "high", "low", "none"] } },
     { id: "nested-model", reasoning_effort_levels: [], reasoning: { supported_efforts: ["max"] } },
+    { id: "xhigh-model", reasoning_effort_levels: ["high", "xhigh"] },
     { id: "plain-model" },
   ],
 };
 const reply = 'data: {"choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n';
 
-async function fixture(url = "https://api.example.test/v1", { loaded = true } = {}) {
+async function fixture(url = "https://api.example.test/v1", { loaded = true, provider }: { loaded?: boolean; provider?: string } = {}) {
   const bodies: Record<string, unknown>[] = [];
   vi.stubGlobal("fetch", vi.fn(async (input: string | URL, init?: RequestInit) => {
     if (String(input).endsWith("/models")) {
@@ -29,7 +30,7 @@ async function fixture(url = "https://api.example.test/v1", { loaded = true } = 
   }));
   const instance = await OpenAICompatDriver.create({
     instanceId: "openai-compat-1", displayName: "Flatt", enabled: true,
-    config: OpenAICompatDriver.decodeConfig({ url, apiKeyEnv: "K" }),
+    config: OpenAICompatDriver.decodeConfig({ url, apiKeyEnv: "K", ...(provider ? { provider } : {}) }),
     environment: { K: "fixture-key" },
   });
   if (loaded) await instance.refreshModels?.();
@@ -53,8 +54,10 @@ it("offers the reasoning efforts a model advertises on /models", async () => {
     "router-model": ["low", "medium", "high"],
     "openrouter-model": ["max", "high", "low", "none"],
     "nested-model": ["max"],
+    "xhigh-model": ["high", "xhigh"],
     "plain-model": undefined,
   });
+  expect(instance.models.options.find((option) => option.id === "xhigh-model")?.variants?.map((variant) => variant.label)).toEqual(["High", "X-High"]);
   await instance.dispose();
 });
 
@@ -86,4 +89,46 @@ it("asks OpenRouter for a provider that applies the chosen effort, and leaves ro
   expect(await turn("openrouter-model", "max")).toMatchObject({ reasoning_effort: "max", provider: { require_parameters: true } });
   expect(await turn("openrouter-model")).not.toHaveProperty("provider");
   await instance.dispose();
+});
+
+it("keeps a pinned OpenRouter provider when it asks for one that applies the effort", async () => {
+  const { instance, turn } = await fixture("https://openrouter.ai/api/v1", { provider: "deepinfra" });
+  expect((await turn("openrouter-model", "high")).provider).toEqual({ order: ["deepinfra"], allow_fallbacks: false, require_parameters: true });
+  expect((await turn("openrouter-model")).provider).toEqual({ order: ["deepinfra"], allow_fallbacks: false });
+  await instance.dispose();
+});
+
+function heldInstance() {
+  const sendTurn = vi.fn(async () => ({ turnId: "sent" }));
+  const instance = {
+    adapter: { sendTurn, interruptTurn: vi.fn(async () => {}), stopAll: vi.fn(async () => {}) },
+    dispose: vi.fn(async () => {}),
+  } as unknown as ProviderInstance;
+  const held = withCatalogWait(instance, new Promise(() => {}), (turn) => turn.variant !== undefined);
+  return { held, sendTurn };
+}
+
+it("starts a held turn after four seconds when /models never answers", async () => {
+  vi.useFakeTimers();
+  const { held, sendTurn } = heldInstance();
+  const started = held.adapter.sendTurn({ threadId: "t", text: "hi", variant: "high" });
+  await vi.advanceTimersByTimeAsync(3_999);
+  expect(sendTurn).not.toHaveBeenCalled();
+  await vi.advanceTimersByTimeAsync(1);
+  await expect(started).resolves.toEqual({ turnId: "sent" });
+  await expect(held.adapter.sendTurn({ threadId: "u", text: "hi" })).resolves.toEqual({ turnId: "sent" });
+});
+
+it.each([
+  ["a stop on its thread", (held: ProviderInstance) => held.adapter.interruptTurn("t")],
+  ["stopAll", (held: ProviderInstance) => held.adapter.stopAll()],
+  ["dispose", (held: ProviderInstance) => held.dispose()],
+] as const)("never starts a held turn after %s", async (_name, stop) => {
+  vi.useFakeTimers();
+  const { held, sendTurn } = heldInstance();
+  const started = held.adapter.sendTurn({ threadId: "t", text: "hi", variant: "high" });
+  await stop(held);
+  await expect(started).rejects.toBeInstanceOf(TurnNotStartedError);
+  await vi.advanceTimersByTimeAsync(5_000);
+  expect(sendTurn).not.toHaveBeenCalled();
 });
