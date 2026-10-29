@@ -134,6 +134,9 @@ export type RuntimeEvent = RuntimeEventBase &
         /** The shell command line exactly as the engine sent it, even when `command` is absent for want of a cwd.
          * Read only by the safety floor; no grant is ever made from it, and like `command` it is never broadcast. */
         commandLine?: string;
+        /** The files a read tool's ask reads (absolute): a request that reads only the bot's own files is answered
+         * without the person. Like `command`, never broadcast. */
+        reads?: string[];
         choices?: string[];
         /** A provider's structured ask (Claude's AskUserQuestion): the whole
          * set of questions, each with its own options, so the card can offer

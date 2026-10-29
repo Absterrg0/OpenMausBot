@@ -45,7 +45,7 @@ import { isPendingSignInRequest, normalizeSignInSite, signInFallbackText, signIn
 import { createRoomTurnLevels } from "./room-turn-level.ts";
 import { createSignInSettle } from "./host/sign-in-settle.ts";
 import { RoomMemberLock } from "./room-member-lock.ts";
-import { approvalHeldNote, approvalHeldReason, approvalModeForOrigin, autoVerdict, deliverFullAccessApproval, undeliveredApprovalTool } from "./auto-approve.ts";
+import { approvalHeldNote, approvalHeldReason, approvalModeForOrigin, autoVerdict, deliverFullAccessApproval, undeliveredApprovalTool } from "./auto-approve.ts"; import { readsOwnFiles } from "./own-file-reads.ts";
 import { bindSafetyFloor, denyAtSafetyFloor, heldAtSafetyFloor, safetyFloorOn } from "./safety-floor-gate.ts";
 import { CommandAllowlistStore, commandAllowlistCandidate } from "./command-allowlist.ts";
 import { providerMcpTool, providerToolAllowKey } from "./provider-tool-allow.ts";
@@ -6470,7 +6470,7 @@ bus.subscribe((event: RuntimeEvent) => {
   const privateImageEvent = event.type === "item.completed" && event.itemType === "assistant_image";
   if (!privateImageEvent) {
     // Exact executable input is internal; the bus's persistence redactor does not scrub the live event.
-    const publicEvent = event.type === "request.opened" ? { ...event, command: undefined, commandLine: undefined } : event;
+    const publicEvent = event.type === "request.opened" ? { ...event, command: undefined, commandLine: undefined, reads: undefined } : event;
     broadcast({ kind: "runtime", event: publicEvent });
   }
   const routineRun = privateImageEvent ? null : (routines?.handleRuntimeEvent(event) ?? null);
@@ -6616,7 +6616,7 @@ bus.subscribe((event: RuntimeEvent) => {
         ? heldAtSafetyFloor(event, autoVerdict(effectiveApprovalMode, event.tool, {
           requiresExplicitApproval: event.requiresExplicitApproval,
           commandAllowed: Boolean(command && commandAllowlist.matches(asker.id, command)),
-          toolAllowed: Boolean(toolAllowKey && asker.alwaysAllow?.includes(toolAllowKey)),
+          toolAllowed: Boolean(toolAllowKey && asker.alwaysAllow?.includes(toolAllowKey)), ownFilesRead: !guestDriven && readsOwnFiles(DATA_DIR, asker.id, event), // never in a guest's turn: the folder holds its owner's memory
         }))
         : null;
       // Claude accepts --permission-mode auto for any model but silently starts in Manual where auto is unavailable (Haiku 4.5, Sonnet 4.5, an org that disabled it).
