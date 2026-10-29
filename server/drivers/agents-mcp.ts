@@ -1,7 +1,7 @@
 // The "agents" MCP server's answers (JSON-RPC 2.0, no MCP SDK), every tool routed through the harness. `env` is what the
 // harness sets for it (see agents-proxy.ts): the stdio proxy an engine starts and the HTTP endpoint an engine reaches
 // both answer through it.
-import { resolveAgentsCall } from "./agents-aliases.ts";
+import { resolveAgentsCall } from "../../shared/agents-tool-names.ts";
 import { TOOL_BRIDGE_ENV, createToolBridge } from "./agents-bridge.ts";
 import { availableTools, catalogProfileFromEnv } from "./agents-catalog.ts";
 import { callTool, capResult, toolCallContextFromEnv } from "./agents-call.ts";

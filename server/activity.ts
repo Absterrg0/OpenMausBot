@@ -1,6 +1,6 @@
 import { join } from "node:path";
 
-import { agentsCallMember } from "../shared/agents-tool-names.ts";
+import { AGENTS_ACTION_TOOLS, agentsCallMember } from "../shared/agents-tool-names.ts";
 import { bridgedCallName } from "./agents-bridge-names.ts";
 import { readDecisions, type DecisionKind, type DecisionRow } from "./decision-log.ts";
 import { isRuntimeEvent, readRecentLines } from "./thread-events.ts";
@@ -119,7 +119,7 @@ export function describeTool(name: string, input?: unknown): { app: string | nul
         return { app: label === "Searched X" ? "X" : "Research", label };
       }
       // An action tool's call reads as what it did: trigger with action=create as "Create trigger".
-      const member = agentsCallMember(action, callArguments(input));
+      const member = (AGENTS_ACTION_TOOLS[action]?.members.length ?? 0) > 1 ? agentsCallMember(action, callArguments(input)) : action;
       return Object.hasOwn(RESEARCH_TOOL_LABELS, member) ? RESEARCH_TOOL_LABELS[member]! : { app: "Team", label: humanize(member) };
     }
     if (server === "highlevel") return { app: "HighLevel", label: humanize(action.replace(/^HIGHLEVEL_/, "")) };

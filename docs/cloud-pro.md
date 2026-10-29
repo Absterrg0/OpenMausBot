@@ -952,7 +952,7 @@ On the Cloud home (`server/shared-computers.ts`, `server/index.ts`):
   flows into them (`server/lending-memory.ts`):
   - memory capture skips such conversations, and they leave no line in the
     bot's daily log;
-  - the bot's memory tool (`memory_update`, its log action included) refuses to write from
+  - the bot's memory tools (`memory_update`, `memory_log`) refuse to write from
     them;
   - recall, the recent-work brief and, in a turn that may use the Mac, the
     session tools (`session_search`, reading a message included, and `list_threads`) draw

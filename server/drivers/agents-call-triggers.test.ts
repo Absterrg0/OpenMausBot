@@ -95,9 +95,13 @@ describe("the trigger tool's actions", () => {
     expect(await text({ action: "update", trigger_id: "t-1" })).toBe("The update action needs at least one supported field to change.");
     expect(await text({ action: "update", trigger_id: "t-1", when: "schedule", name: "A" })).toBe("when applies only to action=create.");
     expect(await text({ action: "pause", trigger_id: "t-1", name: "A" })).toBe("The pause action changes no fields; send them with action=update.");
-    expect(await text({ action: "delete" })).toBe("trigger action=delete needs the trigger_id from trigger_info.");
+    expect(await text({ action: "delete", trigger_id: "t-1" })).toBe("trigger does not delete: call delete_trigger with the trigger_id.");
+    expect(await text({ action: "pause" })).toBe("trigger action=pause needs the trigger_id from trigger_info.");
     expect(await text({ action: "create", trigger_id: "t-1", when: "webhook", name: "A", instructions: "B" })).toBe("trigger_id is for a trigger that exists; leave it out to create one.");
-    expect(await text({ trigger_id: "t-1" })).toContain("trigger needs action: create, or update, pause, resume, run_now or delete");
+    expect(await text({ trigger_id: "t-1" })).toContain("trigger needs action: create, or update, pause, resume or run_now");
+    const deletes = async (args: Record<string, unknown>) => (await callTool("delete_trigger", args, refused.context)).text;
+    expect(await deletes({})).toBe("delete_trigger needs the trigger_id from trigger_info.");
+    expect(await deletes({ trigger_id: "t-1", schedule: { type: "daily", time: "09:00" } })).toBe("delete_trigger takes only trigger_id and for_bot_id.");
     expect((await callTool("trigger_info", { action: "delete" }, refused.context)).text).toBe("trigger_info action is list or events.");
     expect(refused.calls).toEqual([]);
   });
@@ -109,5 +113,14 @@ describe("the trigger tool's actions", () => {
     const events = context({ api: { apps: [], notConnected: [] } });
     await callTool("trigger_info", { action: "events", app: "Gmail" }, events.context);
     expect(events.calls[0]!.path).toBe("/api/internal/trigger-events?fromBotId=scout&fromThreadId=thread-1&app=gmail");
+  });
+});
+
+describe("delete_trigger", () => {
+  it("deletes one trigger, its own or another bot's in the section, and nothing else", async () => {
+    const { calls, context: ctx } = context();
+    const result = await callTool("delete_trigger", { trigger_id: " t-1 ", for_bot_id: "helper" }, ctx);
+    expect(result.text).toContain("Applied delete to trigger t-1 (trigger id t-1). It applied at once");
+    expect(calls).toEqual([{ path: "/api/internal/trigger-requests", body: { fromBotId: "scout", fromThreadId: "thread-1", action: "delete", triggerId: "t-1", forBotId: "helper" } }]);
   });
 });

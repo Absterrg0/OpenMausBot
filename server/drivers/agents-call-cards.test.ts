@@ -47,7 +47,7 @@ describe("the widget tools in the catalog", () => {
     expect(show.description).toContain("if they type something else instead, that is their answer");
     expect(show.description).not.toMatch(/without being asked/);
     expect(show.description).toMatch(/Never ask for passwords here\. Not available in rooms\.$/);
-    expect(show.description).toContain("To replace a widget in place (a progress bar moving, a status changing), call this again with the widget_id it returned; one the person already answered cannot be replaced, so show a new one.");
+    expect(show.description).toContain("To replace a widget in place (a progress bar moving, a status changing), call this again with the widget_id it returned (was update_widget); one the person already answered cannot be replaced, so show a new one.");
     for (const name of ["attach_file", "show_widget"]) expect(tools.get(name), name).not.toHaveProperty("annotations");
   });
 });
@@ -156,7 +156,7 @@ describe("the chat-app tools", () => {
     expect(tools.get("show_html")!.description).toMatch(/^Show a small self-contained web page in this chat, where the person watches it appear and can point at a part to change: /);
     expect(tools.get("show_html")!.description).toContain("or `jsx`, one React component file with a default export");
     // Its last sentence points a dashboard at the bundled data-dashboards skill.
-    expect(tools.get("show_html")!.description).toMatch(/At most 256 KB\. To replace a page you showed, in place, call this again with the app_id it returned and new html, jsx or path; it reloads, so anything the person did in it is lost\. Never put secrets in it\. Not available in rooms\. For a data dashboard, follow the data-dashboards skill\.$/);
+    expect(tools.get("show_html")!.description).toMatch(/At most 256 KB\. To replace a page you showed, in place, call this again with the app_id it returned and new html, jsx or path \(was update_html\); it reloads, so anything the person did in it is lost\. Never put secrets in it\. Not available in rooms\. For a data dashboard, follow the data-dashboards skill\.$/);
     expect(tools.get("show_html")!.inputSchema).not.toHaveProperty("required");
     expect(Object.keys((tools.get("show_html")!.inputSchema as unknown as { properties: object }).properties)).toEqual(expect.arrayContaining(["html", "jsx", "path", "title", "app_id"]));
     expect(Buffer.byteLength(JSON.stringify(tools.get("show_html")))).toBeLessThan(12 * 1024);

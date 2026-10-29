@@ -6,7 +6,7 @@ import { stripControlPlaneEnv } from "../config.ts";
 import type { SendTurnInput } from "../contracts.ts";
 import { augmentedPath } from "../env-path.ts";
 import { killCliTree, spawnCli } from "../procs.ts";
-import { AGENTS_TOOL_ALIASES } from "./agents-aliases.ts";
+import { AGENTS_TOOL_ALIASES } from "../../shared/agents-tool-names.ts";
 import { bridgedCallTarget, unbridgedServer } from "./agents-bridge.ts";
 import { chatImage, type ChatImagePart } from "./chat-images.ts";
 import { CALL_TOOL, directoryCallTarget, isDirectoryTool } from "../mcp-directory.ts";
@@ -377,8 +377,8 @@ export async function mountChatTools(integrations: SendTurnInput["integrations"]
       // Unlisted, so a call by an alias in an earlier tool call reaches the agents server, which runs it as its action
       // tool; the server holds it to that tool's full schema.
       if (agents) {
-        for (const [alias, { tool: target }] of Object.entries(AGENTS_TOOL_ALIASES)) {
-          const listed = staged.find((entry) => entry.tool.name === target);
+        for (const [alias, { tools: targets }] of Object.entries(AGENTS_TOOL_ALIASES)) {
+          const listed = staged.find((entry) => targets.includes(entry.tool.name));
           const name = chatToolName(server, alias);
           if (listed && !registered.has(name)) registered.set(name, { ...listed.tool, name: alias, schema: compileToolSchema({ type: "object" }) });
         }

@@ -1,6 +1,6 @@
 // The trigger tools a bot uses from chat: trigger_info reads (list, events), trigger changes (create, update, pause,
-// resume, run_now, delete). Every change applies at once (no confirmation card); the harness records it on the
-// automation's card with Pause, Edit and Undo.
+// resume, run_now) and delete_trigger deletes. Every change applies at once (no confirmation card); the harness records
+// it on the automation's card with Pause, Edit and Undo.
 import { normalizeCronSchedule } from "../../shared/routine-schedule.ts";
 import { plainTimeZone } from "../../shared/plain-time-zone.ts";
 import { plainWhen } from "../plain-time.ts";
@@ -9,7 +9,7 @@ import type { ToolCallContext, ToolCallResult } from "./agents-call.ts";
 import { WEEKDAYS } from "./agents-catalog.ts";
 import type { Json } from "./agents-client.ts";
 
-export const TRIGGER_TOOL_NAMES: ReadonlySet<string> = new Set(["trigger_info", "trigger"]);
+export const TRIGGER_TOOL_NAMES: ReadonlySet<string> = new Set(["trigger_info", "trigger", "delete_trigger"]);
 
 const LIST_ROUTE = "/api/internal/triggers";
 const EVENTS_ROUTE = "/api/internal/trigger-events";
@@ -361,14 +361,16 @@ export async function callTriggerTool(name: string, args: Json, context: ToolCal
     if (args.action !== undefined && args.action !== null && args.action !== "list") return { text: "trigger_info action is list or events.", isError: true };
     return listTriggers(args, forBotId, context);
   }
-  if (args.action === "create") {
+  if (name === "trigger" && args.action === "create") {
     if (args.trigger_id !== undefined && args.trigger_id !== null) return { text: "trigger_id is for a trigger that exists; leave it out to create one.", isError: true };
     return createTrigger(args, forBotId, context);
   }
   const triggerId = typeof args.trigger_id === "string" ? args.trigger_id.trim() : "";
-  const action = routineAction(args.action);
-  if (!action) return { text: "trigger needs action: create, or update, pause, resume, run_now or delete with a trigger_id from trigger_info.", isError: true };
-  if (!triggerId) return { text: `trigger action=${action} needs the trigger_id from trigger_info.`, isError: true };
+  // Deleting is its own tool, so an engine's remembered allow for trigger never covers it.
+  if (name === "trigger" && args.action === "delete") return { text: "trigger does not delete: call delete_trigger with the trigger_id.", isError: true };
+  const action = name === "delete_trigger" ? "delete" : routineAction(args.action);
+  if (!action) return { text: "trigger needs action: create, or update, pause, resume or run_now with a trigger_id from trigger_info.", isError: true };
+  if (!triggerId) return { text: `${name === "delete_trigger" ? "delete_trigger" : `trigger action=${action}`} needs the trigger_id from trigger_info.`, isError: true };
   const createOnly = CREATE_ONLY.find((key) => args[key] !== undefined && args[key] !== null);
   if (createOnly) return { text: `${createOnly} applies only to action=create.`, isError: true };
   const { fields, error } = triggerFields(Object.fromEntries(Object.entries(args).filter(([key]) => !CALL_KEYS.has(key))));
@@ -378,7 +380,7 @@ export async function callTriggerTool(name: string, args: Json, context: ToolCal
     if (!Object.keys(fields).length) return { text: "The update action needs at least one supported field to change.", isError: true };
     body.changes = fields;
   } else if (Object.keys(fields).length) {
-    return { text: `The ${action} action changes no fields; send them with action=update.`, isError: true };
+    return { text: name === "delete_trigger" ? "delete_trigger takes only trigger_id and for_bot_id." : `The ${action} action changes no fields; send them with action=update.`, isError: true };
   }
   const done = action === "run_now" ? `Started trigger ${triggerId} once now` : `Applied ${action} to trigger ${triggerId}`;
   return request(body, context, done);

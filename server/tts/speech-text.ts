@@ -172,6 +172,7 @@ export function narrateTool(toolName: string): string | null {
     [/^list_bots$/, "checking who's around"],
     [/^trigger$/, "working on an automation"],
     [/^trigger_info$/, "checking automations"],
+    [/^delete_trigger$/, "deleting an automation"],
     [/^ask_bot$/, "asking a teammate"],
   ];
   for (const [pattern, phrase] of verbs) {

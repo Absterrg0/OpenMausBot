@@ -415,7 +415,7 @@ A trigger is "when something happens, a bot does something". Tell a bot "every w
 of my inbox" or "whenever our form calls, draft a reply" and it sets the trigger up in that turn with
 its `trigger` tool (no confirmation; the chat shows a live card with Edit, Pause and Undo). **Triggers**, first in
 the sidebar, lists every schedule and webhook, with a calendar and the run history. Bots manage them with
-`trigger_info` (list, app events) and `trigger` (create, update, pause, resume, run now, delete); a webhook a bot makes never shows the bot its secret:
+`trigger_info` (list, app events), `trigger` (create, update, pause, resume, run now) and `delete_trigger`; a webhook a bot makes never shows the bot its secret:
 the person copies the link from the card or the Triggers page.
 
 Schedules (routines) can run once, on selected weekdays, or every 5–1,440 minutes, using either a bot's configured

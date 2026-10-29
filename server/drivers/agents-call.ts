@@ -1,10 +1,9 @@
 // Runs one agents tool: check arguments, call the harness, render the model's text. Stateless;
 // per-turn limits are the harness's, since one proxy can serve many turns of a warm engine.
-import { agentsCallMember } from "../../shared/agents-tool-names.ts";
+import { agentsCallMember, resolveAgentsCall } from "../../shared/agents-tool-names.ts";
 import { CREDENTIAL_TARGETS, isCredentialTargetId } from "../../shared/credential-request.ts";
 
 import { peerName } from "../peer-roster.ts";
-import { resolveAgentsCall } from "./agents-aliases.ts";
 import { callCardTool, CARD_TOOL_NAMES } from "./agents-call-cards.ts";
 import { callTriggerTool, TRIGGER_TOOL_NAMES } from "./agents-call-triggers.ts";
 import { catalogProfileFromEnv, fullInputSchema, SHARED_COMPUTER_TOOL_NAMES } from "./agents-catalog.ts";
@@ -644,7 +643,7 @@ export async function callTool(called: string, input: Json, context: ToolCallCon
     if (!["append", "replace", "remove", "supersede", "forget"].includes(String(args.action))
       || (!passageOnly && (typeof args.text !== "string" || !args.text.trim()))
       || (args.action !== "append" && (typeof args.old_text !== "string" || !args.old_text.trim()))) {
-      return { text: "Use memory_update action=append with text, replace or supersede with text and old_text, remove with old_text, forget with old_text naming what to forget, or log with one line of text.", isError: true };
+      return { text: "Use memory_update action=append with text, replace or supersede with text and old_text, remove with old_text, or forget with old_text naming what to forget.", isError: true };
     }
     const { body: r } = await apiResponse("/api/internal/memory", {
       method: "POST",
@@ -685,7 +684,7 @@ export async function callTool(called: string, input: Json, context: ToolCallCon
   }
   if (member === "memory_log") {
     if (typeof args.text !== "string" || !args.text.trim()) {
-      return { text: "memory_update action=log needs text: one line about what happened.", isError: true };
+      return { text: "memory_log needs text: one line about what happened.", isError: true };
     }
     const r = await api("/api/internal/memory/log", {
       method: "POST",

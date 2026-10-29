@@ -5,7 +5,7 @@
 import { isOutboundTool } from "../../shared/outbound.ts";
 import { READ_ONLY_ANNOTATIONS } from "../agent-tool-policy.ts";
 import { bm25Ranker } from "../mcp-directory.ts";
-import { AGENTS_TOOL_ALIASES } from "./agents-aliases.ts";
+import { AGENTS_TOOL_ALIASES } from "../../shared/agents-tool-names.ts";
 import type { Json } from "./agents-client.ts";
 
 /** The proxy's switch: "1" lists through the bridge, anything else lists the whole catalog. */
@@ -183,8 +183,8 @@ export function createToolBridge(tools: readonly BridgeTool[]): ToolBridge {
   async function find(args: unknown): Promise<BridgeAnswer> {
     const query = record(args) && typeof args.query === "string" ? args.query.trim() : "";
     if (!query || query.length > QUERY_CHARS) return { text: FIND_USAGE, isError: true };
-    const named = Object.hasOwn(AGENTS_TOOL_ALIASES, query) ? AGENTS_TOOL_ALIASES[query]!.tool : query;
-    if (listedNames.has(named)) return { text: `${named === query ? query : `${query} is part of ${named}, which`} is in your tool list: call it directly.` };
+    const named = Object.hasOwn(AGENTS_TOOL_ALIASES, query) ? AGENTS_TOOL_ALIASES[query]!.tools[0]! : query;
+    if (listedNames.has(named)) return { text: `${named} is in your tool list: call it directly.` };
     const ranked = await bm25Ranker(named, hidden, FIND_MATCHES_MAX);
     const matches: Array<Pick<BridgeTool, "name" | "description" | "inputSchema">> = [];
     let chars = 0;

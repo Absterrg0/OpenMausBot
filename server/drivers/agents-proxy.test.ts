@@ -654,9 +654,11 @@ describe("agents-proxy MCP surface", () => {
       "report_bug",
       "memory_update",
       "retry_thread",
+      "memory_log",
       "session_search",
       "trigger_info",
       "trigger",
+      "delete_trigger",
       "propose_profile",
       "propose_model",
       "propose_team_memory",
@@ -767,7 +769,7 @@ describe("agents-proxy MCP surface", () => {
     const list = await rpc("tools/list");
     const create = list.result.tools.find((t: { name: string }) => t.name === "trigger");
     expect(create.inputSchema.required).toEqual(["action"]);
-    expect(create.inputSchema.properties.action.enum).toEqual(["create", "update", "pause", "resume", "run_now", "delete"]);
+    expect(create.inputSchema.properties.action.enum).toEqual(["create", "update", "pause", "resume", "run_now"]);
     expect(Object.keys(create.inputSchema.properties)).not.toContain("changes");
     expect(create.inputSchema.properties.when.enum).toEqual(["schedule", "app_event", "webhook", "limit_reset"]);
     expect(create.inputSchema.properties.repeat.enum).toEqual(["once", "every_reset"]);
@@ -1321,8 +1323,7 @@ describe("agents-proxy MCP surface", () => {
     const tools = await rpc("tools/list");
     const schema = tools.result.tools.find((tool: { name: string }) => tool.name === "memory_update").inputSchema;
     // No pattern on free-text params: constrained decoding collapses a patterned field to a minimal satisfier.
-    expect(fullInputSchema("memory_update")).toMatchObject({ properties: { text: { minLength: 1 } } });
-    expect(schema.properties.action.enum).toEqual(["append", "replace", "remove", "supersede", "forget", "log"]);
+    expect(fullInputSchema("memory_update")).toMatchObject({ properties: { text: { minLength: 1, maxLength: 1000 } } });
     expect(schema.properties.text).not.toHaveProperty("pattern");
     memoryStatus = 409;
     memoryResponse = { error: "oldText must match exactly once in the latest memory." };
@@ -1352,13 +1353,14 @@ describe("agents-proxy MCP surface", () => {
     memoryResponse = { ok: true, truncated: false };
   });
 
-  it("memory_update action=log appends to today's log through the harness and says so, never loading it anywhere", async () => {
+  it("memory_log appends to today's log through the harness and says so, never loading it anywhere", async () => {
     const tools = await rpc("tools/list");
-    const tool = tools.result.tools.find((t: { name: string }) => t.name === "memory_update");
+    const tool = tools.result.tools.find((t: { name: string }) => t.name === "memory_log");
     expect(tool.description).toContain("what happened, not what is true");
-    expect(tool.description).toContain("logs never load into your prompt");
+    expect(tool.description).toContain("Logs are never loaded into your prompt");
+    expect(tool.inputSchema.required).toEqual(["text"]);
     expect(tool.inputSchema.properties.text).not.toHaveProperty("pattern");
-    const logged = await callTool("memory_update", { action: "log", text: "shipped 0.1.70", fromBotId: "spoofed" });
+    const logged = await callTool("memory_log", { text: "shipped 0.1.70", fromBotId: "spoofed" });
     expect(logged.result.isError).toBe(false);
     expect(logged.result.content[0].text).toBe('Logged to memory/log/2026-09-10.md: - 14:03 · from chat "Deploy" · shipped 0.1.70');
     expect(lastMemoryLogBody).toEqual({ fromBotId: "bot-asker", fromThreadId: "thread-asker-routine", text: "shipped 0.1.70" });

@@ -244,18 +244,19 @@ describe("what a bridged turn is listed", () => {
 describe("find_tool", () => {
   it.each([
     ["schedule a recurring task every morning", "trigger"],
-    ["pause or delete one of my routines", "trigger"],
+    ["pause or resume one of my routines", "trigger"],
     ["what routines do I have", "trigger_info"],
     ["change my name and title", "propose_profile"],
     ["switch this bot to a different model", "propose_model"],
     ["search my earlier conversations", "session_search"],
+    ["delete one of my routines for good", "delete_trigger"],
     ["run a shell command in the VM", "vm_exec"],
     ["add an MCP server", "add_mcp_server"],
     ["see how the threads I opened are going", "list_threads"],
+    ["write a line to today's log", "memory_log"],
     ["remember a decision for the whole team", "propose_team_memory"],
     ["save this procedure as a reusable skill", "skill_manage"],
     ["create a new specialist bot", "create_bot"],
-    ["delete a teammate", "propose_bot_deletion"],
     ["rename a room or change its members", "manage_room"],
     ["use the desktop the user shared", "shared_computer"],
     ["open a separate job for each pull request", "start_thread"],
@@ -272,6 +273,8 @@ describe("find_tool", () => {
     // each of these lands second, behind a tool that does nearly the same
     ["check how a hand-off is going", "assignment_status"],
     ["make a new room", "manage_room"],
+    // delete_trigger shares the word
+    ["delete a teammate", "propose_bot_deletion"],
     ["my skills", "skills_list"],
     ["computers shared with this workspace", "list_shared_computers"],
   ])("returns the hidden tool among its few matches for a looser request: %s", async (query, expected) => {
@@ -307,7 +310,7 @@ describe("find_tool", () => {
     const bridge = bridgeFor(FULL_CHIEF);
     expect((await found(bridge, "create_trigger")).matches[0]!.name).toBe("trigger");
     expect((await found(bridge, "list_trigger_events")).matches[0]!.name).toBe("trigger_info");
-    expect(await bridge.find({ query: "memory_log" })).toEqual({ text: "memory_log is part of memory_update, which is in your tool list: call it directly." });
+    expect((await found(bridge, "update_widget")).matches[0]!.name).toBe("show_widget");
   });
 
   it("says how to run a match", async () => {

@@ -79,33 +79,33 @@ const FULL = "skills+shared+voice+escalations+x+team";
 
 /** Bytes when the budget was last set; a profile may move at most 2% either way (lower it to lock in a win). */
 const BUDGET_BASELINE: Record<string, number> = {
-  "default": 54089,
-  "voice": 54870,
-  "shared": 56189,
-  "shared+voice": 56970,
-  "skills": 56908,
-  "skills+voice": 57689,
-  "skills+shared": 59008,
-  "skills+shared+voice": 59789,
-  "non-chief": 45050,
-  "voice+non-chief": 45831,
-  "shared+non-chief": 47150,
-  "shared+voice+non-chief": 47931,
-  "skills+non-chief": 47869,
-  "skills+voice+non-chief": 48650,
-  "skills+shared+non-chief": 49969,
-  "skills+shared+voice+non-chief": 50750,
-  "skills+shared+voice+cloud-home": 58870,
-  "skills+shared+voice+non-chief+cloud-home": 49831,
-  "default+legacy-switches": 54089,
-  "default+mausbot": 54740,
-  "skills+shared+voice+mausbot": 60440,
-  "skills+shared+voice+escalations": 60619,
-  "skills+shared+voice+escalations+x": 64413,
-  "skills+shared+voice+escalations+x+team": 65045,
-  "default+handoff": 52877,
-  "default+room": 47641,
-  "non-chief+room": 38602,
+  "default": 54959,
+  "voice": 55740,
+  "shared": 57059,
+  "shared+voice": 57840,
+  "skills": 57778,
+  "skills+voice": 58559,
+  "skills+shared": 59878,
+  "skills+shared+voice": 60659,
+  "non-chief": 45902,
+  "voice+non-chief": 46683,
+  "shared+non-chief": 48002,
+  "shared+voice+non-chief": 48783,
+  "skills+non-chief": 48721,
+  "skills+voice+non-chief": 49502,
+  "skills+shared+non-chief": 50821,
+  "skills+shared+voice+non-chief": 51602,
+  "skills+shared+voice+cloud-home": 59740,
+  "skills+shared+voice+non-chief+cloud-home": 50683,
+  "default+legacy-switches": 54959,
+  "default+mausbot": 55610,
+  "skills+shared+voice+mausbot": 61310,
+  "skills+shared+voice+escalations": 61489,
+  "skills+shared+voice+escalations+x": 65328,
+  "skills+shared+voice+escalations+x+team": 65960,
+  "default+handoff": 53747,
+  "default+room": 48473,
+  "non-chief+room": 39416,
 };
 
 const RPC_PREFIX = '{"jsonrpc":"2.0","id":1,"result":';
@@ -282,7 +282,7 @@ describe("agents proxy tools/list golden", () => {
       }
       expect(chiefTools.find((tool) => tool.name === "propose_profile")!.description).toContain(CHIEF_PROFILE_TARGET);
       expect(JSON.stringify(CHIEF_TARGET_TOOLS.map((tool) => tools.get(tool)))).not.toContain("for_bot_id");
-      for (const trigger of ["trigger_info", "trigger"]) {
+      for (const trigger of ["trigger_info", "trigger", "delete_trigger"]) {
         expect(tools.get(trigger)!.inputSchema.properties, `${name}: ${trigger}`).toHaveProperty("for_bot_id");
       }
     }
