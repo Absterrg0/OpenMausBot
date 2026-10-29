@@ -30,6 +30,7 @@ import type { McpMessage } from "./McpResultBudgetField";
 import { McpServerEditor, type McpServerSubmission } from "./McpServerEditor";
 import { isRemoteMcpListing, type McpServerListing } from "./mcp-draft";
 import { WHOP_MCP_URL, isWhopServer, whopServerName } from "@/lib/whop-integration";
+import { POSTIZ_SERVER } from "../../shared/postiz";
 import { openBotSettings } from "./bot-panel/panel-link";
 
 export interface ProbeResult {
@@ -472,7 +473,7 @@ export function McpServersPanel({ embedded = false, whopCard = false, hideWhop =
     </div>;
   }
 
-  const visibleServers = servers?.filter((server) => !hideWhop || !isRemoteMcpListing(server) || !isWhopServer(server));
+  const visibleServers = servers?.filter((server) => !hideWhop || !isRemoteMcpListing(server) || !(isWhopServer(server) || server.name === POSTIZ_SERVER));
 
   return (
     <section

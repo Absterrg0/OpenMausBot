@@ -7,6 +7,7 @@ import { McpOAuthError, McpSignInError, mcpCallbackOrigin, withMcpSignIn, type M
 import { probeMcpServer } from "../mcp-probe.ts";
 import { MAX_MCP_SERVERS, isRemoteMcpServer, mcpServerBody, parseMcpServerMutation, parseMcpServersImport, parseStoredMcpServer, type McpRunsOn, type StoredMcpServer } from "../mcp-registry.ts";
 import { personKey } from "../person-key.ts";
+import { postizKeyHeaders } from "../postiz/connection.ts";
 import { isLoopbackHost, isProxied, provesSameOrigin, requestOrigin } from "../request-auth.ts";
 import type { SessionRegistry } from "../sessions.ts";
 import type { BusyFlag } from "./config.ts";
@@ -14,7 +15,7 @@ import { PASS, type RouteHandler } from "./table.ts";
 import { sessionMember } from "./team-phone.ts";
 
 export interface McpServerRouteDeps {
-  cfg: Pick<AppConfig, "mcpServers">;
+  cfg: Pick<AppConfig, "mcpServers" | "postiz">;
   sessions: Pick<SessionRegistry, "isLive">;
   mcpOAuth: McpOAuthManager;
   teamConnections: Pick<TeamConnectionsHost, "personMcp" | "people">;
@@ -94,6 +95,8 @@ export function createMcpServerRoutes(deps: McpServerRouteDeps): RouteHandler {
           oauth = deps.teamConnections.people.oauth(person);
           const key = deps.teamConnections.people.key(person, name, target.url);
           target = { ...target, headers: key ? { [key.header]: key.value } : {} };
+        } else if (!personal && isRemoteMcpServer(target)) {
+          target = { ...target, headers: { ...target.headers, ...postizKeyHeaders(cfg.postiz, name, target) } };
         }
         if (isRemoteMcpServer(target) && oauth.authState(name, target.url) === "signed-in") {
           const signedIn = (await withMcpSignIn({ [name]: target }, oauth))[name];

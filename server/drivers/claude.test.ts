@@ -1738,7 +1738,10 @@ describe("ClaudeDriver turns (fake CLI)", () => {
       agents: stdio("agents"), browser: stdio("browser"), composio: stdio("composio"), composioOwn: stdio("own-apps"),
       localComputer: stdio("computer"), phone: stdio("phone"), data: stdio("data"), highlevel: stdio("highlevel"),
       device: stdio("device"), dweb: { url: "http://127.0.0.1:1" },
-      custom: { shop: { command: "npx", args: ["shop"], env: {} }, docs: { type: "http" as const, url: "https://docs.example.test/mcp", headers: {} } },
+      custom: {
+        shop: { command: "npx", args: ["shop"], env: {} }, docs: { type: "http" as const, url: "https://docs.example.test/mcp", headers: {} },
+        postiz: { type: "http" as const, url: "https://api.postiz.com/mcp-oauth-dynamic", headers: { Authorization: "Bearer pos_fixture" } },
+      },
     };
     const mounted = async (threadId: string, preloadBrowserTools: boolean) => {
       const { turnId } = await instance.adapter.sendTurn({ threadId, text: "hi", cwd: scratch, preloadBrowserTools, integrations });
@@ -1755,7 +1758,7 @@ describe("ClaudeDriver turns (fake CLI)", () => {
     const browsing = await mounted("t-tool-search", true);
     expect(browsing.toolSearch).toBe("true");
     expect(browsing.alwaysLoaded).toEqual(["agents", "browser", "ogb"]);
-    expect(browsing.onDemand).toEqual(["composio", "computer", "data", "device", "docs", "dweb", "highlevel", "own_apps", "phone", "shop"]);
+    expect(browsing.onDemand).toEqual(["composio", "computer", "data", "device", "docs", "dweb", "highlevel", "own_apps", "phone", "postiz", "shop"]);
     const other = await mounted("t-tool-search-no-browse", false);
     expect(other.alwaysLoaded).toEqual(["agents", "ogb"]);
     expect(other.onDemand).toContain("browser");

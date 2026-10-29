@@ -29,6 +29,8 @@ import { SidebarPopoverMenu } from "./SidebarPopoverMenu";
 import { appCategoryLabel, CATEGORY_SECTION_SIZE, catalogSections, connectorDescription, inCategory, rankCategories } from "@/lib/app-catalog";
 import { McpServersPanel } from "./McpServersPanel";
 import { HighLevelCard } from "./HighLevelCard";
+import { PostizCard } from "./PostizCard";
+import { POSTIZ_CATALOG_CARD, POSTIZ_SEARCH } from "@/lib/postiz";
 import { X_CARD_SEARCH, XCard } from "./XCard";
 import { mergeCompleteConnectorStatus, mergeCurrentConnectorStatus, onlyLatestConnectorResponses } from "@/lib/connector-status-merge";
 import { openBotSettings } from "./bot-panel/panel-link";
@@ -181,12 +183,19 @@ export function PluginsPanel() {
   // Appended after the older state so tests that seed state by call order keep their indices.
   const [highLevelConnected, setHighLevelConnected] = useState<boolean | null>(null);
   const [xConnected, setXConnected] = useState<boolean | null>(null);
+  const [postizConnected, setPostizConnected] = useState<boolean | null>(null);
 
   const polls = useRef(new Map<string, () => void>());
   const statusGenerations = useRef(new Map<string, number>());
   const latestStatusRequests = useRef(new Map<string, number>());
   const opening = useRef<ReturnType<typeof reserveConnectionPage> | null>(null);
 
+  /** A connection that finished or failed since a request no newer than this one no longer needs its sign-in page. */
+  const forgetSettledUrls = (services: Record<string, ConnectorStatus>, requestGenerations: ReadonlyMap<string, number>) => {
+    const settled = Object.entries(services).filter(([slug, state]) => (statusGenerations.current.get(slug) ?? 0) === (requestGenerations.get(slug) ?? 0)
+      && ((state.connected && !state.pending) || /^(expired|failed)$/i.test(state.status ?? ""))).map(([slug]) => slug);
+    if (settled.length) setPendingUrls((current) => settled.some((slug) => current[slug]) ? Object.fromEntries(Object.entries(current).filter(([slug]) => !settled.includes(slug))) : current);
+  };
   const refreshStatus = useCallback((slugs: string[]): Promise<Record<string, ConnectorStatus>> => {
     if (!slugs.length) return Promise.resolve({});
     const requestGenerations = new Map(slugs.map((slug) => [slug, statusGenerations.current.get(slug) ?? 0]));
@@ -210,15 +219,7 @@ export function PluginsPanel() {
           statusGenerations.current,
           requestGenerations,
         ));
-        for (const [slug, state] of Object.entries(services)) {
-          const isCurrent = (statusGenerations.current.get(slug) ?? 0) === (requestGenerations.get(slug) ?? 0);
-          if (isCurrent && ((state.connected && !state.pending) || /^(expired|failed)$/i.test(state.status ?? ""))) setPendingUrls((current) => {
-            if (!current[slug]) return current;
-            const next = { ...current };
-            delete next[slug];
-            return next;
-          });
-        }
+        forgetSettledUrls(services, requestGenerations);
         return services;
       })
       .catch(() => ({}));
@@ -237,15 +238,7 @@ export function PluginsPanel() {
           requestGenerations,
           authoritative,
         ));
-        for (const [slug, state] of Object.entries(services)) {
-          const isCurrent = (statusGenerations.current.get(slug) ?? 0) === (requestGenerations.get(slug) ?? 0);
-          if (isCurrent && ((state.connected && !state.pending) || /^(expired|failed)$/i.test(state.status ?? ""))) setPendingUrls((current) => {
-            if (!current[slug]) return current;
-            const next = { ...current };
-            delete next[slug];
-            return next;
-          });
-        }
+        forgetSettledUrls(services, requestGenerations);
         return services;
       })
       .finally(() => setRefreshing(false));
@@ -441,11 +434,12 @@ export function PluginsPanel() {
   const highLevelMatches = !search || `highlevel high level growably crm ${t("highlevel.description")}`.toLowerCase().includes(search.toLowerCase().trim());
   const showHighLevel = highLevelMatches && (filter === "all" || (filter === "connected" && highLevelConnected !== false));
   const showX = (!search || `${X_CARD_SEARCH} ${t("apps.x.description")}`.toLowerCase().includes(search.toLowerCase().trim())) && (filter === "all" || (filter === "connected" && xConnected !== false));
+  const showPostiz = (!search || `${POSTIZ_SEARCH} ${t("postiz.description")}`.toLowerCase().includes(search.toLowerCase().trim())) && (filter === "all" || (filter === "connected" && postizConnected !== false));
   const visible = (filter === "connected" ? matching.filter((card) => isConnected(card.slug)) : matching)
     .map((card, index) => ({ card, index }))
     .sort((a, b) => Number(isConnected(b.card.slug)) - Number(isConnected(a.card.slug)) || a.index - b.index)
     .map(({ card }) => card);
-  const connectedCount = Object.values(status).filter(hasActiveConnection).length + Number(whopConnected === true) + Number(highLevelConnected === true) + Number(xConnected === true);
+  const connectedCount = Object.values(status).filter(hasActiveConnection).length + Number(whopConnected === true) + Number(highLevelConnected === true) + Number(xConnected === true) + Number(postizConnected === true);
   const connectedEmptyCopy = connectedInventoryCopy(inventoryPhase);
   const close = () => dispatch({ type: "togglePlugins", open: false });
   const setupNotice = connectorSetupNotice({ configured, stale, setup, remoteClient });
@@ -462,11 +456,12 @@ export function PluginsPanel() {
     if (surface !== "apps") dispatch({ type: "togglePlugins", open: true, surface: "apps" });
   };
 
-  const ranked = rankCategories(cards ?? []);
+  const ranked = rankCategories([...(cards ?? []), POSTIZ_CATALOG_CARD], undefined, POSTIZ_CATALOG_CARD.categories);
   const moreCategories = ranked.more;
   const categoryInMore = category !== null && moreCategories.includes(category);
   const inCategoryView = filter === "all" && category !== null;
-  const nativeCardsShown = !inCategoryView && (showWhop || showHighLevel || showX);
+  const postizHere = showPostiz && (!inCategoryView || inCategory(POSTIZ_CATALOG_CARD, category));
+  const nativeCardsShown = (!inCategoryView && (showWhop || showHighLevel || showX)) || postizHere;
   const categoryCards = inCategoryView ? visible.filter((card) => inCategory(card, category)) : visible;
   const sectioned = filter === "all" && !search && category === null;
   const sections = sectioned ? catalogSections(visible, isConnected, ranked.inline) : [];
@@ -765,6 +760,7 @@ export function PluginsPanel() {
                 <div data-native-card="highlevel" className={showHighLevel && !inCategoryView ? "contents" : "hidden"}>
                   <HighLevelCard refreshKey={whopRefresh} onConnection={setHighLevelConnected} />
                 </div>
+                <div data-native-card="postiz" className={postizHere ? "contents" : "hidden"}><PostizCard refreshKey={whopRefresh} onConnection={setPostizConnected} /></div>
                 {allShown.map((card) => renderTile(card))}
               </AppsSection>
             </div>

@@ -129,6 +129,12 @@ The [Whop fixture](whop.md) checks its one-click setup, cancellation, denied
 consent, discovery failures, reconnect and disconnect using that same registry
 and a synthetic provider, without accessing a real Whop account.
 
+The [Postiz fixture](postiz.md) checks the Apps page's Postiz card in the Social
+category: Postiz Cloud's sign-in and an API key for a person's own Postiz, the
+bot's turn getting the `postiz` tools with the token kept out of every answer,
+transcript and log, plain refusals, revocation and disconnect, against loopback
+stand-ins for Postiz.
+
 The [X card fixture](x-connector.md) checks the Apps page's X card: a plan's
 included calls with the month's use, the person's own treg key (saved, tested,
 removed, used first) and a used-up month, against loopback stand-ins for treg

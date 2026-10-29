@@ -23,6 +23,8 @@ export interface ConfigStatus {
   xResearch?: { included: boolean; unavailable?: boolean };
   /** The person's own treg key for research: configured or not, never the key. */
   treg?: SavedKey;
+  /** The Postiz organisation API key, and the Postiz server it belongs to when it is not Postiz Cloud. */
+  postiz?: SavedKey & { url?: string };
   /** `everyClaudeBot`: the key runs every Claude bot, not only "Claude (API key)". */
   anthropic?: SavedKey & { everyClaudeBot?: boolean };
   openai?: SavedKey;
