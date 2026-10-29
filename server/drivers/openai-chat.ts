@@ -13,7 +13,7 @@ import { ASK_USER_TOOL, ASK_USER_TOOL_DEFINITION, askQuestionSummary, parseAskQu
 import { allowsTool, parseToolScope } from "../../shared/tool-scope.ts";
 import { redactSecretsInText } from "../redact.ts";
 import { toolDetailPreview } from "../tool-summary.ts";
-import { ChatToolSessionError, mountChatTools, type ChatToolDefinition, type ChatToolSession, type ChatToolResult } from "./chat-mcp-tools.ts";
+import { ChatToolSessionError, mountChatTools, trimmedToolsNotice, type ChatToolDefinition, type ChatToolSession, type ChatToolResult } from "./chat-mcp-tools.ts";
 import { assertImageTransport, chatImageBudget, chatToolImages, chatUserContent, type ChatContentPart } from "./chat-images.ts";
 import { promptHalves, volatileContextNote, withContextNote } from "./prompt-split.ts";
 import { createChatToolApproval, refusal } from "./chat-tool-approval.ts";
@@ -617,6 +617,8 @@ export function createOpenAIChatRuntime<Config>(options: RuntimeOptions<Config>)
         for (const { server, reason } of tools.skipped) {
           emit({ ...base(turn.threadId, turnId), type: "runtime.notice", message: `MCP server "${server}" was skipped for this turn: ${safeText(reason)}` });
         }
+        const trimmedNotice = trimmedToolsNotice(tools.trimmed);
+        if (trimmedNotice) emit({ ...base(turn.threadId, turnId), type: "runtime.notice", message: trimmedNotice });
         const questionAllowed = options.tools !== false && allowsTool(scope, { kind: "native", name: ASK_USER_TOOL });
         let optionalQuestionOnly = questionAllowed && tools.definitions.length === 0;
           // An MCP server squatting ask_user cannot shadow it (dispatch intercepts the name); skip its definition.
