@@ -1,9 +1,9 @@
 import { afterEach, expect, it, vi } from "vitest";
 
-import { TurnNotStartedError, type ProviderInstance, type RuntimeEvent } from "../contracts.ts";
-import { OpenAICompatDriver, withCatalogWait } from "./openai-compat.ts";
+import type { RuntimeEvent } from "../contracts.ts";
+import { OpenAICompatDriver } from "./openai-compat.ts";
 
-afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers(); });
+afterEach(() => vi.unstubAllGlobals());
 
 const models = {
   data: [
@@ -69,7 +69,7 @@ it("offers OpenRouter's published efforts only, never a guess from supported_par
   await instance.dispose();
 });
 
-it("holds a turn with a saved effort until /models has answered", async () => {
+it("sends a saved effort as chosen while /models has not answered yet", async () => {
   const { instance, turn } = await fixture(undefined, { loaded: false });
   expect((await turn("deepseek-v4.1-flash", "high")).reasoning_effort).toBe("high");
   await instance.dispose();
@@ -98,37 +98,3 @@ it("keeps a pinned OpenRouter provider when it asks for one that applies the eff
   await instance.dispose();
 });
 
-function heldInstance() {
-  const sendTurn = vi.fn(async () => ({ turnId: "sent" }));
-  const instance = {
-    adapter: { sendTurn, interruptTurn: vi.fn(async () => {}), stopAll: vi.fn(async () => {}) },
-    dispose: vi.fn(async () => {}),
-  } as unknown as ProviderInstance;
-  const held = withCatalogWait(instance, new Promise(() => {}), (turn) => turn.variant !== undefined);
-  return { held, sendTurn };
-}
-
-it("starts a held turn after four seconds when /models never answers", async () => {
-  vi.useFakeTimers();
-  const { held, sendTurn } = heldInstance();
-  const started = held.adapter.sendTurn({ threadId: "t", text: "hi", variant: "high" });
-  await vi.advanceTimersByTimeAsync(3_999);
-  expect(sendTurn).not.toHaveBeenCalled();
-  await vi.advanceTimersByTimeAsync(1);
-  await expect(started).resolves.toEqual({ turnId: "sent" });
-  await expect(held.adapter.sendTurn({ threadId: "u", text: "hi" })).resolves.toEqual({ turnId: "sent" });
-});
-
-it.each([
-  ["a stop on its thread", (held: ProviderInstance) => held.adapter.interruptTurn("t")],
-  ["stopAll", (held: ProviderInstance) => held.adapter.stopAll()],
-  ["dispose", (held: ProviderInstance) => held.dispose()],
-] as const)("never starts a held turn after %s", async (_name, stop) => {
-  vi.useFakeTimers();
-  const { held, sendTurn } = heldInstance();
-  const started = held.adapter.sendTurn({ threadId: "t", text: "hi", variant: "high" });
-  await stop(held);
-  await expect(started).rejects.toBeInstanceOf(TurnNotStartedError);
-  await vi.advanceTimersByTimeAsync(5_000);
-  expect(sendTurn).not.toHaveBeenCalled();
-});

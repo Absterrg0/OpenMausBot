@@ -1,14 +1,11 @@
 // Transcript-replay driver for OpenRouter, Groq, Together, llama.cpp, and
 // other endpoints that speak the OpenAI chat-completions contract.
-import {
-  isModelVariant, newId, TurnNotStartedError, type ModelCatalog, type ModelVariantOption, type ProviderDriver, type ProviderInstance,
-  type SendTurnInput,
-} from "../contracts.ts";
+import { isModelVariant, type ModelCatalog, type ModelVariantOption, type ProviderDriver } from "../contracts.ts";
 import { isLoopback } from "../provider-key-check.ts";
 import { lmStudioV1Catalog } from "./local-inject.ts";
 import { createOpenAIChatRuntime } from "./openai-chat.ts";
 import {
-  FIRST_TURN_WAIT_MS, freeDefault, freeFallbackCatalog, freeLabel, freeToolModels, freeToolsFirst, isOpenRouterOrigin, openRouterFreeTier,
+  freeDefault, freeFallbackCatalog, freeLabel, freeToolModels, freeToolsFirst, isOpenRouterOrigin, openRouterFreeTier,
   withOpenRouterTurns, type OpenRouterModelRow,
 } from "./openrouter-free.ts";
 
@@ -104,43 +101,6 @@ export function advertisedEfforts(row: Record<string, unknown>, fromParameters =
   return levels.length ? levels.map((id) => ({ id, label: EFFORT_LABELS[id] ?? id[0]!.toUpperCase() + id.slice(1) })) : undefined;
 }
 
-/** A turn that `needsCatalog` waits up to FIRST_TURN_WAIT_MS for `loading`; a stop on its thread, stopAll or dispose
- * in the meantime rejects it with TurnNotStartedError, so it never starts. */
-export function withCatalogWait(
-  instance: ProviderInstance,
-  loading: Promise<unknown>,
-  needsCatalog: (turn: SendTurnInput) => boolean,
-): ProviderInstance {
-  const { adapter } = instance;
-  const { sendTurn, interruptTurn, stopAll } = adapter;
-  const dispose = instance.dispose;
-  const waiting = new Map<string, () => void>();
-  const cancelAll = () => { for (const cancel of waiting.values()) cancel(); };
-  adapter.sendTurn = async (turn) => {
-    if (!needsCatalog(turn)) return sendTurn(turn);
-    let cancelled = false;
-    let timer: NodeJS.Timeout | undefined;
-    let cancel = () => {};
-    await new Promise<void>((resolve) => {
-      cancel = () => { cancelled = true; resolve(); };
-      waiting.set(turn.threadId, cancel);
-      timer = setTimeout(resolve, FIRST_TURN_WAIT_MS);
-      loading.then(() => resolve(), () => resolve());
-    });
-    clearTimeout(timer);
-    if (waiting.get(turn.threadId) === cancel) waiting.delete(turn.threadId);
-    if (cancelled) throw new TurnNotStartedError(newId(), "The turn was stopped before it started.");
-    return sendTurn(turn);
-  };
-  adapter.interruptTurn = async (threadId, turnId) => {
-    waiting.get(threadId)?.();
-    return interruptTurn(threadId, turnId);
-  };
-  adapter.stopAll = async () => { cancelAll(); return stopAll(); };
-  instance.dispose = async () => { cancelAll(); return dispose(); };
-  return instance;
-}
-
 function isOpenRouterUrl(url: string): boolean {
   try {
     const host = new URL(url).hostname.toLowerCase();
@@ -222,6 +182,7 @@ export const OpenAICompatDriver: ProviderDriver<OpenAICompatConfig> = {
       ? "No API key — open Settings → API keys."
       : `no API key — set ${config.apiKeyEnv} or add it to the instance config`;
     const seeded = config.catalog === "openai" ? OPENAI_MODELS : DEFAULT_MODELS;
+    let catalogListed = Boolean(config.managedModels);
     let catalog: ModelCatalog = config.managedModels
       ? { default: config.managedModels[0], options: config.managedModels.map(id => ({ id, label: id })) }
       : config.model
@@ -259,6 +220,7 @@ export const OpenAICompatDriver: ProviderDriver<OpenAICompatConfig> = {
                 if (config.model && !options.some((model) => model.id === config.model)) {
                   options.unshift({ id: config.model, label: config.model, custom: true });
                 }
+                catalogListed = true;
                 catalog = {
                   default: config.model ?? options[0]!.id,
                   options,
@@ -322,6 +284,7 @@ export const OpenAICompatDriver: ProviderDriver<OpenAICompatConfig> = {
         if (config.model && !ordered.some((model) => model.id === config.model)) {
           ordered.unshift({ id: config.model, label: config.model, custom: true });
         }
+        catalogListed = true;
         catalog = { default: config.model ?? freeDefault(freeTools) ?? ordered[0].id, options: ordered };
       } catch {}
     };
@@ -344,7 +307,8 @@ export const OpenAICompatDriver: ProviderDriver<OpenAICompatConfig> = {
       refreshModels: fetchModels,
       modelVariants: true,
       requestBody: (model, messages, stream, variant) => {
-        const effort = variant && catalog.options.find((option) => option.id === model)?.variants?.some((offered) => offered.id === variant)
+        // Before the server has listed its models, a saved effort goes as chosen; the server rejects one it lacks.
+        const effort = variant && (!catalogListed || catalog.options.find((option) => option.id === model)?.variants?.some((offered) => offered.id === variant))
           ? variant
           : undefined;
         // OpenRouter routes to a provider that ignores an unsupported parameter unless require_parameters is set.
@@ -383,9 +347,6 @@ export const OpenAICompatDriver: ProviderDriver<OpenAICompatConfig> = {
         }),
       },
     });
-    if (!loading) return runtime;
-    const instance = openRouter ? withOpenRouterTurns(runtime, loading) : runtime;
-    // A saved effort is checked against the catalog; OpenRouter's free default comes from it.
-    return withCatalogWait(instance, loading, (turn) => turn.variant !== undefined || (openRouter && !turn.model));
+    return openRouter && loading ? withOpenRouterTurns(runtime, loading) : runtime;
   },
 };
