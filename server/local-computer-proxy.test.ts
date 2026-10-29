@@ -12,6 +12,7 @@ import { describe, expect, it } from "vitest";
 import { CONTROL_UNCONFIRMED } from "./control-client.ts";
 import { gatedLocalComputer } from "./local-computer.ts";
 import { OWN_PROFILE_UNAVAILABLE } from "./local-computer-guidance.ts";
+import { CLICK_SENT_UNCONFIRMED } from "./unconfirmed-click.ts";
 import { SPAWNED_PROXIES } from "./proxy-paths.ts";
 import { wideSchema } from "./testing/oversized-tool-schema.ts";
 import { TOOL_SCHEMA_PROFILE_ENV } from "./tool-schema-profile.ts";
@@ -235,6 +236,80 @@ readline.createInterface({input: process.stdin}).on("line", (line) => {
       const answer = JSON.parse((await lines.next()).value as string);
       expect(answer.result.content).toEqual([...refusal.content, { type: "text", text: OWN_PROFILE_UNAVAILABLE }]);
       expect(answer.result.structuredContent).toEqual(refusal.structuredContent);
+    } finally {
+      child.kill("SIGKILL");
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
+  it.each(["win32", "darwin"] as const)("%s: a foreground type_text reaches the driver so that every character lands", async (platform) => {
+    // Notepad behind cua-driver 0.28.2 on Windows: of one SendInput burst only the first character lands, the rest repeat the last.
+    const driver = `
+const readline = require("node:readline");
+const hex = (value) => "0x" + value.toString(16);
+const owners = { [0x30a5c]: 4242, [0x1f00]: 77 };
+let front = 0x1f00, document = "";
+const calls = [];
+const answer = (name, args) => {
+  calls.push(name);
+  if (name === "bring_to_front") {
+    const target = args.window_id, previous = front;
+    front = target;
+    return { content: [{ type: "text", text: "front" }], structuredContent: { previous_fg_hwnd: hex(previous), now_fg_hwnd: hex(target), target_hwnd: hex(target), landed_on_target: true } };
+  }
+  if (name === "list_windows") return { content: [{ type: "text", text: "windows" }], structuredContent: { windows: Object.entries(owners).map(([id, pid]) => ({ window_id: Number(id), pid })) } };
+  if (name === "type_text") {
+    const text = args.text;
+    document += text.length < 2 ? text : text[0] + text.at(-1).repeat(text.length - 1);
+    return { content: [{ type: "text", text: "typed" }], structuredContent: { effect: "unverifiable", route: "global_input", delivery: { mode: "foreground" } } };
+  }
+  if (name === "click") return { content: [{ type: "text", text: "foreground_unavailable: exact target HWND 0x30a5c or a verified same-process post-action window was not foreground after the click (actual foreground HWND 0x1f00)" }], isError: true, structuredContent: { code: "tool_invocation_failed" } };
+  return { content: [{ type: "text", text: JSON.stringify({ document, calls, front }) }] };
+};
+readline.createInterface({input: process.stdin}).on("line", (line) => {
+  const message = JSON.parse(line);
+  if (message.id === undefined) return;
+  const result = message.method === "initialize"
+    ? { protocolVersion: "2025-06-18", capabilities: { tools: {} }, serverInfo: { name: "cua-driver", version: "0.28.2" } }
+    : answer(message.params.name, message.params.arguments);
+  process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: message.id, result }) + "\\n");
+});
+`;
+    const server = createServer((_request, response) => {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({ held: false, helpOpen: false }));
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const connection = gatedLocalComputer(
+      { command: process.execPath, args: ["-e", driver], env: {}, platform, scope: "local-computer" },
+      { url: `http://127.0.0.1:${(server.address() as AddressInfo).port}/control`, token: "typing-fixture-token" },
+    );
+    const child = spawn(connection.command, connection.args, { env: { ...process.env, ...connection.env }, stdio: ["pipe", "pipe", "pipe"] });
+    try {
+      const lines = createInterface({ input: child.stdout! })[Symbol.asyncIterator]();
+      const rpc = async (id: number, method: string, params: Record<string, unknown> = {}) => {
+        child.stdin!.write(JSON.stringify({ jsonrpc: "2.0", id, method, params }) + "\n");
+        const answer = JSON.parse((await lines.next()).value as string);
+        expect(answer.id).toBe(id);
+        return answer.result;
+      };
+      const state = async (id: number) => JSON.parse((await rpc(id, "tools/call", { name: "read_fixture", arguments: {} })).content[0].text);
+      await rpc(1, "initialize");
+      const text = " Zeile Drei";
+      const typed = await rpc(2, "tools/call", { name: "type_text", arguments: { pid: 4242, window_id: 0x30a5c, delivery_mode: "foreground", text } });
+      const after = await state(3);
+      const clicked = await rpc(4, "tools/call", { name: "click", arguments: { pid: 4242, window_id: 0x30a5c, x: 10, y: 20, delivery_mode: "foreground" } });
+      if (platform === "win32") {
+        expect(after.document).toBe(text);
+        expect(typed.content[0].text).toBe("✅ Typed 11 char(s) on pid 4242 via SendInput (delivery_mode:foreground), one character at a time.");
+        expect(after.calls).toEqual([...[...text].flatMap(() => ["bring_to_front", "type_text"]), "list_windows", "bring_to_front", "read_fixture"]);
+        expect(after.front).toBe(0x1f00);
+        expect(clicked).toEqual({ content: [{ type: "text", text: CLICK_SENT_UNCONFIRMED }], structuredContent: { effect: "unverifiable", route: "global_input", delivery: { mode: "foreground" } } });
+      } else {
+        expect(after.document).toBe(" iiiiiiiiii");
+        expect(after.calls).toEqual(["type_text", "read_fixture"]);
+        expect(clicked.isError).toBe(true);
+      }
     } finally {
       child.kill("SIGKILL");
       await new Promise<void>((resolve) => server.close(() => resolve()));

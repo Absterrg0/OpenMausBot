@@ -6,6 +6,7 @@ import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
 import readline from "node:readline";
 import { lentScreenArguments, lentScreenToolListing } from "./lent-screen-tools.mjs";
+import { typeOneCharacterAtATime, typesInOneBurst } from "./paced-typing.mjs";
 import { helperMissing } from "./lent-screen-failures.mjs";
 
 /** Reads stay under the 4 MB body that carries a result to the server (base64 of 2 MiB is 2.8 MB); writes stay small. */
@@ -212,7 +213,7 @@ export function sharedCommand(command, cwd, signal, seconds = COMMAND_SECONDS) {
 }
 
 /** Persistent transport: Cua observation references survive to the next call. Ending sharing closes this, not the app's daemon. */
-export function createSharedCua(connection) {
+export function createSharedCua(connection, { platform = process.platform } = {}) {
   const child = spawn(connection.mcpCommand, connection.mcpArgs, {
     stdio: ["pipe", "pipe", "ignore"], windowsHide: true,
     env: { ...hostEnvironment(), ...connection.mcpEnv },
@@ -247,7 +248,11 @@ export function createSharedCua(connection) {
     signal?.addEventListener("abort", abort, { once: true });
     child.stdin.write(JSON.stringify({ jsonrpc: "2.0", id, method, params }) + "\n");
   });
-  const ready = request("initialize", { protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "omb-shared-desktop", version: "1" } }).then(() => child.stdin.write('{"jsonrpc":"2.0","method":"notifications/initialized"}\n'));
+  let driver;
+  const ready = request("initialize", { protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "omb-shared-desktop", version: "1" } }).then(answer => {
+    driver = answer?.serverInfo;
+    child.stdin.write('{"jsonrpc":"2.0","method":"notifications/initialized"}\n');
+  });
   ready.catch(() => {});
   return {
     async call(operation, signal) {
@@ -260,6 +265,9 @@ export function createSharedCua(connection) {
       // Every tool and argument is checked here: nothing the server sends reaches the driver unless a lent screen accepts it.
       const lent = lentScreenArguments(operation.tool_name, operation.arguments);
       if (lent.error) throw new Error(lent.error);
+      if (typesInOneBurst(platform, driver?.version, operation.tool_name, lent.arguments)) {
+        return typeOneCharacterAtATime((name, args) => request("tools/call", { name, arguments: args }, signal), lent.arguments);
+      }
       return request("tools/call", { name: operation.tool_name, arguments: lent.arguments }, signal);
     },
     close() { lines.close(); fail(new Error("Computer sharing stopped")); },
