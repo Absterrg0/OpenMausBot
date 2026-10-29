@@ -53,7 +53,12 @@ export interface OpenAICompatConfig {
   model?: string;
   provider?: string;
   managedModels?: string[];
+  /** How long a turn waits for the next piece of a reply before giving up; unset follows the server's default. */
+  replyWaitMinutes?: number;
 }
+
+export const MAX_REPLY_WAIT_MINUTES = 60;
+const isReplyWait = (value: unknown): value is number => Number.isSafeInteger(value) && (value as number) >= 1 && (value as number) <= MAX_REPLY_WAIT_MINUTES;
 
 function positiveTokens(value: unknown): number | undefined {
   return typeof value === "number" && Number.isSafeInteger(value) && value > 0 ? value : undefined;
@@ -96,10 +101,12 @@ function decodeConfig(raw: unknown): OpenAICompatConfig {
   if (config.managedModels !== undefined && (!Array.isArray(config.managedModels) || !config.managedModels.length || config.managedModels.some(model => typeof model !== "string" || !model.trim()))) throw new Error("Invalid managed models.");
   const ownKey = typeof config.apiKeyEnv === "string" && OWN_KEY_ENVS.has(config.apiKeyEnv);
   if (config.catalog !== undefined && config.catalog !== "openai" && config.catalog !== "lmstudio") throw new Error("catalog must be \"openai\" or \"lmstudio\"");
+  if (config.replyWaitMinutes !== undefined && !isReplyWait(config.replyWaitMinutes)) throw new Error(`replyWaitMinutes must be a whole number from 1 to ${MAX_REPLY_WAIT_MINUTES}`);
   const envUrl = ownKey ? undefined : process.env.OPENAI_COMPAT_URL;
   return {
     ...(config.tools !== undefined ? { tools: config.tools as boolean } : {}),
     ...(config.managedModels ? { managedModels: config.managedModels as string[] } : {}),
+    ...(isReplyWait(config.replyWaitMinutes) ? { replyWaitMinutes: config.replyWaitMinutes } : {}),
     url: (typeof config.url === "string" && config.url ? config.url : envUrl || "https://openrouter.ai/api/v1")
       .replace(/\/+$/, ""),
     apiKeyEnv: typeof config.apiKeyEnv === "string" && config.apiKeyEnv
@@ -278,7 +285,7 @@ export const OpenAICompatDriver: ProviderDriver<OpenAICompatConfig> = {
       httpErrorLabel: "upstream",
       missingKeyError: missingKey,
       unavailableReason: missingKey,
-      timeoutMs: idleTimeoutMs(),
+      timeoutMs: config.replyWaitMinutes ? config.replyWaitMinutes * 60_000 : idleTimeoutMs(),
       reasoning: true,
       billing: "metered",
       includeUsageInCompleted: true,
