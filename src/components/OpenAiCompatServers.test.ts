@@ -242,3 +242,40 @@ describe("LM Studio and Bionic setup", () => {
     expect(html).toContain("disabled");
   });
 });
+
+describe("a server's default model", () => {
+  type Props = { children?: ReactNode; servers?: unknown; value?: unknown; onChange?: (event: { target: { value: string } }) => void; "aria-label"?: string };
+  const nodes = (tree: ReactNode): Array<ReactElement<Props>> =>
+    Children.toArray(tree).flatMap((child) => isValidElement<Props>(child) ? [child, ...nodes(child.props.children)] : []);
+  function modelSelect(options: Array<{ id: string; label: string }>) {
+    vi.stubGlobal("window", {});
+    const servers = [instance("openai-compat-1", "Flatt", { url: "https://flatt.example/v1", models: { default: options[0]?.id ?? "", options } })];
+    vi.spyOn(store, "useStore").mockReturnValue({
+      state: { ...store.initialState, instances: servers }, dispatch: vi.fn(), flushBotPatches: vi.fn(), refreshInstances: vi.fn(), refreshModels: vi.fn(),
+    });
+    const added = nodes(OtherOpenAiCompatServers()).find((node) => node.props.servers !== undefined)!;
+    fixture.counting = true;
+    fixture.index = 0;
+    try {
+      return nodes((added.type as (props: Props) => ReactNode)(added.props)).find((node) => node.props["aria-label"] === "Default model for Flatt");
+    } finally {
+      fixture.counting = false;
+    }
+  }
+
+  it("shows the current default and saves the one picked", async () => {
+    fixture.values = [];
+    fixture.api.mockReset();
+    fixture.api.mockResolvedValue({ instances: [] });
+    const select = modelSelect([{ id: "automode", label: "automode" }, { id: "deepseek-v4.1-flash", label: "deepseek-v4.1-flash" }])!;
+    expect(select.props.value).toBe("automode");
+    select.props.onChange!({ target: { value: "deepseek-v4.1-flash" } });
+    await Promise.resolve();
+    expect(fixture.api).toHaveBeenLastCalledWith("/api/instances/openai-compat-1", { method: "PATCH", body: JSON.stringify({ model: "deepseek-v4.1-flash" }) });
+  });
+
+  it("has no picker before the server lists any model", () => {
+    fixture.values = [];
+    expect(modelSelect([])).toBeUndefined();
+  });
+});

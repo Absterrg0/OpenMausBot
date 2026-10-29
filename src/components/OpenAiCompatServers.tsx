@@ -69,6 +69,19 @@ function AddedServers({ servers }: { servers: Array<InstanceInfo & { url?: strin
             <div className="truncate text-[12px] text-ink">{server.displayName}</div>
             {server.url && <div className="truncate font-mono text-[11px] text-ink-secondary">{server.url}</div>}
           </div>
+          {server.models.options.length > 0 && (
+            <Select
+              size="sm"
+              className="max-w-[12rem]"
+              value={server.models.default}
+              onChange={(event) => run("other", () => api(`/api/instances/${encodeURIComponent(server.instanceId)}`, { method: "PATCH", body: JSON.stringify({ model: event.target.value }) }))}
+              disabled={busy !== null}
+              aria-label={t("apiInstances.modelFor", { name: server.displayName })}
+              title={t("apiInstances.modelHint")}
+            >
+              {server.models.options.map((model) => <option key={model.id} value={model.id}>{model.label}</option>)}
+            </Select>
+          )}
           <Select
             size="sm"
             className="shrink-0"
