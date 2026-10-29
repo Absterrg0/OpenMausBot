@@ -28,7 +28,7 @@ interface Fixture {
   evidence: unknown[];
 }
 
-async function withLimitFixture(setup: { recovery?: unknown; secondClaude?: boolean }, check: (fixture: Fixture) => Promise<void>) {
+async function withLimitFixture(setup: { recovery?: unknown; secondClaude?: boolean; codex?: false }, check: (fixture: Fixture) => Promise<void>) {
   const fixture = await launchVerificationServer({});
   const { dataDir, url, logPath } = fixture.info;
   const limitedFile = join(dataDir, "claude-limited.json");
@@ -57,7 +57,7 @@ async function withLimitFixture(setup: { recovery?: unknown; secondClaude?: bool
     const configPath = join(dataDir, "config.json");
     const config = JSON.parse(readFileSync(configPath, "utf8"));
     config.instances.claude.environment = { ...config.instances.claude.environment, FAKE_CLAUDE_LIMITED_FILE: limitedFile, FAKE_CLAUDE_PROMPTS: promptsFile, FAKE_CLAUDE_TOOL_CALLS: "[]" };
-    config.instances.codex = { driver: "codex", config: { cli: fileURLToPath(new URL("./testing/fake-codex-app-server.ts", import.meta.url)) } };
+    if (setup.codex !== false) config.instances.codex = { driver: "codex", config: { cli: fileURLToPath(new URL("./testing/fake-codex-app-server.ts", import.meta.url)) } };
     if (setup.secondClaude) config.instances.claudeWork = { ...config.instances.claude, displayName: "Second Claude sign-in" };
     if (setup.recovery) config.automaticRecovery = setup.recovery;
     writeFileSync(configPath, JSON.stringify(config));
@@ -75,7 +75,7 @@ async function withLimitFixture(setup: { recovery?: unknown; secondClaude?: bool
     await expect.poll(async () => {
       try { return (await fetch(url + "/api/health", { signal: AbortSignal.timeout(1_000) })).ok; } catch { return false; }
     }, { timeout: 20_000 }).toBe(true);
-    await expect.poll(async () => {
+    if (setup.codex !== false) await expect.poll(async () => {
       const { instances } = await api("GET", "/api/instances") as { instances: any[] };
       return instances.find((instance) => instance.instanceId === "codex")?.models.options.some((option: any) => option.id === codex.model);
     }, { timeout: 20_000 }).toBe(true);
@@ -103,8 +103,8 @@ async function withLimitFixture(setup: { recovery?: unknown; secondClaude?: bool
 const messagesOf = async (api: Fixture["api"], threadId: string) => (await api("GET", `/api/threads/${threadId}/messages?limit=200`)).messages as any[];
 const recoveryLines = (messages: any[]) => messages.filter((message) => message.tool?.name?.startsWith("recovery:")).map((message) => message.tool.name as string);
 
-it("the stopped turn's Continue sets up a run that continues the conversation once the limit resets", async () => {
-  await withLimitFixture({}, async ({ api, control, limit, lift, claudePrompts, evidence }) => {
+it("with no other AI to carry on, the stopped turn's Continue sets up a run that continues the conversation once the limit resets", async () => {
+  await withLimitFixture({ codex: false }, async ({ api, control, limit, lift, claudePrompts, evidence }) => {
     const resetsAt = Math.floor(Date.now() / 1000) + 10;
     limit(resetsAt);
     const { bot } = await control("new-bot", "--name", "Scout");
@@ -183,7 +183,7 @@ it("continues on the backup engine with one line, and goes back to its own engin
 }, 150_000);
 
 it("never moves to another sign-in of the same engine; the stopped turn offers Continue instead", async () => {
-  await withLimitFixture({ recovery: { enabled: true, backup: { instanceId: "claudeWork", model: "claude-sonnet-5" } }, secondClaude: true },
+  await withLimitFixture({ recovery: { enabled: true, backup: { instanceId: "claudeWork", model: "claude-sonnet-5" } }, secondClaude: true, codex: false },
     async ({ api, control, limit, claudePrompts }) => {
       const resetsAt = Math.floor(Date.now() / 1000) + 600;
       limit(resetsAt);
@@ -199,7 +199,7 @@ it("never moves to another sign-in of the same engine; the stopped turn offers C
     });
 }, 120_000);
 
-it("a model out of extra-usage credits moves that turn to the backup, but never holds the engine", async () => {
+it("a model out of extra-usage credits moves its turns to the backup for a while, but never holds the engine's other models", async () => {
   await withLimitFixture({ recovery: { enabled: true, backup: codex } }, async ({ api, control, refuse, lift, claudePrompts, evidence }) => {
     const resetsAt = Math.floor(Date.now() / 1000) + 11 * 86_400;
     refuse({ status: "rejected", resetsAt, overageDisabledReason: "out_of_credits", isUsingOverage: false, errorCode: "credits_required" });
@@ -211,18 +211,27 @@ it("a model out of extra-usage credits moves that turn to the backup, but never 
     expect((await api("GET", "/api/limit-resets")).engines).not.toContainEqual(expect.objectContaining({ engine: "claude", blocked: true }));
 
     lift();
-    const { task: other } = await api("POST", `/api/bots/${bot.id}/tasks`, { title: "Another thing" });
-    await control("send", "--bot", bot.id, "--task", other.threadId, "--text", "And check today's commits");
+    // That model is held a while: the bot's next conversation on it goes straight to the backup, without asking Claude.
+    const { task: same } = await api("POST", `/api/bots/${bot.id}/tasks`, { title: "Another thing" });
+    await control("send", "--bot", bot.id, "--task", same.threadId, "--text", "And check today's commits");
+    expect((await control("wait", "--bot", bot.id, "--task", same.threadId, "--timeout", "30")).status).toBe("settled");
+    expect(claudePrompts()).toHaveLength(1);
+    // Claude's other models still run on Claude: the engine itself is never held.
+    const { instances } = await api("GET", "/api/instances") as { instances: any[] };
+    const model = instances.find((instance) => instance.instanceId === "claude").models.options.map((option: any) => option.id).find((id: string) => id !== bot.modelSelection.model);
+    const { task: other } = await api("POST", `/api/bots/${bot.id}/tasks`, { title: "One more" });
+    await api("PATCH", `/api/bots/${bot.id}/tasks/${other.threadId}`, { modelSelection: { instanceId: "claude", model } });
+    await control("send", "--bot", bot.id, "--task", other.threadId, "--text", "And list today's commits");
     expect((await control("wait", "--bot", bot.id, "--task", other.threadId, "--timeout", "30")).status).toBe("settled");
     expect(claudePrompts()).toHaveLength(2);
     const reply = (await messagesOf(api, other.threadId)).findLast((message) => message.role === "bot" && message.kind === "text");
     expect(reply).toMatchObject({ text: "hello from fake claude" });
-    evidence.push({ reply });
+    evidence.push({ reply, model });
   });
 }, 120_000);
 
 it("a turn that works on the engine afterwards ends a refusal's hold long before its reset", async () => {
-  await withLimitFixture({}, async ({ api, control, limit, lift, evidence }) => {
+  await withLimitFixture({ codex: false }, async ({ api, control, limit, lift, evidence }) => {
     const resetsAt = Math.floor(Date.now() / 1000) + 11 * 86_400;
     limit(resetsAt);
     const { bot } = await control("new-bot", "--name", "Scout");
@@ -239,3 +248,41 @@ it("a turn that works on the engine afterwards ends a refusal's hold long before
     evidence.push({ after });
   });
 }, 120_000);
+
+it("with nothing set up for it, carries the person's request on with another AI they have, says so once, and goes back after the reset", async () => {
+  await withLimitFixture({}, async ({ api, control, limit, lift, claudePrompts, evidence }) => {
+    const resetsAt = Math.floor(Date.now() / 1000) + 25;
+    limit(resetsAt);
+    const { bot } = await control("new-bot", "--name", "Kai");
+    const threadId = bot.activeTaskId;
+    const claudeModel = (await api("GET", "/api/bots")).bots.find((entry: any) => entry.id === bot.id).modelSelection;
+    await control("send", "--bot", bot.id, "--task", threadId, "--text", "Draft the launch plan");
+    const reply = async (id: string) => (await messagesOf(api, id)).findLast((message) => message.role === "bot" && message.kind === "text")?.text;
+    await expect.poll(() => reply(threadId), { timeout: 40_000 }).toBe("done from fake codex");
+    const first = await messagesOf(api, threadId);
+    expect(first.map((message) => message.tool?.name)).toContain("notice: continuing on Codex after hitting the usage limit");
+    const task = async (id: string) => (await api("GET", "/api/bots")).bots.find((entry: any) => entry.id === bot.id).tasks.find((entry: any) => entry.threadId === id);
+    expect((await task(threadId)).modelSelection).toEqual(codex);
+    const notified = async () => (await api("GET", "/api/notifications")).notifications as any[];
+    await expect.poll(async () => (await notified()).filter((entry) => entry.kind === "notice").length, { timeout: 10_000 }).toBe(1);
+    expect((await notified()).find((entry) => entry.kind === "notice").body).toMatch(/^Verification fixture reached its limit until .+, so Kai is using Codex meanwhile\.$/);
+    expect((await notified()).filter((entry) => entry.kind === "incident" || entry.kind === "turn-failed"), "one notice, never an incident").toEqual([]);
+
+    // Known to be refusing: another conversation goes to Codex without spending a refused turn on Claude, and no new notice.
+    const { task: other } = await api("POST", `/api/bots/${bot.id}/tasks`, { title: "Another thing" });
+    await control("send", "--bot", bot.id, "--task", other.threadId, "--text", "And the budget");
+    expect((await control("wait", "--bot", bot.id, "--task", other.threadId, "--timeout", "30")).status).toBe("settled");
+    expect(recoveryLines(await messagesOf(api, other.threadId))).toEqual([expect.stringMatching(/so Codex took over\.$/)]);
+    expect(claudePrompts()).toHaveLength(1);
+    expect((await notified()).filter((entry) => entry.kind === "notice")).toHaveLength(1);
+
+    lift();
+    await expect.poll(() => Date.now() > resetsAt * 1000 + 500, { timeout: 40_000, interval: 500 }).toBe(true);
+    await control("send", "--bot", bot.id, "--task", threadId, "--text", "Now polish it");
+    expect((await control("wait", "--bot", bot.id, "--task", threadId, "--timeout", "30")).status).toBe("settled");
+    expect((await task(threadId)).modelSelection).toEqual(claudeModel);
+    expect(recoveryLines(await messagesOf(api, threadId))).toContain("recovery: Verification fixture's limit has reset, so this conversation is back on Verification fixture.");
+    expect(await reply(threadId)).toBe("hello from fake claude");
+    evidence.push({ first, notices: await notified() });
+  });
+}, 150_000);

@@ -20,7 +20,7 @@ import { runAcpOneShot } from "./background-text.ts";
 import { sanitizeAcpToolMessage } from "./tool-log.ts";
 import { stripLeakedSystemHarnessMessages } from "../../../shared/system-message-guard.ts";
 import {
-  classifyQuiet, describeQuiet, formatQuietLimit, lastSeenPhrase, LogTail, promptIdleTimeoutMs, quietKey, quietNoticeMs, quietTickMs, sampleProcessTree,
+  classifyQuiet, describeQuiet, formatQuietLimit, lastSeenPhrase, LIMIT_WORDS, LogTail, promptIdleTimeoutMs, quietKey, quietNoticeMs, quietTickMs, quietVerdict, sampleProcessTree,
   type LogSignal, type ProcessSample, type QuietState,
 } from "./quiet-status.ts";
 import { readSessionReport } from "./session-reports.ts";
@@ -571,13 +571,11 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
           previous = sample;
           previousAt = now;
           if (first && next.kind === "unknown") return;
-          // An SDK sleeping between retries holds no socket and burns no CPU (Qwen against a 429ing endpoint).
-          if (next.kind === "no-signs") {
-            noSignsSince ??= now;
-            if (now - noSignsSince < ACP_STUCK_AFTER_MS) next = { kind: "between-requests" };
-          } else {
-            noSignsSince = null;
-          }
+          // An SDK sleeping between retries holds no socket and burns no CPU (Qwen against a 429ing endpoint); waiting out a
+          // usage limit, or no sign of life for minutes, ends the turn now rather than after the full silence guard.
+          const verdict = quietVerdict({ next, logged, noSignsSince, now, quietMs, name: support.displayName, stuckAfterMs: ACP_STUCK_AFTER_MS });
+          next = verdict.next; noSignsSince = verdict.noSignsSince;
+          if (verdict.stop) return void session.acp.failAll(verdict.stop);
           state = next;
           const key = quietKey(next);
           if (key === shownKey || notices >= 12) return;
@@ -1601,9 +1599,10 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
                 ...base(threadId, turnId), type: "runtime.error",
                 message: (accountError ? support.describeAccountError?.(code, cliTurn.model) : undefined) ?? engineFailureMessage(support.displayName, message) ?? message,
                 ...(needsAuth ? { setup: true } : {}), ...((e as any)?.acpPromptStall === true ? { stalled: true } : {}),
+                ...((e as any)?.acpUsageLimit === true || (code === "quota_or_region_restriction" && LIMIT_WORDS.test(message)) ? { limit: "engine" as const } : {}), // waited out, or the engine gave up: another AI can carry on
               });
               // Never replay an accepted prompt (it may have run tools); evict before listeners start the next turn.
-              if (!needsAuth && !accountError && ((e as any)?.acpPromptStall === true || (e as any)?.acpSessionFailure === true
+              if (!needsAuth && !accountError && ((e as any)?.acpPromptStall === true || (e as any)?.acpUsageLimit === true || (e as any)?.acpSessionFailure === true
                   || code === "upstream_outage") && session.child.exitCode === null && !session.closing) {
                 closeSession(threadId, (e as any)?.acpPromptStall === true ? "prompt-stall" : "rpc-failure");
               } else if (approvalUnconfirmed && session.child.exitCode === null && !session.closing) {
@@ -1611,7 +1610,7 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
               } else if (staleProcess && !state.promptSent && session.child.exitCode === null && !session.closing) {
                 closeSession(threadId, "stale-models");
               }
-              settle(threadId, session, state.stopped, state.stopped ? "cancelled" : needsAuth ? "auth_required" : "rpc_error");
+              settle(threadId, session, state.stopped, state.stopped ? "cancelled" : needsAuth ? "auth_required" : (e as any)?.acpUsageLimit === true ? "quota" : "rpc_error");
             }
           }
         })();

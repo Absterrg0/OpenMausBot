@@ -873,20 +873,35 @@ current month to date.
 
 ### When an engine runs out
 
-When a person's turn ends on its engine's quota or usage limit (a
-subscription's weekly limit, an API key out of credit), the conversation gets
-one card offering up to three other engines that can take over, and "Not
-now". An engine is offered only if it can run a turn now (installed, signed
-in, allowed by your organisation), has the tools and the working folder the
-current one has, and can run the conversation's approval level as it stands.
-Nothing changes until the person picks one: that conversation alone moves to
-the engine's default model, the bot's own model and its other conversations
-stay where they are, and their message is sent again. Turns nobody typed
-(routines, webhooks, a teammate's work) get no card.
+When a turn ends on a usage limit (a subscription's 5-hour or weekly limit,
+one model's own weekly window, a model's extra usage credits), the bot carries
+on by itself with another AI the person has set up until that limit resets,
+and the person hears it once for that stretch of the limit, as a notification:
+"Codex reached its limit until 14:00, so Kai is using Claude meanwhile." With
+no AI to carry on, it says the bot waits instead. Nobody is asked.
 
-The offer is on by default. To switch it off, start the server with
-`OMB_QUOTA_SWITCH=0`; any other value, or none, leaves it on. It has no
-setting in `config.json` yet.
+- **Which AI.** For one model's own limit, the same AI's default model first;
+  then the backups chosen for the bot or in Automatic recovery; then the AI a
+  new bot would get. Only an AI that can run a turn now (installed, signed in,
+  allowed by your organisation, not limited itself) with the tools and the
+  working folder the current one has. Never another sign-in to the same
+  subscription, which would rotate accounts around the provider's limit; a
+  pay-per-use API key on the same AI is fine.
+- **What moves.** The person's message that met the limit is sent again on that
+  AI, in that conversation alone; the bot's own model and its other
+  conversations stay where they are. While the limit lasts, every new turn
+  (a person's, a routine's, a webhook's) goes straight to that AI without
+  asking the limited one first, and a routine run the limit stopped starts
+  again on it.
+- **How long.** The limited AI is held until the reset it named, or for an hour
+  when it named none. One model's own limit holds that model alone, and for at
+  most six hours before it is tried again. A conversation that moved goes back
+  once its AI's limit has reset, with one line saying so.
+
+This is on by default. Start the server with `OMB_QUOTA_SWITCH=0` to switch it
+off: then only the backups Automatic recovery names take over, and the
+notification says the bot waits. Any other value, or none, leaves it on. It
+has no setting in `config.json` yet.
 
 ### Which engine a new bot uses
 

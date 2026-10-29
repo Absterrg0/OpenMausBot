@@ -21,7 +21,13 @@ type Engine = { instanceId: string; driverKind: string };
 export function limitBackupAllowed(from: Engine, to: Engine, toConfig?: Pick<InstanceConfig, "environment" | "access">): boolean {
   if (to.instanceId === from.instanceId) return false;
   if (to.driverKind !== from.driverKind || !SUBSCRIPTION_DRIVERS.has(from.driverKind)) return true;
-  return toConfig?.access === "api" || PAY_PER_USE_KEYS.some((key) => Boolean(toConfig?.environment?.[key]?.trim()));
+  return billsEachUse(toConfig);
+}
+
+/** An engine instance that bills each use (a pay-per-use key, as its access or in its environment) instead of drawing on
+ * a plan's limit. */
+export function billsEachUse(config?: Pick<InstanceConfig, "environment" | "access">): boolean {
+  return config?.access === "api" || PAY_PER_USE_KEYS.some((key) => Boolean(config?.environment?.[key]?.trim()));
 }
 
 export function resetClock(at: number, timeZone = hostTimeZone()): string {
