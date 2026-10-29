@@ -24,8 +24,7 @@ import {
   type LogSignal, type ProcessSample, type QuietState,
 } from "./quiet-status.ts";
 import { readSessionReport } from "./session-reports.ts";
-import { offeredModels } from "./config-options.ts";
-import { SessionModelControls, type AcpModelSelection } from "./session-model-controls.ts";
+import { pickSessionModel, SessionModelControls, type AcpModelSelection } from "./session-model-controls.ts";
 import { versionFromProbe } from "./version-probe.ts"; import { engineHomes } from "../../engine-homes/engine-homes.ts";
 
 export function skipSubscriptionAuthForLocalInject(model: string | undefined): boolean {
@@ -229,6 +228,8 @@ export interface AcpSupport {
     model: string | undefined,
     env: Record<string, string | undefined>,
   ): string | undefined;
+  /** Map a saved selection onto the live session's catalog (a retired model id), once session/new or load answers. */
+  normalizeSessionSelection?(turn: SendTurnInput, offeredModels: readonly string[]): SendTurnInput;
   /** Per-session settings between session/new (or load) and the first prompt. Some CLIs ignore argv
    * and take the model/mode over the wire (droid); a throw fails the turn rather than run another model. */
   configureSession?(ctx: {
@@ -1360,34 +1361,17 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
 
             try {
               if (support.selectModel) {
-                const { configId } = support.selectModel;
                 selectedModel = modelControls.modelOf(session.sessionConfigResult);
-                const wanted = cliTurn.model;
-                const offered = offeredModels(session.sessionConfigResult, configId);
-                if (support.sessionModelEnv && !session.launchModel && offered.length) accountModels = new Set(offered);
-                // A pooled process missing a catalog model predates the catalog: fail and respawn, never run another (the catalog holds picker ids; `wanted` may be the resolved wire id, so check both).
-                staleProcess = Boolean(support.fallbackModel && wanted && !launchedThisTurn && offered.length
-                  && !offered.includes(wanted) && models.options.some((option) => option.id === wanted || option.id === turn.model));
-                if (support.fallbackModel && offered.length && !skipSubscriptionAuthForLocalInject(turn.model)
-                    && !staleProcess && (!wanted || !offered.includes(wanted))) {
-                  const fallback = support.fallbackModel(session.sessionConfigResult, models.default);
-                  if (fallback && fallback !== wanted && offered.includes(fallback)) {
-                    const notice = wanted ? `${wanted}\n${fallback}` : null;
-                    if (notice && session.fallbackNotice !== notice) {
-                      session.fallbackNotice = notice;
-                      emit({
-                        ...base(threadId, turnId),
-                        type: "runtime.notice",
-                        message: `${support.displayName} no longer offers ${wanted}, so this conversation uses ${fallback}. ` +
-                          "Choose another model for this bot to stop seeing this.",
-                      });
-                    }
-                    cliTurn = { ...cliTurn, model: fallback };
-                    current.turn = cliTurn;
-                    reportedModel = fallback;
-                    variant = undefined;
-                  }
-                }
+                // Committed before the setter runs: a failed switch still reports the session and respawns a stale process.
+                const pick = pickSessionModel(support, {
+                  configId: support.selectModel.configId, session, requested: turn, turn: cliTurn, variant, reportedModel,
+                  catalog: models, launchedThisTurn,
+                });
+                if (pick.accountModels) accountModels = pick.accountModels;
+                staleProcess = pick.staleProcess;
+                if (pick.notice) emit({ ...base(threadId, turnId), type: "runtime.notice", message: pick.notice });
+                ({ turn: cliTurn, variant, reportedModel } = pick);
+                current.turn = cliTurn;
                 selectedModel = await modelControls.select(request, sessionId, INIT_TIMEOUT);
               }
 
