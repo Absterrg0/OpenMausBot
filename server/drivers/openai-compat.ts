@@ -88,14 +88,15 @@ export function advertisedContextWindow(row: Record<string, unknown>): number | 
 
 const DEFAULT_EFFORTS = ["low", "medium", "high"];
 
+const validEfforts = (list: unknown) => Array.isArray(list) ? [...new Set(list.filter(isModelVariant))] : [];
+
 /** The `reasoning_effort` values a /models row advertises: `reasoning_effort_levels`, OpenRouter's
- * `reasoning.supported_efforts`, or OpenAI's three when `supported_parameters` only names the field. */
-export function advertisedEfforts(row: Record<string, unknown>): ModelVariantOption[] | undefined {
+ * `reasoning.supported_efforts`, or OpenAI's three when `supported_parameters` only names the field. OpenRouter
+ * documents that a row without `supported_efforts` offers no effort choice, so it passes `fromParameters: false`. */
+export function advertisedEfforts(row: Record<string, unknown>, fromParameters = true): ModelVariantOption[] | undefined {
   const reasoning = row.reasoning && typeof row.reasoning === "object" ? row.reasoning as Record<string, unknown> : {};
-  const published = Array.isArray(row.reasoning_effort_levels) ? row.reasoning_effort_levels : reasoning.supported_efforts;
-  const listed = Array.isArray(published) ? published.filter(isModelVariant) : [];
-  const levels = listed.length ? [...new Set(listed)]
-    : Array.isArray(row.supported_parameters) && row.supported_parameters.includes("reasoning_effort") ? DEFAULT_EFFORTS : [];
+  const listed = [validEfforts(row.reasoning_effort_levels), validEfforts(reasoning.supported_efforts)].find((list) => list.length);
+  const levels = listed ?? (fromParameters && Array.isArray(row.supported_parameters) && row.supported_parameters.includes("reasoning_effort") ? DEFAULT_EFFORTS : []);
   return levels.length ? levels.map((id) => ({ id, label: id[0]!.toUpperCase() + id.slice(1) })) : undefined;
 }
 
@@ -250,7 +251,7 @@ export const OpenAICompatDriver: ProviderDriver<OpenAICompatConfig> = {
           seen.add(id);
           const label = typeof row.name === "string" && row.name.trim() ? row.name : id;
           const contextWindow = advertisedContextWindow(row);
-          const variants = advertisedEfforts(row);
+          const variants = advertisedEfforts(row, !isOpenRouterUrl(config.url));
           options.push({
             id,
             label: openRouter ? freeLabel(label, row) : label,
@@ -341,6 +342,14 @@ export const OpenAICompatDriver: ProviderDriver<OpenAICompatConfig> = {
         }),
       },
     });
+    if (loading) {
+      const send = runtime.adapter.sendTurn;
+      // A saved effort is checked against the catalog, so a turn sent at startup waits for /models.
+      runtime.adapter.sendTurn = async (turn) => {
+        if (turn.variant !== undefined) await loading.catch(() => {});
+        return send(turn);
+      };
+    }
     return openRouter && loading ? withOpenRouterTurns(runtime, loading) : runtime;
   },
 };

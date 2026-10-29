@@ -127,7 +127,6 @@ interface RuntimeOptions<Config> {
   nativeLog: NativeLog;
   refreshModels?: () => Promise<void>;
   generateModel?: () => string;
-  /** The catalog lists `variants` per model and requestBody applies the turn's pick. */
   modelVariants?: boolean;
   reasoning?: boolean;
   /** Cerebras rejects `reasoning_content` and takes `reasoning`. */

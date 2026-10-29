@@ -10,15 +10,19 @@ const models = {
     { id: "deepseek-v4.1-flash", reasoning_effort_levels: ["low", "medium", "high"] },
     { id: "router-model", supported_parameters: ["tools", "reasoning_effort"] },
     { id: "openrouter-model", supported_parameters: ["reasoning_effort"], reasoning: { supported_efforts: ["max", "high", "low", "none"] } },
+    { id: "nested-model", reasoning_effort_levels: [], reasoning: { supported_efforts: ["max"] } },
     { id: "plain-model" },
   ],
 };
 const reply = 'data: {"choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n';
 
-async function fixture(url = "https://api.example.test/v1") {
+async function fixture(url = "https://api.example.test/v1", { loaded = true } = {}) {
   const bodies: Record<string, unknown>[] = [];
   vi.stubGlobal("fetch", vi.fn(async (input: string | URL, init?: RequestInit) => {
-    if (String(input).endsWith("/models")) return Response.json(models);
+    if (String(input).endsWith("/models")) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      return Response.json(models);
+    }
     if (!String(input).endsWith("/chat/completions")) return new Response("", { status: 404 });
     bodies.push(JSON.parse(String(init?.body)));
     return new Response(reply, { headers: { "content-type": "text/event-stream" } });
@@ -28,7 +32,7 @@ async function fixture(url = "https://api.example.test/v1") {
     config: OpenAICompatDriver.decodeConfig({ url, apiKeyEnv: "K" }),
     environment: { K: "fixture-key" },
   });
-  await instance.refreshModels?.();
+  if (loaded) await instance.refreshModels?.();
   const turn = async (model: string, variant?: string) => {
     const events: RuntimeEvent[] = [];
     const off = instance.adapter.onEvent((event) => events.push(event));
@@ -48,8 +52,23 @@ it("offers the reasoning efforts a model advertises on /models", async () => {
     "deepseek-v4.1-flash": ["low", "medium", "high"],
     "router-model": ["low", "medium", "high"],
     "openrouter-model": ["max", "high", "low", "none"],
+    "nested-model": ["max"],
     "plain-model": undefined,
   });
+  await instance.dispose();
+});
+
+it("offers OpenRouter's published efforts only, never a guess from supported_parameters", async () => {
+  const { instance } = await fixture("https://openrouter.ai/api/v1");
+  const variants = Object.fromEntries(instance.models.options.map((option) => [option.id, option.variants?.map((variant) => variant.id)]));
+  expect(variants["router-model"]).toBeUndefined();
+  expect(variants["openrouter-model"]).toEqual(["max", "high", "low", "none"]);
+  await instance.dispose();
+});
+
+it("holds a turn with a saved effort until /models has answered", async () => {
+  const { instance, turn } = await fixture(undefined, { loaded: false });
+  expect((await turn("deepseek-v4.1-flash", "high")).reasoning_effort).toBe("high");
   await instance.dispose();
 });
 
