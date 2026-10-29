@@ -127,8 +127,7 @@ interface RuntimeOptions<Config> {
   nativeLog: NativeLog;
   refreshModels?: () => Promise<void>;
   generateModel?: () => string;
-  modelVariants?: boolean;
-  reasoning?: boolean;
+  modelVariants?: boolean; reasoning?: boolean;
   /** Cerebras rejects `reasoning_content` and takes `reasoning`. */
   reasoningReplayField?: "reasoning_content" | "reasoning";
   contentText?: (content: unknown) => string;
@@ -341,8 +340,7 @@ export function createOpenAIChatRuntime<Config>(options: RuntimeOptions<Config>)
     signal?: AbortSignal,
     onDelta?: (delta: string, kind: "assistant_text" | "reasoning_text") => void,
     tools: ChatToolDefinition[] = [],
-    onUsage?: TextGenerationOptions["onUsage"],
-    variant?: string,
+    onUsage?: TextGenerationOptions["onUsage"], variant?: string,
   ): Promise<Completion> => {
     const timeoutController = new AbortController();
     let idleTimer: NodeJS.Timeout | null = null;
@@ -957,8 +955,7 @@ export function createOpenAIChatRuntime<Config>(options: RuntimeOptions<Config>)
         dataMcp: options.tools !== false,
         highlevelMcp: options.tools !== false,
         deviceMcp: options.tools !== false,
-        queueing: true,
-        ...(options.modelVariants ? { modelVariants: true } : {}),
+        queueing: true, ...(options.modelVariants ? { modelVariants: true } : {}),
         ...(options.tools !== false ? { askTool: { kind: "native" as const, name: ASK_USER_TOOL } } : {}),
         guestTurns: "confined" },
       sendTurn,

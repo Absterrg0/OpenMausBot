@@ -93,11 +93,14 @@ const validEfforts = (list: unknown) => Array.isArray(list) ? [...new Set(list.f
 
 /** The `reasoning_effort` values a /models row advertises: `reasoning_effort_levels`, OpenRouter's
  * `reasoning.supported_efforts`, or OpenAI's three when `supported_parameters` only names the field. OpenRouter
- * documents that a row without `supported_efforts` offers no effort choice, so it passes `fromParameters: false`. */
-export function advertisedEfforts(row: Record<string, unknown>, fromParameters = true): ModelVariantOption[] | undefined {
+ * documents an omitted `supported_efforts` as no effort choice and a null one as every gateway effort. */
+export function advertisedEfforts(row: Record<string, unknown>, openRouter = false): ModelVariantOption[] | undefined {
   const reasoning = row.reasoning && typeof row.reasoning === "object" ? row.reasoning as Record<string, unknown> : {};
   const listed = [validEfforts(row.reasoning_effort_levels), validEfforts(reasoning.supported_efforts)].find((list) => list.length);
-  const levels = listed ?? (fromParameters && Array.isArray(row.supported_parameters) && row.supported_parameters.includes("reasoning_effort") ? DEFAULT_EFFORTS : []);
+  const anyEffort = openRouter
+    ? reasoning.supported_efforts === null
+    : Array.isArray(row.supported_parameters) && row.supported_parameters.includes("reasoning_effort");
+  const levels = listed ?? (anyEffort ? DEFAULT_EFFORTS : []);
   return levels.length ? levels.map((id) => ({ id, label: EFFORT_LABELS[id] ?? id[0]!.toUpperCase() + id.slice(1) })) : undefined;
 }
 
@@ -254,7 +257,7 @@ export const OpenAICompatDriver: ProviderDriver<OpenAICompatConfig> = {
           seen.add(id);
           const label = typeof row.name === "string" && row.name.trim() ? row.name : id;
           const contextWindow = advertisedContextWindow(row);
-          const variants = advertisedEfforts(row, !isOpenRouterUrl(config.url));
+          const variants = advertisedEfforts(row, isOpenRouterUrl(config.url));
           options.push({
             id,
             label: openRouter ? freeLabel(label, row) : label,
@@ -294,6 +297,8 @@ export const OpenAICompatDriver: ProviderDriver<OpenAICompatConfig> = {
       }),
       fetchModels(),
     ]) : null;
+    const offersEffort = (model: string, effort: string) =>
+      catalog.options.find((option) => option.id === model)?.variants?.some((variant) => variant.id === effort);
 
     const runtime = createOpenAIChatRuntime({
       input,
@@ -307,10 +312,7 @@ export const OpenAICompatDriver: ProviderDriver<OpenAICompatConfig> = {
       refreshModels: fetchModels,
       modelVariants: true,
       requestBody: (model, messages, stream, variant) => {
-        // Before the server has listed its models, a saved effort goes as chosen; the server rejects one it lacks.
-        const effort = variant && (!catalogListed || catalog.options.find((option) => option.id === model)?.variants?.some((offered) => offered.id === variant))
-          ? variant
-          : undefined;
+        const effort = variant && (!catalogListed || offersEffort(model, variant)) ? variant : undefined;
         // OpenRouter routes to a provider that ignores an unsupported parameter unless require_parameters is set.
         const routing = isOpenRouterUrl(config.url) ? {
           ...(config.provider ? { order: [config.provider], allow_fallbacks: false } : {}),

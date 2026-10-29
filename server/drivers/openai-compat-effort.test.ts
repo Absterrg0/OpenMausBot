@@ -11,6 +11,7 @@ const models = {
     { id: "router-model", supported_parameters: ["tools", "reasoning_effort"] },
     { id: "openrouter-model", supported_parameters: ["reasoning_effort"], reasoning: { supported_efforts: ["max", "high", "low", "none"] } },
     { id: "nested-model", reasoning_effort_levels: [], reasoning: { supported_efforts: ["max"] } },
+    { id: "any-effort-model", reasoning: { supported_efforts: null } },
     { id: "xhigh-model", reasoning_effort_levels: ["high", "xhigh"] },
     { id: "plain-model" },
   ],
@@ -54,6 +55,7 @@ it("offers the reasoning efforts a model advertises on /models", async () => {
     "router-model": ["low", "medium", "high"],
     "openrouter-model": ["max", "high", "low", "none"],
     "nested-model": ["max"],
+    "any-effort-model": undefined,
     "xhigh-model": ["high", "xhigh"],
     "plain-model": undefined,
   });
@@ -61,11 +63,12 @@ it("offers the reasoning efforts a model advertises on /models", async () => {
   await instance.dispose();
 });
 
-it("offers OpenRouter's published efforts only, never a guess from supported_parameters", async () => {
+it("offers OpenRouter's published efforts, the common three for a null list, and never a guess from supported_parameters", async () => {
   const { instance } = await fixture("https://openrouter.ai/api/v1");
   const variants = Object.fromEntries(instance.models.options.map((option) => [option.id, option.variants?.map((variant) => variant.id)]));
   expect(variants["router-model"]).toBeUndefined();
   expect(variants["openrouter-model"]).toEqual(["max", "high", "low", "none"]);
+  expect(variants["any-effort-model"]).toEqual(["low", "medium", "high"]);
   await instance.dispose();
 });
 
