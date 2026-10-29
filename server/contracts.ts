@@ -1,7 +1,7 @@
 // Ported from upstream's provider contracts with Promises for Effect and listeners for Stream; shapes and names are kept.
 
 import type { ApprovalMode } from "../shared/approval-mode.ts";
-import type { ToolScope } from "../shared/tool-scope.ts";
+import type { ToolIdentity, ToolScope } from "../shared/tool-scope.ts";
 import type { EffortLevel } from "../shared/wire.ts";
 import type {
   DriverKind, InstanceId, ModelVariantOption, RuntimeEventListener, ThreadId, TurnId,
@@ -268,6 +268,8 @@ export interface ProviderAdapter {
     contextReading?: "meter";
     /** sendTurn calls `engineAdmission` itself before it starts an engine process or joins one. */
     engineAdmission?: boolean;
+    /** The tool the model asks the person with: its question and choices become a card they answer with a tap. */
+    askTool?: ToolIdentity;
   };
   sendTurn(input: SendTurnInput): Promise<TurnStartResult>;
   interruptTurn(threadId: ThreadId, turnId?: TurnId): Promise<void>;

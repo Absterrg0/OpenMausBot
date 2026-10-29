@@ -1,5 +1,5 @@
 import { useContext, useState, type ReactNode } from "react";
-import { Check, ShieldCheck, Undo2, X } from "lucide-react";
+import { Check, Clock3, ShieldCheck, Undo2, X } from "lucide-react";
 import { api, ApiError, StoreContext, type Bot, type Message, type OptionCardData } from "@/state/store";
 import { shareLearnedSkillsMode } from "@/lib/feature-flags";
 import { cn } from "@/lib/cn";
@@ -64,10 +64,10 @@ const PROFILE_FIELD_LABEL: Record<ProfileRequestField, LocaleKey> = {
 const staleRoutineCard = (card: OptionCardData) => Boolean(card.routineRequest && !card.answered);
 
 export function approvalCardOutcome(card: OptionCardData): string | undefined {
-  if (card.expired === true || staleRoutineCard(card)) return t("approval.status.expired");
+  const isProposal = Boolean(card.routineRequest || card.skillRequest || card.profileRequest || card.modelRequest || card.teamSetupRequest);
+  if (card.expired === true || staleRoutineCard(card)) return t(isProposal || !card.tool ? "approval.status.expired" : "approval.status.timedOut");
   if (!card.answered) return undefined;
   if (card.undone === true) return t("approval.status.undone");
-  const isProposal = Boolean(card.routineRequest || card.skillRequest || card.profileRequest || card.modelRequest || card.teamSetupRequest);
   if (card.answered !== "allow") return isProposal ? t("approval.status.cancelled") : t("approval.status.denied");
   if (card.teamSetupRequest) return card.teamSetupRequest.deletion ? "Bot deleted" : "Team setup applied";
   const routineAction = card.routineRequest?.operation.action;
@@ -316,6 +316,7 @@ function CompactApprovalRow({
   showDetailInline,
   outcome,
   allowed,
+  expired = false,
   byVoice,
   waiting,
   answeredBelow,
@@ -326,6 +327,7 @@ function CompactApprovalRow({
   showDetailInline: boolean;
   outcome?: string;
   allowed: boolean;
+  expired?: boolean;
   byVoice: ReactNode;
   waiting: boolean;
   answeredBelow: boolean;
@@ -350,7 +352,9 @@ function CompactApprovalRow({
           ? <ShieldCheck size={14} className="shrink-0 self-center text-accent" aria-hidden="true" />
           : allowed
             ? <Check size={14} className="shrink-0 self-center text-success" aria-hidden="true" />
-            : <X size={14} className="shrink-0 self-center" aria-hidden="true" />}
+            : expired
+              ? <Clock3 size={14} className="shrink-0 self-center" aria-hidden="true" />
+              : <X size={14} className="shrink-0 self-center" aria-hidden="true" />}
         <span className={cn("min-w-0 break-words", waiting && "text-ink")}>{header}</span>
         {summary && <span className="min-w-0 break-words">{waiting ? summary : `· ${summary}`}</span>}
         {detail && showDetailInline && (
@@ -453,6 +457,7 @@ export function ApprovalCard({
         showDetailInline={!outbound}
         outcome={outcome}
         allowed={settled === "allow" && !expired}
+        expired={expired}
         byVoice={byVoice}
         waiting={waiting}
         answeredBelow={Boolean(card.requestId && card.tool && !card.dismissed)}

@@ -737,10 +737,10 @@ describe("one approval, one card", () => {
     expect(line).not.toContain("<button");
 
     const [pending] = pendingApprovals([command()]);
-    const panel = renderToStaticMarkup(createElement(PendingApprovalPanel, { pending: pending!, count: 1, index: 0, botName: "Dev" }));
+    const panel = renderToStaticMarkup(createElement(PendingApprovalPanel, { pending: pending!, count: 1, index: 0, botName: "Dev", more: "Cancel turn" }));
     const row = visibleRow(panel);
-    expect(row).toContain("Dev wants to run");
-    expect(row).toMatch(/<code[^>]*><span class="truncate">git status<\/span><\/code>/);
+    expect(row).toContain("Dev wants to run a command");
+    expect(row).toMatch(/font-mono[^"]*"[^>]*>git status<\/div>/);
     expect(panel).toContain('aria-label="Pending approval"');
     expect(panel).not.toContain("Command approval requested");
     expect(row).not.toContain("<pre");
@@ -775,7 +775,7 @@ describe("one approval, one card", () => {
     expect(row).toContain("Run code on Composio?");
     expect(row).not.toContain("code_to_execute");
     expect(row).toContain('aria-label="Details"');
-    expect(row).toContain(">May send</span>");
+    expect(row).toMatch(/>May send<\/span>/);
     expect(row).toContain('title="This runs code that could send or change things in your apps, so it always asks first."');
     expect(panel).not.toContain("This sends something");
     expect(panel.slice(panel.indexOf('id="approval-details-'))).toContain("code_to_execute");

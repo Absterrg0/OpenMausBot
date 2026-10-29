@@ -924,6 +924,7 @@ export function createOpenAIChatRuntime<Config>(options: RuntimeOptions<Config>)
         highlevelMcp: options.tools !== false,
         deviceMcp: options.tools !== false,
         queueing: true,
+        ...(options.tools !== false ? { askTool: { kind: "native" as const, name: ASK_USER_TOOL } } : {}),
         guestTurns: "confined" },
       sendTurn,
       interruptTurn: async (threadId, turnId) => {

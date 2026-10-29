@@ -6,7 +6,7 @@ import { useStore, visibleMessages, currentTaskBot, type Bot, type Group, type I
 import { cn } from "@/lib/cn";
 import { PHONE_LAYOUT, useMediaQuery } from "@/lib/use-media-query";
 import { useMenuMotion } from "./MenuMotion";
-import { ELEVATED_FLOAT } from "./elevated";
+import { ELEVATED_CARD, ELEVATED_FLOAT } from "./elevated";
 import { activeLocale, t } from "@/lib/i18n";
 import { useAdvancedMode } from "@/lib/interface-mode";
 import { imeComposing, sendKeyLabel, sendsMessage, useSendKey } from "@/lib/send-key";
@@ -749,11 +749,11 @@ export function Composer({
         <MentionMenu listRef={mentionListRef} motion={mentionMotion} choices={candidates} highlight={highlight}
           everyoneCount={mentionEveryoneCount} onPick={pickMention} onHighlight={setHighlight} />
         {approval && (
-          <div className="mb-2 overflow-hidden rounded-2xl bg-composer ring-1 ring-composer-ring">
+          <div className={cn("mb-2 overflow-hidden rounded-[20px]", ELEVATED_CARD)}>
             <PendingApprovalPanel
               key={approval.requestId}
               pending={approval}
-              botName={approvalBot?.name}
+              botName={approvalBot?.name} asker={approvalBot}
               count={approvals.length}
               index={0}
               locale={activeLocale()}

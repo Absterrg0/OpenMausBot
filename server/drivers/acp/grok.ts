@@ -371,6 +371,7 @@ const support: AcpSupport = {
     "_x.ai/ask_user_question": GROK_ASK_USER_QUESTION,
     "x.ai/ask_user_question": GROK_ASK_USER_QUESTION,
   },
+  askTool: "ask_user_question",
   displayName: "Grok",
   images: true,
   acceptsUnadvertisedImages: grokAcceptsUnadvertisedImages,

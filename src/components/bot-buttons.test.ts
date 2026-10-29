@@ -1,4 +1,4 @@
-// The answer a bot's card waits for is that bot's own button; Deny, Cancel and the quiet actions keep their looks, and a
+// The answer a bot's card waits for is that bot's own button; Deny, Cancel and the quiet actions stay neutral, and a
 // card no single bot owns keeps the plain primary.
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
@@ -65,23 +65,26 @@ const question: Message = {
 };
 
 describe("a bot's cards answer in its own colour", () => {
-  it("paints Allow once in the asking bot's colour, while Deny stays the danger word and Always allow stays quiet", () => {
+  it("paints Allow once in the asking bot's colour, while Deny is the neutral second answer and Always allow stays quiet", () => {
     const html = approval({ id: "scout", name: "Scout", color: "pink" } as Bot);
     expectOwn(button(html, t("approval.action.allowOnce")), "pink");
     const deny = button(html, t("approval.action.deny"));
     expectPlain(deny);
-    expect(classes(deny)).toContain("text-danger");
-    expectPlain(button(html, t("approval.action.alwaysAllow")));
+    expect(classes(deny)).toEqual(expect.arrayContaining(["bg-ink/[0.07]", "text-ink"]));
+    expect(classes(deny).some((name) => name.includes("danger"))).toBe(false);
+    const always = button(html, t("approval.action.alwaysAllow"));
+    expectPlain(always);
+    expect(classes(always)).toContain("text-ink-secondary");
     expect(classes(button(approval(), t("approval.action.allowOnce")))).toContain("bg-accent");
     expectPlain(button(approval(), t("approval.action.allowOnce")));
   });
 
   it("sends a question's answers in the asking bot's colour, a light one included", () => {
-    const own = renderToStaticMarkup(createElement(QuestionCard, { threadId: "thread-1", bot: { name: "Scout", color: "yellow" }, message: question }));
+    const own = renderToStaticMarkup(createElement(QuestionCard, { threadId: "thread-1", asker: { name: "Scout", color: "yellow" }, message: question }));
     const submit = button(own, t("question.submitAll"));
     expectOwn(submit, "yellow");
     expect(submit).toContain("disabled");
-    expectPlain(button(renderToStaticMarkup(createElement(QuestionCard, { threadId: "thread-1", bot: { name: "Scout" }, message: question })), t("question.submitAll")));
+    expectPlain(button(renderToStaticMarkup(createElement(QuestionCard, { threadId: "thread-1", message: question })), t("question.submitAll")));
   });
 
   it("saves a key, finishes a sign-in and connects an app in the asking bot's colour", () => {
