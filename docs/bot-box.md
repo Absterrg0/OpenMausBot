@@ -75,7 +75,10 @@ drops whatever credential header the client sent, adds the real key, and forward
 (the base URL the server had, or the provider's default); the box cannot choose the upstream. A URL MCP server's
 headers ride the same way (`server/bot-box/broker-mcp.ts`): the turn's server list carries
 `http://127.0.0.1:18080/b/<token>/mcp-<name>` with no headers, and that token is kept for the conversation's later
-turns while the servers are the same, so a long-lived engine process keeps its MCP sessions. Connected apps (Composio,
+turns while the servers are the same, so a long-lived engine process keeps its MCP sessions. A request for the grant
+itself goes to the upstream exactly as it was given (a server at `/mcp` is reached at `/mcp`, never `/mcp/`, which a
+Cloudflare Worker answers with 404), anything below it below that address, with the client's query beside the
+upstream's own. Connected apps (Composio,
 HighLevel) were already behind the harness (`/api/internal/connectors/*` with a per-turn bearer) and stay there.
 
 A key whose CLI takes no base URL from the environment (xAI, Mistral, Groq, Cerebras, MiniMax, Kimi, Cursor, Factory,
