@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useSyncExternalStore } from "react";
 import { createPortal } from "react-dom";
 import { t } from "@/lib/i18n";
 
@@ -26,4 +26,27 @@ export function UndoToast({ toast, onDone }: { toast: Toast | null; onDone: () =
     </div>,
     document.body,
   );
+}
+
+let appToast: Toast | null = null;
+let appToastTimer: ReturnType<typeof setTimeout> | undefined;
+const appToastListeners = new Set<() => void>();
+
+/** Like useUndoToast (a newer toast replaces it), but it stays up when the component that showed it goes away, such as a
+ * composer left by a thread switch. */
+export function showUndoToast(toast: Toast | null) {
+  clearTimeout(appToastTimer);
+  appToast = toast;
+  if (toast) appToastTimer = setTimeout(() => showUndoToast(null), SHOWN_MS);
+  for (const listener of appToastListeners) listener();
+}
+
+const subscribeAppToast = (listener: () => void) => {
+  appToastListeners.add(listener);
+  return () => appToastListeners.delete(listener);
+};
+
+export function AppUndoToast() {
+  const toast = useSyncExternalStore(subscribeAppToast, () => appToast);
+  return <UndoToast toast={toast} onDone={() => showUndoToast(null)} />;
 }

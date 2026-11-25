@@ -1,5 +1,5 @@
 import type { RefObject } from "react";
-import { BookOpen, GitFork, Sparkles, Target } from "lucide-react";
+import { Archive, BookOpen, GitFork, Sparkles, Target, Trash2 } from "lucide-react";
 import { cn } from "@/lib/cn";
 import { t } from "@/lib/i18n";
 import type { ComposerSlashCommand } from "@/lib/composer-commands";
@@ -47,6 +47,10 @@ export function SlashCommandMenu({ listRef, motion, commands, highlight, onPick,
               <Target size={15} aria-hidden="true" />
             ) : command.id === "fork" ? (
               <GitFork size={15} aria-hidden="true" />
+            ) : command.id === "archive" ? (
+              <Archive size={15} aria-hidden="true" />
+            ) : command.id === "delete" ? (
+              <Trash2 size={15} aria-hidden="true" />
             ) : (
               <BookOpen size={15} aria-hidden="true" />
             )}

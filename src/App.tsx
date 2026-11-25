@@ -41,6 +41,7 @@ import { NotificationRail, NotificationsPanel } from "@/components/Notifications
 import { useNotificationFeed } from "@/lib/notification-preferences";
 import { UpdateBanner } from "@/components/UpdateBanner";
 import { AppNotices } from "@/components/AppNotices";
+import { AppUndoToast } from "@/components/UndoToast";
 import { CliLoginCard } from "@/components/CliLoginCard";
 import { AppGrantNotice } from "@/components/AppGrantPrompt";
 import { BotLimitPopup } from "@/components/BotLimitPopup";
@@ -396,6 +397,7 @@ function Shell({ viewer }: { viewer: WelcomeViewer | null }) {
     <div data-look="app" className={cn("flex h-full flex-col", framed && "bg-frame")} onClickCapture={drawerOpen ? noteDrawerAction : undefined} onKeyDownCapture={drawerOpen ? noteDrawerAction : undefined}>
       <WindowFrameBar notifications={notificationTray} sidebarUpdate={!advanced && sidebarShown} />
       <BotLimitPopup />
+      <AppUndoToast />
       <ConversationShareDialogs />
       {!framed && strips}
       <div className="relative flex min-h-0 flex-1 overflow-x-clip">
